@@ -121,6 +121,14 @@ $env:REPORT_COUNTRY = "DE"
 python scripts/submit_antisemitism_test.py
 ```
 
+Use the `internalReportId` printed by that command to fetch the latest processing and
+Discord lifecycle status:
+
+```powershell
+$env:DSA_API_KEY = "<Railway API_KEY>"
+python scripts/get_report_status.py "<internal-report-id>"
+```
+
 Final submissions are never automatically retried after an ambiguous network result. Such a report transitions to `failed` for manual review.
 
 After submission, Discord lifecycle emails update `discordStatus` without changing

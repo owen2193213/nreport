@@ -99,3 +99,6 @@ envelope recipient. Review links are never stored, logged, or opened automatical
 - Report ownership is stored with the report instead of in a second bot database, avoiding
   cross-database drift. The field remains optional for compatibility, while bot callers are
   expected to always provide it. A users table and pagination are deferred until needed.
+- Command-line status checks use the existing authenticated single-report endpoint. A
+  one-shot dependency-free Python client was selected over polling or another API route;
+  callers decide their own refresh interval.

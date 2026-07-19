@@ -107,6 +107,11 @@ export interface FingerprintResponse {
   fingerprint: string;
 }
 
+export interface DiscordDsaSessionState {
+  fingerprint: string;
+  cookies: string;
+}
+
 export interface JsonRequest {
   method: "GET" | "POST";
   path: string;
@@ -116,5 +121,6 @@ export interface JsonRequest {
 
 export interface JsonTransport {
   requestJson<T>(request: JsonRequest): Promise<T>;
+  exportCookies?(): string;
   close?(): Promise<void>;
 }

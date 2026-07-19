@@ -21,7 +21,6 @@ if (!REPORT_FLOWS.includes(flowValue as ReportFlow)) {
 const flow = flowValue as ReportFlow;
 
 const client = new DiscordDsaClient({
-  codeQueryB: process.env.DSA_CODE_QUERY_B ?? "js30bq",
   proxyUrl
 });
 

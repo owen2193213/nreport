@@ -22,18 +22,21 @@ class FakeTransport implements JsonTransport {
     else response = undefined;
     return Promise.resolve(response as T);
   }
+
+  public exportCookies(): string {
+    return '{"cookies":[]}';
+  }
 }
 
 describe("DiscordDsaClient", () => {
   it("constructs the code and verification requests", async () => {
     const transport = new FakeTransport();
     const client = new DiscordDsaClient({
-      codeQueryB: "js30bq",
       fingerprint: "test-fp",
       transport
     });
 
-    await client.sendEmailCode("message_urf", "reporter@example.com");
+    await client.sendEmailCode("message_urf", "projectnebulon@gmail.com");
     const token = await client.verifyEmailCode(
       "message_urf",
       "reporter@example.com",
@@ -45,7 +48,7 @@ describe("DiscordDsaClient", () => {
       {
         method: "POST",
         path: "message_urf/code?b=js30bq",
-        body: { name: "message_urf", email: "reporter@example.com" },
+        body: { name: "message_urf", email: "projectnebulon@gmail.com" },
         headers: { "x-fingerprint": "test-fp" }
       },
       {
@@ -64,7 +67,6 @@ describe("DiscordDsaClient", () => {
   it("loads menus and submits prepared payloads", async () => {
     const transport = new FakeTransport();
     const client = new DiscordDsaClient({
-      codeQueryB: "js30bq",
       fingerprint: "test-fp",
       transport
     });
@@ -86,7 +88,7 @@ describe("DiscordDsaClient", () => {
 
   it("bootstraps and reuses a Discord fingerprint", async () => {
     const transport = new FakeTransport();
-    const client = new DiscordDsaClient({ codeQueryB: "js30bq", transport });
+    const client = new DiscordDsaClient({ transport });
 
     expect(await client.bootstrapFingerprint()).toBe("generated-fp");
     await client.getMenu("message_urf");
@@ -102,5 +104,15 @@ describe("DiscordDsaClient", () => {
         headers: { "x-fingerprint": "generated-fp" }
       }
     ]);
+  });
+
+  it("exports resumable fingerprint and cookie state", async () => {
+    const transport = new FakeTransport();
+    const client = new DiscordDsaClient({ fingerprint: "persisted-fp", transport });
+
+    await expect(client.snapshotSession()).resolves.toEqual({
+      fingerprint: "persisted-fp",
+      cookies: '{"cookies":[]}'
+    });
   });
 });

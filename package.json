@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Typed client for Discord's authorized EU DSA reporting workflows.",
+  "description": "Typed client and Railway backend for authorized EU DSA reporting workflows.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -17,20 +17,29 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "lint": "eslint --no-error-on-unmatched-pattern \"src/**/*.ts\" \"scripts/**/*.ts\" \"test/**/*.ts\"",
-    "typecheck": "tsc --noEmit",
+    "dev": "tsx watch src/backend/main.ts",
+    "lint": "eslint --no-error-on-unmatched-pattern \"src/**/*.ts\" \"scripts/**/*.ts\" \"test/**/*.ts\" \"cloudflare-email-worker/src/**/*.ts\"",
+    "start": "node dist/backend/main.js",
+    "typecheck": "tsc --noEmit && tsc -p cloudflare-email-worker/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:client-readonly": "tsx scripts/test-client-readonly.ts",
     "test:post-headers": "tsx scripts/test-post-headers.ts",
     "test:headers": "tsx scripts/test-menu-headers.ts"
   },
   "dependencies": {
+    "@fastify/rate-limit": "^11.1.0",
+    "fastify": "^5.10.0",
+    "mailparser": "^3.9.14",
+    "pg": "^8.22.0",
     "tough-cookie": "^6.0.2",
     "undici": "^8.7.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260719.1",
     "@eslint/js": "^10.0.1",
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^26.1.1",
+    "@types/pg": "^8.20.0",
     "eslint": "^10.7.0",
     "tsx": "^4.23.1",
     "typescript": "^6.0.3",

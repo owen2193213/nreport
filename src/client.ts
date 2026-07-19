@@ -5,6 +5,7 @@ import { UndiciJsonTransport } from "./transport.js";
 import { REPORT_FLOWS } from "./types.js";
 import type {
   EmailTokenResponse,
+  DiscordDsaSessionState,
   FingerprintResponse,
   JsonTransport,
   ReportDraft,
@@ -15,7 +16,6 @@ import type {
 } from "./types.js";
 
 export interface DiscordDsaClientOptions {
-  codeQueryB: string;
   fingerprint?: string;
   proxyUrl?: string;
   baseUrl?: string;
@@ -25,6 +25,7 @@ export interface DiscordDsaClientOptions {
   extraHeaders?: Record<string, string>;
   timeoutMs?: number;
   transport?: JsonTransport;
+  sessionState?: DiscordDsaSessionState;
 }
 
 function assertFlow(flow: string): asserts flow is ReportFlow {
@@ -47,6 +48,14 @@ function assertCode(code: string): void {
   }
 }
 
+function emailToCodeQueryB(email: string): string {
+  let hash = 5381;
+  for (let index = 0; index < email.length; index += 1) {
+    hash = ((hash << 5) + hash + email.charCodeAt(index)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
 function defaultHeaders(options: DiscordDsaClientOptions): Record<string, string> {
   const headers: Record<string, string> = {
     accept: "*/*",
@@ -58,25 +67,34 @@ function defaultHeaders(options: DiscordDsaClientOptions): Record<string, string
 }
 
 export class DiscordDsaClient {
-  private readonly codeQueryB: string;
   private readonly transport: JsonTransport;
   private fingerprint: string | undefined;
   private fingerprintPromise: Promise<string> | undefined;
 
   public constructor(options: DiscordDsaClientOptions) {
-    if (options.codeQueryB.trim().length === 0) {
-      throw new PayloadValidationError("codeQueryB must not be empty.");
-    }
-    this.codeQueryB = options.codeQueryB;
-    this.fingerprint = options.fingerprint;
+    this.fingerprint = options.fingerprint ?? options.sessionState?.fingerprint;
     this.transport =
       options.transport ??
       new UndiciJsonTransport({
         ...(options.proxyUrl === undefined ? {} : { proxyUrl: options.proxyUrl }),
         ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
         defaultHeaders: defaultHeaders(options),
+        ...(options.sessionState?.cookies === undefined
+          ? {}
+          : { serializedCookies: options.sessionState.cookies }),
         ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs })
       });
+  }
+
+  public async snapshotSession(): Promise<DiscordDsaSessionState> {
+    const cookies = this.transport.exportCookies?.();
+    if (cookies === undefined) {
+      throw new DiscordDsaError("The configured transport cannot export session cookies.");
+    }
+    return {
+      fingerprint: await this.bootstrapFingerprint(),
+      cookies
+    };
   }
 
   public async bootstrapFingerprint(): Promise<string> {
@@ -113,7 +131,7 @@ export class DiscordDsaClient {
     assertEmail(email);
     await this.transport.requestJson<void>({
       method: "POST",
-      path: `${flow}/code?b=${encodeURIComponent(this.codeQueryB)}`,
+      path: `${flow}/code?b=${emailToCodeQueryB(email)}`,
       body: { name: flow, email },
       headers: await this.fingerprintHeaders()
     });

@@ -1,0 +1,9 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dsa-inbound-email",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-19",
+  "vars": {
+    "INGEST_URL": "https://discord-dsa-production.up.railway.app/webhooks/cloudflare-email"
+  }
+}

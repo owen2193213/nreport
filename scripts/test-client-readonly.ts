@@ -6,7 +6,6 @@ if (proxyUrl === undefined || proxyUrl.length === 0) {
 }
 
 const client = new DiscordDsaClient({
-  codeQueryB: process.env.DSA_CODE_QUERY_B ?? "js30bq",
   proxyUrl
 });
 

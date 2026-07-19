@@ -1,6 +1,6 @@
 # Discord DSA API Capture Handoff
 
-Last updated: 2026-07-17
+Last updated: 2026-07-19
 
 ## Objective
 
@@ -33,7 +33,25 @@ Content-Type: application/json
 }
 ```
 
-The `b` query value is not yet understood and must be treated as dynamic until its source is identified.
+The `b` query value is a deterministic, unsigned 32-bit DJB2-style hash of the
+exact email string, encoded in base 36. Discord's web client currently computes
+it as follows:
+
+```js
+function emailToCodeQueryB(email) {
+  let hash = 5381;
+  for (let index = 0; index < email.length; index += 1) {
+    hash = ((hash << 5) + hash + email.charCodeAt(index)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+```
+
+Known test vector: `emailToCodeQueryB("projectnebulon@gmail.com")` returns
+`"js30bq"`. The hash function itself does not lowercase or trim its input, so
+case and whitespace change the result. Treat `b` as email-derived request data,
+not as a global constant, random session value, verification code, token, or
+fingerprint. Its server-side purpose is not confirmed.
 
 ### 2. Verify email code
 
@@ -183,7 +201,9 @@ Content-Type: application/json
 }
 ```
 
-This confirms that the authentication route is menu-specific. The currently observed `b` value remains `js30bq`, but it should still be treated as dynamic.
+This confirms that the authentication route is menu-specific. The observed
+`js30bq` value is the base-36 email hash documented above and must be recomputed
+from the exact reporter email.
 
 Confirmed verification request:
 
@@ -316,12 +336,12 @@ This validates the `Other -> Cybercrime` path `[64,60,147,150,78,77]`, confirms 
 - Menu `version`, `variant`, root/child node IDs, terminal node IDs, and breadcrumb paths
 - Cookies and Discord client/session metadata
 - EU proxy endpoint and its health
-- `b` query parameter, currently observed as `js30bq`
+- `b` query parameter, deterministically recomputed from the exact email string
 
 ### Not yet confirmed
 
 - Minimum required request headers and cookies outside Chrome
-- Source and lifetime of the `b` query value
+- Server-side purpose of the email-derived `b` query value
 - Verification-code/token expiry times, resend behavior, reuse behavior, and invalid-code responses
 - Error behavior for expired tokens, malformed links, invalid menu paths, non-EU IPs, and unavailable content
 - Rate limits and `429` retry headers

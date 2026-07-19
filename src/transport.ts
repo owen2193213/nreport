@@ -19,6 +19,7 @@ export interface UndiciTransportOptions {
   proxyUrl?: string;
   defaultHeaders?: Record<string, string>;
   cookieJar?: CookieJar;
+  serializedCookies?: string;
   timeoutMs?: number;
 }
 
@@ -60,11 +61,19 @@ export class UndiciJsonTransport implements JsonTransport {
   public constructor(options: UndiciTransportOptions = {}) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
     this.defaultHeaders = sanitizeHeaders(options.defaultHeaders ?? {});
-    this.cookieJar = options.cookieJar ?? new CookieJar();
+    this.cookieJar =
+      options.cookieJar ??
+      (options.serializedCookies === undefined
+        ? new CookieJar()
+        : CookieJar.deserializeSync(options.serializedCookies));
     this.timeoutMs = options.timeoutMs ?? 15_000;
     if (options.proxyUrl !== undefined) {
       this.dispatcher = new ProxyAgent(options.proxyUrl);
     }
+  }
+
+  public exportCookies(): string {
+    return JSON.stringify(this.cookieJar.serializeSync());
   }
 
   public async requestJson<T>(requestOptions: JsonRequest): Promise<T> {

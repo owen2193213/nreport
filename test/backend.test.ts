@@ -3,7 +3,10 @@ import { randomBytes } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { extractVerificationCode } from "../src/backend/email.js";
+import {
+  extractVerificationCode,
+  parseDiscordEmail
+} from "../src/backend/email.js";
 import { generateIdentity } from "../src/backend/pseudonyms.js";
 import {
   decryptJson,
@@ -96,5 +99,39 @@ describe("backend secrets and inbound email", () => {
       "Subject: Please verify\r\nContent-Type: text/plain\r\n\r\nFollow normal instructions."
     );
     await expect(extractVerificationCode(raw)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    {
+      subject: "Report Received #1527695430949798110",
+      text: "Your report reference number is #1527695430949798110.",
+      status: "received"
+    },
+    {
+      subject: "Report Actioned #1262026288437268564",
+      text: "We reviewed your report and took action on the content.",
+      status: "actioned"
+    },
+    {
+      subject: "Report Closed #1527695430949798110",
+      text: "We decided not to take action on the content in your report.",
+      status: "closed_no_action"
+    },
+    {
+      subject: "Report Closed #1450081430846574719",
+      text: "We reviewed your report review request for report 1450081430846574719 and decided not to take action.",
+      status: "review_not_approved"
+    }
+  ])("parses Discord lifecycle status $status", async ({ subject, text, status }) => {
+    const reportId = subject.match(/\d{15,22}/)?.[0];
+    const raw = Buffer.from(
+      `From: Discord <noreply@discord.com>\r\nSubject: ${subject}\r\n` +
+        `Content-Type: text/plain\r\n\r\n${text}`
+    );
+    await expect(parseDiscordEmail(raw)).resolves.toEqual({
+      kind: "report_update",
+      reportId,
+      status
+    });
   });
 });

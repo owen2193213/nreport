@@ -7,7 +7,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AppConfig } from "./config.js";
 import { IdempotencyConflictError } from "./database.js";
 import type { Database, ReportRow } from "./database.js";
-import { extractVerificationCode } from "./email.js";
+import { parseDiscordEmail } from "./email.js";
 import { createProxySessionId, generateIdentity } from "./pseudonyms.js";
 import {
   encryptJson,
@@ -27,6 +27,8 @@ function publicReport(report: ReportRow): Record<string, unknown> {
     email: report.reporter_email,
     status: report.status,
     discordReportId: report.discord_report_id,
+    discordStatus: report.discord_status,
+    discordStatusUpdatedAt: report.discord_status_updated_at,
     error:
       report.error_code === null
         ? null
@@ -173,13 +175,24 @@ export async function buildServer(config: AppConfig, database: Database) {
       ) {
         return reply.code(401).send({ error: { code: "invalid_signature" } });
       }
-      const code = await extractVerificationCode(rawEmail);
-      if (!code) return reply.code(202).send({ status: "ignored" });
-      const result = await database.registerVerificationEmail({
-        messageId,
-        recipient,
-        encryptedCode: encryptJson({ code }, config.sessionEncryptionKey)
-      });
+      const parsed = await parseDiscordEmail(rawEmail);
+      if (!parsed) return reply.code(202).send({ status: "ignored" });
+      const result =
+        parsed.kind === "verification"
+          ? await database.registerVerificationEmail({
+              messageId,
+              recipient,
+              encryptedCode: encryptJson(
+                { code: parsed.code },
+                config.sessionEncryptionKey
+              )
+            })
+          : await database.registerReportUpdateEmail({
+              messageId,
+              recipient,
+              discordReportId: parsed.reportId,
+              discordStatus: parsed.status
+            });
       return reply.code(202).send({ status: result });
     }
   );

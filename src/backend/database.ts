@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
 
 import type { ReportFlow } from "../types.js";
+import type { DiscordReportStatus } from "./email.js";
 import type { CreateReportInput } from "./validation.js";
 
 export type ReportStatus =
@@ -29,6 +30,8 @@ export interface ReportRow extends QueryResultRow {
   input: CreateReportInput;
   session_state: string | null;
   discord_report_id: string | null;
+  discord_status: DiscordReportStatus | null;
+  discord_status_updated_at: Date | null;
   error_code: string | null;
   error_message: string | null;
   created_at: Date;
@@ -76,6 +79,8 @@ CREATE TABLE IF NOT EXISTS reports (
   input jsonb NOT NULL,
   session_state text,
   discord_report_id text,
+  discord_status text,
+  discord_status_updated_at timestamptz,
   error_code text,
   error_message text,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -111,8 +116,15 @@ CREATE TABLE IF NOT EXISTS inbound_messages (
   report_id text REFERENCES reports(id) ON DELETE SET NULL,
   recipient text NOT NULL,
   status text NOT NULL,
+  external_report_id text,
+  external_status text,
   received_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status text;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status_updated_at timestamptz;
+ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_report_id text;
+ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_status text;
 
 CREATE INDEX IF NOT EXISTS report_jobs_claim_idx ON report_jobs(state, run_at, id);
 CREATE INDEX IF NOT EXISTS report_events_report_idx ON report_events(report_id, created_at);
@@ -363,6 +375,69 @@ export class Database {
     }
   }
 
+  public async registerReportUpdateEmail(input: {
+    messageId: string;
+    recipient: string;
+    discordReportId: string;
+    discordStatus: DiscordReportStatus;
+  }): Promise<"accepted" | "duplicate" | "pending_report"> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const reportResult = await client.query<ReportRow>(
+        `SELECT * FROM reports
+         WHERE discord_report_id = $1 AND reporter_email = $2
+         FOR UPDATE`,
+        [input.discordReportId, input.recipient.toLowerCase()]
+      );
+      const report = reportResult.rows[0];
+      const inserted = await client.query(
+        `INSERT INTO inbound_messages (
+           message_id, report_id, recipient, status, external_report_id, external_status
+         ) VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (message_id) DO NOTHING
+         RETURNING message_id`,
+        [
+          input.messageId,
+          report?.id ?? null,
+          input.recipient.toLowerCase(),
+          report ? "accepted" : "pending_report",
+          input.discordReportId,
+          input.discordStatus
+        ]
+      );
+      if (inserted.rowCount === 0) {
+        await client.query("COMMIT");
+        return "duplicate";
+      }
+      if (!report) {
+        await client.query("COMMIT");
+        return "pending_report";
+      }
+      await client.query(
+        `UPDATE reports
+         SET discord_status = CASE
+               WHEN discord_status IN ('actioned', 'closed_no_action', 'review_not_approved')
+                 AND $2 = 'received' THEN discord_status
+               ELSE $2
+             END,
+             discord_status_updated_at = now(), updated_at = now()
+         WHERE id = $1`,
+        [report.id, input.discordStatus]
+      );
+      await this.event(client, report.id, "discord_status_updated", {
+        discordStatus: input.discordStatus
+      });
+      await client.query("COMMIT");
+      return "accepted";
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   public async claimJob(): Promise<JobRow | undefined> {
     const client = await this.pool.connect();
     try {
@@ -452,6 +527,34 @@ export class Database {
         [reportId, discordReportId]
       );
       await this.event(client, reportId, "report_submitted", { discordReportId });
+      const pending = await client.query<{ external_status: DiscordReportStatus }>(
+        `SELECT external_status
+         FROM inbound_messages
+         WHERE external_report_id = $1 AND recipient = (
+           SELECT reporter_email FROM reports WHERE id = $2
+         ) AND report_id IS NULL AND external_status IS NOT NULL
+         ORDER BY received_at DESC
+         LIMIT 1`,
+        [discordReportId, reportId]
+      );
+      const pendingStatus = pending.rows[0]?.external_status;
+      if (pendingStatus !== undefined) {
+        await client.query(
+          `UPDATE reports
+           SET discord_status = $2, discord_status_updated_at = now(), updated_at = now()
+           WHERE id = $1`,
+          [reportId, pendingStatus]
+        );
+        await client.query(
+          `UPDATE inbound_messages
+           SET report_id = $2, status = 'accepted'
+           WHERE external_report_id = $1 AND report_id IS NULL`,
+          [discordReportId, reportId]
+        );
+        await this.event(client, reportId, "discord_status_updated", {
+          discordStatus: pendingStatus
+        });
+      }
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");

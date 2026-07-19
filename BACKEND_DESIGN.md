@@ -45,6 +45,17 @@ Alternatives considered:
 
 Failures store a stable error code and redacted message. Retryable pre-submission operations use bounded backoff. Final submission is never automatically retried after an ambiguous network outcome.
 
+After `submitted`, Discord may send lifecycle email updates. These are stored in a
+separate `discord_status` field so they do not overwrite the API submission state:
+
+- `received`: Discord acknowledged the report.
+- `actioned`: Discord took action on the reported content.
+- `closed_no_action`: Discord closed the original report without action.
+- `review_not_approved`: Discord closed a subsequent review request without action.
+
+Lifecycle updates are correlated using both the Discord report ID and the generated
+envelope recipient. Review links are never stored, logged, or opened automatically.
+
 ## Security and reliability
 
 - Require an API key and `Idempotency-Key` on report creation.
@@ -64,4 +75,7 @@ Failures store a stable error code and redacted message. Retryable pre-submissio
 - Versioned reviewed pseudonym lists selected over unbounded generated identities.
 - Exact-recipient correlation selected so reports can wait for verification concurrently.
 - Runtime menu resolution and sticky proxy continuity remain mandatory.
-
+- Discord lifecycle resolution is stored separately from submission status; overwriting
+  `submitted` would make API delivery state and Discord's later decision ambiguous.
+- Review-decision emails are observed and recorded, but review links remain a manual
+  organizational action because opening them changes external state.

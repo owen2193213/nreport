@@ -69,7 +69,9 @@ Content-Type: application/json
 }
 ```
 
-The response is `202 Accepted` for a new report and includes its internal ID, generated pseudonym/address, status, and nullable Discord report ID. Retrieve its current state with:
+The response is `202 Accepted` for a new report and includes its internal ID,
+generated pseudonym/address, submission status, nullable Discord report ID, and
+nullable `discordStatus`. Retrieve its current state with:
 
 ```http
 GET /v1/reports/<internal-report-id>
@@ -83,6 +85,11 @@ Supported flow-specific fields:
 - `guild_urf`: `guildIdOrInviteCode`, `guildElements`
 
 Final submissions are never automatically retried after an ambiguous network result. Such a report transitions to `failed` for manual review.
+
+After submission, Discord lifecycle emails update `discordStatus` without changing
+the successful API submission state. Current values are `received`, `actioned`,
+`closed_no_action`, and `review_not_approved`. Review links are intentionally not
+stored or opened automatically.
 
 ## Install and validate
 

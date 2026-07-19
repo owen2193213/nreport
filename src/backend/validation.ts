@@ -23,6 +23,7 @@ interface BaseCreateReportInput {
   country: string;
   flow: ReportFlow;
   reportType: string;
+  submitterDiscordUserId?: string;
   context?: string;
   reporterUsername?: string;
 }
@@ -119,12 +120,20 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
   const flow = flowValue as ReportFlow;
   const reportType = requiredString(input, "reportType", 100);
   if (!/^[a-z0-9_]+$/.test(reportType)) throw new Error("reportType is invalid.");
+  const submitterDiscordUserId = optionalString(input, "submitterDiscordUserId", 22);
+  if (
+    submitterDiscordUserId !== undefined &&
+    !/^\d{15,22}$/.test(submitterDiscordUserId)
+  ) {
+    throw new Error("submitterDiscordUserId must be a Discord snowflake.");
+  }
   const context = optionalString(input, "context", 4_000);
   const reporterUsername = optionalString(input, "reporterUsername", 100);
   const base = {
     country,
     flow,
     reportType,
+    ...(submitterDiscordUserId === undefined ? {} : { submitterDiscordUserId }),
     ...(context === undefined ? {} : { context }),
     ...(reporterUsername === undefined ? {} : { reporterUsername })
   };

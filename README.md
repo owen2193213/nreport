@@ -68,6 +68,7 @@ Content-Type: application/json
   "country": "DE",
   "flow": "message_urf",
   "reportType": "sub_other_cybercrime",
+  "submitterDiscordUserId": "1057381507204915281",
   "messageUrl": "https://discord.com/channels/1273300509318578227/1526327580456779797/1527300404998832138",
   "context": "The message distributes malware."
 }
@@ -99,6 +100,26 @@ Supported flow-specific fields:
 - `message_urf`: `messageUrl`
 - `user_urf`: `reportedUsername`, `profileElements`, optional `reportedUserServerId`
 - `guild_urf`: `guildIdOrInviteCode`, `guildElements`
+
+`submitterDiscordUserId` is optional for compatibility but should always be supplied by
+the Discord bot from the authenticated interaction user. It is internal metadata and is
+never included in the report sent to Discord. Retrieve a user's latest 100 reports with:
+
+```http
+GET /v1/users/<discord-user-id>/reports
+Authorization: Bearer <API_KEY>
+```
+
+To create the documented antisemitism test report, set the actual submitting bot user's
+ID, API key, and truthful EU country, then run the dependency-free example. This starts a
+real report and sends a verification email:
+
+```powershell
+$env:DSA_API_KEY = "<Railway API_KEY>"
+$env:DISCORD_USER_ID = "<your Discord user ID>"
+$env:REPORT_COUNTRY = "DE"
+python scripts/submit_antisemitism_test.py
+```
 
 Final submissions are never automatically retried after an ambiguous network result. Such a report transitions to `failed` for manual review.
 

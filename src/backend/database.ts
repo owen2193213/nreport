@@ -22,6 +22,7 @@ export interface ReportRow extends QueryResultRow {
   flow: ReportFlow;
   country: string;
   report_type: string;
+  submitter_discord_user_id: string | null;
   reporter_legal_name: string;
   reporter_email: string;
   timezone: string;
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS reports (
   flow text NOT NULL CHECK (flow IN ('user_urf', 'message_urf', 'guild_urf')),
   country char(2) NOT NULL,
   report_type text NOT NULL,
+  submitter_discord_user_id text,
   reporter_legal_name text NOT NULL,
   reporter_email text NOT NULL UNIQUE,
   timezone text NOT NULL,
@@ -131,12 +133,15 @@ ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status text;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status_updated_at timestamptz;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS locale text NOT NULL DEFAULT 'en-US';
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS language text NOT NULL DEFAULT 'en';
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS submitter_discord_user_id text;
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_report_id text;
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_status text;
 
 CREATE INDEX IF NOT EXISTS report_jobs_claim_idx ON report_jobs(state, run_at, id);
 CREATE INDEX IF NOT EXISTS report_events_report_idx ON report_events(report_id, created_at);
 CREATE INDEX IF NOT EXISTS reports_email_status_idx ON reports(reporter_email, status);
+CREATE INDEX IF NOT EXISTS reports_submitter_idx
+  ON reports(submitter_discord_user_id, created_at DESC);
 `;
 
 export class Database {
@@ -227,9 +232,9 @@ export class Database {
       const inserted = await client.query<ReportRow>(
         `INSERT INTO reports (
           id, idempotency_key, request_hash, flow, country, report_type,
-          reporter_legal_name, reporter_email, timezone, locale, language,
-          proxy_session_id, status, input
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'queued', $13)
+          submitter_discord_user_id, reporter_legal_name, reporter_email,
+          timezone, locale, language, proxy_session_id, status, input
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'queued', $14)
         RETURNING *`,
         [
           record.id,
@@ -238,6 +243,7 @@ export class Database {
           record.input.flow,
           record.input.country,
           record.input.reportType,
+          record.input.submitterDiscordUserId ?? null,
           record.legalName,
           record.email,
           record.timezone,
@@ -268,6 +274,17 @@ export class Database {
   public async getReport(id: string): Promise<ReportRow | undefined> {
     const result = await this.pool.query<ReportRow>("SELECT * FROM reports WHERE id = $1", [id]);
     return result.rows[0];
+  }
+
+  public async listReportsBySubmitter(discordUserId: string): Promise<ReportRow[]> {
+    const result = await this.pool.query<ReportRow>(
+      `SELECT * FROM reports
+       WHERE submitter_discord_user_id = $1
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [discordUserId]
+    );
+    return result.rows;
   }
 
   public async getReportByEmail(email: string): Promise<ReportRow | undefined> {

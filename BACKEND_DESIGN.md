@@ -4,6 +4,7 @@
 
 - Build a small internal API around the existing typed Discord DSA client.
 - Accept country, report flow, category, context, and flow-specific target fields.
+- Optionally accept the submitting Discord user's snowflake as internal ownership metadata.
 - Generate organization-controlled country-localized pseudonyms and unique catch-all addresses; callers cannot supply a legal name.
 - Preserve one country-matched sticky proxy session across the entire report lifecycle.
 - Receive Discord verification emails through a Cloudflare Email Worker and correlate them by the SMTP envelope recipient.
@@ -69,6 +70,9 @@ envelope recipient. Review links are never stored, logged, or opened automatical
 - Encrypt persisted Discord session state with AES-256-GCM.
 - Use parameterized SQL and structured redacted logging.
 - Use database uniqueness constraints for internal IDs, generated emails, and idempotency keys.
+- Store submitter Discord IDs only in the authenticated backend; never include them in the
+  external Discord report payload. Index the nullable ID and expose a bounded authenticated
+  lookup of the latest 100 reports for a user.
 
 ## Decision log
 
@@ -92,3 +96,6 @@ envelope recipient. Review links are never stored, logged, or opened automatical
   `submitted` would make API delivery state and Discord's later decision ambiguous.
 - Review-decision emails are observed and recorded, but review links remain a manual
   organizational action because opening them changes external state.
+- Report ownership is stored with the report instead of in a second bot database, avoiding
+  cross-database drift. The field remains optional for compatibility, while bot callers are
+  expected to always provide it. A users table and pagination are deferred until needed.

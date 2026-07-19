@@ -27,6 +27,7 @@ function publicReport(report: ReportRow): Record<string, unknown> {
     country: report.country,
     flow: report.flow,
     reportType: report.report_type,
+    submitterDiscordUserId: report.submitter_discord_user_id,
     pseudonym: report.reporter_legal_name,
     email: report.reporter_email,
     locale: report.locale,
@@ -152,6 +153,23 @@ export async function buildServer(config: AppConfig, database: Database) {
         });
       }
       return reply.send(publicReport(report));
+    }
+  );
+
+  app.get<{ Params: { discordUserId: string } }>(
+    "/v1/users/:discordUserId/reports",
+    { preHandler: authorize },
+    async (request, reply) => {
+      if (!/^\d{15,22}$/.test(request.params.discordUserId)) {
+        return reply.code(400).send({
+          error: {
+            code: "invalid_discord_user_id",
+            message: "discordUserId must be a Discord snowflake."
+          }
+        });
+      }
+      const reports = await database.listReportsBySubmitter(request.params.discordUserId);
+      return reply.send({ reports: reports.map(publicReport) });
     }
   );
 

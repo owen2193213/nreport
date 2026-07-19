@@ -15,6 +15,8 @@ export type ReportStatus =
   | "submitted"
   | "failed";
 
+export const MAX_LIFECYCLE_ATTEMPTS = 3;
+
 export interface ReportRow extends QueryResultRow {
   id: string;
   idempotency_key: string;
@@ -37,6 +39,9 @@ export interface ReportRow extends QueryResultRow {
   discord_status_updated_at: Date | null;
   error_code: string | null;
   error_message: string | null;
+  lifecycle_attempt: number;
+  retryable: boolean;
+  failure_stage: ReportStatus | "pre_submission" | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -68,6 +73,39 @@ export interface CreateReportResult {
   report: ReportRow;
 }
 
+export interface RetryReportRecord {
+  reportId: string;
+  idempotencyKey: string;
+  submitterDiscordUserId: string;
+  email: string;
+  proxySessionId: string;
+}
+
+export interface RetryReportResult {
+  replayed: boolean;
+  report: ReportRow;
+}
+
+export type ReportRetryErrorCode =
+  | "report_not_found"
+  | "report_owner_mismatch"
+  | "report_not_failed"
+  | "report_not_retryable"
+  | "retry_limit_reached";
+
+export function isRetryableFailure(
+  stage: ReportStatus,
+  errorCode: string,
+  lifecycleAttempt: number
+): boolean {
+  return (
+    stage !== "submitting" &&
+    stage !== "submitted" &&
+    errorCode !== "ambiguous_submission_state" &&
+    lifecycleAttempt < MAX_LIFECYCLE_ATTEMPTS
+  );
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS reports (
   id text PRIMARY KEY,
@@ -91,6 +129,9 @@ CREATE TABLE IF NOT EXISTS reports (
   discord_status_updated_at timestamptz,
   error_code text,
   error_message text,
+  lifecycle_attempt integer NOT NULL DEFAULT 1,
+  retryable boolean NOT NULL DEFAULT false,
+  failure_stage text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -129,11 +170,22 @@ CREATE TABLE IF NOT EXISTS inbound_messages (
   received_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS report_retry_requests (
+  report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  idempotency_key text NOT NULL,
+  lifecycle_attempt integer NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (report_id, idempotency_key)
+);
+
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status text;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status_updated_at timestamptz;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS locale text NOT NULL DEFAULT 'en-US';
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS language text NOT NULL DEFAULT 'en';
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS submitter_discord_user_id text;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS lifecycle_attempt integer NOT NULL DEFAULT 1;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS retryable boolean NOT NULL DEFAULT false;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS failure_stage text;
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_report_id text;
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_status text;
 
@@ -142,6 +194,19 @@ CREATE INDEX IF NOT EXISTS report_events_report_idx ON report_events(report_id, 
 CREATE INDEX IF NOT EXISTS reports_email_status_idx ON reports(reporter_email, status);
 CREATE INDEX IF NOT EXISTS reports_submitter_idx
   ON reports(submitter_discord_user_id, created_at DESC);
+
+UPDATE reports AS report
+SET retryable = true,
+    failure_stage = COALESCE(failure_stage, 'pre_submission')
+WHERE report.status = 'failed'
+  AND report.discord_report_id IS NULL
+  AND report.lifecycle_attempt < 3
+  AND report.error_code IS DISTINCT FROM 'ambiguous_submission_state'
+  AND NOT EXISTS (
+    SELECT 1 FROM report_events AS event
+    WHERE event.report_id = report.id
+      AND event.event_type IN ('submission_started', 'report_submitted')
+  );
 `;
 
 export class Database {
@@ -179,6 +244,7 @@ export class Database {
           `UPDATE reports
            SET status = 'failed', error_code = 'ambiguous_submission_state',
                error_message = 'Worker restarted during verification or submission; manual review required.',
+               retryable = false, failure_stage = 'submitting',
                updated_at = now()
            WHERE id = $1 AND status <> 'submitted'`,
           [row.report_id]
@@ -256,7 +322,7 @@ export class Database {
       await client.query(
         `INSERT INTO report_jobs (report_id, kind, dedupe_key, max_attempts)
          VALUES ($1, 'request_code', $2, 2)`,
-        [record.id, `${record.id}:request-code`]
+        [record.id, `${record.id}:request-code:1`]
       );
       await this.event(client, record.id, "report_created");
       await client.query("COMMIT");
@@ -307,7 +373,8 @@ export class Database {
       await client.query("BEGIN");
       await client.query(
         `UPDATE reports
-         SET status = $2, error_code = NULL, error_message = NULL, updated_at = now()
+         SET status = $2, error_code = NULL, error_message = NULL,
+             retryable = false, failure_stage = NULL, updated_at = now()
          WHERE id = $1`,
         [reportId, status]
       );
@@ -386,7 +453,11 @@ export class Database {
          ON CONFLICT (dedupe_key) DO UPDATE
          SET payload = EXCLUDED.payload, state = 'pending', run_at = now(), updated_at = now()
          WHERE report_jobs.state = 'pending'`,
-        [report.id, `${report.id}:verify-submit`, { encryptedCode: input.encryptedCode }]
+        [
+          report.id,
+          `${report.id}:verify-submit:${report.lifecycle_attempt}`,
+          { encryptedCode: input.encryptedCode }
+        ]
       );
       await client.query(
         "UPDATE reports SET status = 'verification_received', updated_at = now() WHERE id = $1",
@@ -523,6 +594,17 @@ export class Database {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      const reportResult = await client.query<ReportRow>(
+        "SELECT * FROM reports WHERE id = $1 FOR UPDATE",
+        [job.report_id]
+      );
+      const report = reportResult.rows[0];
+      if (!report) throw new Error("Report no longer exists.");
+      const retryable = isRetryableFailure(
+        report.status,
+        errorCode,
+        report.lifecycle_attempt
+      );
       await client.query(
         "UPDATE report_jobs SET state = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
         [job.id, message]
@@ -530,11 +612,84 @@ export class Database {
       await client.query(
         `UPDATE reports
          SET status = 'failed', error_code = $2, error_message = $3, updated_at = now()
+             , retryable = $4, failure_stage = $5
          WHERE id = $1`,
-        [job.report_id, errorCode, message]
+        [job.report_id, errorCode, message, retryable, report.status]
       );
-      await this.event(client, job.report_id, "report_failed", { errorCode });
+      await this.event(client, job.report_id, "report_failed", {
+        errorCode,
+        failureStage: report.status,
+        lifecycleAttempt: report.lifecycle_attempt,
+        retryable
+      });
       await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async retryReport(record: RetryReportRecord): Promise<RetryReportResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const reportResult = await client.query<ReportRow>(
+        "SELECT * FROM reports WHERE id = $1 FOR UPDATE",
+        [record.reportId]
+      );
+      const report = reportResult.rows[0];
+      if (!report) throw new ReportRetryError("report_not_found");
+      if (report.submitter_discord_user_id !== record.submitterDiscordUserId) {
+        throw new ReportRetryError("report_owner_mismatch");
+      }
+
+      const replayResult = await client.query(
+        `SELECT 1 FROM report_retry_requests
+         WHERE report_id = $1 AND idempotency_key = $2`,
+        [record.reportId, record.idempotencyKey]
+      );
+      if ((replayResult.rowCount ?? 0) > 0) {
+        await client.query("COMMIT");
+        return { replayed: true, report };
+      }
+      if (report.status !== "failed") throw new ReportRetryError("report_not_failed");
+      if (!report.retryable) throw new ReportRetryError("report_not_retryable");
+      if (report.lifecycle_attempt >= MAX_LIFECYCLE_ATTEMPTS) {
+        throw new ReportRetryError("retry_limit_reached");
+      }
+
+      const nextAttempt = report.lifecycle_attempt + 1;
+      await client.query(
+        `INSERT INTO report_retry_requests (report_id, idempotency_key, lifecycle_attempt)
+         VALUES ($1, $2, $3)`,
+        [record.reportId, record.idempotencyKey, nextAttempt]
+      );
+      const updatedResult = await client.query<ReportRow>(
+        `UPDATE reports
+         SET reporter_email = $2, proxy_session_id = $3,
+             lifecycle_attempt = $4, status = 'queued', session_state = NULL,
+             discord_report_id = NULL, discord_status = NULL,
+             discord_status_updated_at = NULL, error_code = NULL,
+             error_message = NULL, retryable = false, failure_stage = NULL,
+             updated_at = now()
+         WHERE id = $1
+         RETURNING *`,
+        [record.reportId, record.email.toLowerCase(), record.proxySessionId, nextAttempt]
+      );
+      await client.query(
+        `INSERT INTO report_jobs (report_id, kind, dedupe_key, max_attempts)
+         VALUES ($1, 'request_code', $2, 2)`,
+        [record.reportId, `${record.reportId}:request-code:${nextAttempt}`]
+      );
+      const updatedReport = updatedResult.rows[0];
+      if (!updatedReport) throw new Error("Report retry update returned no row.");
+      await this.event(client, record.reportId, "report_retry_requested", {
+        lifecycleAttempt: nextAttempt
+      });
+      await client.query("COMMIT");
+      return { replayed: false, report: updatedReport };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -550,7 +705,8 @@ export class Database {
       await client.query(
         `UPDATE reports
          SET status = 'submitted', discord_report_id = $2, session_state = NULL,
-             error_code = NULL, error_message = NULL, updated_at = now()
+             error_code = NULL, error_message = NULL, retryable = false,
+             failure_stage = NULL, updated_at = now()
          WHERE id = $1`,
         [reportId, discordReportId]
       );
@@ -597,5 +753,25 @@ export class IdempotencyConflictError extends Error {
   public constructor() {
     super("Idempotency-Key was already used with a different request body.");
     this.name = "IdempotencyConflictError";
+  }
+}
+
+const RETRY_ERROR_MESSAGES: Record<ReportRetryErrorCode, string> = {
+  report_not_found: "Report was not found.",
+  report_owner_mismatch: "The Discord user does not own this report.",
+  report_not_failed: "Only failed reports can be retried.",
+  report_not_retryable: "This report cannot be retried safely.",
+  retry_limit_reached: `Reports are limited to ${MAX_LIFECYCLE_ATTEMPTS} lifecycle attempts.`
+};
+
+export class ReportRetryError extends Error {
+  public readonly code: ReportRetryErrorCode;
+  public readonly statusCode: number;
+
+  public constructor(code: ReportRetryErrorCode) {
+    super(RETRY_ERROR_MESSAGES[code]);
+    this.name = "ReportRetryError";
+    this.code = code;
+    this.statusCode = code === "report_not_found" ? 404 : code === "report_owner_mismatch" ? 403 : 409;
   }
 }

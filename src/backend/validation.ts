@@ -51,6 +51,10 @@ export type CreateReportInput =
   | MessageCreateReportInput
   | GuildCreateReportInput;
 
+export interface RetryReportInput {
+  submitterDiscordUserId: string;
+}
+
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("Request body must be a JSON object.");
@@ -165,6 +169,15 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
     guildIdOrInviteCode: requiredString(input, "guildIdOrInviteCode", 100),
     guildElements: stringArray(input, "guildElements", GUILD_ELEMENTS)
   };
+}
+
+export function parseRetryReportInput(value: unknown): RetryReportInput {
+  const input = record(value);
+  const submitterDiscordUserId = requiredString(input, "submitterDiscordUserId", 22);
+  if (!/^\d{15,22}$/.test(submitterDiscordUserId)) {
+    throw new Error("submitterDiscordUserId must be a Discord snowflake.");
+  }
+  return { submitterDiscordUserId };
 }
 
 export function toReportDraft(

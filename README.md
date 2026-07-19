@@ -129,7 +129,38 @@ $env:DSA_API_KEY = "<Railway API_KEY>"
 python scripts/get_report_status.py "<internal-report-id>"
 ```
 
-Final submissions are never automatically retried after an ambiguous network result. Such a report transitions to `failed` for manual review.
+Confirmed pre-submission failures expose `retryable: true` and may be restarted under the
+same internal report ID. A retry keeps the pseudonym and ownership but rotates the email
+alias and sticky proxy session. Reports are limited to three complete lifecycle attempts;
+submission-time network failures and ambiguous outcomes cannot be retried.
+
+```http
+POST /v1/reports/<internal-report-id>/retry
+Authorization: Bearer <API_KEY>
+Idempotency-Key: bot-retry-018f6f04
+Content-Type: application/json
+
+{
+  "submitterDiscordUserId": "1197857362942378017"
+}
+```
+
+New retries return `202 Accepted`. Replaying the same retry idempotency key returns the
+current report with HTTP 200 without creating another attempt. Retry errors distinguish
+ownership mismatch, non-failed reports, unsafe failures, and the attempt limit.
+
+Run a retry from Python only after correcting the cause of the failure:
+
+```powershell
+$env:DSA_API_KEY = "<Railway API_KEY>"
+python scripts/retry_report.py "<internal-report-id>" "<Discord user ID>"
+```
+
+The command prints its generated idempotency key to stderr. If the retry request itself has
+an uncertain network result, rerun it with the same value using `--idempotency-key`.
+
+Final submissions are never automatically retried after an ambiguous network result. Such
+a report transitions to `failed` for manual review.
 
 After submission, Discord lifecycle emails update `discordStatus` without changing
 the successful API submission state. Current values are `received`, `actioned`,

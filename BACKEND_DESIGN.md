@@ -50,6 +50,13 @@ Alternatives considered:
 
 Failures store a stable error code and redacted message. Retryable pre-submission operations use bounded backoff. Final submission is never automatically retried after an ambiguous network outcome.
 
+Failed reports may be retried manually under the same internal report ID only when the
+failure is confirmed to have happened before final submission. A lifecycle retry preserves
+the pseudonym and ownership, increments a bounded attempt counter, and rotates both the
+catch-all email alias and sticky proxy session. Rotating the email prevents a delayed code
+from an older attempt from being accepted by the new lifecycle. Submission-time network
+failures and restart ambiguity are never retryable.
+
 After `submitted`, Discord may send lifecycle email updates. These are stored in a
 separate `discord_status` field so they do not overwrite the API submission state:
 
@@ -91,6 +98,9 @@ envelope recipient. Review links are never stored, logged, or opened automatical
 - Email code query parameter `b` is generated locally from the exact generated email using
   Discord's observed unsigned DJB2-style hash and base-36 encoding; it is not a server token.
 - Exact-recipient correlation selected so reports can wait for verification concurrently.
+- Manual lifecycle retries are limited to three total attempts and require an idempotency
+  key plus the original submitter Discord ID. The current report row holds active state and
+  `report_events` remains the audit history; a separate attempts model is deferred.
 - Runtime menu resolution and sticky proxy continuity remain mandatory.
 - Discord lifecycle resolution is stored separately from submission status; overwriting
   `submitted` would make API delivery state and Discord's later decision ambiguous.

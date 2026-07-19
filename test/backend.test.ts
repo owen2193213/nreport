@@ -7,8 +7,10 @@ import {
   extractVerificationCode,
   parseDiscordEmail
 } from "../src/backend/email.js";
+import { isRetryableFailure } from "../src/backend/database.js";
 import {
   buildAcceptLanguage,
+  generateEmailAlias,
   generateIdentity,
   supportedCountries
 } from "../src/backend/pseudonyms.js";
@@ -18,7 +20,10 @@ import {
   signInboundEmail,
   verifyInboundSignature
 } from "../src/backend/security.js";
-import { parseCreateReportInput } from "../src/backend/validation.js";
+import {
+  parseCreateReportInput,
+  parseRetryReportInput
+} from "../src/backend/validation.js";
 
 describe("backend identity and validation", () => {
   it("generates a localized unique German identity", () => {
@@ -94,6 +99,34 @@ describe("backend identity and validation", () => {
         submitterDiscordUserId: "not-a-user"
       })
     ).toThrow(/Discord snowflake/);
+  });
+
+  it("rotates the email alias without changing the pseudonym", () => {
+    const identity = generateIdentity("DE", "reports.example.org");
+    const retryEmail = generateEmailAlias(
+      identity.displayName,
+      identity.language,
+      "reports.example.org"
+    );
+    expect(retryEmail).not.toBe(identity.email);
+    expect(retryEmail).toMatch(
+      /^[a-z0-9.]+\.[0-9a-hjkmnp-tv-z]{16}@reports\.example\.org$/
+    );
+  });
+
+  it("validates retry ownership and blocks unsafe failure stages", () => {
+    expect(
+      parseRetryReportInput({ submitterDiscordUserId: "1197857362942378017" })
+    ).toEqual({ submitterDiscordUserId: "1197857362942378017" });
+    expect(() =>
+      parseRetryReportInput({ submitterDiscordUserId: "invalid" })
+    ).toThrow(/Discord snowflake/);
+    expect(
+      isRetryableFailure("requesting_verification", "report_processing_failed", 1)
+    ).toBe(true);
+    expect(isRetryableFailure("submitting", "report_processing_failed", 1)).toBe(false);
+    expect(isRetryableFailure("verifying", "ambiguous_submission_state", 1)).toBe(false);
+    expect(isRetryableFailure("verifying", "report_processing_failed", 3)).toBe(false);
   });
 });
 

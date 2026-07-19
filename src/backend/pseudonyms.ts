@@ -103,6 +103,10 @@ function uniqueSuffix(): string {
   return suffix;
 }
 
+function emailFromSlug(slug: string, suffix: string, emailDomain: string): string {
+  return `${slug.replace(/-/g, ".")}.${suffix}@${emailDomain}`;
+}
+
 function select<T>(values: readonly T[]): T {
   const value = values[randomInt(values.length)];
   if (value === undefined) throw new Error("Pseudonym profile is empty.");
@@ -124,6 +128,16 @@ export function createProxySessionId(): string {
   return value.toString().padStart(12, "0");
 }
 
+export function generateEmailAlias(
+  displayName: string,
+  language: string,
+  emailDomain: string
+): string {
+  const slug = slugify(displayName, language);
+  if (slug.length === 0) throw new Error("Pseudonym could not be converted to an email alias.");
+  return emailFromSlug(slug, uniqueSuffix(), emailDomain);
+}
+
 export function generateIdentity(country: string, emailDomain: string): GeneratedIdentity {
   const normalizedCountry = country.toUpperCase();
   const profiles = COUNTRY_PROFILES[normalizedCountry];
@@ -140,7 +154,7 @@ export function generateIdentity(country: string, emailDomain: string): Generate
   return {
     country: normalizedCountry,
     displayName,
-    email: `${slug.replace(/-/g, ".")}.${suffix}@${emailDomain}`,
+    email: emailFromSlug(slug, suffix, emailDomain),
     internalReportId: `${slug}-${suffix}`,
     timezone: profile.timezone,
     locale: profile.locale,

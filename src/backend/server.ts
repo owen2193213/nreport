@@ -5,11 +5,12 @@ import Fastify from "fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 import type { AppConfig } from "./config.js";
-import { IdempotencyConflictError } from "./database.js";
+import { IdempotencyConflictError, ReportRetryError } from "./database.js";
 import type { Database, ReportRow } from "./database.js";
 import { parseDiscordEmail } from "./email.js";
 import {
   createProxySessionId,
+  generateEmailAlias,
   generateIdentity,
   supportedCountries
 } from "./pseudonyms.js";
@@ -19,7 +20,7 @@ import {
   sha256Hex,
   verifyInboundSignature
 } from "./security.js";
-import { parseCreateReportInput } from "./validation.js";
+import { parseCreateReportInput, parseRetryReportInput } from "./validation.js";
 
 function publicReport(report: ReportRow): Record<string, unknown> {
   return {
@@ -32,6 +33,9 @@ function publicReport(report: ReportRow): Record<string, unknown> {
     email: report.reporter_email,
     locale: report.locale,
     timezone: report.timezone,
+    lifecycleAttempt: report.lifecycle_attempt,
+    retryable: report.retryable,
+    failureStage: report.failure_stage,
     status: report.status,
     discordReportId: report.discord_report_id,
     discordStatus: report.discord_status,
@@ -153,6 +157,52 @@ export async function buildServer(config: AppConfig, database: Database) {
         });
       }
       return reply.send(publicReport(report));
+    }
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/v1/reports/:id/retry",
+    { preHandler: authorize, config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const idempotencyKey = header(request, "idempotency-key")?.trim();
+      if (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 200) {
+        return reply.code(400).send({
+          error: {
+            code: "invalid_idempotency_key",
+            message: "Idempotency-Key must contain between 8 and 200 characters."
+          }
+        });
+      }
+      let input: ReturnType<typeof parseRetryReportInput>;
+      try {
+        input = parseRetryReportInput(request.body);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Invalid retry request.";
+        return reply.code(400).send({ error: { code: "invalid_request", message } });
+      }
+      try {
+        const report = await database.getReport(request.params.id);
+        if (!report) throw new ReportRetryError("report_not_found");
+        const result = await database.retryReport({
+          reportId: report.id,
+          idempotencyKey,
+          submitterDiscordUserId: input.submitterDiscordUserId,
+          email: generateEmailAlias(
+            report.reporter_legal_name,
+            report.language,
+            config.emailDomain
+          ),
+          proxySessionId: createProxySessionId()
+        });
+        return reply.code(result.replayed ? 200 : 202).send(publicReport(result.report));
+      } catch (error) {
+        if (error instanceof ReportRetryError) {
+          return reply.code(error.statusCode).send({
+            error: { code: error.code, message: error.message }
+          });
+        }
+        throw error;
+      }
     }
   );
 

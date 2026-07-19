@@ -13,7 +13,7 @@ import uuid
 API_BASE_URL = os.environ.get(
     "DSA_API_BASE_URL", "https://discord-dsa-production.up.railway.app"
 ).rstrip("/")
-API_KEY = "477fc1b461b3c2d035cfe068ca8a98b750fa7b7f0606121393a1ab70be54b562"
+API_KEY = os.environ.get("DSA_API_KEY")
 DISCORD_USER_ID = "1197857362942378017"
 REPORT_COUNTRY = "DE"
 

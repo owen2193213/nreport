@@ -1,23 +1,45 @@
 # Discord DSA Reporting Service
 
-Typed Node.js client and Railway backend for the authorized Discord DSA profile, message, and server report workflows captured in `DISCORD_DSA_API_HANDOFF.md`.
+An internal TypeScript service for authorized EU Digital Services Act reports involving
+Discord users, messages, and servers. A Discord bot calls the authenticated Railway API;
+the backend owns reporter pseudonyms, catch-all email addresses, country-matched sticky
+proxy sessions, verification email processing, live menu resolution, submission, retries,
+and status history.
 
-## Hosted architecture
+The production lifecycle has been verified end to end: create report, receive and verify
+the email code, submit to Discord, persist the Discord report ID, and process the received
+confirmation email.
 
-- Railway Fastify service: authenticated report API, email webhook, and durable job runner.
-- Railway PostgreSQL: reports, idempotency, status events, encrypted session state, and jobs.
-- Cloudflare Email Routing: whole-domain catch-all delivered to `dsa-inbound-email`.
-- IPOasis: one country-specific sticky residential proxy session per report.
+## Start here
 
-The identity service supports all 27 EU member states. It uses version-locked localized
-Faker data where available and Faker's generic English name generator for Bulgaria,
-Estonia, Lithuania, and Malta, where no suitable built-in Faker locale is available. Names
-are kept in their native Unicode form for the report and transliterated only for the
-internal ID and catch-all email address. Nothing is scraped or downloaded at runtime.
+- **Bot developers:** [`docs/BOT_API.md`](docs/BOT_API.md) is the canonical API contract,
+  with request schemas, status handling, errors, report types, and a TypeScript adapter.
+- **Service operators:** use the deployment configuration below.
+- **Backend maintainers:** see [`BACKEND_DESIGN.md`](BACKEND_DESIGN.md).
+- **Low-level client maintainers:** see [`CLIENT_DESIGN.md`](CLIENT_DESIGN.md) and
+  [`HEADER_TEST_RESULTS.md`](HEADER_TEST_RESULTS.md).
+- **Protocol history:** [`DISCORD_DSA_API_HANDOFF.md`](DISCORD_DSA_API_HANDOFF.md) preserves
+  the original workflow capture. It is not the bot-facing contract.
 
-## Railway setup
+## Architecture
 
-Connect the repository to the Railway service and add a PostgreSQL service in the same EU West environment. Configure these variables on the application service:
+- Railway Fastify service: authenticated report API, signed email webhook, and durable jobs.
+- Railway PostgreSQL: reports, idempotency, events, encrypted session state, and job leases.
+- Cloudflare Email Routing: whole-domain catch-all delivered to an Email Worker.
+- IPOasis: one country-specific sticky residential proxy session per lifecycle attempt.
+
+All 27 EU member states are supported. Localized, version-locked Faker data generates
+organization-controlled pseudonyms where available; Bulgaria, Estonia, Lithuania, and
+Malta use Faker's generic fallback. Names stay in Unicode in reports and are transliterated
+only for readable internal IDs and email local-parts. Nothing is scraped at runtime.
+
+The selected country controls the pseudonym profile, proxy country, locale,
+`Accept-Language`, and IANA timezone. Discord's current form payload language is the
+supported fixed value `en`; it is intentionally not derived from the country.
+
+## Railway configuration
+
+Connect this repository and a PostgreSQL service in the same Railway EU environment. Set:
 
 ```text
 NODE_ENV=production
@@ -25,149 +47,39 @@ DATABASE_URL=${{Postgres.DATABASE_URL}}
 API_KEY=<at least 32 random characters>
 SESSION_ENCRYPTION_KEY=<Base64-encoded 32-byte key>
 CLOUDFLARE_EMAIL_WEBHOOK_SECRET=<at least 32 random characters>
-REPORT_EMAIL_DOMAIN=<the Cloudflare Email Routing domain>
+REPORT_EMAIL_DOMAIN=<Cloudflare Email Routing domain>
 DSA_PROXY_URL_TEMPLATE=<sticky proxy URL containing {country} and {session}>
 WORKER_ENABLED=true
 ```
 
-Generate independent secrets locally; never paste them into source files:
+Generate independent secrets locally and never commit them:
 
 ```powershell
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 ```
 
-Use the Base64 result only for `SESSION_ENCRYPTION_KEY`. Generate separate hexadecimal values for `API_KEY` and `CLOUDFLARE_EMAIL_WEBHOOK_SECRET`.
+Use the Base64 value only for `SESSION_ENCRYPTION_KEY`. Use separate hexadecimal values
+for `API_KEY` and `CLOUDFLARE_EMAIL_WEBHOOK_SECRET`.
 
-`railway.json` supplies the build command, start command, `/healthz` health check, and restart policy. The database schema is created idempotently during service startup.
+`railway.json` defines the build, start, `/healthz` health check, and restart policy. The
+application creates or updates its database schema idempotently during startup.
 
 ## Cloudflare Email Worker
 
-The source to paste or deploy is in `cloudflare-email-worker/src/index.ts`. Configure:
+Deploy [`cloudflare-email-worker/src/index.ts`](cloudflare-email-worker/src/index.ts) and
+configure:
 
 ```text
 INGEST_URL=https://discord-dsa-production.up.railway.app/webhooks/cloudflare-email
 INGEST_SHARED_SECRET=<same value as CLOUDFLARE_EMAIL_WEBHOOK_SECRET>
 ```
 
-Store `INGEST_SHARED_SECRET` as an encrypted Worker secret. Route the domain catch-all to the `dsa-inbound-email` Worker. The Worker rejects addresses that do not match the generated-address format, signs the raw message, and sends it to Railway without forwarding it to a personal inbox.
+Store `INGEST_SHARED_SECRET` as an encrypted Worker secret. Route the domain catch-all to
+the Worker. It accepts only generated address formats, signs the raw message, and posts it
+to Railway; it does not forward report mail to a personal inbox.
 
-## API
-
-Create reports with a unique `Idempotency-Key` and the API bearer token. Reporter names and email addresses are deliberately not accepted.
-
-```http
-POST /v1/reports
-Authorization: Bearer <API_KEY>
-Idempotency-Key: bot-job-018f6f04
-Content-Type: application/json
-```
-
-```json
-{
-  "country": "DE",
-  "flow": "message_urf",
-  "reportType": "sub_other_cybercrime",
-  "submitterDiscordUserId": "1057381507204915281",
-  "messageUrl": "https://discord.com/channels/1273300509318578227/1526327580456779797/1527300404998832138",
-  "context": "The message distributes malware."
-}
-```
-
-The response is `202 Accepted` for a new report and includes its internal ID,
-generated pseudonym/address, submission status, nullable Discord report ID, and
-nullable `discordStatus`. Retrieve its current state with:
-
-The selected country also controls the sticky proxy country, Discord locale,
-`Accept-Language`, form language, and primary/capital IANA timezone. Belgium selects a
-Dutch or French profile once for the report. Regional timezone selection is intentionally
-out of scope until the request API accepts a subregion.
-
-The bot can retrieve the authoritative country-code list instead of duplicating it:
-
-```http
-GET /v1/countries
-Authorization: Bearer <API_KEY>
-```
-
-```http
-GET /v1/reports/<internal-report-id>
-Authorization: Bearer <API_KEY>
-```
-
-Supported flow-specific fields:
-
-- `message_urf`: `messageUrl`
-- `user_urf`: `reportedUsername`, `profileElements`, optional `reportedUserServerId`
-- `guild_urf`: `guildIdOrInviteCode`, `guildElements`
-
-`submitterDiscordUserId` is optional for compatibility but should always be supplied by
-the Discord bot from the authenticated interaction user. It is internal metadata and is
-never included in the report sent to Discord. Retrieve a user's latest 100 reports with:
-
-```http
-GET /v1/users/<discord-user-id>/reports
-Authorization: Bearer <API_KEY>
-```
-
-To create the documented antisemitism test report, set the actual submitting bot user's
-ID, API key, and truthful EU country, then run the dependency-free example. This starts a
-real report and sends a verification email:
-
-```powershell
-$env:DSA_API_KEY = "<Railway API_KEY>"
-$env:DISCORD_USER_ID = "<your Discord user ID>"
-$env:REPORT_COUNTRY = "DE"
-python scripts/submit_antisemitism_test.py
-```
-
-Use the `internalReportId` printed by that command to fetch the latest processing and
-Discord lifecycle status:
-
-```powershell
-$env:DSA_API_KEY = "<Railway API_KEY>"
-python scripts/get_report_status.py "<internal-report-id>"
-```
-
-Confirmed pre-submission failures expose `retryable: true` and may be restarted under the
-same internal report ID. A retry keeps the pseudonym and ownership but rotates the email
-alias and sticky proxy session. Reports are limited to three complete lifecycle attempts;
-submission-time network failures and ambiguous outcomes cannot be retried.
-
-```http
-POST /v1/reports/<internal-report-id>/retry
-Authorization: Bearer <API_KEY>
-Idempotency-Key: bot-retry-018f6f04
-Content-Type: application/json
-
-{
-  "submitterDiscordUserId": "1197857362942378017"
-}
-```
-
-New retries return `202 Accepted`. Replaying the same retry idempotency key returns the
-current report with HTTP 200 without creating another attempt. Retry errors distinguish
-ownership mismatch, non-failed reports, unsafe failures, and the attempt limit.
-
-Run a retry from Python only after correcting the cause of the failure:
-
-```powershell
-$env:DSA_API_KEY = "<Railway API_KEY>"
-python scripts/retry_report.py "<internal-report-id>" "<Discord user ID>"
-```
-
-The command prints its generated idempotency key to stderr. If the retry request itself has
-an uncertain network result, rerun it with the same value using `--idempotency-key`.
-
-Final submissions are never automatically retried after an ambiguous network result. Such
-a report transitions to `failed` for manual review.
-
-After submission, Discord lifecycle emails update `discordStatus` without changing
-the successful API submission state. Current values are `received`, `actioned`,
-`closed_no_action`, and `review_not_approved`. Review links are intentionally not
-stored or opened automatically.
-
-## Install and validate
+## Local development and validation
 
 ```powershell
 npm.cmd install
@@ -178,94 +90,23 @@ npm.cmd run build
 npm.cmd audit --audit-level=high
 ```
 
-## Usage
-
-Create one client instance per pending report so the proxy identity and cookies stay consistent:
-
-```ts
-import { DiscordDsaClient } from "discord-dsa-api-client";
-
-const flow = "message_urf";
-const email = "reporter@example.com";
-
-const client = new DiscordDsaClient({
-  proxyUrl: process.env.DSA_PROXY_URL,
-  locale: "en-US",
-  timezone: "Europe/Berlin"
-});
-
-await client.sendEmailCode(flow, email);
-const token = await client.verifyEmailCode(flow, email, userSuppliedCode);
-const menu = await client.getMenu(flow);
-
-const payload = client.prepareSubmission(
-  menu,
-  {
-    flow,
-    reporter: {
-      country: "DE",
-      legalName: "Example Reporter",
-      username: "example"
-    },
-    messageUrl:
-      "https://discord.com/channels/1273300509318578227/1526327580456779797/1527300404998832138",
-    reportType: "sub_other_cybercrime",
-    context: "Report context supplied by the reporter."
-  },
-  token
-);
-
-// Present `payload` as a redacted summary and require explicit confirmation.
-const result = await client.submitPrepared(payload);
-await client.close();
-```
-
-Do not log `token`, cookies, proxy credentials, verification codes, or unredacted payloads.
-
-The client automatically requests a fresh fingerprint from Discord's unauthenticated experiments endpoint through the same proxy and reuses it for the report lifecycle. A known fingerprint may be supplied explicitly through the `fingerprint` constructor option for controlled testing.
-
-When sending an email code, the client automatically derives Discord's `b`
-query value from the exact email string using the unsigned 32-bit DJB2-style
-algorithm used by Discord's web client and encodes the result in base 36. The
-calculation is case- and whitespace-sensitive. For example,
-`projectnebulon@gmail.com` produces `js30bq`.
-
-## Proxy behavior
-
-Pass an HTTP(S) proxy URL through `proxyUrl`. The same client instance uses the same `ProxyAgent` and cookie jar for menu, code, verification, and submission calls. If the provider rotates exits, embed its sticky-session identifier in the proxy credentials.
-
-For the configured IPOasis dynamic residential plan, use the documented sticky username parameters and European gateway:
-
-```text
-http://user-{SUBUSER}-region-DE-sess-{RANDOM_NUMERIC_ID}-sessTime-120:{PASSWORD}@gate-eu.ipoasis.com:8668
-```
-
-Generate one random numeric `sess` value for each new report, then reuse the same URL/client instance for that entire report. See `IPOASIS_PROXY_NOTES.md` for the source-backed details. Never commit the completed URL.
-
-## Header test
-
-The header experiment performs only read-only menu GETs:
+The read-only header and client diagnostics are:
 
 ```powershell
 npm.cmd run test:headers
-```
-
-To exercise the real client bootstrap and menu path without sending email or submitting a report:
-
-```powershell
-$env:DSA_PROXY_URL = "http://..."
 npm.cmd run test:client-readonly
 ```
 
-With a proxy:
+They require a correctly configured EU proxy for meaningful results. Do not put proxy
+credentials, fingerprints, verification tokens, or API keys in source control or logs.
 
-```powershell
-$env:DSA_PROXY_URL = "http://username:password@host:port"
-npm.cmd run test:headers
-```
+## Operational rules
 
-Success on menu GET does not prove that the same header set is sufficient for code, verification, or submission POSTs. Those must be tested in a controlled report lifecycle.
-
-Optional `DSA_FINGERPRINT`, `DSA_INSTALLATION_ID`, and `DSA_SUPER_PROPERTIES` environment variables enable full-versus-ablated session-header comparisons. The script reports only whether they were supplied and never prints their values.
-
-Use `DSA_TEST_FLOW` and comma-separated `DSA_TEST_PROFILES` to run a smaller diagnostic subset when proxy routes are slow.
+- Callers never supply a reporter name or email address.
+- Bots always set `submitterDiscordUserId` from the authenticated interaction user.
+- Use a stable `Idempotency-Key` for every create or retry request.
+- Resolve semantic report types through the live Discord menu; never persist breadcrumbs.
+- Do not automatically retry an ambiguous final submission.
+- Treat generated email addresses, tokens, raw mail, and report context as sensitive.
+- Discord lifecycle email updates change `discordStatus`; they do not replace the successful
+  API status `submitted`.

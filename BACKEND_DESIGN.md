@@ -36,8 +36,9 @@ Alternatives considered:
 - Fastify HTTP API: health, create-report, get-report, and Cloudflare inbound-email endpoints.
 - PostgreSQL: reports, jobs, report events, and inbound-message deduplication.
 - Job runner: requests an email code, verifies a received code, and submits the report.
-- Country profiles: one versioned mapping controls pseudonym source, locale, language,
-  primary timezone, and proxy country for every EU member state.
+- Country profiles: one versioned mapping controls pseudonym source, locale,
+  `Accept-Language`, primary timezone, and proxy country for every EU member state.
+  Discord's form payload language is the fixed supported value `en`.
 - Pseudonym generator: locked localized Faker data where supported and Faker's generic
   English generator for uncovered countries. Unicode names are preserved in the report;
   only internal IDs and email local-parts are transliterated to readable ASCII.
@@ -92,9 +93,10 @@ envelope recipient. Review links are never stored, logged, or opened automatical
   built-in locale; runtime downloading or scraping is forbidden.
 - `@sindresorhus/transliterate` selected for deterministic Unicode-to-ASCII email and ID
   generation instead of maintaining incomplete Greek, Cyrillic, and diacritic mappings.
-- One country profile controls proxy country, Discord locale, `Accept-Language`, payload
-  language, and timezone. Belgium selects either its Dutch or French profile once per
-  report. Regional timezone exceptions are deferred until the API accepts a subregion.
+- One country profile controls proxy country, Discord locale, `Accept-Language`, and
+  timezone. Belgium selects either its Dutch or French profile once per report. The
+  Discord form payload uses the supported fixed value `en`; regional timezone exceptions
+  are deferred until the API accepts a subregion.
 - Email code query parameter `b` is generated locally from the exact generated email using
   Discord's observed unsigned DJB2-style hash and base-36 encoding; it is not a server token.
 - Exact-recipient correlation selected so reports can wait for verification concurrently.
@@ -112,3 +114,7 @@ envelope recipient. Review links are never stored, logged, or opened automatical
 - Command-line status checks use the existing authenticated single-report endpoint. A
   one-shot dependency-free Python client was selected over polling or another API route;
   callers decide their own refresh interval.
+- The Railway HTTP API is the canonical Discord bot boundary. Bot callers supply the
+  authenticated interaction user's snowflake as ownership metadata and use interaction
+  IDs as idempotency keys; they do not import the low-level Discord client or duplicate
+  report state in a second database.

@@ -92,3 +92,19 @@ The verification code and returned email token are intentionally not recorded.
 ### Remaining limitation
 
 This establishes the minimum observed headers for the fingerprint bootstrap, menu GET, `message_urf/code`, and `message_urf/verify` endpoints. The final report-submission POST has not undergone minimal-header testing. The other two verification flows use the same request shape but have not independently been retested with the minimal profile.
+
+## 2026-07-19: complete production lifecycle
+
+The backend subsequently completed a controlled `message_urf` lifecycle using the same
+minimal application header policy: fingerprint bootstrap, menu fetch, code request, email
+verification, final submission, Discord report ID persistence, and confirmation-email
+processing all succeeded.
+
+An earlier final submission returned HTTP 400 because the country-specific locale had
+been used as the form payload `language`. Runtime menu configuration accepts the fixed
+value `en`; the backend now keeps country-specific locale, timezone, `Accept-Language`,
+pseudonym, and proxy selection while always submitting `language: "en"`.
+
+This is end-to-end evidence that the implemented header policy works. It is not a claim
+that every retained final-POST header was independently proven necessary: destructive
+one-field ablation of final submissions remains intentionally out of scope.

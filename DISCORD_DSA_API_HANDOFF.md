@@ -2,6 +2,11 @@
 
 Last updated: 2026-07-19
 
+> **Historical protocol record.** This file preserves the browser-captured Discord
+> workflow and breadcrumb research. Discord bot implementations must use the hosted API
+> contract in [`docs/BOT_API.md`](docs/BOT_API.md), not the endpoints, tokens, or numeric
+> breadcrumbs documented here.
+
 ## Objective
 
 Map Discord's EU DSA report workflow so an authorized nonprofit bot can submit changeable user-profile, message, and server reports. The supplied IDs and links are dummy/whitelisted data.
@@ -350,7 +355,12 @@ This validates the `Other -> Cybercrime` path `[64,60,147,150,78,77]`, confirms 
 
 ### Readiness assessment
 
-All three flows are sufficiently mapped to implement a controlled prototype that fetches the current menu and resolves paths by labels/keys. They are not yet production-ready. Production readiness still requires clean-session tests, minimal-header tests, expiry/error handling, rate-limit handling, proxy validation, secret handling, and duplicate-submission protection.
+All three flows were sufficiently mapped to implement the typed client, and the hosted
+backend has since completed a controlled production lifecycle through report confirmation.
+The service now includes runtime menu resolution, sticky proxy validation, secret handling,
+bounded retries, rate limits, durable jobs, and idempotent duplicate protection. This
+capture remains useful for protocol archaeology, but readiness and bot behavior are defined
+by [`docs/BOT_API.md`](docs/BOT_API.md) and the current source code.
 
 ### Server report
 

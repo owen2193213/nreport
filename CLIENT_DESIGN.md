@@ -40,4 +40,8 @@
 - Chose semantic `report_type` identifiers over hardcoded node numbers.
 - Chose `undici` plus `tough-cookie` for explicit proxy and cookie control.
 - Chose read-only menu requests for header ablation to avoid sending verification emails or duplicate reports.
-- Measured `x-fingerprint` as necessary for menu GET, implemented automatic acquisition, and confirmed `x-installation-id`/`x-super-properties` are unnecessary for menu GET. POST ablation remains deliberately untested.
+- Measured `x-fingerprint` as necessary for menu GET, implemented automatic acquisition,
+  and confirmed `x-installation-id`/`x-super-properties` are unnecessary for menu GET.
+  The minimal application header profile has completed a production report lifecycle.
+  A formal one-header-group-at-a-time ablation of the final POST remains deliberately
+  unperformed to avoid duplicate reports.

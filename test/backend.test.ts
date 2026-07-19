@@ -7,7 +7,11 @@ import {
   extractVerificationCode,
   parseDiscordEmail
 } from "../src/backend/email.js";
-import { generateIdentity } from "../src/backend/pseudonyms.js";
+import {
+  buildAcceptLanguage,
+  generateIdentity,
+  supportedCountries
+} from "../src/backend/pseudonyms.js";
 import {
   decryptJson,
   encryptJson,
@@ -26,6 +30,27 @@ describe("backend identity and validation", () => {
       /^[a-z0-9.]+\.[0-9a-hjkmnp-tv-z]{16}@reports\.example\.org$/
     );
     expect(identity.timezone).toBe("Europe/Berlin");
+    expect(identity.locale).toBe("de-DE");
+    expect(identity.language).toBe("de");
+  });
+
+  it("generates an internally consistent identity for every EU member state", () => {
+    expect(supportedCountries()).toEqual([
+      "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES",
+      "FI", "FR", "GR", "HR", "HU", "IE", "IT", "LT", "LU",
+      "LV", "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK"
+    ]);
+    for (const country of supportedCountries()) {
+      const identity = generateIdentity(country, "reports.example.org");
+      expect(identity.country).toBe(country);
+      expect(identity.displayName.trim().split(/\s+/).length).toBeGreaterThanOrEqual(2);
+      expect(identity.internalReportId).toMatch(/^[a-z0-9-]+-[0-9a-hjkmnp-tv-z]{16}$/);
+      expect(identity.email).toMatch(/^[a-z0-9.]+\.[0-9a-hjkmnp-tv-z]{16}@reports\.example\.org$/);
+      expect(identity.locale).toMatch(/^[a-z]{2}-[A-Z]{2}$/);
+      expect(identity.language).toMatch(/^[a-z]{2}$/);
+      expect(identity.timezone).toContain("/");
+      expect(buildAcceptLanguage(identity.locale, identity.language)).toContain(identity.locale);
+    }
   });
 
   it("rejects caller-supplied reporter identities", () => {

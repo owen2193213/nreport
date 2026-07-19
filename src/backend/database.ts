@@ -25,6 +25,8 @@ export interface ReportRow extends QueryResultRow {
   reporter_legal_name: string;
   reporter_email: string;
   timezone: string;
+  locale: string;
+  language: string;
   proxy_session_id: string;
   status: ReportStatus;
   input: CreateReportInput;
@@ -55,6 +57,8 @@ export interface CreateReportRecord {
   legalName: string;
   email: string;
   timezone: string;
+  locale: string;
+  language: string;
   proxySessionId: string;
 }
 
@@ -74,6 +78,8 @@ CREATE TABLE IF NOT EXISTS reports (
   reporter_legal_name text NOT NULL,
   reporter_email text NOT NULL UNIQUE,
   timezone text NOT NULL,
+  locale text NOT NULL,
+  language text NOT NULL,
   proxy_session_id text NOT NULL,
   status text NOT NULL,
   input jsonb NOT NULL,
@@ -123,6 +129,8 @@ CREATE TABLE IF NOT EXISTS inbound_messages (
 
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status text;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status_updated_at timestamptz;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS locale text NOT NULL DEFAULT 'en-US';
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS language text NOT NULL DEFAULT 'en';
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_report_id text;
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_status text;
 
@@ -219,8 +227,9 @@ export class Database {
       const inserted = await client.query<ReportRow>(
         `INSERT INTO reports (
           id, idempotency_key, request_hash, flow, country, report_type,
-          reporter_legal_name, reporter_email, timezone, proxy_session_id, status, input
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11)
+          reporter_legal_name, reporter_email, timezone, locale, language,
+          proxy_session_id, status, input
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'queued', $13)
         RETURNING *`,
         [
           record.id,
@@ -232,6 +241,8 @@ export class Database {
           record.legalName,
           record.email,
           record.timezone,
+          record.locale,
+          record.language,
           record.proxySessionId,
           record.input
         ]

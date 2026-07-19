@@ -27,7 +27,9 @@
     "test:headers": "tsx scripts/test-menu-headers.ts"
   },
   "dependencies": {
+    "@faker-js/faker": "^10.5.0",
     "@fastify/rate-limit": "^11.1.0",
+    "@sindresorhus/transliterate": "^2.3.1",
     "fastify": "^5.10.0",
     "mailparser": "^3.9.14",
     "pg": "^8.22.0",

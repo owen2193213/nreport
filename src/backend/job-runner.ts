@@ -5,7 +5,7 @@ import { DiscordDsaHttpError } from "../errors.js";
 import type { DiscordDsaSessionState } from "../types.js";
 import type { AppConfig } from "./config.js";
 import type { Database, JobRow, ReportRow } from "./database.js";
-import { buildProxyUrl } from "./pseudonyms.js";
+import { buildAcceptLanguage, buildProxyUrl } from "./pseudonyms.js";
 import { decryptJson, encryptJson } from "./security.js";
 import { toReportDraft } from "./validation.js";
 
@@ -86,7 +86,10 @@ export class JobRunner {
     return new DiscordDsaClient({
       proxyUrl,
       timezone: report.timezone,
-      locale: "en-US",
+      locale: report.locale,
+      extraHeaders: {
+        "accept-language": buildAcceptLanguage(report.locale, report.language)
+      },
       ...(sessionState === undefined ? {} : { sessionState })
     });
   }
@@ -167,7 +170,8 @@ export class JobRunner {
       const payload = client.prepareSubmission(
         menu,
         toReportDraft(report.input, report.reporter_legal_name),
-        token
+        token,
+        report.language
       );
       await this.database.setStatus(report.id, "submitting", "submission_started");
       const result = await client.submitPrepared(payload);

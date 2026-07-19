@@ -9,7 +9,11 @@ Typed Node.js client and Railway backend for the authorized Discord DSA profile,
 - Cloudflare Email Routing: whole-domain catch-all delivered to `dsa-inbound-email`.
 - IPOasis: one country-specific sticky residential proxy session per report.
 
-The current reviewed pseudonym catalog supports Germany (`DE`). Add another explicit catalog before accepting another country; the service never falls back to an unrelated locale.
+The identity service supports all 27 EU member states. It uses version-locked localized
+Faker data where available and small reviewed local catalogs for Bulgaria, Estonia,
+Lithuania, and Malta. Names are kept in their native Unicode form for the report and
+transliterated only for the internal ID and catch-all email address. Nothing is scraped or
+downloaded at runtime.
 
 ## Railway setup
 
@@ -72,6 +76,18 @@ Content-Type: application/json
 The response is `202 Accepted` for a new report and includes its internal ID,
 generated pseudonym/address, submission status, nullable Discord report ID, and
 nullable `discordStatus`. Retrieve its current state with:
+
+The selected country also controls the sticky proxy country, Discord locale,
+`Accept-Language`, form language, and primary/capital IANA timezone. Belgium selects a
+Dutch or French profile once for the report. Regional timezone selection is intentionally
+out of scope until the request API accepts a subregion.
+
+The bot can retrieve the authoritative country-code list instead of duplicating it:
+
+```http
+GET /v1/countries
+Authorization: Bearer <API_KEY>
+```
 
 ```http
 GET /v1/reports/<internal-report-id>

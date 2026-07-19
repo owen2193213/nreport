@@ -8,7 +8,11 @@ import type { AppConfig } from "./config.js";
 import { IdempotencyConflictError } from "./database.js";
 import type { Database, ReportRow } from "./database.js";
 import { parseDiscordEmail } from "./email.js";
-import { createProxySessionId, generateIdentity } from "./pseudonyms.js";
+import {
+  createProxySessionId,
+  generateIdentity,
+  supportedCountries
+} from "./pseudonyms.js";
 import {
   encryptJson,
   safeEqual,
@@ -25,6 +29,8 @@ function publicReport(report: ReportRow): Record<string, unknown> {
     reportType: report.report_type,
     pseudonym: report.reporter_legal_name,
     email: report.reporter_email,
+    locale: report.locale,
+    timezone: report.timezone,
     status: report.status,
     discordReportId: report.discord_report_id,
     discordStatus: report.discord_status,
@@ -90,6 +96,10 @@ export async function buildServer(config: AppConfig, database: Database) {
 
   const authorize = apiAuthorization(config);
 
+  app.get("/v1/countries", { preHandler: authorize }, async (_request, reply) => {
+    return reply.send({ countries: supportedCountries() });
+  });
+
   app.post(
     "/v1/reports",
     { preHandler: authorize, config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
@@ -114,6 +124,8 @@ export async function buildServer(config: AppConfig, database: Database) {
           legalName: identity.displayName,
           email: identity.email,
           timezone: identity.timezone,
+          locale: identity.locale,
+          language: identity.language,
           proxySessionId: createProxySessionId()
         });
         return reply.code(result.created ? 202 : 200).send(publicReport(result.report));

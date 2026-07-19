@@ -51,6 +51,63 @@ function parseRetryAfter(value: string | string[] | undefined): number | undefin
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
 }
 
+function safeDetail(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  return value
+    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[redacted-email]")
+    .replace(/\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}\b/g, "[redacted-token]")
+    .slice(0, 180);
+}
+
+function collectValidationDetails(
+  value: unknown,
+  path: string,
+  output: string[],
+  depth = 0
+): void {
+  if (depth > 6 || output.length >= 8 || typeof value !== "object" || value === null) {
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  if (Array.isArray(record._errors)) {
+    for (const item of record._errors) {
+      if (output.length >= 8 || typeof item !== "object" || item === null) break;
+      const error = item as Record<string, unknown>;
+      const code = safeDetail(error.code);
+      const message = safeDetail(error.message);
+      const detail = [code, message].filter((part) => part !== undefined).join(": ");
+      if (detail.length > 0) output.push(`${path || "request"}: ${detail}`);
+    }
+  }
+  for (const [key, child] of Object.entries(record)) {
+    if (key === "_errors" || output.length >= 8) continue;
+    const safeKey = key.replace(/[^A-Za-z0-9_[\].-]/g, "").slice(0, 80);
+    collectValidationDetails(child, path ? `${path}.${safeKey}` : safeKey, output, depth + 1);
+  }
+}
+
+export function summarizeDiscordErrorBody(responseText: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(responseText);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+  const body = parsed as Record<string, unknown>;
+  const parts: string[] = [];
+  if (typeof body.code === "number" || typeof body.code === "string") {
+    parts.push(`code ${String(body.code).slice(0, 40)}`);
+  }
+  const message = safeDetail(body.message);
+  if (message !== undefined) parts.push(message);
+  const validationDetails: string[] = [];
+  collectValidationDetails(body.errors, "", validationDetails);
+  parts.push(...validationDetails);
+  if (parts.length === 0) return undefined;
+  return parts.join("; ").slice(0, 450);
+}
+
 export class UndiciJsonTransport implements JsonTransport {
   private readonly baseUrl: string;
   private readonly defaultHeaders: Record<string, string>;
@@ -115,10 +172,16 @@ export class UndiciJsonTransport implements JsonTransport {
     const responseText = await response.body.text();
     if (response.statusCode < 200 || response.statusCode >= 300) {
       const retryAfterSeconds = parseRetryAfter(response.headers["retry-after"]);
+      const responseSummary = summarizeDiscordErrorBody(responseText);
       throw new DiscordDsaHttpError(
         `Discord returned HTTP ${response.statusCode} for ${requestOptions.method} ${url.pathname}.`,
         response.statusCode,
-        retryAfterSeconds === undefined ? undefined : { retryAfterSeconds }
+        retryAfterSeconds === undefined && responseSummary === undefined
+          ? undefined
+          : {
+              ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+              ...(responseSummary === undefined ? {} : { responseSummary })
+            }
       );
     }
 

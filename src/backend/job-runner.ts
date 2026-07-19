@@ -23,9 +23,10 @@ class SessionNotReadyError extends Error {
 
 function redactedError(error: unknown): { code: string; message: string; retryAfter?: number } {
   if (error instanceof DiscordDsaHttpError) {
+    const detail = error.responseSummary === undefined ? "" : `: ${error.responseSummary}`;
     return {
       code: `discord_http_${error.status}`,
-      message: `Discord returned HTTP ${error.status}.`,
+      message: `Discord returned HTTP ${error.status}${detail}`.slice(0, 500),
       ...(error.retryAfterSeconds === undefined
         ? {}
         : { retryAfter: error.retryAfterSeconds })

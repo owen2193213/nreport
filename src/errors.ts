@@ -8,17 +8,21 @@ export class DiscordDsaError extends Error {
 export class DiscordDsaHttpError extends DiscordDsaError {
   public readonly status: number;
   public readonly retryAfterSeconds?: number;
+  public readonly responseSummary?: string;
 
   public constructor(
     message: string,
     status: number,
-    options?: ErrorOptions & { retryAfterSeconds?: number }
+    options?: ErrorOptions & { retryAfterSeconds?: number; responseSummary?: string }
   ) {
     super(message, options);
     this.name = "DiscordDsaHttpError";
     this.status = status;
     if (options?.retryAfterSeconds !== undefined) {
       this.retryAfterSeconds = options.retryAfterSeconds;
+    }
+    if (options?.responseSummary !== undefined) {
+      this.responseSummary = options.responseSummary;
     }
   }
 }

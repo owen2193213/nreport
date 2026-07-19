@@ -76,6 +76,21 @@ describe("backend secrets and inbound email", () => {
     await expect(extractVerificationCode(raw)).resolves.toBe("Z8RYMD");
   });
 
+  it("prefers the Discord subject key over CSS hexadecimal values", async () => {
+    const raw = Buffer.from(
+      "From: Discord <noreply@discord.com>\r\n" +
+        "Subject: Your one-time verification key is ZX7KMH\r\n" +
+        "Content-Type: multipart/alternative; boundary=discord-boundary\r\n\r\n" +
+        "--discord-boundary\r\nContent-Type: text/plain\r\n\r\n" +
+        "Your verification key is ZX7KMH.\r\n" +
+        "--discord-boundary\r\nContent-Type: text/html\r\n\r\n" +
+        "<style>.button{color:#2E3338;background:#4F5660}</style>" +
+        "<p>Your verification key is <strong>ZX7KMH</strong>.</p>\r\n" +
+        "--discord-boundary--"
+    );
+    await expect(extractVerificationCode(raw)).resolves.toBe("ZX7KMH");
+  });
+
   it("does not treat ordinary six-letter words as verification codes", async () => {
     const raw = Buffer.from(
       "Subject: Please verify\r\nContent-Type: text/plain\r\n\r\nFollow normal instructions."

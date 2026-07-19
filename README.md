@@ -10,10 +10,10 @@ Typed Node.js client and Railway backend for the authorized Discord DSA profile,
 - IPOasis: one country-specific sticky residential proxy session per report.
 
 The identity service supports all 27 EU member states. It uses version-locked localized
-Faker data where available and small reviewed local catalogs for Bulgaria, Estonia,
-Lithuania, and Malta. Names are kept in their native Unicode form for the report and
-transliterated only for the internal ID and catch-all email address. Nothing is scraped or
-downloaded at runtime.
+Faker data where available and Faker's generic English name generator for Bulgaria,
+Estonia, Lithuania, and Malta, where no suitable built-in Faker locale is available. Names
+are kept in their native Unicode form for the report and transliterated only for the
+internal ID and catch-all email address. Nothing is scraped or downloaded at runtime.
 
 ## Railway setup
 

@@ -14,7 +14,7 @@
 
 - The API and PostgreSQL run in Railway EU West (Amsterdam) as one Node.js service plus one database.
 - Cloudflare Email Routing owns the whole-domain catch-all and invokes one Email Worker.
-- V1 supports all 27 EU member states. Localized Faker data is used where a suitable locale exists; Bulgaria, Estonia, Lithuania, and Malta use small reviewed local catalogs. There is no unrelated-language fallback.
+- V1 supports all 27 EU member states. Localized Faker data is used where a suitable locale exists; Bulgaria, Estonia, Lithuania, and Malta deliberately use Faker's generic English name generator because Faker does not provide suitable country locales.
 - Expected scale is tens of concurrent reports, not thousands per second.
 - Reports may wait several minutes for email, and process restarts must not lose them.
 - The organization controls the pseudonyms and catch-all domain and is authorized to submit the reports in scope.
@@ -37,9 +37,9 @@ Alternatives considered:
 - Job runner: requests an email code, verifies a received code, and submits the report.
 - Country profiles: one versioned mapping controls pseudonym source, locale, language,
   primary timezone, and proxy country for every EU member state.
-- Pseudonym generator: locked localized Faker data where supported, plus reviewed local
-  given/family name catalogs for uncovered countries. Unicode names are preserved in the
-  report; only internal IDs and email local-parts are transliterated to readable ASCII.
+- Pseudonym generator: locked localized Faker data where supported and Faker's generic
+  English generator for uncovered countries. Unicode names are preserved in the report;
+  only internal IDs and email local-parts are transliterated to readable ASCII.
 - Proxy session builder: creates a unique sticky-session identifier and reuses it for all steps.
 - Cloudflare Email Worker: receives catch-all messages and posts the raw RFC822 message plus signed envelope metadata to Railway.
 
@@ -76,9 +76,9 @@ envelope recipient. Review links are never stored, logged, or opened automatical
 - One Railway service selected to minimize operational complexity.
 - PostgreSQL job table selected over Redis or another queue service.
 - Cloudflare Email Routing selected because inbound routing is already available for the domain.
-- Locked localized Faker datasets selected over manually maintaining thousands of names.
-  Small reviewed local catalogs are used only where Faker has no suitable locale, and
-  runtime downloading or scraping is forbidden.
+- Locked localized Faker datasets selected over manually maintaining names. Faker's
+  generic English instance is the explicit fallback for countries without a suitable
+  built-in locale; runtime downloading or scraping is forbidden.
 - `@sindresorhus/transliterate` selected for deterministic Unicode-to-ASCII email and ID
   generation instead of maintaining incomplete Greek, Cyrillic, and diacritic mappings.
 - One country profile controls proxy country, Discord locale, `Accept-Language`, payload

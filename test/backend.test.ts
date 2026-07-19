@@ -53,6 +53,17 @@ describe("backend identity and validation", () => {
     }
   });
 
+  it.each(["BG", "EE", "LT", "MT"])(
+    "uses Faker's generic English name fallback for %s",
+    (country) => {
+      for (let sample = 0; sample < 10; sample += 1) {
+        expect(generateIdentity(country, "reports.example.org").displayName).toMatch(
+          /^[\x20-\x7E]+$/
+        );
+      }
+    }
+  );
+
   it("rejects caller-supplied reporter identities", () => {
     expect(() =>
       parseCreateReportInput({

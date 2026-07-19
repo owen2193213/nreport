@@ -6,6 +6,7 @@ import {
   fakerDE,
   fakerDE_AT,
   fakerEL,
+  fakerEN,
   fakerEN_IE,
   fakerES,
   fakerFI,
@@ -31,64 +32,11 @@ import transliterate from "@sindresorhus/transliterate";
 const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";
 
 interface CountryProfile {
-  faker?: Faker;
-  fullNames?: readonly string[];
+  faker: Faker;
   locale: string;
   language: string;
   timezone: string;
 }
-
-const BULGARIAN_NAMES = [
-  "Александър Димитров",
-  "Борис Иванов",
-  "Виктор Георгиев",
-  "Георги Петров",
-  "Даниел Николов",
-  "Иван Стоянов",
-  "Елена Димитрова",
-  "Мария Иванова",
-  "Никол Николова",
-  "София Георгиева"
-] as const;
-
-const ESTONIAN_NAMES = [
-  "Andres Tamm",
-  "Karl Saar",
-  "Kristjan Sepp",
-  "Markus Mägi",
-  "Martin Kask",
-  "Anna Kukk",
-  "Kadri Rebane",
-  "Laura Ilves",
-  "Liis Pärn",
-  "Maarja Oja"
-] as const;
-
-const LITHUANIAN_NAMES = [
-  "Jonas Kazlauskas",
-  "Mantas Petrauskas",
-  "Tomas Jankauskas",
-  "Lukas Žukauskas",
-  "Darius Paulauskas",
-  "Austėja Kazlauskaitė",
-  "Gabija Petrauskaitė",
-  "Ieva Jankauskaitė",
-  "Eglė Žukauskaitė",
-  "Rūta Paulauskaitė"
-] as const;
-
-const MALTESE_NAMES = [
-  "Andrew Borg",
-  "Daniel Camilleri",
-  "Joseph Farrugia",
-  "Luke Galea",
-  "Matthew Vella",
-  "Claire Attard",
-  "Elena Micallef",
-  "Maria Muscat",
-  "Sarah Spiteri",
-  "Sophie Zammit"
-] as const;
 
 const COUNTRY_PROFILES: Readonly<Record<string, readonly CountryProfile[]>> = {
   AT: [{ faker: fakerDE_AT, locale: "de-AT", language: "de", timezone: "Europe/Vienna" }],
@@ -96,12 +44,12 @@ const COUNTRY_PROFILES: Readonly<Record<string, readonly CountryProfile[]>> = {
     { faker: fakerNL_BE, locale: "nl-BE", language: "nl", timezone: "Europe/Brussels" },
     { faker: fakerFR_BE, locale: "fr-BE", language: "fr", timezone: "Europe/Brussels" }
   ],
-  BG: [{ fullNames: BULGARIAN_NAMES, locale: "bg-BG", language: "bg", timezone: "Europe/Sofia" }],
+  BG: [{ faker: fakerEN, locale: "bg-BG", language: "bg", timezone: "Europe/Sofia" }],
   HR: [{ faker: fakerHR, locale: "hr-HR", language: "hr", timezone: "Europe/Zagreb" }],
   CY: [{ faker: fakerEL, locale: "el-CY", language: "el", timezone: "Asia/Nicosia" }],
   CZ: [{ faker: fakerCS_CZ, locale: "cs-CZ", language: "cs", timezone: "Europe/Prague" }],
   DK: [{ faker: fakerDA, locale: "da-DK", language: "da", timezone: "Europe/Copenhagen" }],
-  EE: [{ fullNames: ESTONIAN_NAMES, locale: "et-EE", language: "et", timezone: "Europe/Tallinn" }],
+  EE: [{ faker: fakerEN, locale: "et-EE", language: "et", timezone: "Europe/Tallinn" }],
   FI: [{ faker: fakerFI, locale: "fi-FI", language: "fi", timezone: "Europe/Helsinki" }],
   FR: [{ faker: fakerFR, locale: "fr-FR", language: "fr", timezone: "Europe/Paris" }],
   DE: [{ faker: fakerDE, locale: "de-DE", language: "de", timezone: "Europe/Berlin" }],
@@ -110,9 +58,9 @@ const COUNTRY_PROFILES: Readonly<Record<string, readonly CountryProfile[]>> = {
   IE: [{ faker: fakerEN_IE, locale: "en-IE", language: "en", timezone: "Europe/Dublin" }],
   IT: [{ faker: fakerIT, locale: "it-IT", language: "it", timezone: "Europe/Rome" }],
   LV: [{ faker: fakerLV, locale: "lv-LV", language: "lv", timezone: "Europe/Riga" }],
-  LT: [{ fullNames: LITHUANIAN_NAMES, locale: "lt-LT", language: "lt", timezone: "Europe/Vilnius" }],
+  LT: [{ faker: fakerEN, locale: "lt-LT", language: "lt", timezone: "Europe/Vilnius" }],
   LU: [{ faker: fakerFR_LU, locale: "fr-LU", language: "fr", timezone: "Europe/Luxembourg" }],
-  MT: [{ fullNames: MALTESE_NAMES, locale: "mt-MT", language: "mt", timezone: "Europe/Malta" }],
+  MT: [{ faker: fakerEN, locale: "mt-MT", language: "mt", timezone: "Europe/Malta" }],
   NL: [{ faker: fakerNL, locale: "nl-NL", language: "nl", timezone: "Europe/Amsterdam" }],
   PL: [{ faker: fakerPL, locale: "pl-PL", language: "pl", timezone: "Europe/Warsaw" }],
   PT: [{ faker: fakerPT_PT, locale: "pt-PT", language: "pt", timezone: "Europe/Lisbon" }],
@@ -162,9 +110,7 @@ function select<T>(values: readonly T[]): T {
 }
 
 function generateDisplayName(profile: CountryProfile): string {
-  if (profile.faker !== undefined) return profile.faker.person.fullName();
-  if (profile.fullNames !== undefined) return select(profile.fullNames);
-  throw new Error("Pseudonym profile has no name source.");
+  return profile.faker.person.fullName();
 }
 
 export function buildAcceptLanguage(locale: string, language: string): string {

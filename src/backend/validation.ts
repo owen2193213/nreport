@@ -7,6 +7,7 @@ import type {
 import { supportedCountries } from "./pseudonyms.js";
 
 const FLOW_VALUES = new Set<ReportFlow>(["user_urf", "message_urf", "guild_urf"]);
+export const DISCORD_FORM_LANGUAGE = "en" as const;
 const PROFILE_ELEMENTS = new Set<UserProfileElement>(["photos", "name", "descriptors"]);
 const GUILD_ELEMENTS = new Set<GuildElement>([
   "name",

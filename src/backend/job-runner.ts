@@ -7,7 +7,7 @@ import type { AppConfig } from "./config.js";
 import type { Database, JobRow, ReportRow } from "./database.js";
 import { buildAcceptLanguage, buildProxyUrl } from "./pseudonyms.js";
 import { decryptJson, encryptJson } from "./security.js";
-import { toReportDraft } from "./validation.js";
+import { DISCORD_FORM_LANGUAGE, toReportDraft } from "./validation.js";
 
 interface JobLogger {
   error(data: Record<string, unknown>, message: string): void;
@@ -172,7 +172,7 @@ export class JobRunner {
         menu,
         toReportDraft(report.input, report.reporter_legal_name),
         token,
-        report.language
+        DISCORD_FORM_LANGUAGE
       );
       await this.database.setStatus(report.id, "submitting", "submission_started");
       const result = await client.submitPrepared(payload);

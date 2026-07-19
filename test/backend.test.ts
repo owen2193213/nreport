@@ -21,11 +21,19 @@ import {
   verifyInboundSignature
 } from "../src/backend/security.js";
 import {
+  DISCORD_FORM_LANGUAGE,
   parseCreateReportInput,
   parseRetryReportInput
 } from "../src/backend/validation.js";
 
 describe("backend identity and validation", () => {
+  it("keeps Discord's form language independent from the country locale", () => {
+    const identity = generateIdentity("DE", "reports.example.org");
+
+    expect(identity.language).toBe("de");
+    expect(DISCORD_FORM_LANGUAGE).toBe("en");
+  });
+
   it("generates a localized unique German identity", () => {
     const identity = generateIdentity("de", "reports.example.org");
     expect(identity.country).toBe("DE");

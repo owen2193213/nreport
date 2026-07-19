@@ -1,0 +1,32 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.eslintcache
+
+# Runtime configuration and secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+*.pem
+*.key
+
+# Local databases and runtime files
+*.db
+*.sqlite
+*.sqlite3
+*.log
+npm-debug.log*
+
+# Local tooling and editor state
+.agents/
+.codex/
+.railway/
+.wrangler/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

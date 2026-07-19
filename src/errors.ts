@@ -1,0 +1,38 @@
+export class DiscordDsaError extends Error {
+  public constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DiscordDsaError";
+  }
+}
+
+export class DiscordDsaHttpError extends DiscordDsaError {
+  public readonly status: number;
+  public readonly retryAfterSeconds?: number;
+
+  public constructor(
+    message: string,
+    status: number,
+    options?: ErrorOptions & { retryAfterSeconds?: number }
+  ) {
+    super(message, options);
+    this.name = "DiscordDsaHttpError";
+    this.status = status;
+    if (options?.retryAfterSeconds !== undefined) {
+      this.retryAfterSeconds = options.retryAfterSeconds;
+    }
+  }
+}
+
+export class MenuResolutionError extends DiscordDsaError {
+  public constructor(message: string) {
+    super(message);
+    this.name = "MenuResolutionError";
+  }
+}
+
+export class PayloadValidationError extends DiscordDsaError {
+  public constructor(message: string) {
+    super(message);
+    this.name = "PayloadValidationError";
+  }
+}

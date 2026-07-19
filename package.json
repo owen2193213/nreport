@@ -1,0 +1,40 @@
+{
+  "name": "discord-dsa-api-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Typed client for Discord's authorized EU DSA reporting workflows.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint --no-error-on-unmatched-pattern \"src/**/*.ts\" \"scripts/**/*.ts\" \"test/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:client-readonly": "tsx scripts/test-client-readonly.ts",
+    "test:post-headers": "tsx scripts/test-post-headers.ts",
+    "test:headers": "tsx scripts/test-menu-headers.ts"
+  },
+  "dependencies": {
+    "tough-cookie": "^6.0.2",
+    "undici": "^8.7.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
+    "eslint": "^10.7.0",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.64.0",
+    "vitest": "^4.1.10"
+  }
+}

@@ -70,7 +70,7 @@ attempts for that tracked report; `/reports` remains available.
 
 - Whitelisting is enabled unless `WHITELIST_ENABLED=false`.
 - Normal users begin with zero credits; configured admins are unlimited.
-- A one-use key grants 1-100 credits and may have a redemption deadline.
+- A one-use key grants any positive integer number of credits and may have a redemption deadline.
 - Plaintext key values are displayed once; only a peppered HMAC and safe prefix are stored.
 - Report creation consumes one credit. Status checks and lifecycle retries are free.
 - Revoking a redeemed key suspends its user, clears every remaining credit, and deletes

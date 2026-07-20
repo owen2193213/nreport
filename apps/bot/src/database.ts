@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS access_keys (
   id uuid PRIMARY KEY,
   code_hash char(64) NOT NULL UNIQUE,
   code_prefix text NOT NULL,
-  credits_total integer NOT NULL CHECK (credits_total BETWEEN 1 AND 100),
+  credits_total integer NOT NULL CHECK (credits_total >= 1),
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'redeemed', 'revoked')),
   expires_at timestamptz,
   created_by text NOT NULL,
@@ -124,6 +124,20 @@ CREATE TABLE IF NOT EXISTS bot_state (
 );
 
 CREATE INDEX IF NOT EXISTS access_keys_status_idx ON access_keys(status, created_at DESC);
+ALTER TABLE access_keys DROP CONSTRAINT IF EXISTS access_keys_credits_total_check;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_constraint
+     WHERE conname = 'access_keys_credits_positive'
+       AND conrelid = 'access_keys'::regclass
+  ) THEN
+    ALTER TABLE access_keys
+      ADD CONSTRAINT access_keys_credits_positive CHECK (credits_total >= 1);
+  END IF;
+END
+$$;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS draft_id uuid;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS server_snapshot jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS report_tracking_draft_idx

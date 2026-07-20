@@ -138,6 +138,20 @@ describe("Discord command registration", () => {
       : undefined;
     expect(target).toMatchObject({ required: true });
   });
+
+  it("allows access keys to grant any positive integer number of credits", () => {
+    const command = COMMANDS.find((candidate) => candidate.name === "admin");
+    const keyGroup = command?.options?.find((option) => option.name === "key");
+    const create = keyGroup && "options" in keyGroup
+      ? keyGroup.options?.find((option) => option.name === "create")
+      : undefined;
+    const credits = create && "options" in create
+      ? create.options?.find((option) => option.name === "credits")
+      : undefined;
+
+    expect(credits).toMatchObject({ required: true, min_value: 1 });
+    expect(credits && "max_value" in credits ? credits.max_value : undefined).toBeUndefined();
+  });
 });
 
 describe("bot cryptography", () => {

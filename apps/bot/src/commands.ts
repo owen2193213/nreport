@@ -153,7 +153,6 @@ const admin = userInstalled()
                 .setDescription("Credits granted by each key")
                 .setRequired(true)
                 .setMinValue(1)
-                .setMaxValue(100)
             )
             .addIntegerOption((option) =>
               option

@@ -6,6 +6,10 @@ import type { ReportLifecycleEvent } from "@discord-dsa/contracts";
 import { verifyReportEventSignature } from "./crypto.js";
 import type { BotDatabase } from "./database.js";
 
+export function reportEventIngestionStatus(tracked: boolean): 202 | 409 {
+  return tracked ? 202 : 409;
+}
+
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Array<Buffer<ArrayBufferLike>> = [];
@@ -108,8 +112,12 @@ export class HealthServer {
         return;
       }
       const tracked = await this.database.ingestLifecycleEvent(event);
-      response.writeHead(202, { "content-type": "application/json" });
-      response.end(JSON.stringify({ status: tracked ? "accepted" : "ignored" }));
+      response.writeHead(reportEventIngestionStatus(tracked), {
+        "content-type": "application/json"
+      });
+      response.end(
+        JSON.stringify({ status: tracked ? "accepted" : "report_not_tracked_yet" })
+      );
     } catch {
       response.writeHead(400, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "invalid_event" }));

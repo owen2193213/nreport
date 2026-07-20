@@ -2,6 +2,7 @@ import type {
   CreateReportInput,
   DiscordReportStatus,
   GuildElement,
+  ReportedUserSnapshot,
   ReportFlow,
   ReportStatus,
   UserProfileElement
@@ -16,6 +17,9 @@ export interface ReportDraft {
   messageUrl?: string;
   profileElements?: UserProfileElement[];
   reportedUsername?: string;
+  reportedUserId?: string;
+  reportedUserSnapshot?: ReportedUserSnapshot;
+  profileTargetRaw?: string;
   reportedUserServerId?: string;
   reportType?: string;
   serverSnapshot?: ServerSnapshot;

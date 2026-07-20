@@ -7,6 +7,7 @@ import { BotDatabase } from "./database.js";
 import { HealthServer } from "./health.js";
 import { InteractionHandler } from "./interactions.js";
 import { NotificationWorker } from "./notifier.js";
+import { ProfileResolver } from "./profile-resolver.js";
 import { ServerResolver } from "./server-resolver.js";
 
 async function main(): Promise<void> {
@@ -26,7 +27,15 @@ async function main(): Promise<void> {
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages]
   });
   const serverResolver = new ServerResolver(client);
-  const handler = new InteractionHandler({ api, config, countries, database, serverResolver });
+  const profileResolver = new ProfileResolver(client);
+  const handler = new InteractionHandler({
+    api,
+    config,
+    countries,
+    database,
+    profileResolver,
+    serverResolver
+  });
   client.on(Events.InteractionCreate, (interaction) => void handler.handle(interaction));
 
   let discordReady = false;

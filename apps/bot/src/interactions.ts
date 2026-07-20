@@ -28,6 +28,11 @@ import { countryDisplay, matchingCountries } from "./countries.js";
 import { decryptJson, encryptJson, generateAccessKey, hashAccessKey } from "./crypto.js";
 import { AccessError } from "./database.js";
 import type { BotDatabase } from "./database.js";
+import {
+  isSnowflakeProfileTarget,
+  normalizeProfileTarget
+} from "./profile-resolver.js";
+import type { ProfileResolver } from "./profile-resolver.js";
 import type { ServerResolver } from "./server-resolver.js";
 import type { ReportDraft } from "./types.js";
 import {
@@ -35,6 +40,7 @@ import {
   accessKeyEmbed,
   accessKeysEmbed,
   buildCountryPicker,
+  buildProfileTargetConfirmation,
   buildReportModal,
   buildReview,
   draftToCreateInput,
@@ -54,6 +60,7 @@ export interface InteractionHandlerOptions {
   config: BotConfig;
   countries: readonly string[];
   database: BotDatabase;
+  profileResolver: ProfileResolver;
   serverResolver: ServerResolver;
 }
 
@@ -88,6 +95,7 @@ export class InteractionHandler {
   private readonly config: BotConfig;
   private readonly countries: readonly string[];
   private readonly database: BotDatabase;
+  private readonly profileResolver: ProfileResolver;
   private readonly serverResolver: ServerResolver;
 
   public constructor(options: InteractionHandlerOptions) {
@@ -95,6 +103,7 @@ export class InteractionHandler {
     this.config = options.config;
     this.countries = options.countries;
     this.database = options.database;
+    this.profileResolver = options.profileResolver;
     this.serverResolver = options.serverResolver;
   }
 
@@ -165,6 +174,14 @@ export class InteractionHandler {
     interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
     draft: ReportDraft
   ): Promise<void> {
+    const draftId = await this.prepareDraft(interaction, draft);
+    if (draftId) await interaction.showModal(buildReportModal(draftId, draft));
+  }
+
+  private async prepareDraft(
+    interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
+    draft: ReportDraft
+  ): Promise<string | null> {
     await this.requireReportAccess(interaction.user.id);
     const access = await this.database.getAccess(interaction.user.id);
     if (draft.country === undefined && access.defaultCountry !== null) {
@@ -179,7 +196,7 @@ export class InteractionHandler {
         flags: EPHEMERAL,
         allowedMentions: { parse: [] }
       });
-      return;
+      return null;
     }
     if (draft.flow === "guild_urf" && draft.guildIdOrInviteCode && !draft.serverSnapshot) {
       const snapshot = await this.serverResolver.resolve(
@@ -188,8 +205,7 @@ export class InteractionHandler {
       );
       if (snapshot) draft.serverSnapshot = snapshot;
     }
-    const draftId = await this.saveDraft(interaction.user.id, draft);
-    await interaction.showModal(buildReportModal(draftId, draft));
+    return this.saveDraft(interaction.user.id, draft);
   }
 
   private countryOption(interaction: ChatInputCommandInteraction): string | undefined {
@@ -275,16 +291,35 @@ export class InteractionHandler {
       return;
     }
     if (subcommand === "profile") {
-      const username = interaction.options.getString("username", true).trim();
+      const target = normalizeProfileTarget(interaction.options.getString("target", true));
       const serverId = interaction.options.getString("server-id")?.trim();
       if (serverId && !SNOWFLAKE.test(serverId)) {
         throw new AccessError("invalid_server_id", "Server ID must be a Discord snowflake.");
       }
-      await this.startDraft(interaction, {
+      const draft: ReportDraft = {
         flow: "user_urf",
-        reportedUsername: username,
+        reportedUsername: target,
         ...(country ? { country } : {}),
         ...(serverId ? { reportedUserServerId: serverId } : {})
+      };
+      if (!isSnowflakeProfileTarget(target)) {
+        await this.startDraft(interaction, draft);
+        return;
+      }
+      draft.profileTargetRaw = target;
+      const draftId = await this.prepareDraft(interaction, draft);
+      if (!draftId) return;
+      await interaction.deferReply({ flags: EPHEMERAL });
+      const resolved = await this.profileResolver.resolve(target, serverId, interaction.guild);
+      if (resolved) {
+        draft.reportedUsername = resolved.username;
+        draft.reportedUserId = resolved.userId;
+        draft.reportedUserSnapshot = resolved;
+        await this.replaceDraft(interaction.user.id, draftId, draft);
+      }
+      await interaction.editReply({
+        ...buildProfileTargetConfirmation(draftId, draft),
+        allowedMentions: { parse: [] }
       });
       return;
     }
@@ -554,6 +589,46 @@ export class InteractionHandler {
         ...(await this.reportPage(interaction.user.id, requestedPage)),
         allowedMentions: { parse: [] }
       });
+      return;
+    }
+    if (parts[0] === "profile" && parts[1] && parts[2]) {
+      const action = parts[1];
+      const draftId = parts[2];
+      const draft = await this.loadDraft(interaction.user.id, draftId);
+      if (draft.flow !== "user_urf" || !draft.profileTargetRaw) return;
+      if (action === "retry") {
+        await interaction.deferUpdate();
+        const resolved = await this.profileResolver.resolve(
+          draft.profileTargetRaw,
+          draft.reportedUserServerId,
+          interaction.guild
+        );
+        if (resolved) {
+          draft.reportedUsername = resolved.username;
+          draft.reportedUserId = resolved.userId;
+          draft.reportedUserSnapshot = resolved;
+          await this.replaceDraft(interaction.user.id, draftId, draft);
+        }
+        await interaction.editReply({
+          ...buildProfileTargetConfirmation(draftId, draft),
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+      if (action === "account") {
+        if (!draft.reportedUserSnapshot || !draft.reportedUserId) {
+          throw new AccessError("user_not_resolved", "Try resolving that user ID again.");
+        }
+        draft.reportedUsername = draft.reportedUserSnapshot.username;
+      } else if (action === "username") {
+        draft.reportedUsername = draft.profileTargetRaw;
+        delete draft.reportedUserId;
+        delete draft.reportedUserSnapshot;
+      } else {
+        return;
+      }
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+      await interaction.showModal(buildReportModal(draftId, draft));
       return;
     }
     if (parts[0] === "country" && parts[1] === "page" && parts[2] && parts[3]) {

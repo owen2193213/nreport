@@ -66,6 +66,10 @@ function reportedDetails(report: ReportRow): ReportedDetails {
       return {
         kind: "profile",
         reportedUsername: input.reportedUsername,
+        ...(input.reportedUserId === undefined ? {} : { reportedUserId: input.reportedUserId }),
+        ...(input.reportedUserSnapshot === undefined
+          ? {}
+          : { reportedUserSnapshot: input.reportedUserSnapshot }),
         profileElements: input.profileElements,
         ...(input.reportedUserServerId === undefined
           ? {}

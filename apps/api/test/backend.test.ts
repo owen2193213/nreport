@@ -7,7 +7,7 @@ import {
   extractVerificationCode,
   parseDiscordEmail
 } from "../src/email.js";
-import { isRetryableFailure } from "../src/database.js";
+import { isRetryableFailure, shouldApplyDiscordStatus } from "../src/database.js";
 import {
   buildAcceptLanguage,
   generateEmailAlias,
@@ -110,6 +110,35 @@ describe("backend identity and validation", () => {
     ).toThrow(/Discord snowflake/);
   });
 
+  it("accepts a validated resolved-user snapshot without requiring a schema migration", () => {
+    const input = parseCreateReportInput({
+      country: "DE",
+      flow: "user_urf",
+      reportType: "sub_other_hate_speech",
+      reportedUsername: "example",
+      reportedUserId: "123456789012345678",
+      reportedUserSnapshot: {
+        userId: "123456789012345678",
+        username: "example",
+        globalDisplayName: "Example Display",
+        avatarUrl: "https://cdn.discordapp.com/avatar.png",
+        bot: false,
+        resolvedAt: "2026-07-20T00:00:00.000Z"
+      },
+      profileElements: ["name"]
+    });
+    expect(input).toMatchObject({
+      reportedUserId: "123456789012345678",
+      reportedUsername: "example"
+    });
+    expect(() =>
+      parseCreateReportInput({
+        ...input,
+        reportedUserId: "223456789012345678"
+      })
+    ).toThrow(/must match reportedUserId/);
+  });
+
   it("rotates the email alias without changing the pseudonym", () => {
     const identity = generateIdentity("DE", "reports.example.org");
     const retryEmail = generateEmailAlias(
@@ -140,6 +169,14 @@ describe("backend identity and validation", () => {
 });
 
 describe("backend secrets and inbound email", () => {
+  it("suppresses duplicate and out-of-order Discord status updates", () => {
+    expect(shouldApplyDiscordStatus(null, "received")).toBe(true);
+    expect(shouldApplyDiscordStatus("received", "received")).toBe(false);
+    expect(shouldApplyDiscordStatus("received", "actioned")).toBe(true);
+    expect(shouldApplyDiscordStatus("actioned", "received")).toBe(false);
+    expect(shouldApplyDiscordStatus("closed_no_action", "actioned")).toBe(false);
+  });
+
   it("encrypts persisted secrets and authenticates raw email", () => {
     const key = randomBytes(32);
     const encrypted = encryptJson({ code: "ABC123" }, key);

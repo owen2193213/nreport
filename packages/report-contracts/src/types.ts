@@ -24,6 +24,16 @@ export type DiscordReportStatus = (typeof DISCORD_REPORT_STATUSES)[number];
 export const PROFILE_ELEMENTS = ["photos", "name", "descriptors"] as const;
 export type UserProfileElement = (typeof PROFILE_ELEMENTS)[number];
 
+export interface ReportedUserSnapshot {
+  userId: string;
+  username: string;
+  globalDisplayName: string | null;
+  serverDisplayName?: string;
+  avatarUrl: string | null;
+  bot: boolean;
+  resolvedAt: string;
+}
+
 export const GUILD_ELEMENTS = [
   "name",
   "icon",
@@ -52,6 +62,8 @@ export interface MessageCreateReportInput extends BaseCreateReportInput {
 export interface UserCreateReportInput extends BaseCreateReportInput {
   flow: "user_urf";
   reportedUsername: string;
+  reportedUserId?: string;
+  reportedUserSnapshot?: ReportedUserSnapshot;
   reportedUserServerId?: string;
   profileElements: UserProfileElement[];
 }
@@ -98,6 +110,8 @@ export type ReportedDetails =
   | {
       kind: "profile";
       reportedUsername: string;
+      reportedUserId?: string;
+      reportedUserSnapshot?: ReportedUserSnapshot;
       reportedUserServerId?: string;
       profileElements: UserProfileElement[];
       context?: string;

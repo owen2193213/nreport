@@ -17,6 +17,21 @@ export type ReportStatus =
 
 export const MAX_LIFECYCLE_ATTEMPTS = 3;
 
+const TERMINAL_DISCORD_STATUSES = new Set<DiscordReportStatus>([
+  "actioned",
+  "closed_no_action",
+  "review_not_approved"
+]);
+
+export function shouldApplyDiscordStatus(
+  current: DiscordReportStatus | null,
+  incoming: DiscordReportStatus
+): boolean {
+  if (current === incoming) return false;
+  if (current !== null && TERMINAL_DISCORD_STATUSES.has(current)) return false;
+  return true;
+}
+
 export interface ReportRow extends QueryResultRow {
   id: string;
   idempotency_key: string;
@@ -638,13 +653,13 @@ export class Database {
         await client.query("COMMIT");
         return "pending_report";
       }
+      if (!shouldApplyDiscordStatus(report.discord_status, input.discordStatus)) {
+        await client.query("COMMIT");
+        return "accepted";
+      }
       await client.query(
         `UPDATE reports
-         SET discord_status = CASE
-               WHEN discord_status IN ('actioned', 'closed_no_action', 'review_not_approved')
-                 AND $2 = 'received' THEN discord_status
-               ELSE $2
-             END,
+         SET discord_status = $2,
              discord_status_updated_at = now(), updated_at = now()
          WHERE id = $1`,
         [report.id, input.discordStatus]

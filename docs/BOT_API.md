@@ -170,10 +170,28 @@ interface ReportSummary {
   updatedAt: string;
 }
 
+interface ReportedUserSnapshot {
+  userId: string;
+  username: string;
+  globalDisplayName: string | null;
+  serverDisplayName?: string;
+  avatarUrl: string | null;
+  bot: boolean;
+  resolvedAt: string;
+}
+
 interface ReportDetail extends ReportSummary {
   reportedDetails:
     | { kind: "message"; messageUrl: string; context?: string }
-    | { kind: "profile"; reportedUsername: string; reportedUserServerId?: string; profileElements: string[]; context?: string }
+    | {
+        kind: "profile";
+        reportedUsername: string;
+        reportedUserId?: string;
+        reportedUserSnapshot?: ReportedUserSnapshot;
+        reportedUserServerId?: string;
+        profileElements: string[];
+        context?: string;
+      }
     | { kind: "server"; guildIdOrInviteCode: string; guildElements: string[]; context?: string };
   timeline: Array<{
     eventId: string;
@@ -289,6 +307,15 @@ or `@me`, channel IDs, and message IDs are accepted in the appropriate positions
   "reportType": "sub_other_cybercrime",
   "submitterDiscordUserId": "1197857362942378017",
   "reportedUsername": "reported-user",
+  "reportedUserId": "123456789012345678",
+  "reportedUserSnapshot": {
+    "userId": "123456789012345678",
+    "username": "reported-user",
+    "globalDisplayName": "Reported Display Name",
+    "avatarUrl": "https://cdn.discordapp.com/avatars/123456789012345678/example.png",
+    "bot": false,
+    "resolvedAt": "2026-07-20T12:00:00.000Z"
+  },
   "reportedUserServerId": "1273300509318578227",
   "profileElements": ["name", "descriptors"],
   "context": "Explain which selected profile elements contain the unlawful material."
@@ -305,6 +332,11 @@ descriptors
 
 `reportedUserServerId` is optional and, when supplied, must be a 15-22 digit Discord
 snowflake.
+
+`reportedUserId` and `reportedUserSnapshot` are optional, immutable evidence captured by the
+bot after the user confirms a snowflake-shaped target as an account. The snapshot user ID must
+match `reportedUserId`. `reportedUsername` remains the value submitted to Discord's DSA form.
+Name-only reports omit the ID and snapshot.
 
 #### Server report
 
@@ -543,7 +575,7 @@ Implemented user-installed app commands:
 
 ```text
 /report message [message-link]
-/report profile username [server-id]
+/report profile target [server-id] [country]
 /report server [server-or-invite]
 /reports status report-id
 /reports list

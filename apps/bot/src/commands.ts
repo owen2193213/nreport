@@ -47,8 +47,8 @@ const report = userInstalled()
         .setDescription("Report a Discord profile")
         .addStringOption((option) =>
           option
-            .setName("username")
-            .setDescription("The profile username shown by Discord")
+            .setName("target")
+            .setDescription("Username, display name, user ID, or mention")
             .setRequired(true)
             .setMaxLength(100)
         )

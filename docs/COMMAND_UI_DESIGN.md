@@ -4,7 +4,7 @@
 
 - Replace raw command text with a consistent, Discord-native embed system.
 - Let users browse their reports one at a time with stateless Previous/Next buttons.
-- Show human labels, current progress, reason, country, timestamps, and shortened identifiers.
+- Show one current status, human reason, country, timestamps, and shortened identifiers.
 - Keep every interaction result ephemeral; lifecycle notifications remain private DMs.
 - Include full report details in private lifecycle DMs while omitting generated identity data.
 - Support dozens of reports without keeping pagination sessions in memory.
@@ -30,7 +30,16 @@ embed language without pagination controls.
 Admin key lists use compact embed fields and remain bounded by the database query limit.
 One-time plaintext keys stay in ephemeral embed descriptions. Errors use a red embed with a
 safe concise message. Report cards consistently show target, category, country, combined
-reason/elements, reported details, status, IDs, and the complete API event timeline.
+reason/elements, reported details, one status, references, and a user-facing milestone history.
+Verification and submission internals remain available in the API timeline but collapse into
+Created, Submitted, Received, and Outcome stages in Discord. Notification titles carry the new
+status without repeating it in separate Progress or Discord review fields.
+
+Profile reporting uses one required `target` string. Ordinary names continue directly;
+snowflake-shaped IDs and mentions are resolved and shown in an ephemeral confirmation with
+Report This Account, Use as Username, and Cancel actions. Failed lookup adds a retry action.
+Resolved public profile metadata is captured in the encrypted draft and API JSON report input,
+so no relational migration is required and later account changes do not rewrite report history.
 
 ## Alternatives considered
 
@@ -46,3 +55,6 @@ reason/elements, reported details, status, IDs, and the complete API event timel
 - Selected shared embed builders so every command uses the same status vocabulary and colors.
 - Retained ephemeral interaction replies and adopted full-detail private lifecycle DMs as requested.
 - Selected signed webhook delivery plus periodic reconciliation for fast, recoverable updates.
+- Selected semantic milestone history while retaining the complete API event log.
+- Selected explicit confirmation for snowflake-shaped profile targets because numeric usernames
+  and Discord IDs are otherwise ambiguous.

@@ -4,6 +4,7 @@ import {
   ApplicationCommandType,
   ApplicationIntegrationType,
   InteractionContextType,
+  MessageFlags,
   Routes
 } from "discord.js";
 import type { REST } from "discord.js";
@@ -23,9 +24,12 @@ import { renderNotification } from "../src/notifier.js";
 import { matchingCountries } from "../src/countries.js";
 import type { BotConfig } from "../src/config.js";
 import type { BotDatabase } from "../src/database.js";
+import { notificationEventKey } from "../src/database.js";
 import { InteractionHandler } from "../src/interactions.js";
+import { reportEventIngestionStatus } from "../src/health.js";
+import { ProfileResolver, normalizeProfileTarget } from "../src/profile-resolver.js";
 import { ServerResolver } from "../src/server-resolver.js";
-import type { DsaApi } from "@discord-dsa/contracts";
+import type { DsaApi, ReportDetail } from "@discord-dsa/contracts";
 import {
   buildCountryPicker,
   buildReportModal,
@@ -35,7 +39,7 @@ import {
   reportEmbed
 } from "../src/ui.js";
 
-function reportFixture() {
+function reportFixture(): ReportDetail {
   return {
     internalReportId: "timo-schmitt-74cjy1qvc1azcxy2",
     country: "DE",
@@ -128,6 +132,11 @@ describe("Discord command registration", () => {
       ? message.options?.find((option) => option.name === "message-link")
       : undefined;
     expect(messageLink).toMatchObject({ required: true });
+    const profile = subcommands.find((subcommand) => subcommand.name === "profile");
+    const target = profile && "options" in profile
+      ? profile.options?.find((option) => option.name === "target")
+      : undefined;
+    expect(target).toMatchObject({ required: true });
   });
 });
 
@@ -221,6 +230,30 @@ describe("server resolution", () => {
   });
 });
 
+describe("profile resolution", () => {
+  it("normalizes mentions and resolves an immutable public user snapshot", async () => {
+    expect(normalizeProfileTarget("<@!123456789012345678>")).toBe("123456789012345678");
+    const fetchUser = vi.fn().mockResolvedValue({
+      id: "123456789012345678",
+      username: "example",
+      globalName: "Example Display",
+      bot: false,
+      displayAvatarURL: () => "https://cdn.discordapp.com/avatar.png"
+    });
+    const client = {
+      users: { fetch: fetchUser },
+      guilds: { fetch: vi.fn() }
+    } as unknown as Client;
+    await expect(new ProfileResolver(client).resolve("123456789012345678")).resolves.toMatchObject({
+      userId: "123456789012345678",
+      username: "example",
+      globalDisplayName: "Example Display",
+      avatarUrl: "https://cdn.discordapp.com/avatar.png"
+    });
+    expect(fetchUser).toHaveBeenCalledWith("123456789012345678", { force: true });
+  });
+});
+
 describe("report UI", () => {
   it("searches full country names and returns flags with ISO values", () => {
     expect(matchingCountries(["DE", "FR", "IE"], "ger")).toEqual([
@@ -279,6 +312,36 @@ describe("report UI", () => {
     });
   });
 
+  it("preserves a resolved profile ID and snapshot in the API request", () => {
+    const snapshot = {
+      userId: "123456789012345678",
+      username: "example",
+      globalDisplayName: "Example Display",
+      avatarUrl: "https://cdn.discordapp.com/avatar.png",
+      bot: false,
+      resolvedAt: "2026-07-20T00:00:00.000Z"
+    };
+    expect(
+      draftToCreateInput(
+        {
+          flow: "user_urf",
+          country: "DE",
+          reportType: "sub_other_hate_speech",
+          reportedUsername: "example",
+          reportedUserId: snapshot.userId,
+          reportedUserSnapshot: snapshot,
+          profileElements: ["name"],
+          context: "The profile name contains unlawful hate speech."
+        },
+        "1197857362942378017"
+      )
+    ).toMatchObject({
+      reportedUsername: "example",
+      reportedUserId: snapshot.userId,
+      reportedUserSnapshot: snapshot
+    });
+  });
+
   it("keeps review embeds below Discord's embed limit", () => {
     const review = buildReview("draft", {
       flow: "message_urf",
@@ -303,9 +366,10 @@ describe("report UI", () => {
     const now = "2026-07-20T00:00:00.000Z";
     const report = reportFixture();
     report.reportedDetails.context = "x".repeat(4_000);
+    report.lifecycleAttempt = 3;
     report.timeline = Array.from({ length: 30 }, (_, index) => ({
       eventId: `${index + 1}`,
-      type: "verification_started",
+      type: index % 10 === 9 ? "report_submitted" : "verification_started",
       occurredAt: now,
       lifecycleAttempt: Math.floor(index / 10) + 1,
       discordStatus: null,
@@ -323,19 +387,121 @@ describe("report UI", () => {
     expect(characters).toBeLessThanOrEqual(6_000);
     expect(json.fields?.length).toBeLessThanOrEqual(25);
     expect(JSON.stringify(json)).toContain("Attempt 3");
+    expect(JSON.stringify(json)).not.toContain("Verification started");
   });
 
   it("renders lifecycle DMs with full details and the current timeline", () => {
     const rendered = renderNotification(reportFixture());
     const json = JSON.stringify(rendered.toJSON());
-    expect(json).toContain("Action taken");
+    expect(json).toContain("Discord took action");
     expect(json).toContain("discord.com/channels");
     expect(json).toContain("sensitive context");
-    expect(json).toContain("Timeline");
+    expect(json).toContain("History");
+  });
+
+  it("shows a lifecycle status only in the notification title and simplified history", () => {
+    const report = reportFixture();
+    report.discordStatus = "received";
+    report.timeline[1]!.discordStatus = "received";
+    const json = renderNotification(report, null, "discord:received").toJSON();
+    expect(json.title).toBe("Report received by Discord");
+    expect(json.description).toBeUndefined();
+    expect(json.fields?.some((field) => field.name === "Discord review")).toBe(false);
+    expect(json.fields?.some((field) => field.name === "Progress")).toBe(false);
+  });
+});
+
+describe("lifecycle notification deduplication", () => {
+  it("deduplicates equal Discord states even when the API event IDs differ", () => {
+    const base = {
+      internalReportId: "report-1",
+      submitterDiscordUserId: "1197857362942378017",
+      occurredAt: "2026-07-20T00:00:00.000Z"
+    };
+    expect(notificationEventKey({ ...base, eventId: "41", type: "discord:received" })).toBe(
+      notificationEventKey({ ...base, eventId: "42", type: "discord:received" })
+    );
+    expect(notificationEventKey({ ...base, eventId: "43", type: "discord:actioned" })).not.toBe(
+      notificationEventKey({ ...base, eventId: "42", type: "discord:received" })
+    );
+  });
+
+  it("asks the API to retry events that arrive before report tracking is linked", () => {
+    expect(reportEventIngestionStatus(false)).toBe(409);
+    expect(reportEventIngestionStatus(true)).toBe(202);
   });
 });
 
 describe("report interaction country precedence", () => {
+  it("asks how to interpret a snowflake-shaped profile target before opening the report modal", async () => {
+    const deferReply = vi.fn();
+    const editReply = vi.fn();
+    const showModal = vi.fn();
+    const database = {
+      getAccess: vi.fn().mockResolvedValue({
+        credits: 0,
+        defaultCountry: "DE",
+        suspended: false,
+        suspensionReason: null
+      }),
+      saveDraft: vi.fn().mockResolvedValue("draft-id"),
+      updateDraft: vi.fn()
+    } as unknown as BotDatabase;
+    const resolveProfile = vi.fn().mockResolvedValue({
+      userId: "123456789012345678",
+      username: "example",
+      globalDisplayName: "Example Display",
+      avatarUrl: "https://cdn.discordapp.com/avatar.png",
+      bot: false,
+      resolvedAt: "2026-07-20T00:00:00.000Z"
+    });
+    const profileResolver = {
+      resolve: resolveProfile
+    } as unknown as ProfileResolver;
+    const config = {
+      whitelistEnabled: false,
+      adminUserIds: new Set<string>(),
+      dataEncryptionKey: randomBytes(32)
+    } as unknown as BotConfig;
+    const handler = new InteractionHandler({
+      api: {} as DsaApi,
+      config,
+      countries: ["DE"],
+      database,
+      profileResolver,
+      serverResolver: {} as ServerResolver
+    });
+    const interaction = {
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => true,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => false,
+      isRepliable: () => true,
+      commandName: "report",
+      user: { id: "1197857362942378017" },
+      guild: null,
+      options: {
+        getSubcommand: () => "profile",
+        getString: (name: string) =>
+          name === "target" ? "123456789012345678" : null
+      },
+      deferReply,
+      editReply,
+      showModal,
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    expect(resolveProfile).toHaveBeenCalled();
+    expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(JSON.stringify(editReply.mock.calls[0]?.[0])).toContain("Report This Account");
+    expect(showModal).not.toHaveBeenCalled();
+  });
+
   it("does not create a draft when neither an explicit nor default country exists", async () => {
     const reply = vi.fn();
     const saveDraft = vi.fn();
@@ -358,6 +524,7 @@ describe("report interaction country precedence", () => {
       config,
       countries: ["DE", "FR"],
       database,
+      profileResolver: {} as ProfileResolver,
       serverResolver: {} as ServerResolver
     });
     const interaction = {

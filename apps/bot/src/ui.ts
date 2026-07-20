@@ -38,7 +38,7 @@ const STATUS_LABELS: Record<string, string> = {
   verification_received: "Verification received",
   verifying: "Verifying",
   submitting: "Submitting to Discord",
-  submitted: "Submitted",
+  submitted: "Submitted to Discord",
   failed: "Failed",
   received: "Received by Discord",
   actioned: "Action taken",
@@ -67,19 +67,6 @@ function discordTimestamp(value: string): string {
 function shortId(value: string): string {
   return value.length <= 18 ? value : `${value.slice(0, 8)}…${value.slice(-6)}`;
 }
-
-const EVENT_LABELS: Record<string, string> = {
-  report_created: "Report created",
-  requesting_verification: "Verification requested",
-  verification_requested: "Verification email requested",
-  verification_email_received: "Verification email received",
-  verification_started: "Verification started",
-  submission_started: "Submission started",
-  report_submitted: "Submitted to Discord",
-  discord_status_updated: "Discord review updated",
-  report_failed: "Processing failed",
-  report_retry_requested: "Retry requested"
-};
 
 function labeledElements(flow: ReportFlow, elements: readonly string[]): string[] {
   if (flow === "user_urf") {
@@ -316,12 +303,81 @@ export function buildCountryPicker(
   };
 }
 
+function profileSnapshotText(snapshot: ReportDraft["reportedUserSnapshot"]): string | null {
+  if (!snapshot) return null;
+  return [
+    snapshot.globalDisplayName ? `**${snapshot.globalDisplayName}**` : null,
+    `@${snapshot.username}`,
+    `User ID: \`${snapshot.userId}\``,
+    snapshot.serverDisplayName ? `Server display name: **${snapshot.serverDisplayName}**` : null,
+    snapshot.bot ? "Discord bot account" : null
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+}
+
+export function buildProfileTargetConfirmation(
+  draftId: string,
+  draft: ReportDraft
+): { embeds: EmbedBuilder[]; components: ActionRowBuilder<ButtonBuilder>[] } {
+  if (draft.flow !== "user_urf" || !draft.profileTargetRaw) {
+    throw new Error("Profile target confirmation requires a profile draft.");
+  }
+  const resolved = profileSnapshotText(draft.reportedUserSnapshot);
+  const embed = new EmbedBuilder()
+    .setColor(resolved ? Colors.Blurple : Colors.Orange)
+    .setTitle(resolved ? "What does this value represent?" : "User ID lookup was unsuccessful")
+    .setDescription(
+      resolved
+        ? `\`${draft.profileTargetRaw}\` could be a Discord user ID or a numeric username.`
+        : `Discord could not resolve \`${draft.profileTargetRaw}\`. This may be temporary, or the value may be a numeric username.`
+    )
+    .addFields(
+      resolved
+        ? { name: "Resolved account", value: resolved }
+        : { name: "Original value", value: `\`${draft.profileTargetRaw}\`` }
+    );
+  if (draft.reportedUserSnapshot?.avatarUrl) {
+    embed.setThumbnail(draft.reportedUserSnapshot.avatarUrl);
+  }
+  const buttons = new ActionRowBuilder<ButtonBuilder>();
+  if (resolved) {
+    buttons.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`profile:account:${draftId}`)
+        .setLabel("Report This Account")
+        .setStyle(ButtonStyle.Danger)
+    );
+  }
+  buttons.addComponents(
+    new ButtonBuilder()
+      .setCustomId(`profile:username:${draftId}`)
+      .setLabel("Use as Username")
+      .setStyle(ButtonStyle.Primary)
+  );
+  if (!resolved) {
+    buttons.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`profile:retry:${draftId}`)
+        .setLabel("Try Lookup Again")
+        .setStyle(ButtonStyle.Secondary)
+    );
+  }
+  buttons.addComponents(
+    new ButtonBuilder()
+      .setCustomId(`draft:cancel:${draftId}`)
+      .setLabel("Cancel")
+      .setStyle(ButtonStyle.Secondary)
+  );
+  return { embeds: [embed], components: [buttons] };
+}
+
 function targetSummary(draft: ReportDraft): string {
   switch (draft.flow) {
     case "message_urf":
       return draft.messageUrl ?? "Missing message link";
     case "user_urf":
-      return `${draft.reportedUsername ?? "Missing username"}${
+      return `${profileSnapshotText(draft.reportedUserSnapshot) ?? draft.reportedUsername ?? "Missing username"}${
         draft.reportedUserServerId ? ` in server ${draft.reportedUserServerId}` : ""
       }`;
     case "guild_urf":
@@ -370,6 +426,11 @@ export function buildReview(draftId: string, draft: ReportDraft): {
       }))
     )
     .setFooter({ text: "Review carefully before submitting" });
+  if (draft.flow === "user_urf" && draft.reportedUserSnapshot?.avatarUrl) {
+    embed.setThumbnail(draft.reportedUserSnapshot.avatarUrl);
+  } else if (draft.serverSnapshot?.iconUrl) {
+    embed.setThumbnail(draft.serverSnapshot.iconUrl);
+  }
   const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`draft:submit:${draftId}`)
@@ -413,6 +474,12 @@ export function draftToCreateInput(draft: ReportDraft, userId: string): CreateRe
         ...common,
         flow: draft.flow,
         reportedUsername: draft.reportedUsername,
+        ...(draft.reportedUserId === undefined
+          ? {}
+          : { reportedUserId: draft.reportedUserId }),
+        ...(draft.reportedUserSnapshot === undefined
+          ? {}
+          : { reportedUserSnapshot: draft.reportedUserSnapshot }),
         profileElements: draft.profileElements,
         ...(draft.reportedUserServerId === undefined
           ? {}
@@ -463,7 +530,10 @@ function reportTarget(report: ReportView, snapshot?: ServerSnapshot | null): str
     case "message":
       return report.reportedDetails.messageUrl;
     case "profile":
-      return report.reportedDetails.reportedUsername;
+      return (
+        profileSnapshotText(report.reportedDetails.reportedUserSnapshot) ??
+        report.reportedDetails.reportedUsername
+      );
     case "server":
       return serverSnapshotText(snapshot) ?? report.reportedDetails.guildIdOrInviteCode;
   }
@@ -476,6 +546,9 @@ function reportDetails(report: ReportView, snapshot?: ServerSnapshot | null): st
       details.kind === "profile" && details.reportedUserServerId
         ? `Observed in server: \`${details.reportedUserServerId}\``
         : null,
+      details.kind === "profile" && details.reportedUserSnapshot
+        ? `Name submitted to Discord: \`@${details.reportedUsername}\`\nAccount information captured ${discordTimestamp(details.reportedUserSnapshot.resolvedAt)}`
+        : null,
       details.kind === "server" ? serverSnapshotText(snapshot) : null,
       details.context
     ]
@@ -484,40 +557,102 @@ function reportDetails(report: ReportView, snapshot?: ServerSnapshot | null): st
   );
 }
 
-function reportTimeline(report: ReportView): string {
-  if (report.timeline.length === 0) return "No timeline events recorded.";
-  let previousAttempt: number | null = null;
-  return report.timeline
-    .flatMap((event) => {
-      const label =
-        event.type === "discord_status_updated" && event.discordStatus
-          ? statusLabel(event.discordStatus)
-          : EVENT_LABELS[event.type] ?? statusLabel(event.type);
-      const attemptHeading =
-        event.lifecycleAttempt !== null && event.lifecycleAttempt !== previousAttempt
-          ? [`**Attempt ${event.lifecycleAttempt}**`]
-          : [];
-      previousAttempt = event.lifecycleAttempt;
-      return [
-        ...attemptHeading,
-        `${discordTimestamp(event.occurredAt)} • **${label}**${
-          event.errorCode ? ` • \`${event.errorCode}\`` : ""
-        }`
-      ];
-    })
-    .join("\n");
+type HistoryStage = "created" | "retry" | "submitted" | "received" | "outcome" | "failed";
+
+function historyStage(event: ReportView["timeline"][number]): {
+  key: HistoryStage;
+  label: string;
+  icon: string;
+} | null {
+  if (event.type === "report_created") {
+    return { key: "created", label: "Report created", icon: "✅" };
+  }
+  if (event.type === "report_retry_requested") {
+    return { key: "retry", label: "Retry started", icon: "🔄" };
+  }
+  if (event.type === "report_submitted") {
+    return { key: "submitted", label: "Submitted to Discord", icon: "✅" };
+  }
+  if (event.type === "report_failed") {
+    return { key: "failed", label: "Processing failed", icon: "❌" };
+  }
+  if (event.type !== "discord_status_updated" || !event.discordStatus) return null;
+  switch (event.discordStatus) {
+    case "received":
+      return { key: "received", label: "Received by Discord", icon: "✅" };
+    case "actioned":
+      return { key: "outcome", label: "Discord took action", icon: "✅" };
+    case "closed_no_action":
+      return { key: "outcome", label: "Closed without action", icon: "⚪" };
+    case "review_not_approved":
+      return { key: "outcome", label: "Report not approved", icon: "⚠️" };
+  }
+}
+
+function pendingHistoryStage(report: ReportView): string | null {
+  if (
+    report.status === "failed" ||
+    report.discordStatus === "actioned" ||
+    report.discordStatus === "closed_no_action" ||
+    report.discordStatus === "review_not_approved"
+  ) {
+    return null;
+  }
+  if (report.status !== "submitted") return "⏳ Preparing and submitting report";
+  if (report.discordStatus === null) return "⏳ Waiting for Discord to receive the report";
+  return "⏳ Awaiting Discord's decision";
+}
+
+export function reportHistory(report: ReportView): string {
+  const attempts = new Map<number, Map<HistoryStage, { label: string; icon: string; at: string }>>();
+  for (const event of report.timeline) {
+    const stage = historyStage(event);
+    if (!stage) continue;
+    const attempt = event.lifecycleAttempt ?? 1;
+    const stages =
+      attempts.get(attempt) ??
+      new Map<HistoryStage, { label: string; icon: string; at: string }>();
+    if (!stages.has(stage.key)) {
+      stages.set(stage.key, { label: stage.label, icon: stage.icon, at: event.occurredAt });
+    }
+    attempts.set(attempt, stages);
+  }
+  const attemptNumbers = [...attempts.keys()].sort((left, right) => left - right);
+  if (!attemptNumbers.includes(report.lifecycleAttempt)) {
+    attemptNumbers.push(report.lifecycleAttempt);
+    attemptNumbers.sort((left, right) => left - right);
+  }
+  const showAttemptHeadings = Math.max(report.lifecycleAttempt, ...attemptNumbers) > 1;
+  const order: HistoryStage[] = ["created", "retry", "submitted", "received", "outcome", "failed"];
+  const lines: string[] = [];
+  for (const attempt of attemptNumbers) {
+    const stages = attempts.get(attempt);
+    if (showAttemptHeadings) lines.push(`**Attempt ${attempt}**`);
+    for (const key of order) {
+      const stage = stages?.get(key);
+      if (stage) lines.push(`${stage.icon} ${stage.label} — ${discordTimestamp(stage.at)}`);
+    }
+  }
+  const pending = pendingHistoryStage(report);
+  if (pending) lines.push(pending);
+  return lines.join("\n") || "No report history is available yet.";
+}
+
+export interface ReportEmbedOptions {
+  page?: { current: number; total: number };
+  title?: string;
+  hideStatusDescription?: boolean;
 }
 
 export function reportEmbed(
   report: ReportView,
   snapshot?: ServerSnapshot | null,
-  page?: { current: number; total: number }
+  options: ReportEmbedOptions = {}
 ): EmbedBuilder {
   const currentStatus = report.discordStatus ?? report.status;
   const embed = new EmbedBuilder()
     .setColor(statusColor(report))
-    .setTitle(`${FLOW_LABELS[report.flow]} report`)
-    .setDescription(`**${statusLabel(currentStatus)}**`)
+    .setTitle(options.title ?? `${FLOW_LABELS[report.flow]} report`)
     .addFields(
       { name: "Reported thing", value: truncate(reportTarget(report, snapshot), 1_024) },
       { name: "Report category", value: FLOW_LABELS[report.flow], inline: true },
@@ -527,18 +662,36 @@ export function reportEmbed(
         name: index === 0 ? "Reported details" : `Reported details (${index + 1})`,
         value
       })),
-      { name: "Progress", value: statusLabel(report.status), inline: true },
-      { name: "Discord review", value: statusLabel(report.discordStatus), inline: true },
-      { name: "Report ID", value: `\`${shortId(report.internalReportId)}\``, inline: true },
-      { name: "Discord ID", value: report.discordReportId ? `\`${report.discordReportId}\`` : "Not assigned", inline: true },
-      { name: "Attempt", value: `${report.lifecycleAttempt} of 3`, inline: true },
-      { name: "Created", value: discordTimestamp(report.createdAt), inline: true },
-      { name: "Last updated", value: discordTimestamp(report.updatedAt), inline: true }
+      {
+        name: "References",
+        value: `Report: \`${shortId(report.internalReportId)}\`\nDiscord: ${
+          report.discordReportId ? `\`${report.discordReportId}\`` : "Not assigned"
+        }`,
+        inline: true
+      },
+      {
+        name: "Dates",
+        value: `Created ${discordTimestamp(report.createdAt)}\nUpdated ${discordTimestamp(report.updatedAt)}`,
+        inline: true
+      }
     );
-  for (const [index, value] of splitField(reportTimeline(report)).entries()) {
-    embed.addFields({ name: index === 0 ? "Timeline" : `Timeline (${index + 1})`, value });
+  if (!options.hideStatusDescription) embed.setDescription(`**${statusLabel(currentStatus)}**`);
+  if (report.lifecycleAttempt > 1 || report.retryable) {
+    embed.addFields({
+      name: "Retry",
+      value: `Attempt **${report.lifecycleAttempt} of 3**${
+        report.retryable ? " • Another retry is available" : ""
+      }`
+    });
   }
-  if (snapshot?.iconUrl) embed.setThumbnail(snapshot.iconUrl);
+  for (const [index, value] of splitField(reportHistory(report)).entries()) {
+    embed.addFields({ name: index === 0 ? "History" : `History (${index + 1})`, value });
+  }
+  const profileAvatar =
+    report.reportedDetails.kind === "profile"
+      ? report.reportedDetails.reportedUserSnapshot?.avatarUrl
+      : null;
+  if (profileAvatar ?? snapshot?.iconUrl) embed.setThumbnail(profileAvatar ?? snapshot!.iconUrl!);
   if (report.error) {
     embed.addFields({
       name: "Latest error",
@@ -546,8 +699,8 @@ export function reportEmbed(
     });
   }
   embed.setFooter({
-    text: page
-      ? `Report ${page.current} of ${page.total} • Full ID: ${report.internalReportId}`
+    text: options.page
+      ? `Report ${options.page.current} of ${options.page.total} • Full ID: ${report.internalReportId}`
       : `Full ID: ${report.internalReportId}`
   });
   return embed;
@@ -565,7 +718,7 @@ export function reportBrowser(
     new ButtonBuilder().setCustomId(`reports:page:${safePage + 1}`).setLabel("Next").setStyle(ButtonStyle.Primary).setDisabled(safePage === total - 1)
   );
   return {
-    embeds: [reportEmbed(report, snapshot, { current: safePage + 1, total })],
+    embeds: [reportEmbed(report, snapshot, { page: { current: safePage + 1, total } })],
     components: total > 1 ? [controls] : []
   };
 }

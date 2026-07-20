@@ -24,7 +24,7 @@ registration script requires only `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_I
 
 ```text
 /report message message-link [country]
-/report profile username [server-id] [country]
+/report profile target [server-id] [country]
 /report server [server-or-invite] [country]
 /reports list
 /reports status report-id
@@ -47,6 +47,8 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
 2. Use the searchable command country, then the saved country. If neither exists, ask the
    user to rerun with a country and do not create a draft.
 3. Collect the flow-specific reason, elements, target, and context.
+   Profile targets accept a username, display name, user ID, or mention. Snowflake-shaped
+   values are resolved first and require an ephemeral account-versus-username confirmation.
 4. Encrypt the draft at rest with a 30-minute expiry.
 5. Show a final review with submit, edit, country, and cancel controls.
 6. Atomically reserve one credit and create the API report with the interaction ID.
@@ -58,8 +60,9 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
     for submission, failure, received, actioned, closed, or rejected review.
 
 Report cards include the target, category, full country name and flag, human reason plus
-selected elements, reported details, IDs, and the complete chronological timeline. Server
-metadata is resolved best-effort and cached. DMs include full report details but omit the
+selected elements, reported details, references, and a simplified milestone history. The API
+retains the complete technical timeline. Server metadata and ID-backed profile metadata are
+resolved best-effort and captured at submission time. DMs include full report details but omit the
 generated reporter identity and email. A Discord 50007 response permanently disables DM
 attempts for that tracked report; `/reports` remains available.
 

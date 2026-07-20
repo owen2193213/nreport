@@ -32,8 +32,10 @@ export function renderNotification(
     "discord:closed_no_action": "Discord closed the report without action",
     "discord:review_not_approved": "Discord did not approve the report"
   };
-  return reportEmbed(report, snapshot)
-    .setTitle((eventType && titles[eventType]) ?? "Discord DSA report update")
+  return reportEmbed(report, snapshot, {
+    title: (eventType && titles[eventType]) ?? "Discord DSA report update",
+    hideStatusDescription: true
+  })
     .setTimestamp(new Date(report.discordStatusUpdatedAt ?? report.updatedAt));
 }
 

@@ -1,6 +1,7 @@
 import type { ReportDraft } from "@discord-dsa/client";
 import type {
   GuildElement,
+  ReportedUserSnapshot,
   ReportFlow,
   UserProfileElement
 } from "@discord-dsa/contracts";
@@ -32,6 +33,8 @@ interface BaseCreateReportInput {
 export interface UserCreateReportInput extends BaseCreateReportInput {
   flow: "user_urf";
   reportedUsername: string;
+  reportedUserId?: string;
+  reportedUserSnapshot?: ReportedUserSnapshot;
   reportedUserServerId?: string;
   profileElements: UserProfileElement[];
 }
@@ -105,6 +108,43 @@ function stringArray<T extends string>(
   return [...unique];
 }
 
+function optionalReportedUserSnapshot(
+  input: Record<string, unknown>
+): ReportedUserSnapshot | undefined {
+  if (input.reportedUserSnapshot === undefined) return undefined;
+  const value = record(input.reportedUserSnapshot);
+  const userId = requiredString(value, "userId", 22);
+  const username = requiredString(value, "username", 100);
+  if (!/^\d{15,22}$/.test(userId)) {
+    throw new Error("reportedUserSnapshot.userId must be a Discord snowflake.");
+  }
+  const globalNameValue = value.globalDisplayName;
+  const globalDisplayName =
+    globalNameValue === null ? null : requiredString(value, "globalDisplayName", 100);
+  const serverDisplayName = optionalString(value, "serverDisplayName", 100);
+  const avatarValue = value.avatarUrl;
+  const avatarUrl = avatarValue === null ? null : requiredString(value, "avatarUrl", 500);
+  if (avatarUrl !== null && !/^https:\/\//i.test(avatarUrl)) {
+    throw new Error("reportedUserSnapshot.avatarUrl must be an HTTPS URL.");
+  }
+  if (typeof value.bot !== "boolean") {
+    throw new Error("reportedUserSnapshot.bot must be a boolean.");
+  }
+  const resolvedAt = requiredString(value, "resolvedAt", 100);
+  if (!Number.isFinite(new Date(resolvedAt).getTime())) {
+    throw new Error("reportedUserSnapshot.resolvedAt must be an ISO-8601 timestamp.");
+  }
+  return {
+    userId,
+    username,
+    globalDisplayName,
+    ...(serverDisplayName === undefined ? {} : { serverDisplayName }),
+    avatarUrl,
+    bot: value.bot,
+    resolvedAt
+  };
+}
+
 function rejectIdentityFields(input: Record<string, unknown>): void {
   for (const key of ["name", "legalName", "email", "reporterLegalName", "reporterEmail"]) {
     if (key in input) {
@@ -152,6 +192,14 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
   }
   if (flow === "user_urf") {
     const reportedUsername = requiredString(input, "reportedUsername", 100);
+    const reportedUserId = optionalString(input, "reportedUserId", 22);
+    if (reportedUserId !== undefined && !/^\d{15,22}$/.test(reportedUserId)) {
+      throw new Error("reportedUserId must be a Discord snowflake.");
+    }
+    const reportedUserSnapshot = optionalReportedUserSnapshot(input);
+    if (reportedUserSnapshot !== undefined && reportedUserSnapshot.userId !== reportedUserId) {
+      throw new Error("reportedUserSnapshot.userId must match reportedUserId.");
+    }
     const reportedUserServerId = optionalString(input, "reportedUserServerId", 32);
     if (reportedUserServerId !== undefined && !/^\d{15,22}$/.test(reportedUserServerId)) {
       throw new Error("reportedUserServerId must be a Discord snowflake.");
@@ -160,6 +208,8 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
       ...base,
       flow,
       reportedUsername,
+      ...(reportedUserId === undefined ? {} : { reportedUserId }),
+      ...(reportedUserSnapshot === undefined ? {} : { reportedUserSnapshot }),
       ...(reportedUserServerId === undefined ? {} : { reportedUserServerId }),
       profileElements: stringArray(input, "profileElements", PROFILE_ELEMENTS)
     };

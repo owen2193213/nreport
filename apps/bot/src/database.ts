@@ -180,6 +180,12 @@ export interface NotificationJob extends QueryResultRow {
   attempts: number;
 }
 
+export function notificationEventKey(event: ReportLifecycleEvent): string {
+  return event.type.startsWith("discord:")
+    ? `lifecycle:${event.type}`
+    : `api:${event.eventId}`;
+}
+
 export class AccessError extends Error {
   public constructor(public readonly code: string, message: string) {
     super(message);
@@ -781,7 +787,7 @@ export class BotDatabase {
              (tracking_id, discord_user_id, event_key, payload)
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (tracking_id, event_key) DO NOTHING`,
-          [tracking.id, tracking.discord_user_id, `api:${event.eventId}`, payload]
+          [tracking.id, tracking.discord_user_id, notificationEventKey(event), payload]
         );
       }
       await client.query("COMMIT");

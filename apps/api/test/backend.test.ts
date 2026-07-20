@@ -16,6 +16,7 @@ import {
   VERIFICATION_EMAIL_RESEND_DELAYS_SECONDS,
   VERIFICATION_EMAIL_TIMEOUT_SECONDS
 } from "../src/database.js";
+import { inspectNetworkCause } from "../src/job-runner.js";
 import {
   buildAcceptLanguage,
   generateEmailAlias,
@@ -36,6 +37,37 @@ import {
 } from "../src/validation.js";
 
 describe("backend identity and validation", () => {
+  it("extracts only safe diagnostics from a wrapped Discord network failure", () => {
+    const lowLevel = Object.assign(new Error("proxy credentials must stay private"), {
+      code: "UND_ERR_CONNECT_TIMEOUT",
+      syscall: "connect",
+      hostname: "secret-proxy.example",
+      proxyUrl: "http://user:password@secret-proxy.example"
+    });
+    const wrapper = new Error("request failed", { cause: lowLevel });
+
+    expect(inspectNetworkCause(wrapper)).toEqual({
+      name: "Error",
+      code: "UND_ERR_CONNECT_TIMEOUT",
+      syscall: "connect",
+      depth: 1
+    });
+    expect(JSON.stringify(inspectNetworkCause(wrapper))).not.toContain("secret");
+    expect(JSON.stringify(inspectNetworkCause(wrapper))).not.toContain("password");
+  });
+
+  it("bounds malformed and cyclic network cause chains", () => {
+    const cyclic = Object.assign(new Error("cyclic"), { code: 500 });
+    cyclic.cause = cyclic;
+
+    expect(inspectNetworkCause(cyclic)).toEqual({
+      name: "Error",
+      code: "500",
+      depth: 0
+    });
+    expect(inspectNetworkCause("not an error")).toBeUndefined();
+  });
+
   it("keeps Discord's form language independent from the country locale", () => {
     const identity = generateIdentity("DE", "reports.example.org");
 

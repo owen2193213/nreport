@@ -29,11 +29,79 @@ class SessionNotReadyError extends Error {
   }
 }
 
-function redactedError(error: unknown): { code: string; message: string; retryAfter?: number } {
+interface NetworkCauseDiagnostic {
+  name: string;
+  code?: string;
+  syscall?: string;
+  depth: number;
+}
+
+interface RedactedError {
+  code: string;
+  message: string;
+  retryAfter?: number;
+  networkCause?: NetworkCauseDiagnostic;
+}
+
+function safeDiagnosticValue(
+  value: unknown,
+  pattern: RegExp,
+  maximumLength: number
+): string | undefined {
+  if (typeof value !== "string" && typeof value !== "number") return undefined;
+  const normalized = String(value).slice(0, maximumLength);
+  return pattern.test(normalized) ? normalized : undefined;
+}
+
+function safeProperty(value: object, property: string): unknown {
+  try {
+    return (value as Record<string, unknown>)[property];
+  } catch {
+    return undefined;
+  }
+}
+
+export function inspectNetworkCause(error: unknown): NetworkCauseDiagnostic | undefined {
+  const visited = new Set<object>();
+  let current = error;
+  let fallback: NetworkCauseDiagnostic | undefined;
+  for (let depth = 0; depth < 6 && typeof current === "object" && current !== null; depth += 1) {
+    if (visited.has(current)) break;
+    visited.add(current);
+
+    const name =
+      safeDiagnosticValue(safeProperty(current, "name"), /^[A-Za-z][A-Za-z0-9_.-]*$/, 80) ??
+      "Error";
+    const code = safeDiagnosticValue(
+      safeProperty(current, "code"),
+      /^[A-Za-z0-9_.-]+$/,
+      80
+    );
+    const syscall = safeDiagnosticValue(
+      safeProperty(current, "syscall"),
+      /^[A-Za-z0-9_.-]+$/,
+      40
+    );
+    const diagnostic = {
+      name,
+      ...(code === undefined ? {} : { code }),
+      ...(syscall === undefined ? {} : { syscall }),
+      depth
+    };
+    fallback ??= diagnostic;
+    if (code !== undefined || syscall !== undefined) return diagnostic;
+    current = safeProperty(current, "cause");
+  }
+  return fallback;
+}
+
+function redactedError(error: unknown): RedactedError {
   if (error instanceof DiscordDsaNetworkError) {
+    const networkCause = inspectNetworkCause(error);
     return {
       code: "discord_network_error",
-      message: "Temporary connection to Discord failed. Please retry this report."
+      message: "Temporary connection to Discord failed. Please retry this report.",
+      ...(networkCause === undefined ? {} : { networkCause })
     };
   }
   if (error instanceof DiscordDsaHttpError) {
@@ -161,6 +229,7 @@ export class JobRunner {
             resendNumber: job.payload.resendNumber,
             errorCode: redacted.code,
             errorMessage: redacted.message,
+            networkCause: redacted.networkCause,
             durationMs: Date.now() - startedAt,
             event: "verification_resend_failed"
           },
@@ -185,6 +254,7 @@ export class JobRunner {
             jobKind: job.kind,
             errorCode: redacted.code,
             errorMessage: redacted.message,
+            networkCause: redacted.networkCause,
             delaySeconds,
             durationMs: Date.now() - startedAt
           },
@@ -201,6 +271,7 @@ export class JobRunner {
           jobKind: job.kind,
           errorCode: redacted.code,
           errorMessage: redacted.message,
+          networkCause: redacted.networkCause,
           durationMs: Date.now() - startedAt
         },
         "Report job failed"
@@ -249,6 +320,7 @@ export class JobRunner {
           stage,
           errorCode: redacted.code,
           errorMessage: redacted.message,
+          networkCause: redacted.networkCause,
           durationMs: Date.now() - startedAt
         },
         "Report job stage failed"

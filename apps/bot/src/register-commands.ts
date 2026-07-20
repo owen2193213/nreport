@@ -1,13 +1,17 @@
-import { REST, Routes } from "discord.js";
+import { registerGlobalCommands } from "./command-registration.js";
 
-import { COMMANDS } from "./commands.js";
-import { loadBotConfig } from "./config.js";
+function required(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is required.`);
+  return value;
+}
 
 async function main(): Promise<void> {
-  const config = loadBotConfig();
-  const rest = new REST({ version: "10" }).setToken(config.token);
-  await rest.put(Routes.applicationCommands(config.applicationId), { body: COMMANDS });
-  process.stdout.write(`Registered ${COMMANDS.length} global commands.\n`);
+  const count = await registerGlobalCommands({
+    applicationId: required("DISCORD_APPLICATION_ID"),
+    token: required("DISCORD_BOT_TOKEN")
+  });
+  process.stdout.write(`Registered ${count} global commands.\n`);
 }
 
 main().catch((error: unknown) => {

@@ -89,8 +89,9 @@ application creates or updates its database schema idempotently during startup.
 
 Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. The bot
 uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
-report drafts, and calls the API through `DSA_API_BASE_URL`. Register global commands once
-with:
+report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
+the global commands automatically. To synchronize them manually, set only the Discord token
+and application ID and run:
 
 ```powershell
 npm.cmd run register -w @discord-dsa/bot

@@ -3,10 +3,13 @@ import { randomBytes } from "node:crypto";
 import {
   ApplicationCommandType,
   ApplicationIntegrationType,
-  InteractionContextType
+  InteractionContextType,
+  Routes
 } from "discord.js";
-import { describe, expect, it } from "vitest";
+import type { REST } from "discord.js";
+import { describe, expect, it, vi } from "vitest";
 
+import { registerGlobalCommands } from "../src/command-registration.js";
 import { COMMANDS } from "../src/commands.js";
 import {
   decryptJson,
@@ -23,6 +26,21 @@ import {
 } from "../src/ui.js";
 
 describe("Discord command registration", () => {
+  it("synchronizes the complete global command set", async () => {
+    const put = vi.fn().mockResolvedValue([]);
+    const count = await registerGlobalCommands({
+      applicationId: "123456789012345678",
+      rest: { put } as unknown as REST,
+      token: "test-token"
+    });
+
+    expect(count).toBe(COMMANDS.length);
+    expect(put).toHaveBeenCalledWith(
+      Routes.applicationCommands("123456789012345678"),
+      { body: COMMANDS }
+    );
+  });
+
   it("registers user-installed commands in every requested interaction context", () => {
     expect(COMMANDS).toHaveLength(6);
     for (const command of COMMANDS) {

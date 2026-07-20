@@ -18,6 +18,10 @@ idempotency reconciliation records, notification cursors, and a durable DM outbo
 All commands are global and use `USER_INSTALL` only. They support guild channels, the
 app's bot DM, ordinary DMs, and group DMs:
 
+When `NODE_ENV=production`, bot startup synchronizes this complete command set through
+Discord's bulk global-command endpoint before connecting to the Gateway. The standalone
+registration script requires only `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_ID`.
+
 ```text
 /report message [message-link]
 /report profile username [server-id]

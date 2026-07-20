@@ -1,6 +1,7 @@
 import { DsaApi } from "@discord-dsa/contracts";
 import { Client, Events, GatewayIntentBits } from "discord.js";
 
+import { registerGlobalCommands } from "./command-registration.js";
 import { loadBotConfig } from "./config.js";
 import { BotDatabase } from "./database.js";
 import { HealthServer } from "./health.js";
@@ -9,6 +10,13 @@ import { NotificationWorker } from "./notifier.js";
 
 async function main(): Promise<void> {
   const config = loadBotConfig();
+  if (config.environment === "production") {
+    const count = await registerGlobalCommands({
+      applicationId: config.applicationId,
+      token: config.token
+    });
+    process.stdout.write(`Synchronized ${count} global Discord commands.\n`);
+  }
   const database = new BotDatabase(config.databaseUrl);
   await database.migrate();
   const api = new DsaApi({ baseUrl: config.apiBaseUrl, apiKey: config.apiKey });

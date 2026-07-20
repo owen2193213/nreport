@@ -14,7 +14,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AppConfig } from "./config.js";
 import { IdempotencyConflictError, ReportRetryError } from "./database.js";
 import type { Database, ReportEventRow, ReportRow } from "./database.js";
-import { parseDiscordEmail } from "./email.js";
+import { inspectDiscordEmail } from "./email.js";
 import {
   createProxySessionId,
   generateIdentity,
@@ -409,15 +409,20 @@ export async function buildServer(config: AppConfig, database: Database) {
         );
         return reply.code(401).send({ error: { code: "invalid_signature" } });
       }
-      const parsed = await parseDiscordEmail(rawEmail);
+      const inspection = await inspectDiscordEmail(rawEmail);
       const messageIdDigest = sha256Hex(messageId).slice(0, 16);
-      if (!parsed) {
+      if (inspection.kind === "ignored") {
         request.log.info(
-          { event: "inbound_email_ignored", messageIdDigest },
+          {
+            event: "inbound_email_ignored",
+            messageIdDigest,
+            ...inspection.diagnostic
+          },
           "Inbound email ignored"
         );
         return reply.code(202).send({ status: "ignored" });
       }
+      const parsed = inspection.email;
       const result =
         parsed.kind === "verification"
           ? await database.registerVerificationEmail({

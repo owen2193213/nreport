@@ -7,6 +7,7 @@ import { BotDatabase } from "./database.js";
 import { HealthServer } from "./health.js";
 import { InteractionHandler } from "./interactions.js";
 import { NotificationWorker } from "./notifier.js";
+import { BOT_PRESENCE } from "./presence.js";
 import { ProfileResolver } from "./profile-resolver.js";
 import { ServerResolver } from "./server-resolver.js";
 
@@ -29,7 +30,8 @@ async function main(): Promise<void> {
   const api = new DsaApi({ baseUrl: config.apiBaseUrl, apiKey: config.apiKey });
   const { countries } = await api.countries();
   const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages]
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
+    presence: BOT_PRESENCE
   });
   const serverResolver = new ServerResolver(client);
   const profileResolver = new ProfileResolver(client);

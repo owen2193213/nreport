@@ -207,6 +207,9 @@ uses the same operation. Both surfaces update to the successor's new report card
   using the same one-way message-ID digest recorded by the API.
 - Inbound-email correlation records the parsed email kind, database result, correlated report ID
   when available, and a one-way message-ID digest. It does not record recipient or email content.
+- Ignored inbound email records a stable failure classification, sender addresses, sanitized
+  subject, and a sanitized 500-character text preview. Email addresses and verification-code
+  candidates are redacted, and raw MIME or HTML is never logged.
 - Job stage records include duration so an operator can distinguish email delay, Discord network
   delay, and bot polling delay.
 

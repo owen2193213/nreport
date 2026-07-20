@@ -782,6 +782,13 @@ These rules are mandatory because all bot instances share one backend API key:
 - The backend worker must remain enabled with `WORKER_ENABLED=true`.
 - Cloudflare must route the report domain catch-all to the email worker.
 - A successful verification email is matched using the exact SMTP envelope recipient.
+- Verification codes are extracted first from Discord's exact English subject form and only then
+  from the same verification phrase in the plain-text body. Codes may be letter-only or
+  alphanumeric; broad six-character scanning is intentionally forbidden because ordinary words
+  and HTML color values are unsafe matches.
+- Ignored-email logs classify unmatched Discord verification/lifecycle subjects and include only
+  a bounded, sanitized subject and text preview. Generated email addresses and code candidates are
+  redacted; raw MIME and HTML are not logged.
 - Multiple reports can wait concurrently because every generated address is unique.
 - Inbound email can win the race with initial session persistence; saving the session preserves an
   already-recorded `verification_received` state so the report never moves backwards.

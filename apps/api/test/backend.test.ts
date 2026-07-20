@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   extractVerificationCode,
+  inspectDiscordEmail,
   parseDiscordEmail
 } from "../src/email.js";
 import {
@@ -280,11 +281,63 @@ describe("backend secrets and inbound email", () => {
     await expect(extractVerificationCode(raw)).resolves.toBe("ZX7KMH");
   });
 
+  it("extracts a letter-only Discord verification key from the exact subject", async () => {
+    const raw = Buffer.from(
+      "From: Discord <noreply@discord.com>\r\n" +
+        "Subject: Your one-time verification key is STLGSY\r\n" +
+        "Content-Type: text/plain\r\n\r\nYour verification key is STLGSY."
+    );
+    await expect(extractVerificationCode(raw)).resolves.toBe("STLGSY");
+  });
+
+  it("uses a contextual body phrase when the subject has no code", async () => {
+    const raw = Buffer.from(
+      "From: Discord <noreply@discord.com>\r\n" +
+        "Subject: Verify your report\r\n" +
+        "Content-Type: text/plain\r\n\r\nYour verification code is ab12cd."
+    );
+    await expect(extractVerificationCode(raw)).resolves.toBe("AB12CD");
+  });
+
   it("does not treat ordinary six-letter words as verification codes", async () => {
     const raw = Buffer.from(
       "Subject: Please verify\r\nContent-Type: text/plain\r\n\r\nFollow normal instructions."
     );
     await expect(extractVerificationCode(raw)).resolves.toBeUndefined();
+  });
+
+  it("classifies and sanitizes an unmatched Discord lifecycle email", async () => {
+    const raw = Buffer.from(
+      "From: Discord <noreply@discord.com>\r\n" +
+        "Subject: Discord report received: #1527695430949798110\r\n" +
+        "Content-Type: text/plain\r\n\r\n" +
+        "Reference ABC123 was sent to reporter@example.org."
+    );
+    await expect(inspectDiscordEmail(raw)).resolves.toEqual({
+      kind: "ignored",
+      diagnostic: {
+        classification: "discord_lifecycle_subject_unmatched",
+        senderAddresses: ["noreply@discord.com"],
+        subject: "Discord report received: #1527695430949798110",
+        textPreview: "Reference [redacted-code] was sent to [redacted-email]."
+      }
+    });
+  });
+
+  it("classifies a non-Discord sender without exposing body email addresses", async () => {
+    const raw = Buffer.from(
+      "From: Example <alerts@example.org>\r\n" +
+        "Subject: Verify your report\r\n" +
+        "Content-Type: text/plain\r\n\r\nContact private@example.org."
+    );
+    await expect(inspectDiscordEmail(raw)).resolves.toMatchObject({
+      kind: "ignored",
+      diagnostic: {
+        classification: "non_discord_sender",
+        senderAddresses: ["alerts@example.org"],
+        textPreview: "Contact [redacted-email]."
+      }
+    });
   });
 
   it.each([

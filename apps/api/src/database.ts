@@ -55,6 +55,19 @@ export interface JobRow extends QueryResultRow {
   max_attempts: number;
 }
 
+export interface ReportEventRow extends QueryResultRow {
+  id: string;
+  report_id: string;
+  event_type: string;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+}
+
+export interface DeliveryEventRow extends ReportEventRow {
+  submitter_discord_user_id: string;
+  delivery_attempts: number;
+}
+
 export interface CreateReportRecord {
   id: string;
   idempotencyKey: string;
@@ -178,6 +191,20 @@ CREATE TABLE IF NOT EXISTS report_retry_requests (
   PRIMARY KEY (report_id, idempotency_key)
 );
 
+CREATE TABLE IF NOT EXISTS report_delivery_outbox (
+  event_id bigint PRIMARY KEY REFERENCES report_events(id) ON DELETE CASCADE,
+  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'sending', 'sent')),
+  attempts integer NOT NULL DEFAULT 0,
+  run_at timestamptz NOT NULL DEFAULT now(),
+  locked_at timestamptz,
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS report_delivery_outbox_claim_idx
+  ON report_delivery_outbox(state, run_at, locked_at);
+
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status text;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status_updated_at timestamptz;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS locale text NOT NULL DEFAULT 'en-US';
@@ -271,11 +298,29 @@ export class Database {
     reportId: string,
     eventType: string,
     metadata: Record<string, unknown> = {}
-  ): Promise<void> {
-    await client.query(
-      "INSERT INTO report_events (report_id, event_type, metadata) VALUES ($1, $2, $3)",
+  ): Promise<ReportEventRow> {
+    const result = await client.query<ReportEventRow>(
+      `INSERT INTO report_events (report_id, event_type, metadata)
+       VALUES ($1, $2, $3) RETURNING *`,
       [reportId, eventType, metadata]
     );
+    const event = result.rows[0];
+    if (!event) throw new Error("Report event insert returned no row.");
+    if (
+      eventType === "report_submitted" ||
+      eventType === "report_failed" ||
+      eventType === "discord_status_updated"
+    ) {
+      await client.query(
+        `INSERT INTO report_delivery_outbox (event_id)
+         SELECT $1 WHERE EXISTS (
+           SELECT 1 FROM reports
+           WHERE id = $2 AND submitter_discord_user_id IS NOT NULL
+         ) ON CONFLICT (event_id) DO NOTHING`,
+        [event.id, reportId]
+      );
+    }
+    return event;
   }
 
   public async createReport(record: CreateReportRecord): Promise<CreateReportResult> {
@@ -340,6 +385,86 @@ export class Database {
   public async getReport(id: string): Promise<ReportRow | undefined> {
     const result = await this.pool.query<ReportRow>("SELECT * FROM reports WHERE id = $1", [id]);
     return result.rows[0];
+  }
+
+  public async getReportEvents(reportId: string): Promise<ReportEventRow[]> {
+    const result = await this.pool.query<ReportEventRow>(
+      "SELECT * FROM report_events WHERE report_id = $1 ORDER BY id ASC",
+      [reportId]
+    );
+    return result.rows;
+  }
+
+  public async listLifecycleEvents(afterEventId: string, limit: number): Promise<DeliveryEventRow[]> {
+    const result = await this.pool.query<DeliveryEventRow>(
+      `SELECT events.*, reports.submitter_discord_user_id, outbox.attempts AS delivery_attempts
+       FROM report_events AS events
+       JOIN reports ON reports.id = events.report_id
+       JOIN report_delivery_outbox AS outbox ON outbox.event_id = events.id
+       WHERE events.id > $1 AND reports.submitter_discord_user_id IS NOT NULL
+       ORDER BY events.id ASC LIMIT $2`,
+      [afterEventId, Math.min(Math.max(limit, 1), 100)]
+    );
+    return result.rows;
+  }
+
+  public async claimDeliveryEvents(limit = 20): Promise<DeliveryEventRow[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<DeliveryEventRow>(
+        `SELECT events.*, reports.submitter_discord_user_id, outbox.attempts AS delivery_attempts
+         FROM report_delivery_outbox AS outbox
+         JOIN report_events AS events ON events.id = outbox.event_id
+         JOIN reports ON reports.id = events.report_id
+         WHERE outbox.state IN ('pending', 'sending') AND outbox.run_at <= now()
+           AND (outbox.locked_at IS NULL OR outbox.locked_at < now() - interval '5 minutes')
+           AND reports.submitter_discord_user_id IS NOT NULL
+         ORDER BY outbox.run_at, outbox.event_id
+         FOR UPDATE OF outbox SKIP LOCKED LIMIT $1`,
+        [Math.min(Math.max(limit, 1), 100)]
+      );
+      if (result.rows.length > 0) {
+        await client.query(
+          `UPDATE report_delivery_outbox SET state = 'sending', locked_at = now(),
+             attempts = attempts + 1, updated_at = now()
+           WHERE event_id = ANY($1::bigint[])`,
+          [result.rows.map((row) => row.id)]
+        );
+      }
+      await client.query("COMMIT");
+      return result.rows.map((row) => ({
+        ...row,
+        delivery_attempts: row.delivery_attempts + 1
+      }));
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async completeDeliveryEvent(eventId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE report_delivery_outbox SET state = 'sent', locked_at = NULL,
+         last_error = NULL, updated_at = now() WHERE event_id = $1`,
+      [eventId]
+    );
+  }
+
+  public async retryDeliveryEvent(
+    eventId: string,
+    attempts: number,
+    message: string
+  ): Promise<void> {
+    const delaySeconds = Math.min(15 * 2 ** Math.max(attempts - 1, 0), 900);
+    await this.pool.query(
+      `UPDATE report_delivery_outbox SET state = 'pending', locked_at = NULL,
+         run_at = now() + ($2 * interval '1 second'), last_error = $3,
+         updated_at = now() WHERE event_id = $1`,
+      [eventId, delaySeconds, message.slice(0, 500)]
+    );
   }
 
   public async listReportsBySubmitter(discordUserId: string): Promise<ReportRow[]> {

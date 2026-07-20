@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { ReportView } from "@discord-dsa/contracts";
+import type { ReportLifecycleEvent, ReportView } from "@discord-dsa/contracts";
 import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
 
@@ -8,7 +8,8 @@ import type {
   AccessView,
   NotificationPayload,
   PollingTracking,
-  SubmissionTracking
+  SubmissionTracking,
+  ServerSnapshot
 } from "./types.js";
 
 const SCHEMA_SQL = `
@@ -107,8 +108,24 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
   UNIQUE (tracking_id, event_key)
 );
 
+CREATE TABLE IF NOT EXISTS api_event_inbox (
+  event_id bigint PRIMARY KEY,
+  internal_report_id text NOT NULL,
+  discord_user_id text NOT NULL,
+  event_type text NOT NULL,
+  occurred_at timestamptz NOT NULL,
+  received_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS bot_state (
+  key text PRIMARY KEY,
+  value text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS access_keys_status_idx ON access_keys(status, created_at DESC);
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS draft_id uuid;
+ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS server_snapshot jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS report_tracking_draft_idx
   ON report_tracking(draft_id) WHERE draft_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS report_drafts_expiry_idx ON report_drafts(expires_at);
@@ -137,6 +154,7 @@ export interface TrackingRow extends QueryResultRow {
   encrypted_request: string;
   last_status: PollingTracking["lastStatus"];
   last_discord_status: PollingTracking["lastDiscordStatus"];
+  server_snapshot: ServerSnapshot | null;
 }
 
 export interface AccessKeyView extends QueryResultRow {
@@ -480,6 +498,7 @@ export class BotDatabase {
     country: string;
     reportType: string;
     encryptedRequest: string;
+    serverSnapshot?: ServerSnapshot;
     adminBypass: boolean;
   }): Promise<{
     id: string;
@@ -534,8 +553,8 @@ export class BotDatabase {
       await client.query(
         `INSERT INTO report_tracking
            (id, draft_id, discord_user_id, interaction_id, idempotency_key, flow, country,
-            report_type, encrypted_request, credit_state, poll_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            report_type, encrypted_request, credit_state, server_snapshot, poll_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
            now() + interval '1 minute')`,
         [
           id,
@@ -547,7 +566,8 @@ export class BotDatabase {
           input.country,
           input.reportType,
           input.encryptedRequest,
-          creditState
+          creditState,
+          input.serverSnapshot ?? null
         ]
       );
       await client.query("COMMIT");
@@ -676,16 +696,6 @@ export class BotDatabase {
       const tracking = result.rows[0];
       if (!tracking) throw new Error("Tracked report was not found.");
 
-      const events: string[] = [];
-      if (report.status === "submitted" && tracking.last_status !== "submitted") {
-        events.push("submitted");
-      }
-      if (report.status === "failed" && tracking.last_status !== "failed") {
-        events.push("failed");
-      }
-      if (report.discordStatus !== null && report.discordStatus !== tracking.last_discord_status) {
-        events.push(`discord:${report.discordStatus}`);
-      }
       const terminal =
         report.status === "failed" ||
         report.discordStatus === "actioned" ||
@@ -694,31 +704,11 @@ export class BotDatabase {
       await client.query(
         `UPDATE report_tracking SET internal_report_id = $2, last_status = $3,
            last_discord_status = $4, poll_at = CASE WHEN $5 THEN NULL
-             WHEN $3 = 'submitted' THEN now() + interval '5 minutes'
+             WHEN $3 = 'submitted' THEN NULL
              ELSE now() + interval '30 seconds' END,
            locked_at = NULL, updated_at = now() WHERE id = $1`,
         [trackingId, report.internalReportId, report.status, report.discordStatus, terminal]
       );
-      const payload: NotificationPayload = {
-        country: report.country,
-        discordReportId: report.discordReportId,
-        discordStatus: report.discordStatus,
-        flow: report.flow,
-        internalReportId: report.internalReportId,
-        lifecycleAttempt: report.lifecycleAttempt,
-        reportType: report.reportType,
-        retryable: report.retryable,
-        status: report.status,
-        timestamp: report.discordStatusUpdatedAt ?? report.updatedAt
-      };
-      for (const event of events) {
-        await client.query(
-          `INSERT INTO notification_outbox
-             (tracking_id, discord_user_id, event_key, payload)
-           VALUES ($1, $2, $3, $4) ON CONFLICT (tracking_id, event_key) DO NOTHING`,
-          [trackingId, tracking.discord_user_id, event, payload]
-        );
-      }
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -726,6 +716,97 @@ export class BotDatabase {
     } finally {
       client.release();
     }
+  }
+
+  public async serverSnapshot(
+    internalReportId: string,
+    userId: string
+  ): Promise<ServerSnapshot | null> {
+    const result = await this.pool.query<TrackingRow>(
+      `SELECT * FROM report_tracking
+       WHERE internal_report_id = $1 AND discord_user_id = $2`,
+      [internalReportId, userId]
+    );
+    return result.rows[0]?.server_snapshot ?? null;
+  }
+
+  public async saveServerSnapshot(
+    internalReportId: string,
+    userId: string,
+    snapshot: ServerSnapshot
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE report_tracking SET server_snapshot = $3, updated_at = now()
+       WHERE internal_report_id = $1 AND discord_user_id = $2`,
+      [internalReportId, userId, snapshot]
+    );
+  }
+
+  public async ingestLifecycleEvent(event: ReportLifecycleEvent): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const trackingResult = await client.query<TrackingRow>(
+        `SELECT * FROM report_tracking
+         WHERE internal_report_id = $1 AND discord_user_id = $2 FOR UPDATE`,
+        [event.internalReportId, event.submitterDiscordUserId]
+      );
+      const tracking = trackingResult.rows[0];
+      if (!tracking) {
+        await client.query("COMMIT");
+        return false;
+      }
+      const inserted = await client.query(
+        `INSERT INTO api_event_inbox
+           (event_id, internal_report_id, discord_user_id, event_type, occurred_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (event_id) DO NOTHING RETURNING event_id`,
+        [
+          event.eventId,
+          event.internalReportId,
+          event.submitterDiscordUserId,
+          event.type,
+          event.occurredAt
+        ]
+      );
+      if ((inserted.rowCount ?? 0) > 0) {
+        const payload: NotificationPayload = {
+          eventId: event.eventId,
+          eventType: event.type,
+          internalReportId: event.internalReportId,
+          occurredAt: event.occurredAt
+        };
+        await client.query(
+          `INSERT INTO notification_outbox
+             (tracking_id, discord_user_id, event_key, payload)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (tracking_id, event_key) DO NOTHING`,
+          [tracking.id, tracking.discord_user_id, `api:${event.eventId}`, payload]
+        );
+      }
+      await client.query("COMMIT");
+      return true;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async reconciliationCursor(): Promise<string | null> {
+    const result = await this.pool.query<{ value: string }>(
+      "SELECT value FROM bot_state WHERE key = 'report_event_cursor'"
+    );
+    return result.rows[0]?.value ?? null;
+  }
+
+  public async setReconciliationCursor(eventId: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO bot_state (key, value) VALUES ('report_event_cursor', $1)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [eventId]
+    );
   }
 
   public async claimNotifications(limit = 20): Promise<NotificationJob[]> {

@@ -67,7 +67,7 @@ export type CreateReportInput =
   | UserCreateReportInput
   | GuildCreateReportInput;
 
-export interface ReportView {
+export interface ReportSummary {
   internalReportId: string;
   country: string;
   flow: ReportFlow;
@@ -88,3 +88,48 @@ export interface ReportView {
   createdAt: string;
   updatedAt: string;
 }
+
+export type ReportedDetails =
+  | {
+      kind: "message";
+      messageUrl: string;
+      context?: string;
+    }
+  | {
+      kind: "profile";
+      reportedUsername: string;
+      reportedUserServerId?: string;
+      profileElements: UserProfileElement[];
+      context?: string;
+    }
+  | {
+      kind: "server";
+      guildIdOrInviteCode: string;
+      guildElements: GuildElement[];
+      context?: string;
+    };
+
+export interface ReportTimelineEvent {
+  eventId: string;
+  type: string;
+  occurredAt: string;
+  lifecycleAttempt: number | null;
+  discordStatus: DiscordReportStatus | null;
+  errorCode: string | null;
+}
+
+export interface ReportDetail extends ReportSummary {
+  reportedDetails: ReportedDetails;
+  timeline: ReportTimelineEvent[];
+}
+
+export interface ReportLifecycleEvent {
+  eventId: string;
+  internalReportId: string;
+  submitterDiscordUserId: string;
+  type: string;
+  occurredAt: string;
+}
+
+/** @deprecated Use ReportDetail for a single report and ReportSummary for lists. */
+export type ReportView = ReportDetail;

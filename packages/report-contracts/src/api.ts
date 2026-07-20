@@ -1,4 +1,9 @@
-import type { CreateReportInput, ReportView } from "./types.js";
+import type {
+  CreateReportInput,
+  ReportDetail,
+  ReportLifecycleEvent,
+  ReportSummary
+} from "./types.js";
 
 interface ApiErrorBody {
   error?: { code?: string; message?: string };
@@ -61,7 +66,7 @@ export class DsaApi {
     return this.request("/v1/countries");
   }
 
-  public createReport(interactionId: string, input: CreateReportInput): Promise<ReportView> {
+  public createReport(interactionId: string, input: CreateReportInput): Promise<ReportDetail> {
     return this.request("/v1/reports", {
       method: "POST",
       headers: {
@@ -72,11 +77,11 @@ export class DsaApi {
     });
   }
 
-  public report(internalReportId: string): Promise<ReportView> {
+  public report(internalReportId: string): Promise<ReportDetail> {
     return this.request(`/v1/reports/${encodeURIComponent(internalReportId)}`);
   }
 
-  public reportsFor(discordUserId: string): Promise<{ reports: ReportView[] }> {
+  public reportsFor(discordUserId: string): Promise<{ reports: ReportSummary[] }> {
     return this.request(`/v1/users/${encodeURIComponent(discordUserId)}/reports`);
   }
 
@@ -84,7 +89,7 @@ export class DsaApi {
     internalReportId: string,
     interactionId: string,
     discordUserId: string
-  ): Promise<ReportView> {
+  ): Promise<ReportDetail> {
     return this.request(`/v1/reports/${encodeURIComponent(internalReportId)}/retry`, {
       method: "POST",
       headers: {
@@ -93,5 +98,13 @@ export class DsaApi {
       },
       body: JSON.stringify({ submitterDiscordUserId: discordUserId })
     });
+  }
+
+  public lifecycleEvents(
+    afterEventId: string,
+    limit = 100
+  ): Promise<{ events: ReportLifecycleEvent[] }> {
+    const query = new URLSearchParams({ after: afterEventId, limit: limit.toString() });
+    return this.request(`/v1/report-events?${query.toString()}`);
   }
 }

@@ -8,6 +8,7 @@ import {
 import type {
   DsaApi,
   GuildElement,
+  ReportDetail,
   ReportView,
   UserProfileElement
 } from "@discord-dsa/contracts";
@@ -23,17 +24,26 @@ import {
 } from "discord.js";
 
 import type { BotConfig } from "./config.js";
+import { countryDisplay, matchingCountries } from "./countries.js";
 import { decryptJson, encryptJson, generateAccessKey, hashAccessKey } from "./crypto.js";
 import { AccessError } from "./database.js";
 import type { BotDatabase } from "./database.js";
+import type { ServerResolver } from "./server-resolver.js";
 import type { ReportDraft } from "./types.js";
 import {
+  accessEmbed,
+  accessKeyEmbed,
+  accessKeysEmbed,
   buildCountryPicker,
   buildReportModal,
   buildReview,
   draftToCreateInput,
-  renderAccess,
-  renderReport
+  errorEmbed,
+  generatedKeysEmbed,
+  infoEmbed,
+  reportBrowser,
+  reportEmbed,
+  successEmbed
 } from "./ui.js";
 
 const EPHEMERAL = MessageFlags.Ephemeral;
@@ -44,6 +54,7 @@ export interface InteractionHandlerOptions {
   config: BotConfig;
   countries: readonly string[];
   database: BotDatabase;
+  serverResolver: ServerResolver;
 }
 
 function conciseError(error: unknown): string {
@@ -77,12 +88,14 @@ export class InteractionHandler {
   private readonly config: BotConfig;
   private readonly countries: readonly string[];
   private readonly database: BotDatabase;
+  private readonly serverResolver: ServerResolver;
 
   public constructor(options: InteractionHandlerOptions) {
     this.api = options.api;
     this.config = options.config;
     this.countries = options.countries;
     this.database = options.database;
+    this.serverResolver = options.serverResolver;
   }
 
   public async handle(interaction: Interaction): Promise<void> {
@@ -157,12 +170,66 @@ export class InteractionHandler {
     if (draft.country === undefined && access.defaultCountry !== null) {
       draft.country = access.defaultCountry;
     }
-    const draftId = await this.saveDraft(interaction.user.id, draft);
     if (draft.country === undefined) {
-      await interaction.reply({ ...buildCountryPicker(this.countries, draftId, 0), flags: EPHEMERAL });
+      const guidance = interaction.isMessageContextMenuCommand()
+        ? "Set a default with `/settings country`, or copy the message link and run `/report message` with the country option."
+        : "Run this command again and choose a country from the searchable `country` option, or save one with `/settings country`.";
+      await interaction.reply({
+        embeds: [errorEmbed(`A country is required. ${guidance}`)],
+        flags: EPHEMERAL,
+        allowedMentions: { parse: [] }
+      });
       return;
     }
+    if (draft.flow === "guild_urf" && draft.guildIdOrInviteCode && !draft.serverSnapshot) {
+      const snapshot = await this.serverResolver.resolve(
+        draft.guildIdOrInviteCode,
+        interaction.guild
+      );
+      if (snapshot) draft.serverSnapshot = snapshot;
+    }
+    const draftId = await this.saveDraft(interaction.user.id, draft);
     await interaction.showModal(buildReportModal(draftId, draft));
+  }
+
+  private countryOption(interaction: ChatInputCommandInteraction): string | undefined {
+    const country = interaction.options.getString("country")?.trim().toUpperCase();
+    if (country !== undefined && !this.countries.includes(country)) {
+      throw new AccessError("invalid_country", "Choose a country returned by autocomplete.");
+    }
+    return country;
+  }
+
+  private async snapshotFor(report: ReportDetail, userId: string) {
+    if (report.reportedDetails.kind !== "server") return null;
+    const ownerId = report.submitterDiscordUserId ?? userId;
+    const stored = await this.database.serverSnapshot(report.internalReportId, ownerId);
+    if (stored) return stored;
+    const resolved = await this.serverResolver.resolve(report.reportedDetails.guildIdOrInviteCode);
+    if (resolved) {
+      await this.database.saveServerSnapshot(report.internalReportId, ownerId, resolved);
+    }
+    return resolved;
+  }
+
+  private async reportPage(userId: string, requestedPage: number) {
+    const { reports } = await this.api.reportsFor(userId);
+    if (reports.length === 0) {
+      return {
+        embeds: [
+          infoEmbed(
+            "No reports yet",
+            "Your submitted DSA reports will appear here. Use `/report` or **Apps → Report Message** to begin."
+          )
+        ],
+        components: []
+      };
+    }
+    const page = Math.min(Math.max(requestedPage, 0), reports.length - 1);
+    const summary = reports[page];
+    if (!summary) throw new Error("Report page is unavailable.");
+    const report = await this.api.report(summary.internalReportId);
+    return reportBrowser(report, await this.snapshotFor(report, userId), page, reports.length);
   }
 
   private async handleMessageContext(
@@ -197,11 +264,13 @@ export class InteractionHandler {
 
   private async handleReportCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     const subcommand = interaction.options.getSubcommand();
+    const country = this.countryOption(interaction);
     if (subcommand === "message") {
-      const messageUrl = interaction.options.getString("message-link")?.trim();
+      const messageUrl = interaction.options.getString("message-link", true).trim();
       await this.startDraft(interaction, {
         flow: "message_urf",
-        ...(messageUrl ? { messageUrl } : {})
+        messageUrl,
+        ...(country ? { country } : {})
       });
       return;
     }
@@ -214,6 +283,7 @@ export class InteractionHandler {
       await this.startDraft(interaction, {
         flow: "user_urf",
         reportedUsername: username,
+        ...(country ? { country } : {}),
         ...(serverId ? { reportedUserServerId: serverId } : {})
       });
       return;
@@ -223,6 +293,7 @@ export class InteractionHandler {
     const target = suppliedTarget || guildTarget;
     await this.startDraft(interaction, {
       flow: "guild_urf",
+      ...(country ? { country } : {}),
       ...(target ? { guildIdOrInviteCode: target } : {})
     });
   }
@@ -231,24 +302,20 @@ export class InteractionHandler {
     const subcommand = interaction.options.getSubcommand();
     await interaction.deferReply({ flags: EPHEMERAL });
     if (subcommand === "list") {
-      const { reports } = await this.api.reportsFor(interaction.user.id);
-      const content =
-        reports.length === 0
-          ? "You have no reports."
-          : reports
-              .slice(0, 10)
-              .map((report) =>
-                `${report.internalReportId} — ${report.status}/${report.discordStatus ?? "pending"}`
-              )
-              .join("\n");
-      await interaction.editReply({ content, allowedMentions: { parse: [] } });
+      await interaction.editReply({
+        ...(await this.reportPage(interaction.user.id, 0)),
+        allowedMentions: { parse: [] }
+      });
       return;
     }
     const reportId = interaction.options.getString("report-id", true);
     const report = await this.api.report(reportId);
     this.assertOwner(report, interaction.user.id);
     if (subcommand === "status") {
-      await interaction.editReply({ content: renderReport(report), allowedMentions: { parse: [] } });
+      await interaction.editReply({
+        embeds: [reportEmbed(report, await this.snapshotFor(report, interaction.user.id))],
+        allowedMentions: { parse: [] }
+      });
       return;
     }
     await this.requireReportAccess(interaction.user.id);
@@ -257,7 +324,10 @@ export class InteractionHandler {
     }
     const retried = await this.api.retryReport(reportId, interaction.id, interaction.user.id);
     await this.database.resumeTrackingByReport(reportId, interaction.user.id, retried);
-    await interaction.editReply({ content: renderReport(retried), allowedMentions: { parse: [] } });
+    await interaction.editReply({
+      embeds: [reportEmbed(retried, await this.snapshotFor(retried, interaction.user.id))],
+      allowedMentions: { parse: [] }
+    });
   }
 
   private assertOwner(report: ReportView, userId: string): void {
@@ -275,7 +345,12 @@ export class InteractionHandler {
         hashAccessKey(code, this.config.keyPepper)
       );
       await interaction.reply({
-        content: `Key redeemed. You now have ${access.credits} report credit(s).`,
+        embeds: [
+          successEmbed(
+            "Access key redeemed",
+            `Your new balance is **${access.credits} report credit${access.credits === 1 ? "" : "s"}**.`
+          )
+        ],
         flags: EPHEMERAL,
         allowedMentions: { parse: [] }
       });
@@ -283,7 +358,7 @@ export class InteractionHandler {
     }
     const access = await this.database.getAccess(interaction.user.id);
     await interaction.reply({
-      content: renderAccess(access, this.isAdmin(interaction.user.id)),
+      embeds: [accessEmbed(access, this.isAdmin(interaction.user.id))],
       flags: EPHEMERAL,
       allowedMentions: { parse: [] }
     });
@@ -295,7 +370,15 @@ export class InteractionHandler {
       throw new AccessError("invalid_country", "Choose a country returned by autocomplete.");
     }
     await this.database.setDefaultCountry(interaction.user.id, country);
-    await interaction.reply({ content: `Default report country set to ${country}.`, flags: EPHEMERAL });
+    await interaction.reply({
+      embeds: [
+        successEmbed(
+          "Default country updated",
+          `New reports will default to **${countryDisplay(country)}**. You can still change it during review.`
+        )
+      ],
+      flags: EPHEMERAL
+    });
   }
 
   private async handleAdminCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -331,10 +414,7 @@ export class InteractionHandler {
         generated.push({ id: key.id, code: key.code });
       }
       await interaction.reply({
-        content: [
-          "These key values are shown once:",
-          ...generated.map((key) => `${key.id} — ${key.code}`)
-        ].join("\n"),
+        embeds: [generatedKeysEmbed(generated)],
         flags: EPHEMERAL,
         allowedMentions: { parse: [] }
       });
@@ -343,15 +423,7 @@ export class InteractionHandler {
     if (subcommand === "list") {
       const keys = await this.database.listAccessKeys();
       await interaction.reply({
-        content:
-          keys.length === 0
-            ? "No access keys exist."
-            : keys
-                .map(
-                  (key) =>
-                    `${key.id} — ${key.code_prefix} — ${key.credits_total} credits — ${key.status}`
-                )
-                .join("\n"),
+        embeds: [accessKeysEmbed(keys)],
         flags: EPHEMERAL,
         allowedMentions: { parse: [] }
       });
@@ -362,15 +434,7 @@ export class InteractionHandler {
       const key = await this.database.getAccessKey(keyId);
       if (!key) throw new AccessError("key_not_found", "Access key was not found.");
       await interaction.reply({
-        content: [
-          `ID: ${key.id}`,
-          `Prefix: ${key.code_prefix}`,
-          `Credits: ${key.credits_total}`,
-          `Status: ${key.status}`,
-          `Expires: ${key.expires_at?.toISOString() ?? "never"}`,
-          `Redeemed by: ${key.redeemed_by ?? "nobody"}`,
-          `Revoked: ${key.revoked_at?.toISOString() ?? "no"}`
-        ].join("\n"),
+        embeds: [accessKeyEmbed(key)],
         flags: EPHEMERAL,
         allowedMentions: { parse: [] }
       });
@@ -378,7 +442,10 @@ export class InteractionHandler {
     }
     const reason = interaction.options.getString("reason")?.trim() || "Revoked by administrator";
     await this.database.revokeAccessKey(keyId, interaction.user.id, reason);
-    await interaction.reply({ content: `Revoked access key ${keyId}.`, flags: EPHEMERAL });
+    await interaction.reply({
+      embeds: [successEmbed("Access key revoked", `Key \`${keyId}\` has been revoked.`)],
+      flags: EPHEMERAL
+    });
   }
 
   private async handleAdminUser(
@@ -390,7 +457,7 @@ export class InteractionHandler {
     if (subcommand === "inspect") {
       const access = await this.database.getAccess(userId);
       await interaction.reply({
-        content: `User ${userId}\n${renderAccess(access, this.isAdmin(userId))}`,
+        embeds: [accessEmbed(access, this.isAdmin(userId), userId)],
         flags: EPHEMERAL,
         allowedMentions: { parse: [] }
       });
@@ -399,22 +466,24 @@ export class InteractionHandler {
     if (subcommand === "suspend") {
       const reason = interaction.options.getString("reason")?.trim() || "Suspended by administrator";
       await this.database.suspendUser(userId, interaction.user.id, reason);
-      await interaction.reply({ content: `Suspended user ${userId} and cleared their credits.`, flags: EPHEMERAL });
+      await interaction.reply({
+        embeds: [successEmbed("User suspended", `User \`${userId}\` is suspended and their remaining credits were cleared.`)],
+        flags: EPHEMERAL
+      });
       return;
     }
     await this.database.reinstateUser(userId, interaction.user.id);
-    await interaction.reply({ content: `Reinstated user ${userId} with zero credits.`, flags: EPHEMERAL });
+    await interaction.reply({
+      embeds: [successEmbed("User reinstated", `User \`${userId}\` is active with **0 credits**.`)],
+      flags: EPHEMERAL
+    });
   }
 
   private async handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
-    if (interaction.commandName !== "settings") return;
-    const focused = interaction.options.getFocused().toUpperCase();
-    await interaction.respond(
-      this.countries
-        .filter((country) => country.includes(focused))
-        .slice(0, 25)
-        .map((country) => ({ name: country, value: country }))
-    );
+    if (interaction.commandName !== "settings" && interaction.commandName !== "report") return;
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "country") return;
+    await interaction.respond(matchingCountries(this.countries, String(focused.value)));
   }
 
   private async handleModal(interaction: ModalSubmitInteraction): Promise<void> {
@@ -442,6 +511,13 @@ export class InteractionHandler {
       draft.guildElements = values.filter((value): value is GuildElement =>
         (GUILD_ELEMENTS as readonly string[]).includes(value)
       );
+      if (draft.guildIdOrInviteCode) {
+        const snapshot = await this.serverResolver.resolve(
+          draft.guildIdOrInviteCode,
+          interaction.guild
+        );
+        if (snapshot) draft.serverSnapshot = snapshot;
+      }
     }
     draftToCreateInput(draft, interaction.user.id);
     await this.replaceDraft(interaction.user.id, draftId, draft);
@@ -471,6 +547,15 @@ export class InteractionHandler {
 
   private async handleButton(interaction: ButtonInteraction): Promise<void> {
     const parts = customParts(interaction.customId);
+    if (parts[0] === "reports" && parts[1] === "page" && parts[2]) {
+      const requestedPage = Number(parts[2]);
+      if (!Number.isInteger(requestedPage)) return;
+      await interaction.update({
+        ...(await this.reportPage(interaction.user.id, requestedPage)),
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
     if (parts[0] === "country" && parts[1] === "page" && parts[2] && parts[3]) {
       await this.loadDraft(interaction.user.id, parts[2]);
       await interaction.update(buildCountryPicker(this.countries, parts[2], Number(parts[3])));
@@ -481,7 +566,11 @@ export class InteractionHandler {
     const draftId = parts[2];
     if (action === "cancel") {
       await this.database.deleteDraft(interaction.user.id, draftId);
-      await interaction.update({ content: "Report cancelled.", components: [] });
+      await interaction.update({
+        content: null,
+        embeds: [infoEmbed("Report cancelled", "The temporary encrypted draft has been deleted.")],
+        components: []
+      });
       return;
     }
     const draft = await this.loadDraft(interaction.user.id, draftId);
@@ -514,9 +603,14 @@ export class InteractionHandler {
       country: request.country,
       reportType: request.reportType,
       encryptedRequest: encryptJson(request, this.config.dataEncryptionKey),
+      ...(draft.serverSnapshot ? { serverSnapshot: draft.serverSnapshot } : {}),
       adminBypass: this.isAdmin(interaction.user.id) || !this.config.whitelistEnabled
     });
-    await interaction.editReply({ content: "Submitting the report…", components: [] });
+    await interaction.editReply({
+      content: null,
+      embeds: [infoEmbed("Submitting report", "Your report is being prepared and sent securely. This may take a moment.")],
+      components: []
+    });
     try {
       let report = await this.api.createReport(tracking.interactionId, request);
       await this.database.markSubmissionCreated(tracking.id, report);
@@ -528,7 +622,8 @@ export class InteractionHandler {
       }
       await this.database.observeReport(tracking.id, report);
       await interaction.editReply({
-        content: renderReport(report),
+        content: null,
+        embeds: [reportEmbed(report, draft.serverSnapshot)],
         components: [],
         allowedMentions: { parse: [] }
       });
@@ -537,7 +632,12 @@ export class InteractionHandler {
         await this.database.releaseReservation(tracking.id, "report_rejected");
       }
       await interaction.editReply({
-        content: `The report could not be confirmed yet: ${conciseError(error)}\nYour idempotency key has been preserved.`,
+        content: null,
+        embeds: [
+          errorEmbed(
+            `${conciseError(error)}\n\nYour submission identity has been preserved and the bot will reconcile it safely.`
+          )
+        ],
         components: [],
         allowedMentions: { parse: [] }
       });
@@ -546,11 +646,11 @@ export class InteractionHandler {
 
   private async respondWithError(interaction: Interaction, error: unknown): Promise<void> {
     if (!interaction.isRepliable()) return;
-    const content = `Unable to complete that action: ${conciseError(error)}`.slice(0, 1900);
+    const embeds = [errorEmbed(conciseError(error))];
     if (interaction.deferred || interaction.replied) {
-      await interaction.followUp({ content, flags: EPHEMERAL, allowedMentions: { parse: [] } });
+      await interaction.followUp({ embeds, flags: EPHEMERAL, allowedMentions: { parse: [] } });
     } else {
-      await interaction.reply({ content, flags: EPHEMERAL, allowedMentions: { parse: [] } });
+      await interaction.reply({ embeds, flags: EPHEMERAL, allowedMentions: { parse: [] } });
     }
   }
 }

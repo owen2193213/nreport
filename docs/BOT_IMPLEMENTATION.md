@@ -23,9 +23,9 @@ Discord's bulk global-command endpoint before connecting to the Gateway. The sta
 registration script requires only `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_ID`.
 
 ```text
-/report message [message-link]
-/report profile username [server-id]
-/report server [server-or-invite]
+/report message message-link [country]
+/report profile username [server-id] [country]
+/report server [server-or-invite] [country]
 /reports list
 /reports status report-id
 /reports retry report-id
@@ -44,7 +44,8 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
 ## Report lifecycle
 
 1. Enforce access or configured-admin bypass.
-2. Use the saved country or show the paged authoritative country list.
+2. Use the searchable command country, then the saved country. If neither exists, ask the
+   user to rerun with a country and do not create a draft.
 3. Collect the flow-specific reason, elements, target, and context.
 4. Encrypt the draft at rest with a 30-minute expiry.
 5. Show a final review with submit, edit, country, and cancel controls.
@@ -53,12 +54,14 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
 8. Release it after a definite pre-creation rejection; reconcile ambiguous responses with
    the exact body and idempotency key.
 9. Poll briefly in the interaction, then let the durable worker continue.
-10. DM safe summaries for submission, failure, received, actioned, closed, or rejected review.
+10. Push lifecycle changes from the API to the bot and DM the complete current report card
+    for submission, failure, received, actioned, closed, or rejected review.
 
-DMs include report IDs, flow, reason, country, attempt, status, and timestamp. They omit
-the generated reporter identity/email, target identifiers, selected evidence details, and
-free-text context. A Discord 50007 response permanently disables DM attempts for that
-tracked report; `/reports` remains available.
+Report cards include the target, category, full country name and flag, human reason plus
+selected elements, reported details, IDs, and the complete chronological timeline. Server
+metadata is resolved best-effort and cached. DMs include full report details but omit the
+generated reporter identity and email. A Discord 50007 response permanently disables DM
+attempts for that tracked report; `/reports` remains available.
 
 ## Access credits
 
@@ -74,9 +77,10 @@ tracked report; `/reports` remains available.
 ## Operations
 
 The notification worker uses leased PostgreSQL rows and `SKIP LOCKED`, so restarts do not
-duplicate work and additional replicas remain safe. Pending reports poll approximately
-every 30 seconds; submitted reports awaiting Discord decisions poll every five minutes.
-DMs use a unique `(tracking_id, event_key)` outbox key and bounded exponential retry.
+duplicate work and additional replicas remain safe. Pending creation and submission work
+polls approximately every 30 seconds. Submitted reports stop individual polling: the API
+uses a transactional event outbox and signed private webhook, with 15-minute reconciliation
+as a safety net. DMs use a unique `(tracking_id, event_key)` key and bounded retry.
 
 Do not register production commands or enable production reporting workers in pull-request
 environments. Use a separate Discord application and mocked API for staging.

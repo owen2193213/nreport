@@ -1,5 +1,6 @@
 import { loadConfig } from "./config.js";
 import { Database } from "./database.js";
+import { EventDeliveryWorker } from "./event-delivery.js";
 import { JobRunner } from "./job-runner.js";
 import { buildServer } from "./server.js";
 
@@ -9,7 +10,11 @@ async function main(): Promise<void> {
   await database.migrate();
   const app = await buildServer(config, database);
   const runner = new JobRunner(database, config, app.log);
-  if (config.workerEnabled) runner.start();
+  const eventDelivery = new EventDeliveryWorker(database, config, app.log);
+  if (config.workerEnabled) {
+    runner.start();
+    eventDelivery.start();
+  }
 
   let stopping = false;
   const stop = async (signal: string): Promise<void> => {
@@ -17,7 +22,10 @@ async function main(): Promise<void> {
     stopping = true;
     app.log.info({ signal }, "Shutting down");
     await app.close();
-    if (config.workerEnabled) await runner.stop();
+    if (config.workerEnabled) {
+      await eventDelivery.stop();
+      await runner.stop();
+    }
     await database.close();
   };
   process.once("SIGINT", () => void stop("SIGINT"));

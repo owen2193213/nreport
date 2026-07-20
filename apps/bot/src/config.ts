@@ -12,6 +12,7 @@ export interface BotConfig {
   port: number;
   token: string;
   whitelistEnabled: boolean;
+  reportEventWebhookSecret?: string;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -56,6 +57,10 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   if (adminValues.length === 0) throw new Error("At least one Discord admin ID is required.");
 
   const apiBaseUrl = new URL(required(env, "DSA_API_BASE_URL")).toString();
+  const reportEventWebhookSecret = env.REPORT_EVENT_WEBHOOK_SECRET?.trim();
+  if (reportEventWebhookSecret !== undefined && reportEventWebhookSecret.length < 32) {
+    throw new Error("REPORT_EVENT_WEBHOOK_SECRET must contain at least 32 characters.");
+  }
   return {
     apiBaseUrl,
     apiKey: secret(env, "DSA_API_KEY"),
@@ -69,6 +74,7 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     keyPepper: secret(env, "ACCESS_KEY_PEPPER"),
     port: port(env.PORT),
     token: required(env, "DISCORD_BOT_TOKEN"),
-    whitelistEnabled: env.WHITELIST_ENABLED !== "false"
+    whitelistEnabled: env.WHITELIST_ENABLED !== "false",
+    ...(reportEventWebhookSecret === undefined ? {} : { reportEventWebhookSecret })
   };
 }

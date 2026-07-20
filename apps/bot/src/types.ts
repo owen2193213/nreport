@@ -18,6 +18,17 @@ export interface ReportDraft {
   reportedUsername?: string;
   reportedUserServerId?: string;
   reportType?: string;
+  serverSnapshot?: ServerSnapshot;
+}
+
+export interface ServerSnapshot {
+  id: string;
+  name: string;
+  description: string | null;
+  iconUrl: string | null;
+  approximateMemberCount: number | null;
+  approximatePresenceCount: number | null;
+  resolvedAt: string;
 }
 
 export interface AccessView {
@@ -42,14 +53,8 @@ export interface PollingTracking extends SubmissionTracking {
 }
 
 export interface NotificationPayload {
-  country: string;
-  discordReportId: string | null;
-  discordStatus: DiscordReportStatus | null;
-  flow: ReportFlow;
+  eventId: string;
+  eventType: string;
   internalReportId: string;
-  lifecycleAttempt: number;
-  reportType: string;
-  retryable: boolean;
-  status: ReportStatus;
-  timestamp: string;
+  occurredAt: string;
 }

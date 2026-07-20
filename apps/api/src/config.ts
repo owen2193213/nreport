@@ -10,6 +10,8 @@ export interface AppConfig {
   sessionEncryptionKey: Buffer;
   webhookSecret: string;
   workerEnabled: boolean;
+  botEventWebhookUrl?: string;
+  botEventWebhookSecret?: string;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -48,6 +50,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   const proxyUrlTemplate = env.DSA_PROXY_URL_TEMPLATE?.trim();
+  const botEventWebhookUrl = env.BOT_EVENT_WEBHOOK_URL?.trim();
+  const botEventWebhookSecret = env.BOT_EVENT_WEBHOOK_SECRET?.trim();
+  if ((botEventWebhookUrl === undefined) !== (botEventWebhookSecret === undefined)) {
+    throw new Error("BOT_EVENT_WEBHOOK_URL and BOT_EVENT_WEBHOOK_SECRET must be configured together.");
+  }
+  if (botEventWebhookUrl !== undefined) new URL(botEventWebhookUrl);
+  if (botEventWebhookSecret !== undefined && botEventWebhookSecret.length < 32) {
+    throw new Error("BOT_EVENT_WEBHOOK_SECRET must contain at least 32 characters.");
+  }
+  const botEventDelivery =
+    botEventWebhookUrl === undefined
+      ? {}
+      : {
+          botEventWebhookUrl,
+          botEventWebhookSecret: botEventWebhookSecret as string
+        };
   if (
     proxyUrlTemplate !== undefined &&
     (!proxyUrlTemplate.includes("{country}") || !proxyUrlTemplate.includes("{session}"))
@@ -66,6 +84,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...(proxyUrlTemplate === undefined ? {} : { proxyUrlTemplate }),
     sessionEncryptionKey: encryptionKey(env),
     webhookSecret: secret(env, "CLOUDFLARE_EMAIL_WEBHOOK_SECRET"),
-    workerEnabled: env.WORKER_ENABLED !== "false"
+    workerEnabled: env.WORKER_ENABLED !== "false",
+    ...botEventDelivery
   };
 }

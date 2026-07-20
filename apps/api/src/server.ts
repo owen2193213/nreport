@@ -1,12 +1,19 @@
 import { Buffer } from "node:buffer";
 
 import rateLimit from "@fastify/rate-limit";
+import {
+  DISCORD_REPORT_STATUSES,
+  type ReportDetail,
+  type ReportedDetails,
+  type ReportSummary,
+  type ReportTimelineEvent
+} from "@discord-dsa/contracts";
 import Fastify from "fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 import type { AppConfig } from "./config.js";
 import { IdempotencyConflictError, ReportRetryError } from "./database.js";
-import type { Database, ReportRow } from "./database.js";
+import type { Database, ReportEventRow, ReportRow } from "./database.js";
 import { parseDiscordEmail } from "./email.js";
 import {
   createProxySessionId,
@@ -22,7 +29,7 @@ import {
 } from "./security.js";
 import { parseCreateReportInput, parseRetryReportInput } from "./validation.js";
 
-function publicReport(report: ReportRow): Record<string, unknown> {
+function publicReportSummary(report: ReportRow): ReportSummary {
   return {
     internalReportId: report.id,
     country: report.country,
@@ -39,13 +46,72 @@ function publicReport(report: ReportRow): Record<string, unknown> {
     status: report.status,
     discordReportId: report.discord_report_id,
     discordStatus: report.discord_status,
-    discordStatusUpdatedAt: report.discord_status_updated_at,
+    discordStatusUpdatedAt: report.discord_status_updated_at?.toISOString() ?? null,
     error:
       report.error_code === null
         ? null
         : { code: report.error_code, message: report.error_message },
-    createdAt: report.created_at,
-    updatedAt: report.updated_at
+    createdAt: report.created_at.toISOString(),
+    updatedAt: report.updated_at.toISOString()
+  };
+}
+
+function reportedDetails(report: ReportRow): ReportedDetails {
+  const input = report.input;
+  const context = input.context === undefined ? {} : { context: input.context };
+  switch (input.flow) {
+    case "message_urf":
+      return { kind: "message", messageUrl: input.messageUrl, ...context };
+    case "user_urf":
+      return {
+        kind: "profile",
+        reportedUsername: input.reportedUsername,
+        profileElements: input.profileElements,
+        ...(input.reportedUserServerId === undefined
+          ? {}
+          : { reportedUserServerId: input.reportedUserServerId }),
+        ...context
+      };
+    case "guild_urf":
+      return {
+        kind: "server",
+        guildIdOrInviteCode: input.guildIdOrInviteCode,
+        guildElements: input.guildElements,
+        ...context
+      };
+  }
+}
+
+function timeline(events: readonly ReportEventRow[]): ReportTimelineEvent[] {
+  let lifecycleAttempt = 1;
+  return events.map((event) => {
+    const metadataAttempt = event.metadata.lifecycleAttempt;
+    if (typeof metadataAttempt === "number" && Number.isInteger(metadataAttempt)) {
+      lifecycleAttempt = metadataAttempt;
+    }
+    const rawDiscordStatus = event.metadata.discordStatus;
+    const discordStatus =
+      typeof rawDiscordStatus === "string" &&
+      (DISCORD_REPORT_STATUSES as readonly string[]).includes(rawDiscordStatus)
+        ? (rawDiscordStatus as ReportTimelineEvent["discordStatus"])
+        : null;
+    return {
+      eventId: event.id,
+      type: event.event_type,
+      occurredAt: event.created_at.toISOString(),
+      lifecycleAttempt,
+      discordStatus,
+      errorCode:
+        typeof event.metadata.errorCode === "string" ? event.metadata.errorCode : null
+    };
+  });
+}
+
+async function publicReportDetail(database: Database, report: ReportRow): Promise<ReportDetail> {
+  return {
+    ...publicReportSummary(report),
+    reportedDetails: reportedDetails(report),
+    timeline: timeline(await database.getReportEvents(report.id))
   };
 }
 
@@ -133,7 +199,9 @@ export async function buildServer(config: AppConfig, database: Database) {
           language: identity.language,
           proxySessionId: createProxySessionId()
         });
-        return reply.code(result.created ? 202 : 200).send(publicReport(result.report));
+        return reply
+          .code(result.created ? 202 : 200)
+          .send(await publicReportDetail(database, result.report));
       } catch (error) {
         if (error instanceof IdempotencyConflictError) {
           return reply.code(409).send({
@@ -156,7 +224,7 @@ export async function buildServer(config: AppConfig, database: Database) {
           error: { code: "report_not_found", message: "Report was not found." }
         });
       }
-      return reply.send(publicReport(report));
+      return reply.send(await publicReportDetail(database, report));
     }
   );
 
@@ -194,7 +262,9 @@ export async function buildServer(config: AppConfig, database: Database) {
           ),
           proxySessionId: createProxySessionId()
         });
-        return reply.code(result.replayed ? 200 : 202).send(publicReport(result.report));
+        return reply
+          .code(result.replayed ? 200 : 202)
+          .send(await publicReportDetail(database, result.report));
       } catch (error) {
         if (error instanceof ReportRetryError) {
           return reply.code(error.statusCode).send({
@@ -219,7 +289,38 @@ export async function buildServer(config: AppConfig, database: Database) {
         });
       }
       const reports = await database.listReportsBySubmitter(request.params.discordUserId);
-      return reply.send({ reports: reports.map(publicReport) });
+      return reply.send({ reports: reports.map(publicReportSummary) });
+    }
+  );
+
+  app.get<{ Querystring: { after?: string; limit?: string } }>(
+    "/v1/report-events",
+    { preHandler: authorize },
+    async (request, reply) => {
+      const after = request.query.after ?? "0";
+      const limit = Number(request.query.limit ?? "100");
+      if (!/^\d+$/.test(after) || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return reply.code(400).send({
+          error: { code: "invalid_event_cursor", message: "Invalid event cursor or limit." }
+        });
+      }
+      const events = await database.listLifecycleEvents(after, limit);
+      return reply.send({
+        events: events.map((event) => {
+          const discordStatus = event.metadata.discordStatus;
+          return {
+            eventId: event.id,
+            internalReportId: event.report_id,
+            submitterDiscordUserId: event.submitter_discord_user_id,
+            type:
+              event.event_type === "discord_status_updated" &&
+              typeof discordStatus === "string"
+                ? `discord:${discordStatus}`
+                : event.event_type,
+            occurredAt: event.created_at.toISOString()
+          };
+        })
+      });
     }
   );
 

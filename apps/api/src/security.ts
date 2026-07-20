@@ -80,3 +80,14 @@ export function verifyInboundSignature(input: {
     input.signature
   );
 }
+
+export function signReportEvent(
+  secret: string,
+  timestamp: string,
+  eventId: string,
+  body: string
+): string {
+  return createHmac("sha256", secret)
+    .update(`${timestamp}\n${eventId}\n${sha256Hex(body)}`)
+    .digest("hex");
+}

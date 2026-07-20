@@ -11,6 +11,8 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  Colors,
+  EmbedBuilder,
   LabelBuilder,
   ModalBuilder,
   StringSelectMenuBuilder,
@@ -19,13 +21,129 @@ import {
   TextInputStyle
 } from "discord.js";
 
-import type { AccessView, ReportDraft } from "./types.js";
+import type { AccessKeyView } from "./database.js";
+import { countryDisplay } from "./countries.js";
+import type { AccessView, ReportDraft, ServerSnapshot } from "./types.js";
 
 const FLOW_LABELS: Record<ReportFlow, string> = {
   message_urf: "Message",
   user_urf: "Profile",
   guild_urf: "Server"
 };
+
+const STATUS_LABELS: Record<string, string> = {
+  queued: "Queued",
+  requesting_verification: "Requesting verification",
+  awaiting_verification: "Awaiting verification",
+  verification_received: "Verification received",
+  verifying: "Verifying",
+  submitting: "Submitting to Discord",
+  submitted: "Submitted",
+  failed: "Failed",
+  received: "Received by Discord",
+  actioned: "Action taken",
+  closed_no_action: "Closed — no action",
+  review_not_approved: "Review not approved"
+};
+
+function statusLabel(status: string | null): string {
+  if (status === null) return "Pending Discord review";
+  return STATUS_LABELS[status] ?? status.replaceAll("_", " ");
+}
+
+function statusColor(report: Pick<ReportView, "status" | "discordStatus">): number {
+  if (report.status === "failed" || report.discordStatus === "review_not_approved") return Colors.Red;
+  if (report.discordStatus === "actioned") return Colors.Green;
+  if (report.discordStatus === "closed_no_action") return Colors.Greyple;
+  if (report.status === "submitted" || report.discordStatus === "received") return Colors.Blurple;
+  return Colors.Yellow;
+}
+
+function discordTimestamp(value: string): string {
+  const seconds = Math.floor(new Date(value).getTime() / 1_000);
+  return Number.isFinite(seconds) ? `<t:${seconds}:R>` : value;
+}
+
+function shortId(value: string): string {
+  return value.length <= 18 ? value : `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
+
+const EVENT_LABELS: Record<string, string> = {
+  report_created: "Report created",
+  requesting_verification: "Verification requested",
+  verification_requested: "Verification email requested",
+  verification_email_received: "Verification email received",
+  verification_started: "Verification started",
+  submission_started: "Submission started",
+  report_submitted: "Submitted to Discord",
+  discord_status_updated: "Discord review updated",
+  report_failed: "Processing failed",
+  report_retry_requested: "Retry requested"
+};
+
+function labeledElements(flow: ReportFlow, elements: readonly string[]): string[] {
+  if (flow === "user_urf") {
+    return elements.map(
+      (element) => PROFILE_ELEMENT_LABELS[element as keyof typeof PROFILE_ELEMENT_LABELS] ?? element
+    );
+  }
+  if (flow === "guild_urf") {
+    return elements.map(
+      (element) => GUILD_ELEMENT_LABELS[element as keyof typeof GUILD_ELEMENT_LABELS] ?? element
+    );
+  }
+  return [];
+}
+
+function reasonText(flow: ReportFlow, reportType: string, elements: readonly string[]): string {
+  const labels = labeledElements(flow, elements);
+  return `${reportReasonLabel(flow, reportType)}${labels.length > 0 ? ` — ${labels.join(", ")}` : ""}`;
+}
+
+function serverSnapshotText(snapshot: ServerSnapshot | null | undefined): string | null {
+  if (!snapshot) return null;
+  return [
+    `**${snapshot.name}** (\`${snapshot.id}\`)`,
+    snapshot.description,
+    snapshot.approximateMemberCount === null
+      ? null
+      : `Members: **${snapshot.approximateMemberCount.toLocaleString("en")}**${
+          snapshot.approximatePresenceCount === null
+            ? ""
+            : ` • Online: **${snapshot.approximatePresenceCount.toLocaleString("en")}**`
+        }`
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+}
+
+function splitField(value: string, maximum = 1_024): string[] {
+  const chunks: string[] = [];
+  let remaining = value || "Not provided";
+  while (remaining.length > maximum) {
+    let boundary = remaining.lastIndexOf("\n", maximum);
+    if (boundary < maximum / 2) boundary = maximum;
+    chunks.push(remaining.slice(0, boundary));
+    remaining = remaining.slice(boundary).replace(/^\n/, "");
+  }
+  chunks.push(remaining);
+  return chunks;
+}
+
+export function infoEmbed(title: string, description: string): EmbedBuilder {
+  return new EmbedBuilder().setColor(Colors.Blurple).setTitle(title).setDescription(description);
+}
+
+export function successEmbed(title: string, description: string): EmbedBuilder {
+  return new EmbedBuilder().setColor(Colors.Green).setTitle(title).setDescription(description);
+}
+
+export function errorEmbed(description: string): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(Colors.Red)
+    .setTitle("Unable to complete that action")
+    .setDescription(description.slice(0, 4_000));
+}
 
 function textLabel(input: {
   customId: string;
@@ -157,7 +275,7 @@ export function buildCountryPicker(
   countries: readonly string[],
   draftId: string,
   page: number
-): { content: string; components: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] } {
+): { embeds: EmbedBuilder[]; components: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] } {
   const pageSize = 24;
   const pageCount = Math.max(1, Math.ceil(countries.length / pageSize));
   const safePage = Math.min(Math.max(page, 0), pageCount - 1);
@@ -165,7 +283,7 @@ export function buildCountryPicker(
   const picker = new StringSelectMenuBuilder()
     .setCustomId(`country:select:${draftId}:${safePage}`)
     .setPlaceholder("Choose the relevant EU country")
-    .addOptions(options.map((country) => ({ label: country, value: country })))
+    .addOptions(options.map((country) => ({ label: countryDisplay(country), value: country })))
     .setMinValues(1)
     .setMaxValues(1);
   const components: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] = [
@@ -188,7 +306,12 @@ export function buildCountryPicker(
     );
   }
   return {
-    content: `Choose the country whose law applies. Page ${safePage + 1}/${pageCount}.`,
+    embeds: [
+      infoEmbed(
+        "Choose the applicable country",
+        `Select the EU country whose law applies to this report.\n\nPage **${safePage + 1} of ${pageCount}**`
+      )
+    ],
     components
   };
 }
@@ -211,7 +334,7 @@ function truncate(value: string, maximum: number): string {
 }
 
 export function buildReview(draftId: string, draft: ReportDraft): {
-  content: string;
+  embeds: EmbedBuilder[];
   components: ActionRowBuilder<ButtonBuilder>[];
 } {
   if (!draft.country || !draft.reportType || !draft.context) {
@@ -219,23 +342,34 @@ export function buildReview(draftId: string, draft: ReportDraft): {
   }
   const elements =
     draft.flow === "user_urf"
-      ? draft.profileElements?.join(", ")
+      ? draft.profileElements ?? []
       : draft.flow === "guild_urf"
-        ? draft.guildElements?.join(", ")
-        : undefined;
-  const content = [
-    "**Review this DSA report before submitting**",
-    `Type: ${FLOW_LABELS[draft.flow]}`,
-    `Country: ${draft.country}`,
-    `Reason: ${reportReasonLabel(draft.flow, draft.reportType)}`,
-    `Target: ${truncate(targetSummary(draft), 300)}`,
-    ...(elements ? [`Elements: ${elements}`] : []),
-    "",
-    "**Context**",
-    truncate(draft.context, 1_000),
-    "",
-    "Submitting creates a real report. Confirm that the information is truthful and authorized."
-  ].join("\n");
+        ? draft.guildElements ?? []
+        : [];
+  const details = [
+    draft.flow === "guild_urf" ? serverSnapshotText(draft.serverSnapshot) : null,
+    draft.flow === "user_urf" && draft.reportedUserServerId
+      ? `Observed in server: \`${draft.reportedUserServerId}\``
+      : null,
+    draft.context
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join("\n\n");
+  const embed = new EmbedBuilder()
+    .setColor(Colors.Orange)
+    .setTitle(`Review ${FLOW_LABELS[draft.flow].toLowerCase()} report`)
+    .setDescription("Submitting creates a real DSA report. Confirm that the information is truthful and authorized.")
+    .addFields(
+      { name: "Reported thing", value: truncate(targetSummary(draft), 1_000) },
+      { name: "Report category", value: FLOW_LABELS[draft.flow], inline: true },
+      { name: "Country", value: countryDisplay(draft.country), inline: true },
+      { name: "Reason", value: reasonText(draft.flow, draft.reportType, elements) },
+      ...splitField(details).map((value, index) => ({
+        name: index === 0 ? "Reported details" : `Reported details (${index + 1})`,
+        value
+      }))
+    )
+    .setFooter({ text: "Review carefully before submitting" });
   const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`draft:submit:${draftId}`)
@@ -254,7 +388,7 @@ export function buildReview(draftId: string, draft: ReportDraft): {
       .setLabel("Cancel")
       .setStyle(ButtonStyle.Secondary)
   );
-  return { content, components: [buttons] };
+  return { embeds: [embed], components: [buttons] };
 }
 
 export function draftToCreateInput(draft: ReportDraft, userId: string): CreateReportInput {
@@ -297,24 +431,175 @@ export function draftToCreateInput(draft: ReportDraft, userId: string): CreateRe
   }
 }
 
-export function renderAccess(access: AccessView, admin: boolean): string {
-  return [
-    admin ? "Access: administrator (unlimited)" : `Credits: ${access.credits}`,
-    `Default country: ${access.defaultCountry ?? "not set"}`,
-    `Suspended: ${access.suspended ? "yes" : "no"}`,
-    ...(access.suspensionReason ? [`Reason: ${access.suspensionReason}`] : [])
-  ].join("\n");
+export function accessEmbed(access: AccessView, admin: boolean, userId?: string): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setColor(access.suspended ? Colors.Red : Colors.Blurple)
+    .setTitle(userId ? "User access" : "Your reporting access")
+    .addFields(
+      { name: "Access level", value: admin ? "Administrator — unlimited reports" : "Credit-based access", inline: true },
+      { name: "Credits", value: admin ? "Unlimited" : access.credits.toString(), inline: true },
+      {
+        name: "Default country",
+        value: access.defaultCountry ? countryDisplay(access.defaultCountry) : "Not configured",
+        inline: true
+      },
+      { name: "Account status", value: access.suspended ? "Suspended" : "Active", inline: true }
+    );
+  if (userId) embed.setDescription(`Discord user: \`${userId}\``);
+  if (access.suspensionReason) embed.addFields({ name: "Suspension reason", value: access.suspensionReason });
+  return embed;
 }
 
-export function renderReport(report: ReportView): string {
-  return [
-    `Report: ${report.internalReportId}`,
-    `Type: ${FLOW_LABELS[report.flow]} — ${reportReasonLabel(report.flow, report.reportType)}`,
-    `Country: ${report.country}`,
-    `Submission status: ${report.status}`,
-    `Discord status: ${report.discordStatus ?? "not received yet"}`,
-    `Discord report ID: ${report.discordReportId ?? "not assigned yet"}`,
-    `Attempt: ${report.lifecycleAttempt}/3`,
-    ...(report.error ? [`Error: ${report.error.code}`, `Retryable: ${report.retryable ? "yes" : "no"}`] : [])
-  ].join("\n");
+function reportElements(report: ReportView): readonly string[] {
+  return report.reportedDetails.kind === "profile"
+    ? report.reportedDetails.profileElements
+    : report.reportedDetails.kind === "server"
+      ? report.reportedDetails.guildElements
+      : [];
+}
+
+function reportTarget(report: ReportView, snapshot?: ServerSnapshot | null): string {
+  switch (report.reportedDetails.kind) {
+    case "message":
+      return report.reportedDetails.messageUrl;
+    case "profile":
+      return report.reportedDetails.reportedUsername;
+    case "server":
+      return serverSnapshotText(snapshot) ?? report.reportedDetails.guildIdOrInviteCode;
+  }
+}
+
+function reportDetails(report: ReportView, snapshot?: ServerSnapshot | null): string {
+  const details = report.reportedDetails;
+  return (
+    [
+      details.kind === "profile" && details.reportedUserServerId
+        ? `Observed in server: \`${details.reportedUserServerId}\``
+        : null,
+      details.kind === "server" ? serverSnapshotText(snapshot) : null,
+      details.context
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n") || "No additional context supplied."
+  );
+}
+
+function reportTimeline(report: ReportView): string {
+  if (report.timeline.length === 0) return "No timeline events recorded.";
+  let previousAttempt: number | null = null;
+  return report.timeline
+    .flatMap((event) => {
+      const label =
+        event.type === "discord_status_updated" && event.discordStatus
+          ? statusLabel(event.discordStatus)
+          : EVENT_LABELS[event.type] ?? statusLabel(event.type);
+      const attemptHeading =
+        event.lifecycleAttempt !== null && event.lifecycleAttempt !== previousAttempt
+          ? [`**Attempt ${event.lifecycleAttempt}**`]
+          : [];
+      previousAttempt = event.lifecycleAttempt;
+      return [
+        ...attemptHeading,
+        `${discordTimestamp(event.occurredAt)} • **${label}**${
+          event.errorCode ? ` • \`${event.errorCode}\`` : ""
+        }`
+      ];
+    })
+    .join("\n");
+}
+
+export function reportEmbed(
+  report: ReportView,
+  snapshot?: ServerSnapshot | null,
+  page?: { current: number; total: number }
+): EmbedBuilder {
+  const currentStatus = report.discordStatus ?? report.status;
+  const embed = new EmbedBuilder()
+    .setColor(statusColor(report))
+    .setTitle(`${FLOW_LABELS[report.flow]} report`)
+    .setDescription(`**${statusLabel(currentStatus)}**`)
+    .addFields(
+      { name: "Reported thing", value: truncate(reportTarget(report, snapshot), 1_024) },
+      { name: "Report category", value: FLOW_LABELS[report.flow], inline: true },
+      { name: "Country", value: countryDisplay(report.country), inline: true },
+      { name: "Reason", value: reasonText(report.flow, report.reportType, reportElements(report)) },
+      ...splitField(reportDetails(report, snapshot)).map((value, index) => ({
+        name: index === 0 ? "Reported details" : `Reported details (${index + 1})`,
+        value
+      })),
+      { name: "Progress", value: statusLabel(report.status), inline: true },
+      { name: "Discord review", value: statusLabel(report.discordStatus), inline: true },
+      { name: "Report ID", value: `\`${shortId(report.internalReportId)}\``, inline: true },
+      { name: "Discord ID", value: report.discordReportId ? `\`${report.discordReportId}\`` : "Not assigned", inline: true },
+      { name: "Attempt", value: `${report.lifecycleAttempt} of 3`, inline: true },
+      { name: "Created", value: discordTimestamp(report.createdAt), inline: true },
+      { name: "Last updated", value: discordTimestamp(report.updatedAt), inline: true }
+    );
+  for (const [index, value] of splitField(reportTimeline(report)).entries()) {
+    embed.addFields({ name: index === 0 ? "Timeline" : `Timeline (${index + 1})`, value });
+  }
+  if (snapshot?.iconUrl) embed.setThumbnail(snapshot.iconUrl);
+  if (report.error) {
+    embed.addFields({
+      name: "Latest error",
+      value: `${report.error.message ?? report.error.code}\nRetry available: **${report.retryable ? "Yes" : "No"}**`
+    });
+  }
+  embed.setFooter({
+    text: page
+      ? `Report ${page.current} of ${page.total} • Full ID: ${report.internalReportId}`
+      : `Full ID: ${report.internalReportId}`
+  });
+  return embed;
+}
+
+export function reportBrowser(
+  report: ReportView,
+  snapshot: ServerSnapshot | null | undefined,
+  page: number,
+  total: number
+): { embeds: EmbedBuilder[]; components: ActionRowBuilder<ButtonBuilder>[] } {
+  const safePage = Math.min(Math.max(page, 0), total - 1);
+  const controls = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`reports:page:${safePage - 1}`).setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(safePage === 0),
+    new ButtonBuilder().setCustomId(`reports:page:${safePage + 1}`).setLabel("Next").setStyle(ButtonStyle.Primary).setDisabled(safePage === total - 1)
+  );
+  return {
+    embeds: [reportEmbed(report, snapshot, { current: safePage + 1, total })],
+    components: total > 1 ? [controls] : []
+  };
+}
+
+export function accessKeysEmbed(keys: readonly AccessKeyView[]): EmbedBuilder {
+  const embed = infoEmbed("Access keys", keys.length === 0 ? "No access keys exist." : `Showing the ${keys.length} most recent keys.`);
+  for (const key of keys) {
+    embed.addFields({
+      name: `${key.code_prefix} • ${statusLabel(key.status)}`,
+      value: `ID: \`${key.id}\`\nCredits: **${key.credits_total}** • Expires: ${key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never"}`,
+      inline: true
+    });
+  }
+  return embed;
+}
+
+export function accessKeyEmbed(key: AccessKeyView): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(key.status === "active" ? Colors.Green : key.status === "revoked" ? Colors.Red : Colors.Blurple)
+    .setTitle("Access key details")
+    .setDescription(`\`${key.id}\``)
+    .addFields(
+      { name: "Prefix", value: key.code_prefix, inline: true },
+      { name: "Credits", value: key.credits_total.toString(), inline: true },
+      { name: "Status", value: statusLabel(key.status), inline: true },
+      { name: "Expires", value: key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never", inline: true },
+      { name: "Redeemed by", value: key.redeemed_by ? `\`${key.redeemed_by}\`` : "Nobody", inline: true },
+      { name: "Revoked", value: key.revoked_at ? discordTimestamp(key.revoked_at.toISOString()) : "No", inline: true }
+    );
+}
+
+export function generatedKeysEmbed(keys: readonly { id: string; code: string }[]): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(Colors.Green)
+    .setTitle("Access keys created")
+    .setDescription(["These plaintext values are shown once. Store them securely.", "", ...keys.map((key) => `\`${key.id}\`\n\`${key.code}\``)].join("\n"));
 }

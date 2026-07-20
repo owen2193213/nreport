@@ -29,8 +29,16 @@ const report = userInstalled()
         .addStringOption((option) =>
           option
             .setName("message-link")
-            .setDescription("Full Discord message link; you can also enter it in the form")
+            .setDescription("Full Discord message link")
+            .setRequired(true)
             .setMaxLength(300)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("country")
+            .setDescription("Applicable EU country")
+            .setAutocomplete(true)
+            .setMaxLength(100)
         )
     )
     .addSubcommand((command) =>
@@ -51,6 +59,13 @@ const report = userInstalled()
             .setMinLength(15)
             .setMaxLength(22)
         )
+        .addStringOption((option) =>
+          option
+            .setName("country")
+            .setDescription("Applicable EU country")
+            .setAutocomplete(true)
+            .setMaxLength(100)
+        )
     )
     .addSubcommand((command) =>
       command
@@ -60,6 +75,13 @@ const report = userInstalled()
           option
             .setName("server-or-invite")
             .setDescription("Server ID or invite code; defaults to the current server")
+            .setMaxLength(100)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("country")
+            .setDescription("Applicable EU country")
+            .setAutocomplete(true)
             .setMaxLength(100)
         )
     );
@@ -108,7 +130,7 @@ const settings = userInstalled()
         .addStringOption((option) =>
           option
             .setName("country")
-            .setDescription("Two-letter EU country code")
+            .setDescription("EU country")
             .setRequired(true)
             .setAutocomplete(true)
         )

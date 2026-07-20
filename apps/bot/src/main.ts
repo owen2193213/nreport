@@ -7,6 +7,7 @@ import { BotDatabase } from "./database.js";
 import { HealthServer } from "./health.js";
 import { InteractionHandler } from "./interactions.js";
 import { NotificationWorker } from "./notifier.js";
+import { ServerResolver } from "./server-resolver.js";
 
 async function main(): Promise<void> {
   const config = loadBotConfig();
@@ -24,7 +25,8 @@ async function main(): Promise<void> {
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages]
   });
-  const handler = new InteractionHandler({ api, config, countries, database });
+  const serverResolver = new ServerResolver(client);
+  const handler = new InteractionHandler({ api, config, countries, database, serverResolver });
   client.on(Events.InteractionCreate, (interaction) => void handler.handle(interaction));
 
   let discordReady = false;
@@ -32,10 +34,14 @@ async function main(): Promise<void> {
     discordReady = true;
     process.stdout.write(`Discord app ready as ${readyClient.user.username}.\n`);
   });
-  const health = new HealthServer(database, () => discordReady && client.isReady());
+  const health = new HealthServer(
+    database,
+    () => discordReady && client.isReady(),
+    config.reportEventWebhookSecret
+  );
   await health.listen(config.port);
   await client.login(config.token);
-  const notifier = new NotificationWorker(database, api, client, config);
+  const notifier = new NotificationWorker(database, api, client, config, serverResolver);
   notifier.start();
 
   let stopping = false;

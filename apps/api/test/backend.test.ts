@@ -18,6 +18,7 @@ import {
   decryptJson,
   encryptJson,
   signInboundEmail,
+  signReportEvent,
   verifyInboundSignature
 } from "../src/security.js";
 import {
@@ -165,6 +166,14 @@ describe("backend secrets and inbound email", () => {
         now: 1_800_000_000_000
       })
     ).toBe(true);
+  });
+
+  it("signs lifecycle webhook payloads deterministically", () => {
+    const signature = signReportEvent("s".repeat(32), "1800000000", "42", "{\"eventId\":\"42\"}");
+    expect(signature).toMatch(/^[a-f0-9]{64}$/);
+    expect(signature).toBe(
+      signReportEvent("s".repeat(32), "1800000000", "42", "{\"eventId\":\"42\"}")
+    );
   });
 
   it("extracts one repeated Discord verification code", async () => {

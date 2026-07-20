@@ -2,9 +2,11 @@ import { Buffer } from "node:buffer";
 import {
   createCipheriv,
   createDecipheriv,
+  createHash,
   createHmac,
   randomBytes,
-  randomUUID
+  randomUUID,
+  timingSafeEqual
 } from "node:crypto";
 
 const ALGORITHM = "aes-256-gcm";
@@ -51,4 +53,32 @@ export function decryptJson<T>(value: string, key: Buffer): T {
   decipher.setAuthTag(tag);
   const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return JSON.parse(plaintext.toString("utf8")) as T;
+}
+
+function safeEqual(left: string, right: string): boolean {
+  const leftHash = createHash("sha256").update(left).digest();
+  const rightHash = createHash("sha256").update(right).digest();
+  return timingSafeEqual(leftHash, rightHash);
+}
+
+export function verifyReportEventSignature(input: {
+  secret: string;
+  timestamp: string;
+  eventId: string;
+  body: string;
+  signature: string;
+  now?: number;
+}): boolean {
+  const timestampMs = Number(input.timestamp) * 1_000;
+  if (
+    !Number.isFinite(timestampMs) ||
+    Math.abs((input.now ?? Date.now()) - timestampMs) > 5 * 60_000
+  ) {
+    return false;
+  }
+  const bodyHash = createHash("sha256").update(input.body).digest("hex");
+  const expected = createHmac("sha256", input.secret)
+    .update(`${input.timestamp}\n${input.eventId}\n${bodyHash}`)
+    .digest("hex");
+  return safeEqual(expected, input.signature);
 }

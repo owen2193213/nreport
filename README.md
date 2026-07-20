@@ -69,6 +69,8 @@ CLOUDFLARE_EMAIL_WEBHOOK_SECRET=<at least 32 random characters>
 REPORT_EMAIL_DOMAIN=<Cloudflare Email Routing domain>
 DSA_PROXY_URL_TEMPLATE=<sticky proxy URL containing {country} and {session}>
 WORKER_ENABLED=true
+BOT_EVENT_WEBHOOK_URL=http://${{Discord-Bot.RAILWAY_PRIVATE_DOMAIN}}:3000/internal/report-events
+BOT_EVENT_WEBHOOK_SECRET=<at least 32 random characters>
 ```
 
 Generate independent secrets locally and never commit them:
@@ -79,7 +81,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 ```
 
 Use the Base64 value only for `SESSION_ENCRYPTION_KEY`. Use separate hexadecimal values
-for `API_KEY` and `CLOUDFLARE_EMAIL_WEBHOOK_SECRET`.
+for `API_KEY`, `CLOUDFLARE_EMAIL_WEBHOOK_SECRET`, and `BOT_EVENT_WEBHOOK_SECRET`.
 
 [`apps/api/railway.json`](apps/api/railway.json) defines the build, start, `/healthz`
 health check, and restart policy. The
@@ -100,6 +102,11 @@ npm.cmd run register -w @discord-dsa/bot
 In the Discord Developer Portal, enable **User Install** and disable **Guild Install** for
 this application. The bot health endpoint becomes ready only after both PostgreSQL and the
 Discord Gateway connection are available.
+
+Set `REPORT_EVENT_WEBHOOK_SECRET` on the bot to the same value as the API's
+`BOT_EVENT_WEBHOOK_SECRET`. The API pushes events to the bot's Railway private domain, so
+the bot needs no public domain. Failed webhook deliveries retry durably, and a 15-minute
+event-feed reconciliation provides an additional recovery path.
 
 ## Cloudflare Email Worker
 

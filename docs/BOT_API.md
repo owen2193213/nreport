@@ -148,7 +148,7 @@ type DiscordReportStatus =
   | "closed_no_action"
   | "review_not_approved";
 
-interface ReportView {
+interface ReportSummary {
   internalReportId: string;
   country: string;
   flow: ReportFlow;
@@ -168,6 +168,21 @@ interface ReportView {
   error: { code: string; message: string | null } | null;
   createdAt: string;
   updatedAt: string;
+}
+
+interface ReportDetail extends ReportSummary {
+  reportedDetails:
+    | { kind: "message"; messageUrl: string; context?: string }
+    | { kind: "profile"; reportedUsername: string; reportedUserServerId?: string; profileElements: string[]; context?: string }
+    | { kind: "server"; guildIdOrInviteCode: string; guildElements: string[]; context?: string };
+  timeline: Array<{
+    eventId: string;
+    type: string;
+    occurredAt: string;
+    lifecycleAttempt: number | null;
+    discordStatus: DiscordReportStatus | null;
+    errorCode: string | null;
+  }>;
 }
 ```
 
@@ -383,8 +398,23 @@ Authorization: Bearer <DSA_API_KEY>
 }
 ```
 
-The actual objects contain every `ReportView` field. A normal user-facing command must
+The actual objects contain every `ReportSummary` field. Fetch the selected report's
+`ReportDetail` from `GET /v1/reports/{internalReportId}` before rendering it. A normal user-facing command must
 always substitute `interaction.user.id`; never accept an arbitrary user ID option.
+
+### `GET /v1/report-events`
+
+Returns up to 100 externally meaningful lifecycle events after a numeric event cursor.
+The bot uses this feed every 15 minutes to reconcile signed webhook delivery.
+
+```http
+GET /v1/report-events?after=1234&limit=100
+Authorization: Bearer <DSA_API_KEY>
+```
+
+Webhook and feed events contain `eventId`, `internalReportId`, `submitterDiscordUserId`,
+`type`, and `occurredAt`. Ingest by immutable `eventId`; webhook receipt must not advance
+the reconciliation cursor because webhook events can arrive out of order.
 
 ### `POST /v1/reports/{internalReportId}/retry`
 

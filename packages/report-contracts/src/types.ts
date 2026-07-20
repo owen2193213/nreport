@@ -91,6 +91,9 @@ export interface ReportSummary {
   timezone: string;
   lifecycleAttempt: number;
   retryable: boolean;
+  retryOfReportId: string | null;
+  retriedAsReportId: string | null;
+  retrySequence: number;
   failureStage: ReportStatus | "pre_submission" | null;
   status: ReportStatus;
   discordReportId: string | null;

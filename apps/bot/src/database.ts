@@ -174,6 +174,9 @@ export interface TrackingRow extends QueryResultRow {
   last_status: PollingTracking["lastStatus"];
   last_discord_status: PollingTracking["lastDiscordStatus"];
   server_snapshot: ServerSnapshot | null;
+  flow: string;
+  country: string;
+  report_type: string;
 }
 
 export interface AccessKeyView extends QueryResultRow {
@@ -218,6 +221,10 @@ export function notificationEventKey(event: ReportLifecycleEvent): string {
     : `api:${event.eventId}`;
 }
 
+export function shouldNotifyLifecycleType(eventType: string): boolean {
+  return eventType !== "discord:received";
+}
+
 export function observedNotificationTypes(
   lastStatus: ReportStatus | null,
   lastDiscordStatus: DiscordReportStatus | null,
@@ -229,7 +236,11 @@ export function observedNotificationTypes(
   } else if (lastStatus !== report.status && report.status === "failed") {
     types.push("report_failed");
   }
-  if (report.discordStatus !== null && lastDiscordStatus !== report.discordStatus) {
+  if (
+    report.discordStatus !== null &&
+    lastDiscordStatus !== report.discordStatus &&
+    shouldNotifyLifecycleType(`discord:${report.discordStatus}`)
+  ) {
     types.push(`discord:${report.discordStatus}`);
   }
   return types;
@@ -727,17 +738,67 @@ export class BotDatabase {
     );
   }
 
-  public async resumeTrackingByReport(
-    internalReportId: string,
+  public async trackRetryReport(
+    previousReportId: string,
     userId: string,
+    interactionId: string,
     report: ReportView
-  ): Promise<void> {
-    await this.pool.query(
-      `UPDATE report_tracking SET last_status = $3, last_discord_status = $4,
-         poll_at = now() + interval '30 seconds', locked_at = NULL, updated_at = now()
-       WHERE internal_report_id = $1 AND discord_user_id = $2`,
-      [internalReportId, userId, report.status, report.discordStatus]
-    );
+  ): Promise<string> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const existing = await client.query<TrackingRow>(
+        `SELECT * FROM report_tracking
+         WHERE internal_report_id = $1 OR interaction_id = $2
+         FOR UPDATE`,
+        [report.internalReportId, interactionId]
+      );
+      const replay = existing.rows[0];
+      if (replay) {
+        await client.query("COMMIT");
+        return replay.id;
+      }
+      const previousResult = await client.query<TrackingRow>(
+        `SELECT * FROM report_tracking
+         WHERE internal_report_id = $1 AND discord_user_id = $2
+         FOR UPDATE`,
+        [previousReportId, userId]
+      );
+      const previous = previousResult.rows[0];
+      if (!previous) throw new Error("Previous report tracking was not found.");
+      const trackingId = randomUUID();
+      await client.query(
+        `INSERT INTO report_tracking (
+           id, discord_user_id, interaction_id, idempotency_key, internal_report_id,
+           flow, country, report_type, encrypted_request, credit_state,
+           last_status, last_discord_status, server_snapshot, poll_at
+         ) VALUES (
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, 'none', $10, $11, $12,
+           now() + interval '30 seconds'
+         )`,
+        [
+          trackingId,
+          userId,
+          interactionId,
+          `retry:${interactionId}`,
+          report.internalReportId,
+          previous.flow,
+          previous.country,
+          previous.report_type,
+          previous.encrypted_request,
+          report.status,
+          report.discordStatus,
+          previous.server_snapshot
+        ]
+      );
+      await client.query("COMMIT");
+      return trackingId;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   public async observeReport(trackingId: string, report: ReportView): Promise<void> {
@@ -853,7 +914,7 @@ export class BotDatabase {
           event.occurredAt
         ]
       );
-      if ((inserted.rowCount ?? 0) > 0) {
+      if ((inserted.rowCount ?? 0) > 0 && shouldNotifyLifecycleType(event.type)) {
         const payload: NotificationPayload = {
           eventId: event.eventId,
           eventType: event.type,

@@ -666,6 +666,14 @@ export function reportEmbed(
         name: "References",
         value: `Report: \`${shortId(report.internalReportId)}\`\nDiscord: ${
           report.discordReportId ? `\`${report.discordReportId}\`` : "Not assigned"
+        }${
+          report.retryOfReportId
+            ? `\nPrevious report: \`${shortId(report.retryOfReportId)}\``
+            : ""
+        }${
+          report.retriedAsReportId
+            ? `\nRetried as: \`${shortId(report.retriedAsReportId)}\``
+            : ""
         }`,
         inline: true
       },
@@ -676,10 +684,10 @@ export function reportEmbed(
       }
     );
   if (!options.hideStatusDescription) embed.setDescription(`**${statusLabel(currentStatus)}**`);
-  if (report.lifecycleAttempt > 1 || report.retryable) {
+  if (report.retrySequence > 0 || report.retryable) {
     embed.addFields({
       name: "Retry",
-      value: `Attempt **${report.lifecycleAttempt} of 3**${
+      value: `Report **${report.retrySequence + 1} of 3**${
         report.retryable ? " • Another retry is available" : ""
       }`
     });
@@ -706,6 +714,20 @@ export function reportEmbed(
   return embed;
 }
 
+export function reportRetryComponents(
+  report: ReportView
+): ActionRowBuilder<ButtonBuilder>[] {
+  if (!(report.status === "failed" && report.retryable && report.retrySequence < 2)) return [];
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`reports:retry:${report.internalReportId}`)
+        .setLabel("Retry as new report")
+        .setStyle(ButtonStyle.Primary)
+    )
+  ];
+}
+
 export function reportBrowser(
   report: ReportView,
   snapshot: ServerSnapshot | null | undefined,
@@ -717,9 +739,10 @@ export function reportBrowser(
     new ButtonBuilder().setCustomId(`reports:page:${safePage - 1}`).setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(safePage === 0),
     new ButtonBuilder().setCustomId(`reports:page:${safePage + 1}`).setLabel("Next").setStyle(ButtonStyle.Primary).setDisabled(safePage === total - 1)
   );
+  const retryControls = reportRetryComponents(report);
   return {
     embeds: [reportEmbed(report, snapshot, { page: { current: safePage + 1, total } })],
-    components: total > 1 ? [controls] : []
+    components: [...(total > 1 ? [controls] : []), ...retryControls]
   };
 }
 
@@ -728,7 +751,13 @@ export function accessKeysEmbed(keys: readonly AccessKeyView[]): EmbedBuilder {
   for (const key of keys) {
     embed.addFields({
       name: `${key.code_prefix} • ${statusLabel(key.status)}`,
-      value: `ID: \`${key.id}\`\nCredits: **${key.credits_total}** • Expires: ${key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never"}`,
+      value: [
+        `ID: \`${key.id}\``,
+        `Credits: **${key.credits_total}** • Expires: ${key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never"}`,
+        key.redeemed_by
+          ? `Redeemed by: \`${key.redeemed_by}\`${key.redeemed_at ? ` • ${discordTimestamp(key.redeemed_at.toISOString())}` : ""}`
+          : "Redeemed by: Nobody"
+      ].join("\n"),
       inline: true
     });
   }
@@ -754,5 +783,5 @@ export function generatedKeysEmbed(keys: readonly { id: string; code: string }[]
   return new EmbedBuilder()
     .setColor(Colors.Green)
     .setTitle("Access keys created")
-    .setDescription(["These plaintext values are shown once. Store them securely.", "", ...keys.map((key) => `\`${key.id}\`\n\`${key.code}\``)].join("\n"));
+    .setDescription(["These plaintext values are shown once. Store them securely.", "", ...keys.map((key) => `\`${key.code}\``)].join("\n"));
 }

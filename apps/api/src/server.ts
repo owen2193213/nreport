@@ -17,7 +17,6 @@ import type { Database, ReportEventRow, ReportRow } from "./database.js";
 import { parseDiscordEmail } from "./email.js";
 import {
   createProxySessionId,
-  generateEmailAlias,
   generateIdentity,
   supportedCountries
 } from "./pseudonyms.js";
@@ -42,6 +41,9 @@ function publicReportSummary(report: ReportRow): ReportSummary {
     timezone: report.timezone,
     lifecycleAttempt: report.lifecycle_attempt,
     retryable: report.retryable,
+    retryOfReportId: report.retry_of_report_id,
+    retriedAsReportId: report.retried_as_report_id,
+    retrySequence: report.retry_sequence,
     failureStage: report.failure_stage,
     status: report.status,
     discordReportId: report.discord_report_id,
@@ -142,8 +144,12 @@ export async function buildServer(config: AppConfig, database: Database) {
         paths: [
           "req.headers.authorization",
           "req.headers.x-dsa-signature",
+          "req.headers.x-dsa-recipient",
+          "req.headers.x-dsa-message-id",
           "request.headers.authorization",
-          "request.headers.x-dsa-signature"
+          "request.headers.x-dsa-signature",
+          "request.headers.x-dsa-recipient",
+          "request.headers.x-dsa-message-id"
         ],
         censor: "[REDACTED]"
       }
@@ -203,6 +209,16 @@ export async function buildServer(config: AppConfig, database: Database) {
           language: identity.language,
           proxySessionId: createProxySessionId()
         });
+        request.log.info(
+          {
+            event: "report_create_accepted",
+            reportId: result.report.id,
+            created: result.created,
+            flow: result.report.flow,
+            country: result.report.country
+          },
+          "Report creation accepted"
+        );
         return reply
           .code(result.created ? 202 : 200)
           .send(await publicReportDetail(database, result.report));
@@ -255,17 +271,29 @@ export async function buildServer(config: AppConfig, database: Database) {
       try {
         const report = await database.getReport(request.params.id);
         if (!report) throw new ReportRetryError("report_not_found");
+        const identity = generateIdentity(report.country, config.emailDomain);
         const result = await database.retryReport({
           reportId: report.id,
           idempotencyKey,
           submitterDiscordUserId: input.submitterDiscordUserId,
-          email: generateEmailAlias(
-            report.reporter_legal_name,
-            report.language,
-            config.emailDomain
-          ),
+          id: identity.internalReportId,
+          legalName: identity.displayName,
+          email: identity.email,
+          timezone: identity.timezone,
+          locale: identity.locale,
+          language: identity.language,
           proxySessionId: createProxySessionId()
         });
+        request.log.info(
+          {
+            event: "report_retry_accepted",
+            reportId: result.report.id,
+            previousReportId: report.id,
+            replayed: result.replayed,
+            retrySequence: result.report.retry_sequence
+          },
+          "Report retry accepted"
+        );
         return reply
           .code(result.replayed ? 200 : 202)
           .send(await publicReportDetail(database, result.report));
@@ -273,6 +301,11 @@ export async function buildServer(config: AppConfig, database: Database) {
         if (error instanceof ReportRetryError) {
           return reply.code(error.statusCode).send({
             error: { code: error.code, message: error.message }
+          });
+        }
+        if (error instanceof IdempotencyConflictError) {
+          return reply.code(409).send({
+            error: { code: "idempotency_conflict", message: error.message }
           });
         }
         throw error;
@@ -350,6 +383,10 @@ export async function buildServer(config: AppConfig, database: Database) {
         recipient.length > 320 ||
         messageId.length > 500
       ) {
+        request.log.warn(
+          { event: "inbound_email_rejected", reason: "invalid_event" },
+          "Inbound email rejected"
+        );
         return reply.code(400).send({ error: { code: "invalid_email_event" } });
       }
       if (
@@ -362,10 +399,25 @@ export async function buildServer(config: AppConfig, database: Database) {
           signature
         })
       ) {
+        request.log.warn(
+          {
+            event: "inbound_email_rejected",
+            reason: "invalid_signature",
+            messageIdDigest: sha256Hex(messageId).slice(0, 16)
+          },
+          "Inbound email rejected"
+        );
         return reply.code(401).send({ error: { code: "invalid_signature" } });
       }
       const parsed = await parseDiscordEmail(rawEmail);
-      if (!parsed) return reply.code(202).send({ status: "ignored" });
+      const messageIdDigest = sha256Hex(messageId).slice(0, 16);
+      if (!parsed) {
+        request.log.info(
+          { event: "inbound_email_ignored", messageIdDigest },
+          "Inbound email ignored"
+        );
+        return reply.code(202).send({ status: "ignored" });
+      }
       const result =
         parsed.kind === "verification"
           ? await database.registerVerificationEmail({
@@ -382,7 +434,18 @@ export async function buildServer(config: AppConfig, database: Database) {
               discordReportId: parsed.reportId,
               discordStatus: parsed.status
             });
-      return reply.code(202).send({ status: result });
+      request.log.info(
+        {
+          event: "inbound_email_correlated",
+          messageIdDigest,
+          emailKind: parsed.kind,
+          correlationStatus: result.status,
+          reportId: result.reportId,
+          ...(parsed.kind === "report_update" ? { discordStatus: parsed.status } : {})
+        },
+        "Inbound email processed"
+      );
+      return reply.code(202).send({ status: result.status });
     }
   );
 

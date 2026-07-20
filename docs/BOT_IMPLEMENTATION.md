@@ -58,7 +58,8 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
    the exact body and idempotency key.
 9. Poll briefly in the interaction, then let the durable worker continue.
 10. Push lifecycle changes from the API to the bot and DM the complete current report card
-    for submission, failure, received, actioned, closed, or rejected review.
+    for submission, failure, actioned, closed, or rejected review. `received` remains visible in
+    the timeline but does not create a second acknowledgement DM.
 
 Report cards include the target, category, full country name and flag, human reason plus
 selected elements, reported details, references, and a simplified milestone history. The API
@@ -87,6 +88,138 @@ until Discord returns a terminal outcome. The API also uses a transactional even
 signed private webhook for fast delivery, with full event-feed reconciliation as a safety net.
 DMs use a per-attempt unique `(tracking_id, event_key)` key and retry transient failures with a
 bounded exponential delay.
+
+### Notification decision log
+
+- A successful `report_submitted` event is the single user-facing acknowledgement that Discord
+  received the report submission. A following `discord:received` event is stored and displayed in
+  report history but is not sent as another DM.
+- Suppression happens both when events are ingested and immediately before delivery, so pending
+  `received` jobs created by an older bot version are also discarded safely.
+- Delaying the submission acknowledgement or removing `received` from the API timeline were
+  rejected because they would reduce responsiveness or audit detail.
+
+## Verification timeout and immutable retries
+
+### Understanding and assumptions
+
+- A report must not remain in `awaiting_verification` indefinitely when Discord's verification
+  email never reaches the Cloudflare worker.
+- The API waits for at most 60 seconds after requesting verification, then marks the report failed
+  with `verification_email_timeout` and makes it retryable.
+- The API makes the initial verification request and, while the same report is still waiting,
+  repeats that same Discord request at 20 and 40 seconds. Every request uses the report's existing
+  sticky proxy identity, email alias, and persisted Discord session. Resends never extend the
+  original 60-second deadline.
+- An email may reach the inbound worker before the initial request job finishes saving its Discord
+  session. Persisting the session must therefore preserve an already-recorded
+  `verification_received` state rather than moving the report backwards to
+  `awaiting_verification`. The same preservation rule applies if mail arrives while a resend is
+  refreshing that session.
+- A manual retry is free, remains owner/admin protected, and is unavailable to suspended users.
+- Each retry creates a new internal report ID, generated identity/email, proxy session, API row,
+  bot tracking row, and timeline. The failed report remains immutable and links to its successor.
+- A chain is limited to the original report plus two successors. This preserves the existing
+  three-attempt safety limit without allowing branches from the same failed report.
+
+### Final design
+
+The initial request transaction schedules two durable `request_code` resend jobs. A resend is a
+no-op unless the report is still `awaiting_verification`, has a saved session, and remains inside
+its original deadline. This makes restarts safe and stops both resending and report correlation as
+soon as mail arrives or the deadline expires. The Cloudflare catch-all itself remains online for
+other reports; late mail for the expired alias is recorded as unmatched and cannot revive it.
+
+The API worker sweeps expired verification deadlines every few seconds. Expiration and the
+`report_failed` lifecycle event are committed together, so the bot receives a durable failure DM.
+The existing retry endpoint creates a successor report transactionally and returns that new report;
+idempotent replays return the same successor. The bot creates separate tracking for the successor,
+so lifecycle notification keys and polling state cannot collide with the failed report.
+
+Failed report views and failure DMs include a **Retry as new report** button. `/reports retry`
+uses the same operation. Both surfaces update to the successor's new report card after creation.
+
+### Decision log
+
+- Chosen: deadline sweep over a permanent timeout job. This avoids expanding the job-kind schema
+  and safely recovers deadlines created before a worker restart.
+- Chosen: durable same-session resends at 20 and 40 seconds, with a fixed 60-second deadline, over
+  in-memory timers or a sliding deadline. This survives restarts without monitoring indefinitely.
+- Chosen: session persistence that preserves `verification_received`, because inbound email and
+  the request job can finish in either order.
+- Chosen: immutable successor rows over resetting a failed row. This preserves audit history and
+  gives every manual retry the new ID requested by the product flow.
+- Rejected: creating a fresh Discord session for each resend. It could pair an inbound code with
+  the wrong session; all resends instead continue from the saved session.
+
+## Access-key presentation and credit accounting
+
+### Understanding and assumptions
+
+- Plaintext access keys are sensitive and remain visible only in the one-time creation response.
+- The database UUID is an administrative implementation detail and is omitted from that creation
+  response; administrators can obtain it from the key list when inspection or revocation is needed.
+- Key list and inspection views identify the redeeming Discord user ID and redemption time, or say
+  explicitly that the key is unredeemed.
+- Normal report submission reserves and then consumes one credit. Configured admins retain the
+  documented unlimited-access bypass, and `WHITELIST_ENABLED=false` intentionally bypasses credits
+  for every user.
+- Credit reservation remains transactional and suitable for concurrent submissions; no new schema
+  or additional external service is required.
+
+### Decision log
+
+- Chosen: hide internal IDs only in the one-time generated-key response, preserving the ID in
+  administrative list/inspect output because those commands address keys by ID.
+- Chosen: render raw Discord user IDs without mentions so administrative output cannot ping users.
+- Chosen: preserve the established admin and disabled-whitelist bypass policy. Operators who want
+  to exercise credit accounting must test with a non-admin while whitelisting is enabled.
+
+## Operational lifecycle logging
+
+### Understanding and assumptions
+
+- Railway logs must reconstruct a report from creation through email correlation, Discord
+  verification/submission, bot tracking, and notification delivery without database access.
+- Expected production volume is modest, but repeated status polling can be noisy; state-changing
+  boundaries are logged at `info`, recoverable anomalies at `warn`, and terminal failures at
+  `error`.
+- Logs may contain internal report, job, event, notification, and tracking IDs. They must never
+  contain raw email addresses or messages, verification codes, access-key plaintext/hashes,
+  report context, proxy credentials, encryption material, Discord interaction tokens, or request
+  bodies.
+- Logging failures must not affect report processing. A failure while replying to an expired
+  Discord interaction is contained and logged rather than escaping the event handler.
+
+### Event vocabulary
+
+- API: `report_create_accepted`, `report_retry_accepted`, `report_job_started`,
+  `report_job_stage_started`, `report_job_stage_completed`, `report_job_completed`,
+  `report_job_stage_failed`, `report_job_retry_scheduled`, `report_job_failed`,
+  `verification_resend_completed`, `verification_resend_skipped`,
+  `verification_resend_failed`, `verification_wait_expired`, `inbound_email_rejected`,
+  `inbound_email_ignored`, and `inbound_email_correlated`.
+- Bot: `interaction_failed`, `interaction_error_response_failed`,
+  `report_submission_reserved`, `report_submission_created`, and
+  `report_submission_observed` or `report_submission_failed`, in addition to the existing polling,
+  reconciliation, webhook, and notification events.
+- Email worker: `email_rejected`, `email_forward_completed`, and `email_forward_failed`, correlated
+  using the same one-way message-ID digest recorded by the API.
+- Inbound-email correlation records the parsed email kind, database result, correlated report ID
+  when available, and a one-way message-ID digest. It does not record recipient or email content.
+- Job stage records include duration so an operator can distinguish email delay, Discord network
+  delay, and bot polling delay.
+
+### Decision log
+
+- Chosen: explicit lifecycle boundary events over logging response bodies. Bodies contain private
+  reporting data and are not needed for correlation.
+- Chosen: a short SHA-256 message-ID digest over raw IDs or recipient addresses for duplicate-mail
+  investigation without exposing mailbox identifiers.
+- Chosen: contain secondary Discord response errors in the interaction handler so an expired
+  interaction cannot terminate the bot process.
+- Rejected: logging every successful report-status GET beyond Fastify's existing access log; bot
+  state-change and polling logs already provide the useful status signal.
 
 Do not register production commands or enable production reporting workers in pull-request
 environments. Use a separate Discord application and mocked API for staging.

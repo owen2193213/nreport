@@ -7,7 +7,14 @@ import {
   extractVerificationCode,
   parseDiscordEmail
 } from "../src/email.js";
-import { isRetryableFailure, shouldApplyDiscordStatus } from "../src/database.js";
+import {
+  isRetryableFailure,
+  statusAfterSessionPersistence,
+  shouldResendVerification,
+  shouldApplyDiscordStatus,
+  VERIFICATION_EMAIL_RESEND_DELAYS_SECONDS,
+  VERIFICATION_EMAIL_TIMEOUT_SECONDS
+} from "../src/database.js";
 import {
   buildAcceptLanguage,
   generateEmailAlias,
@@ -153,6 +160,7 @@ describe("backend identity and validation", () => {
   });
 
   it("validates retry ownership and blocks unsafe failure stages", () => {
+    expect(VERIFICATION_EMAIL_TIMEOUT_SECONDS).toBe(60);
     expect(
       parseRetryReportInput({ submitterDiscordUserId: "1197857362942378017" })
     ).toEqual({ submitterDiscordUserId: "1197857362942378017" });
@@ -162,9 +170,44 @@ describe("backend identity and validation", () => {
     expect(
       isRetryableFailure("requesting_verification", "report_processing_failed", 1)
     ).toBe(true);
+    expect(isRetryableFailure("awaiting_verification", "verification_email_timeout", 0)).toBe(
+      true
+    );
     expect(isRetryableFailure("submitting", "report_processing_failed", 1)).toBe(false);
     expect(isRetryableFailure("verifying", "ambiguous_submission_state", 1)).toBe(false);
-    expect(isRetryableFailure("verifying", "report_processing_failed", 3)).toBe(false);
+    expect(isRetryableFailure("verifying", "report_processing_failed", 2)).toBe(false);
+  });
+
+  it("preserves an email that arrives before session persistence completes", () => {
+    expect(statusAfterSessionPersistence("requesting_verification")).toBe(
+      "awaiting_verification"
+    );
+    expect(statusAfterSessionPersistence("verification_received")).toBe(
+      "verification_received"
+    );
+  });
+
+  it("resends only inside the fixed verification window", () => {
+    expect(VERIFICATION_EMAIL_RESEND_DELAYS_SECONDS).toEqual([20, 40]);
+    const deadline = new Date("2026-07-20T12:01:00.000Z");
+    expect(
+      shouldResendVerification(
+        { status: "awaiting_verification", session_state: "encrypted", verification_deadline: deadline },
+        new Date("2026-07-20T12:00:40.000Z")
+      )
+    ).toBe(true);
+    expect(
+      shouldResendVerification(
+        { status: "verification_received", session_state: "encrypted", verification_deadline: null },
+        new Date("2026-07-20T12:00:40.000Z")
+      )
+    ).toBe(false);
+    expect(
+      shouldResendVerification(
+        { status: "awaiting_verification", session_state: "encrypted", verification_deadline: deadline },
+        deadline
+      )
+    ).toBe(false);
   });
 });
 

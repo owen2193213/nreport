@@ -7,7 +7,12 @@ import {
   type DiscordDsaSessionState
 } from "@discord-dsa/client";
 import type { AppConfig } from "./config.js";
-import type { Database, JobRow, ReportRow } from "./database.js";
+import {
+  shouldResendVerification,
+  type Database,
+  type JobRow,
+  type ReportRow
+} from "./database.js";
 import { buildAcceptLanguage, buildProxyUrl } from "./pseudonyms.js";
 import { decryptJson, encryptJson } from "./security.js";
 import { DISCORD_FORM_LANGUAGE, toReportDraft } from "./validation.js";
@@ -50,6 +55,7 @@ function redactedError(error: unknown): { code: string; message: string; retryAf
 export class JobRunner {
   private stopped = false;
   private runningPromise: Promise<void> | undefined;
+  private nextVerificationSweepAt = 0;
 
   public constructor(
     private readonly database: Database,
@@ -71,6 +77,16 @@ export class JobRunner {
     await this.database.recoverInterruptedJobs();
     while (!this.stopped) {
       try {
+        if (Date.now() >= this.nextVerificationSweepAt) {
+          const expiredReportIds = await this.database.expireVerificationWaits();
+          this.nextVerificationSweepAt = Date.now() + 5_000;
+          for (const reportId of expiredReportIds) {
+            this.logger.info(
+              { event: "verification_wait_expired", reportId },
+              "Verification email wait expired"
+            );
+          }
+        }
         const job = await this.database.claimJob();
         if (!job) {
           await delay(750);
@@ -105,6 +121,18 @@ export class JobRunner {
   }
 
   private async processJob(job: JobRow): Promise<void> {
+    const startedAt = Date.now();
+    this.logger.info(
+      {
+        event: "report_job_started",
+        jobId: job.id,
+        reportId: job.report_id,
+        jobKind: job.kind,
+        attempt: job.attempts,
+        resend: job.payload.resend === true
+      },
+      "Report job started"
+    );
     try {
       if (job.kind === "request_code") {
         await this.requestCode(job);
@@ -112,8 +140,34 @@ export class JobRunner {
         await this.verifyAndSubmit(job);
       }
       await this.database.completeJob(job.id);
+      this.logger.info(
+        {
+          event: "report_job_completed",
+          jobId: job.id,
+          reportId: job.report_id,
+          jobKind: job.kind,
+          durationMs: Date.now() - startedAt
+        },
+        "Report job completed"
+      );
     } catch (error) {
       const redacted = redactedError(error);
+      if (job.kind === "request_code" && job.payload.resend === true) {
+        await this.database.completeJob(job.id);
+        this.logger.error(
+          {
+            jobId: job.id,
+            reportId: job.report_id,
+            resendNumber: job.payload.resendNumber,
+            errorCode: redacted.code,
+            errorMessage: redacted.message,
+            durationMs: Date.now() - startedAt,
+            event: "verification_resend_failed"
+          },
+          "Verification email resend failed; original deadline remains active"
+        );
+        return;
+      }
       const canRetry =
         job.attempts < job.max_attempts &&
         (job.kind === "request_code" || error instanceof SessionNotReadyError);
@@ -124,16 +178,82 @@ export class JobRunner {
         );
         await this.database.retryJob(job, redacted.message, delaySeconds);
         this.logger.info(
-          { jobId: job.id, reportId: job.report_id, delaySeconds },
+          {
+            event: "report_job_retry_scheduled",
+            jobId: job.id,
+            reportId: job.report_id,
+            jobKind: job.kind,
+            errorCode: redacted.code,
+            errorMessage: redacted.message,
+            delaySeconds,
+            durationMs: Date.now() - startedAt
+          },
           "Report job scheduled for retry"
         );
         return;
       }
       await this.database.failJobAndReport(job, redacted.code, redacted.message);
       this.logger.error(
-        { jobId: job.id, reportId: job.report_id, errorCode: redacted.code },
+        {
+          event: "report_job_failed",
+          jobId: job.id,
+          reportId: job.report_id,
+          jobKind: job.kind,
+          errorCode: redacted.code,
+          errorMessage: redacted.message,
+          durationMs: Date.now() - startedAt
+        },
         "Report job failed"
       );
+    }
+  }
+
+  private async runStage<T>(
+    job: JobRow,
+    stage: string,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const startedAt = Date.now();
+    this.logger.info(
+      {
+        event: "report_job_stage_started",
+        jobId: job.id,
+        reportId: job.report_id,
+        jobKind: job.kind,
+        stage
+      },
+      "Report job stage started"
+    );
+    try {
+      const result = await operation();
+      this.logger.info(
+        {
+          event: "report_job_stage_completed",
+          jobId: job.id,
+          reportId: job.report_id,
+          jobKind: job.kind,
+          stage,
+          durationMs: Date.now() - startedAt
+        },
+        "Report job stage completed"
+      );
+      return result;
+    } catch (error) {
+      const redacted = redactedError(error);
+      this.logger.error(
+        {
+          event: "report_job_stage_failed",
+          jobId: job.id,
+          reportId: job.report_id,
+          jobKind: job.kind,
+          stage,
+          errorCode: redacted.code,
+          errorMessage: redacted.message,
+          durationMs: Date.now() - startedAt
+        },
+        "Report job stage failed"
+      );
+      throw error;
     }
   }
 
@@ -145,17 +265,69 @@ export class JobRunner {
 
   private async requestCode(job: JobRow): Promise<void> {
     const report = await this.requiredReport(job.report_id);
+    if (job.payload.resend === true) {
+      if (!shouldResendVerification(report)) {
+        this.logger.info(
+          {
+            event: "verification_resend_skipped",
+            jobId: job.id,
+            reportId: report.id,
+            resendNumber: job.payload.resendNumber,
+            reportStatus: report.status
+          },
+          "Verification email resend skipped because report is no longer waiting"
+        );
+        return;
+      }
+      const sessionState = decryptJson<DiscordDsaSessionState>(
+        report.session_state!,
+        this.config.sessionEncryptionKey
+      );
+      const resendNumber =
+        typeof job.payload.resendNumber === "number" ? job.payload.resendNumber : 0;
+      const client = this.clientFor(report, sessionState);
+      try {
+        await this.runStage(job, "resend_verification_email", () =>
+          client.sendEmailCode(report.flow, report.reporter_email)
+        );
+        const refreshedSession = await this.runStage(job, "snapshot_resend_session", () =>
+          client.snapshotSession()
+        );
+        const persisted = await this.database.saveResentVerificationSession(
+          report.id,
+          encryptJson(refreshedSession, this.config.sessionEncryptionKey),
+          resendNumber
+        );
+        this.logger.info(
+          {
+            event: "verification_resend_completed",
+            jobId: job.id,
+            reportId: report.id,
+            resendNumber,
+            persisted
+          },
+          "Verification email resend request completed"
+        );
+      } finally {
+        await this.runStage(job, "close_discord_session", () => client.close());
+      }
+      return;
+    }
     await this.database.setStatus(report.id, "requesting_verification", "requesting_verification");
     const client = this.clientFor(report);
     try {
-      await client.sendEmailCode(report.flow, report.reporter_email);
-      const sessionState = await client.snapshotSession();
+      await this.runStage(job, "request_verification_email", () =>
+        client.sendEmailCode(report.flow, report.reporter_email)
+      );
+      const sessionState = await this.runStage(job, "snapshot_initial_session", () =>
+        client.snapshotSession()
+      );
       await this.database.saveAwaitingVerification(
         report.id,
         encryptJson(sessionState, this.config.sessionEncryptionKey)
       );
     } finally {
-      await client.close();
+      await this.runStage(job, "close_discord_session", () => client.close());
     }
   }
 
@@ -175,8 +347,12 @@ export class JobRunner {
     const client = this.clientFor(report, sessionState);
     try {
       await this.database.setStatus(report.id, "verifying", "verification_started");
-      const token = await client.verifyEmailCode(report.flow, report.reporter_email, code);
-      const menu = await client.getMenu(report.flow);
+      const token = await this.runStage(job, "verify_email_code", () =>
+        client.verifyEmailCode(report.flow, report.reporter_email, code)
+      );
+      const menu = await this.runStage(job, "fetch_report_menu", () =>
+        client.getMenu(report.flow)
+      );
       const payload = client.prepareSubmission(
         menu,
         toReportDraft(report.input, report.reporter_legal_name),
@@ -184,10 +360,12 @@ export class JobRunner {
         DISCORD_FORM_LANGUAGE
       );
       await this.database.setStatus(report.id, "submitting", "submission_started");
-      const result = await client.submitPrepared(payload);
+      const result = await this.runStage(job, "submit_report", () =>
+        client.submitPrepared(payload)
+      );
       await this.database.markSubmitted(report.id, result.report_id);
     } finally {
-      await client.close();
+      await this.runStage(job, "close_discord_session", () => client.close());
     }
   }
 }

@@ -16,6 +16,24 @@ export type ReportStatus =
   | "failed";
 
 export const MAX_LIFECYCLE_ATTEMPTS = 3;
+export const VERIFICATION_EMAIL_TIMEOUT_SECONDS = 60;
+export const VERIFICATION_EMAIL_RESEND_DELAYS_SECONDS = [20, 40] as const;
+
+export function statusAfterSessionPersistence(current: ReportStatus): ReportStatus {
+  return current === "verification_received" ? current : "awaiting_verification";
+}
+
+export function shouldResendVerification(
+  report: Pick<ReportRow, "status" | "session_state" | "verification_deadline">,
+  now = new Date()
+): boolean {
+  return (
+    report.status === "awaiting_verification" &&
+    report.session_state !== null &&
+    report.verification_deadline !== null &&
+    report.verification_deadline.getTime() > now.getTime()
+  );
+}
 
 const TERMINAL_DISCORD_STATUSES = new Set<DiscordReportStatus>([
   "actioned",
@@ -57,6 +75,10 @@ export interface ReportRow extends QueryResultRow {
   lifecycle_attempt: number;
   retryable: boolean;
   failure_stage: ReportStatus | "pre_submission" | null;
+  retry_of_report_id: string | null;
+  retried_as_report_id: string | null;
+  retry_sequence: number;
+  verification_deadline: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -101,11 +123,21 @@ export interface CreateReportResult {
   report: ReportRow;
 }
 
+export interface InboundEmailRegistration {
+  status: "accepted" | "duplicate" | "unknown_recipient" | "pending_report";
+  reportId: string | null;
+}
+
 export interface RetryReportRecord {
   reportId: string;
   idempotencyKey: string;
   submitterDiscordUserId: string;
+  id: string;
+  legalName: string;
   email: string;
+  timezone: string;
+  locale: string;
+  language: string;
   proxySessionId: string;
 }
 
@@ -124,13 +156,13 @@ export type ReportRetryErrorCode =
 export function isRetryableFailure(
   stage: ReportStatus,
   errorCode: string,
-  lifecycleAttempt: number
+  retrySequence: number
 ): boolean {
   return (
     stage !== "submitting" &&
     stage !== "submitted" &&
     errorCode !== "ambiguous_submission_state" &&
-    lifecycleAttempt < MAX_LIFECYCLE_ATTEMPTS
+    retrySequence < MAX_LIFECYCLE_ATTEMPTS - 1
   );
 }
 
@@ -160,6 +192,10 @@ CREATE TABLE IF NOT EXISTS reports (
   lifecycle_attempt integer NOT NULL DEFAULT 1,
   retryable boolean NOT NULL DEFAULT false,
   failure_stage text,
+  retry_of_report_id text REFERENCES reports(id),
+  retried_as_report_id text REFERENCES reports(id),
+  retry_sequence integer NOT NULL DEFAULT 0,
+  verification_deadline timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -228,6 +264,10 @@ ALTER TABLE reports ADD COLUMN IF NOT EXISTS submitter_discord_user_id text;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS lifecycle_attempt integer NOT NULL DEFAULT 1;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS retryable boolean NOT NULL DEFAULT false;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS failure_stage text;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS retry_of_report_id text REFERENCES reports(id);
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS retried_as_report_id text REFERENCES reports(id);
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS retry_sequence integer NOT NULL DEFAULT 0;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS verification_deadline timestamptz;
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_report_id text;
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_status text;
 
@@ -236,13 +276,27 @@ CREATE INDEX IF NOT EXISTS report_events_report_idx ON report_events(report_id, 
 CREATE INDEX IF NOT EXISTS reports_email_status_idx ON reports(reporter_email, status);
 CREATE INDEX IF NOT EXISTS reports_submitter_idx
   ON reports(submitter_discord_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS reports_verification_deadline_idx
+  ON reports(verification_deadline) WHERE status = 'awaiting_verification';
+
+UPDATE reports
+SET retry_sequence = lifecycle_attempt - 1
+WHERE retry_sequence = 0 AND lifecycle_attempt > 1;
+
+UPDATE reports
+SET verification_deadline = updated_at + interval '60 seconds'
+WHERE status = 'awaiting_verification' AND verification_deadline IS NULL;
+
+UPDATE reports
+SET retryable = false
+WHERE retry_sequence >= 2 AND retryable = true;
 
 UPDATE reports AS report
 SET retryable = true,
     failure_stage = COALESCE(failure_stage, 'pre_submission')
 WHERE report.status = 'failed'
   AND report.discord_report_id IS NULL
-  AND report.lifecycle_attempt < 3
+  AND report.retry_sequence < 2
   AND report.error_code IS DISTINCT FROM 'ambiguous_submission_state'
   AND NOT EXISTS (
     SELECT 1 FROM report_events AS event
@@ -540,14 +594,115 @@ export class Database {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query(
+      const updated = await client.query<Pick<ReportRow, "status">>(
         `UPDATE reports
-         SET status = 'awaiting_verification', session_state = $2, updated_at = now()
-         WHERE id = $1`,
-        [reportId, encryptedSessionState]
+         SET status = CASE
+               WHEN status = 'verification_received' THEN status
+               ELSE 'awaiting_verification'
+             END,
+             session_state = $2,
+             verification_deadline = CASE
+               WHEN status = 'verification_received' THEN NULL
+               ELSE COALESCE(
+                 verification_deadline,
+                 now() + ($3 * interval '1 second')
+               )
+             END,
+             updated_at = now()
+         WHERE id = $1
+           AND status IN ('requesting_verification', 'awaiting_verification', 'verification_received')
+         RETURNING status`,
+        [reportId, encryptedSessionState, VERIFICATION_EMAIL_TIMEOUT_SECONDS]
       );
+      if (updated.rowCount === 0) {
+        throw new Error("Report is no longer waiting for verification.");
+      }
+      for (const [index, delaySeconds] of VERIFICATION_EMAIL_RESEND_DELAYS_SECONDS.entries()) {
+        await client.query(
+          `INSERT INTO report_jobs
+             (report_id, kind, dedupe_key, payload, max_attempts, run_at)
+           VALUES
+             ($1, 'request_code', $2, $3, 1, now() + ($4 * interval '1 second'))
+           ON CONFLICT (dedupe_key) DO NOTHING`,
+          [
+            reportId,
+            `${reportId}:request-code-resend:${index + 1}`,
+            { resend: true, resendNumber: index + 1 },
+            delaySeconds
+          ]
+        );
+      }
       await this.event(client, reportId, "verification_requested");
       await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async saveResentVerificationSession(
+    reportId: string,
+    encryptedSessionState: string,
+    resendNumber: number
+  ): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const updated = await client.query(
+        `UPDATE reports
+         SET session_state = $2, updated_at = now()
+         WHERE id = $1
+           AND status IN ('awaiting_verification', 'verification_received')
+           AND (status = 'verification_received' OR verification_deadline > now())
+         RETURNING id, status`,
+        [reportId, encryptedSessionState]
+      );
+      if (updated.rowCount === 1) {
+        await this.event(client, reportId, "verification_email_resent", { resendNumber });
+      }
+      await client.query("COMMIT");
+      return updated.rowCount === 1;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async expireVerificationWaits(): Promise<string[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const expired = await client.query<ReportRow>(
+        `SELECT * FROM reports
+         WHERE status = 'awaiting_verification'
+           AND verification_deadline IS NOT NULL
+           AND verification_deadline <= now()
+         ORDER BY verification_deadline
+         FOR UPDATE SKIP LOCKED`
+      );
+      for (const report of expired.rows) {
+        const retryable = report.retry_sequence < MAX_LIFECYCLE_ATTEMPTS - 1;
+        await client.query(
+          `UPDATE reports
+           SET status = 'failed', error_code = 'verification_email_timeout',
+               error_message = 'Discord verification email was not received within 60 seconds.',
+               retryable = $2, failure_stage = 'awaiting_verification',
+               verification_deadline = NULL, session_state = NULL, updated_at = now()
+           WHERE id = $1`,
+          [report.id, retryable]
+        );
+        await this.event(client, report.id, "report_failed", {
+          errorCode: "verification_email_timeout",
+          failureStage: "awaiting_verification",
+          retryable
+        });
+      }
+      await client.query("COMMIT");
+      return expired.rows.map((report) => report.id);
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -560,7 +715,7 @@ export class Database {
     messageId: string;
     recipient: string;
     encryptedCode: string;
-  }): Promise<"accepted" | "duplicate" | "unknown_recipient"> {
+  }): Promise<InboundEmailRegistration> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -586,11 +741,11 @@ export class Database {
       );
       if (inserted.rowCount === 0) {
         await client.query("COMMIT");
-        return "duplicate";
+        return { status: "duplicate", reportId: report?.id ?? null };
       }
       if (!report) {
         await client.query("COMMIT");
-        return "unknown_recipient";
+        return { status: "unknown_recipient", reportId: null };
       }
       await client.query(
         `INSERT INTO report_jobs (report_id, kind, dedupe_key, payload, max_attempts, run_at)
@@ -605,12 +760,13 @@ export class Database {
         ]
       );
       await client.query(
-        "UPDATE reports SET status = 'verification_received', updated_at = now() WHERE id = $1",
+        `UPDATE reports SET status = 'verification_received', verification_deadline = NULL,
+           updated_at = now() WHERE id = $1`,
         [report.id]
       );
       await this.event(client, report.id, "verification_email_received");
       await client.query("COMMIT");
-      return "accepted";
+      return { status: "accepted", reportId: report.id };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -624,7 +780,7 @@ export class Database {
     recipient: string;
     discordReportId: string;
     discordStatus: DiscordReportStatus;
-  }): Promise<"accepted" | "duplicate" | "pending_report"> {
+  }): Promise<InboundEmailRegistration> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -652,15 +808,15 @@ export class Database {
       );
       if (inserted.rowCount === 0) {
         await client.query("COMMIT");
-        return "duplicate";
+        return { status: "duplicate", reportId: report?.id ?? null };
       }
       if (!report) {
         await client.query("COMMIT");
-        return "pending_report";
+        return { status: "pending_report", reportId: null };
       }
       if (!shouldApplyDiscordStatus(report.discord_status, input.discordStatus)) {
         await client.query("COMMIT");
-        return "accepted";
+        return { status: "accepted", reportId: report.id };
       }
       await client.query(
         `UPDATE reports
@@ -673,7 +829,7 @@ export class Database {
         discordStatus: input.discordStatus
       });
       await client.query("COMMIT");
-      return "accepted";
+      return { status: "accepted", reportId: report.id };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -748,7 +904,7 @@ export class Database {
       const retryable = isRetryableFailure(
         report.status,
         errorCode,
-        report.lifecycle_attempt
+        report.retry_sequence
       );
       await client.query(
         "UPDATE report_jobs SET state = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
@@ -757,7 +913,7 @@ export class Database {
       await client.query(
         `UPDATE reports
          SET status = 'failed', error_code = $2, error_message = $3, updated_at = now()
-             , retryable = $4, failure_stage = $5
+             , retryable = $4, failure_stage = $5, verification_deadline = NULL
          WHERE id = $1`,
         [job.report_id, errorCode, message, retryable, report.status]
       );
@@ -790,51 +946,74 @@ export class Database {
         throw new ReportRetryError("report_owner_mismatch");
       }
 
-      const replayResult = await client.query(
-        `SELECT 1 FROM report_retry_requests
-         WHERE report_id = $1 AND idempotency_key = $2`,
-        [record.reportId, record.idempotencyKey]
+      const replayResult = await client.query<ReportRow>(
+        "SELECT * FROM reports WHERE idempotency_key = $1 FOR UPDATE",
+        [record.idempotencyKey]
       );
-      if ((replayResult.rowCount ?? 0) > 0) {
+      const replay = replayResult.rows[0];
+      if (replay) {
+        if (replay.retry_of_report_id !== report.id) throw new IdempotencyConflictError();
         await client.query("COMMIT");
-        return { replayed: true, report };
+        return { replayed: true, report: replay };
       }
       if (report.status !== "failed") throw new ReportRetryError("report_not_failed");
       if (!report.retryable) throw new ReportRetryError("report_not_retryable");
-      if (report.lifecycle_attempt >= MAX_LIFECYCLE_ATTEMPTS) {
+      if (report.retry_sequence >= MAX_LIFECYCLE_ATTEMPTS - 1) {
         throw new ReportRetryError("retry_limit_reached");
       }
 
-      const nextAttempt = report.lifecycle_attempt + 1;
-      await client.query(
-        `INSERT INTO report_retry_requests (report_id, idempotency_key, lifecycle_attempt)
-         VALUES ($1, $2, $3)`,
-        [record.reportId, record.idempotencyKey, nextAttempt]
-      );
-      const updatedResult = await client.query<ReportRow>(
-        `UPDATE reports
-         SET reporter_email = $2, proxy_session_id = $3,
-             lifecycle_attempt = $4, status = 'queued', session_state = NULL,
-             discord_report_id = NULL, discord_status = NULL,
-             discord_status_updated_at = NULL, error_code = NULL,
-             error_message = NULL, retryable = false, failure_stage = NULL,
-             updated_at = now()
-         WHERE id = $1
-         RETURNING *`,
-        [record.reportId, record.email.toLowerCase(), record.proxySessionId, nextAttempt]
+      const nextSequence = report.retry_sequence + 1;
+      const inserted = await client.query<ReportRow>(
+        `INSERT INTO reports (
+           id, idempotency_key, request_hash, flow, country, report_type,
+           submitter_discord_user_id, reporter_legal_name, reporter_email,
+           timezone, locale, language, proxy_session_id, status, input,
+           retry_of_report_id, retry_sequence
+         ) VALUES (
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+           'queued', $14, $15, $16
+         ) RETURNING *`,
+        [
+          record.id,
+          record.idempotencyKey,
+          report.request_hash,
+          report.flow,
+          report.country,
+          report.report_type,
+          report.submitter_discord_user_id,
+          record.legalName,
+          record.email.toLowerCase(),
+          record.timezone,
+          record.locale,
+          record.language,
+          record.proxySessionId,
+          report.input,
+          report.id,
+          nextSequence
+        ]
       );
       await client.query(
         `INSERT INTO report_jobs (report_id, kind, dedupe_key, max_attempts)
          VALUES ($1, 'request_code', $2, 2)`,
-        [record.reportId, `${record.reportId}:request-code:${nextAttempt}`]
+        [record.id, `${record.id}:request-code:1`]
       );
-      const updatedReport = updatedResult.rows[0];
-      if (!updatedReport) throw new Error("Report retry update returned no row.");
-      await this.event(client, record.reportId, "report_retry_requested", {
-        lifecycleAttempt: nextAttempt
+      const successor = inserted.rows[0];
+      if (!successor) throw new Error("Retry report insert returned no row.");
+      await client.query(
+        `UPDATE reports SET retryable = false, retried_as_report_id = $2, updated_at = now()
+         WHERE id = $1`,
+        [report.id, successor.id]
+      );
+      await this.event(client, successor.id, "report_created", {
+        retryOfReportId: report.id,
+        retrySequence: nextSequence
+      });
+      await this.event(client, report.id, "report_retry_created", {
+        newReportId: successor.id,
+        retrySequence: nextSequence
       });
       await client.query("COMMIT");
-      return { replayed: false, report: updatedReport };
+      return { replayed: false, report: successor };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -850,6 +1029,7 @@ export class Database {
       await client.query(
         `UPDATE reports
          SET status = 'submitted', discord_report_id = $2, session_state = NULL,
+             verification_deadline = NULL,
              error_code = NULL, error_message = NULL, retryable = false,
              failure_stage = NULL, updated_at = now()
          WHERE id = $1`,

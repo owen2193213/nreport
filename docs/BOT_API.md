@@ -160,6 +160,9 @@ interface ReportSummary {
   timezone: string;
   lifecycleAttempt: number;
   retryable: boolean;
+  retryOfReportId: string | null;
+  retriedAsReportId: string | null;
+  retrySequence: number;
   failureStage: ReportStatus | "pre_submission" | null;
   status: ReportStatus;
   discordReportId: string | null;
@@ -228,6 +231,13 @@ queued
 
 After submission, `discordStatus` can independently progress from `received` to
 `actioned`, `closed_no_action`, or `review_not_approved`.
+
+`awaiting_verification` has a fixed 60-second deadline. The API repeats the same Discord
+verification-code request at 20 and 40 seconds while the report is still waiting, using the same
+email alias, sticky proxy identity, and persisted Discord session. Resends never extend the
+deadline. If the Cloudflare worker does not deliver an email before it expires, the API fails the
+report with `verification_email_timeout`, stops resending/correlating that report, and emits a
+retryable `report_failed` lifecycle event.
 
 ## 6. Endpoint reference
 
@@ -383,6 +393,9 @@ characters.
   "timezone": "Europe/Berlin",
   "lifecycleAttempt": 1,
   "retryable": false,
+  "retryOfReportId": null,
+  "retriedAsReportId": null,
+  "retrySequence": 0,
   "failureStage": null,
   "status": "queued",
   "discordReportId": null,
@@ -451,7 +464,7 @@ reconciliation cursor because webhook events can arrive out of order.
 
 ### `POST /v1/reports/{internalReportId}/retry`
 
-Starts a new lifecycle attempt only for a safely retryable failed report.
+Creates a new successor report only for a safely retryable failed report.
 
 ```http
 POST /v1/reports/example-report-id/retry
@@ -466,9 +479,13 @@ Content-Type: application/json
 }
 ```
 
-The backend verifies ownership, preserves the internal report ID and pseudonym, increments
-`lifecycleAttempt`, and rotates both the catch-all email alias and sticky proxy session.
-There are at most three total lifecycle attempts.
+The backend verifies ownership, leaves the failed report immutable, and returns a new report with
+a new `internalReportId`, pseudonym, catch-all email alias, sticky proxy session, database row, and
+timeline. `retryOfReportId` links the successor to the failed report and `retriedAsReportId` links
+the failed report forward to its successor, while `retrySequence` enforces
+the original report plus at most two successors. Replaying the same idempotency key returns the
+same successor rather than creating another branch.
+There are at most three reports in one retry chain.
 
 New retry: HTTP `202`. Idempotent replay: HTTP `200`.
 
@@ -478,7 +495,7 @@ Never offer a retry button unless all are true:
 report.status === "failed"
 report.retryable === true
 report.submitterDiscordUserId === interaction.user.id
-report.lifecycleAttempt < 3
+report.retrySequence < 2
 ```
 
 Final-submission failures and ambiguous outcomes are deliberately non-retryable.
@@ -540,7 +557,7 @@ permanent copy of Discord's node graph.
 | 409 | `idempotency_conflict` | Bot reused an interaction key with different input; log as a bug |
 | 409 | `report_not_failed` | Refresh status; it is no longer failed |
 | 409 | `report_not_retryable` | Explain that it cannot be retried safely |
-| 409 | `retry_limit_reached` | Explain that all three lifecycle attempts were used |
+| 409 | `retry_limit_reached` | Explain that all three reports in the retry chain were used |
 | 429 | `rate_limited` | Back off; do not create a replacement key |
 | 500+ | `internal_error` | Preserve the key and retry cautiously or ask the user to check later |
 
@@ -567,6 +584,7 @@ Common classes:
 | `discord_http_<status>` | Discord returned a definite HTTP error; safe structured details may follow |
 | `discord_network_error` | A temporary proxy or network failure prevented contact with Discord |
 | `report_processing_failed` | Network, proxy, menu, parsing, or local processing failed |
+| `verification_email_timeout` | Discord's verification email did not arrive within 60 seconds |
 | `ambiguous_submission_state` | Worker stopped during verification/submission; manual review required |
 
 Use `retryable` as the authority. Do not infer retry safety from the text or HTTP number.
@@ -765,7 +783,9 @@ These rules are mandatory because all bot instances share one backend API key:
 - Cloudflare must route the report domain catch-all to the email worker.
 - A successful verification email is matched using the exact SMTP envelope recipient.
 - Multiple reports can wait concurrently because every generated address is unique.
-- A delayed email from an older retry alias cannot verify the active attempt.
+- Inbound email can win the race with initial session persistence; saving the session preserves an
+  already-recorded `verification_received` state so the report never moves backwards.
+- A delayed email for a failed report cannot verify its successor because every retry has a new alias.
 - The backend stores the latest 100 reports per user through the list endpoint; the database
   retains more unless separately maintained.
 - Restarting during code-request work is recoverable. Restarting during verification or

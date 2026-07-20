@@ -28,6 +28,7 @@ import { countryDisplay, matchingCountries } from "./countries.js";
 import { decryptJson, encryptJson, generateAccessKey, hashAccessKey } from "./crypto.js";
 import { AccessError } from "./database.js";
 import type { BotDatabase } from "./database.js";
+import { botLog, errorFields } from "./observability.js";
 import {
   isSnowflakeProfileTarget,
   isValidProfileTarget,
@@ -50,6 +51,7 @@ import {
   infoEmbed,
   reportBrowser,
   reportEmbed,
+  reportRetryComponents,
   successEmbed
 } from "./ui.js";
 
@@ -75,6 +77,13 @@ function isDefinitePreCreationError(error: unknown): boolean {
   return error instanceof DsaApiError && error.status < 500 && error.status !== 409;
 }
 
+export function shouldBypassReportCredits(
+  isAdmin: boolean,
+  whitelistEnabled: boolean
+): boolean {
+  return isAdmin || !whitelistEnabled;
+}
+
 function parseExpiry(value: string | null): Date | null {
   if (value === null) return null;
   const date = new Date(value);
@@ -89,6 +98,22 @@ function parseExpiry(value: string | null): Date | null {
 
 function customParts(customId: string): string[] {
   return customId.split(":");
+}
+
+function interactionLogFields(interaction: Interaction): Record<string, string> {
+  if (interaction.isAutocomplete()) {
+    return { interactionType: "autocomplete", commandName: interaction.commandName };
+  }
+  if (interaction.isMessageContextMenuCommand()) {
+    return { interactionType: "message_context", commandName: interaction.commandName };
+  }
+  if (interaction.isChatInputCommand()) {
+    return { interactionType: "chat_input", commandName: interaction.commandName };
+  }
+  if (interaction.isModalSubmit()) return { interactionType: "modal_submit" };
+  if (interaction.isStringSelectMenu()) return { interactionType: "string_select" };
+  if (interaction.isButton()) return { interactionType: "button" };
+  return { interactionType: "unknown" };
 }
 
 export class InteractionHandler {
@@ -124,7 +149,20 @@ export class InteractionHandler {
         await this.handleButton(interaction);
       }
     } catch (error) {
-      await this.respondWithError(interaction, error);
+      botLog(
+        "interaction_failed",
+        { ...interactionLogFields(interaction), ...errorFields(error) },
+        "warn"
+      );
+      try {
+        await this.respondWithError(interaction, error);
+      } catch (responseError) {
+        botLog(
+          "interaction_error_response_failed",
+          { ...interactionLogFields(interaction), ...errorFields(responseError) },
+          "error"
+        );
+      }
     }
   }
 
@@ -133,7 +171,7 @@ export class InteractionHandler {
   }
 
   private async requireReportAccess(userId: string): Promise<void> {
-    if (this.isAdmin(userId) || !this.config.whitelistEnabled) return;
+    if (shouldBypassReportCredits(this.isAdmin(userId), this.config.whitelistEnabled)) return;
     const access = await this.database.getAccess(userId);
     if (access.suspended) {
       throw new AccessError("user_suspended", "Your reporting access is suspended. Contact an admin.");
@@ -141,6 +179,32 @@ export class InteractionHandler {
     if (access.credits < 1) {
       throw new AccessError("no_credits", "You need a report credit. Use `/access redeem` with a valid key.");
     }
+  }
+
+  private async requireRetryAccess(userId: string): Promise<void> {
+    if (this.isAdmin(userId)) return;
+    const access = await this.database.getAccess(userId);
+    if (access.suspended) {
+      throw new AccessError("user_suspended", "Your reporting access is suspended. Contact an admin.");
+    }
+  }
+
+  private async retryAsNewReport(
+    reportId: string,
+    interactionId: string,
+    actorUserId: string
+  ): Promise<ReportDetail> {
+    const report = await this.api.report(reportId);
+    this.assertOwner(report, actorUserId);
+    await this.requireRetryAccess(actorUserId);
+    if (!(report.status === "failed" && report.retryable && report.retrySequence < 2)) {
+      throw new AccessError("not_retryable", "This report is not currently safe to retry.");
+    }
+    const ownerUserId = report.submitterDiscordUserId;
+    if (!ownerUserId) throw new AccessError("owner_missing", "This report has no Discord owner.");
+    const retried = await this.api.retryReport(reportId, interactionId, ownerUserId);
+    await this.database.trackRetryReport(reportId, ownerUserId, interactionId, retried);
+    return retried;
   }
 
   private requireAdmin(userId: string): void {
@@ -356,18 +420,15 @@ export class InteractionHandler {
     if (subcommand === "status") {
       await interaction.editReply({
         embeds: [reportEmbed(report, await this.snapshotFor(report, interaction.user.id))],
+        components: reportRetryComponents(report),
         allowedMentions: { parse: [] }
       });
       return;
     }
-    await this.requireReportAccess(interaction.user.id);
-    if (!(report.status === "failed" && report.retryable && report.lifecycleAttempt < 3)) {
-      throw new AccessError("not_retryable", "This report is not currently safe to retry.");
-    }
-    const retried = await this.api.retryReport(reportId, interaction.id, interaction.user.id);
-    await this.database.resumeTrackingByReport(reportId, interaction.user.id, retried);
+    const retried = await this.retryAsNewReport(reportId, interaction.id, interaction.user.id);
     await interaction.editReply({
       embeds: [reportEmbed(retried, await this.snapshotFor(retried, interaction.user.id))],
+      components: reportRetryComponents(retried),
       allowedMentions: { parse: [] }
     });
   }
@@ -589,6 +650,17 @@ export class InteractionHandler {
 
   private async handleButton(interaction: ButtonInteraction): Promise<void> {
     const parts = customParts(interaction.customId);
+    if (parts[0] === "reports" && parts[1] === "retry" && parts[2]) {
+      await interaction.deferUpdate();
+      const retried = await this.retryAsNewReport(parts[2], interaction.id, interaction.user.id);
+      await interaction.editReply({
+        content: null,
+        embeds: [reportEmbed(retried, await this.snapshotFor(retried, interaction.user.id))],
+        components: reportRetryComponents(retried),
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
     if (parts[0] === "reports" && parts[1] === "page" && parts[2]) {
       const requestedPage = Number(parts[2]);
       if (!Number.isInteger(requestedPage)) return;
@@ -680,6 +752,12 @@ export class InteractionHandler {
     try {
       await this.requireReportAccess(interaction.user.id);
       const request = draftToCreateInput(draft, interaction.user.id);
+      const isAdmin = this.isAdmin(interaction.user.id);
+      const creditBypassReason = isAdmin
+        ? "administrator"
+        : !this.config.whitelistEnabled
+          ? "whitelist_disabled"
+          : "none";
       tracking = await this.database.reserveSubmission({
         draftId,
         userId: interaction.user.id,
@@ -689,7 +767,17 @@ export class InteractionHandler {
         reportType: request.reportType,
         encryptedRequest: encryptJson(request, this.config.dataEncryptionKey),
         ...(draft.serverSnapshot ? { serverSnapshot: draft.serverSnapshot } : {}),
-        adminBypass: this.isAdmin(interaction.user.id) || !this.config.whitelistEnabled
+        adminBypass: shouldBypassReportCredits(
+          isAdmin,
+          this.config.whitelistEnabled
+        )
+      });
+      botLog("report_submission_reserved", {
+        trackingId: tracking.id,
+        flow: request.flow,
+        country: request.country,
+        creditState: tracking.creditState,
+        creditBypassReason
       });
       await interaction.editReply({
         content: null,
@@ -703,6 +791,12 @@ export class InteractionHandler {
       });
       let report = await this.api.createReport(tracking.interactionId, request);
       await this.database.markSubmissionCreated(tracking.id, report);
+      botLog("report_submission_created", {
+        trackingId: tracking.id,
+        reportId: report.internalReportId,
+        status: report.status,
+        creditState: tracking.creditState
+      });
       await this.database.deleteDraft(interaction.user.id, draftId);
       for (let attempt = 0; attempt < 5; attempt += 1) {
         if (report.status === "submitted" || report.status === "failed") break;
@@ -710,13 +804,27 @@ export class InteractionHandler {
         report = await this.api.report(report.internalReportId);
       }
       await this.database.observeReport(tracking.id, report);
+      botLog("report_submission_observed", {
+        trackingId: tracking.id,
+        reportId: report.internalReportId,
+        status: report.status,
+        discordStatus: report.discordStatus
+      });
       await interaction.editReply({
         content: null,
         embeds: [reportEmbed(report, draft.serverSnapshot)],
-        components: [],
+        components: reportRetryComponents(report),
         allowedMentions: { parse: [] }
       });
     } catch (error) {
+      botLog(
+        "report_submission_failed",
+        {
+          ...(tracking ? { trackingId: tracking.id, creditState: tracking.creditState } : {}),
+          ...errorFields(error)
+        },
+        "error"
+      );
       if (tracking && isDefinitePreCreationError(error)) {
         await this.database.releaseReservation(tracking.id, "report_rejected");
       }

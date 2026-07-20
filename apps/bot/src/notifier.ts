@@ -6,11 +6,11 @@ import { DiscordAPIError, type Client } from "discord.js";
 
 import type { BotConfig } from "./config.js";
 import { decryptJson } from "./crypto.js";
-import type { BotDatabase } from "./database.js";
+import { shouldNotifyLifecycleType, type BotDatabase } from "./database.js";
 import { botLog, errorFields } from "./observability.js";
 import type { ServerResolver } from "./server-resolver.js";
 import type { ServerSnapshot } from "./types.js";
-import { reportEmbed } from "./ui.js";
+import { reportEmbed, reportRetryComponents } from "./ui.js";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown notification error";
@@ -188,6 +188,17 @@ export class NotificationWorker {
     const jobs = await this.database.claimNotifications();
     for (const job of jobs) {
       try {
+        if (!shouldNotifyLifecycleType(job.payload.eventType)) {
+          await this.database.completeNotification(job.id);
+          botLog("notification_send_suppressed", {
+            notificationId: job.id,
+            trackingId: job.tracking_id,
+            reportId: job.payload.internalReportId,
+            eventType: job.payload.eventType,
+            reason: "submission_acknowledgement_already_sent"
+          });
+          continue;
+        }
         botLog("notification_send_started", {
           notificationId: job.id,
           trackingId: job.tracking_id,
@@ -205,6 +216,7 @@ export class NotificationWorker {
               job.payload.eventType
             )
           ],
+          components: reportRetryComponents(report),
           allowedMentions: { parse: [] }
         });
         await this.database.completeNotification(job.id);

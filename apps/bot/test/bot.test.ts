@@ -26,9 +26,10 @@ import type { BotConfig } from "../src/config.js";
 import type { BotDatabase } from "../src/database.js";
 import {
   notificationEventKey,
-  observedNotificationTypes
+  observedNotificationTypes,
+  shouldNotifyLifecycleType
 } from "../src/database.js";
-import { InteractionHandler } from "../src/interactions.js";
+import { InteractionHandler, shouldBypassReportCredits } from "../src/interactions.js";
 import { reportEventIngestionStatus } from "../src/health.js";
 import {
   isValidProfileTarget,
@@ -41,9 +42,13 @@ import {
   buildCountryPicker,
   buildReportModal,
   buildReview,
+  accessKeyEmbed,
+  accessKeysEmbed,
   draftToCreateInput,
+  generatedKeysEmbed,
   reportBrowser,
-  reportEmbed
+  reportEmbed,
+  reportRetryComponents
 } from "../src/ui.js";
 
 function reportFixture(): ReportDetail {
@@ -59,6 +64,9 @@ function reportFixture(): ReportDetail {
     timezone: "Europe/Berlin",
     lifecycleAttempt: 1,
     retryable: false,
+    retryOfReportId: null,
+    retriedAsReportId: null,
+    retrySequence: 0,
     failureStage: null,
     status: "submitted" as const,
     discordReportId: "1527695430949798110",
@@ -211,6 +219,46 @@ describe("bot cryptography", () => {
         now: 1_800_000_000_000
       })
     ).toBe(false);
+  });
+});
+
+describe("access key administration views", () => {
+  const redeemedKey = {
+    id: "internal-key-id",
+    code_prefix: "dsa_example",
+    credits_total: 250,
+    status: "redeemed" as const,
+    expires_at: null,
+    created_by: "100000000000000001",
+    created_at: new Date("2026-07-20T00:00:00.000Z"),
+    redeemed_by: "100000000000000002",
+    redeemed_at: new Date("2026-07-20T01:00:00.000Z"),
+    revoked_by: null,
+    revoked_at: null,
+    revoke_reason: null
+  };
+
+  it("shows only plaintext keys, not internal IDs, immediately after generation", () => {
+    const json = JSON.stringify(
+      generatedKeysEmbed([{ id: "internal-key-id", code: "dsa_plaintext-secret" }]).toJSON()
+    );
+    expect(json).toContain("dsa_plaintext-secret");
+    expect(json).not.toContain("internal-key-id");
+  });
+
+  it("identifies the redeemer in key list and inspection output", () => {
+    const list = JSON.stringify(accessKeysEmbed([redeemedKey]).toJSON());
+    const detail = JSON.stringify(accessKeyEmbed(redeemedKey).toJSON());
+    for (const output of [list, detail]) {
+      expect(output).toContain("100000000000000002");
+      expect(output).toContain("Redeemed");
+    }
+  });
+
+  it("charges normal users only when credit enforcement is enabled", () => {
+    expect(shouldBypassReportCredits(false, true)).toBe(false);
+    expect(shouldBypassReportCredits(true, true)).toBe(true);
+    expect(shouldBypassReportCredits(false, false)).toBe(true);
   });
 });
 
@@ -468,7 +516,7 @@ describe("lifecycle notification deduplication", () => {
     ).not.toBe(notificationEventKey({ ...base, eventId: "42", type: "discord:received" }));
   });
 
-  it("queues notifications for report states observed by fallback polling", () => {
+  it("uses submission as the only acknowledgement notification", () => {
     const submitted = reportFixture();
     submitted.status = "submitted";
     submitted.discordStatus = null;
@@ -477,9 +525,24 @@ describe("lifecycle notification deduplication", () => {
     ]);
 
     submitted.discordStatus = "received";
-    expect(observedNotificationTypes("submitted", null, submitted)).toEqual([
-      "discord:received"
-    ]);
+    expect(observedNotificationTypes("submitted", null, submitted)).toEqual([]);
+    expect(shouldNotifyLifecycleType("report_submitted")).toBe(true);
+    expect(shouldNotifyLifecycleType("discord:received")).toBe(false);
+    expect(shouldNotifyLifecycleType("discord:actioned")).toBe(true);
+  });
+
+  it("shows a new-report retry button only for safely retryable failures", () => {
+    const failed = reportFixture();
+    failed.status = "failed";
+    failed.retryable = true;
+    failed.retrySequence = 1;
+    expect(reportRetryComponents(failed)[0]?.components[0]?.data).toMatchObject({
+      custom_id: `reports:retry:${failed.internalReportId}`,
+      label: "Retry as new report"
+    });
+
+    failed.retrySequence = 2;
+    expect(reportRetryComponents(failed)).toEqual([]);
   });
 
   it("asks the API to retry events that arrive before report tracking is linked", () => {
@@ -526,6 +589,44 @@ describe("lifecycle notification deduplication", () => {
 });
 
 describe("report component responsiveness", () => {
+  it("contains a secondary response failure after the original interaction error", async () => {
+    const reply = vi.fn().mockRejectedValue(Object.assign(new Error("Unknown interaction"), {
+      code: 10_062,
+      status: 404
+    }));
+    const handler = new InteractionHandler({
+      api: {} as DsaApi,
+      config: {
+        adminUserIds: new Set<string>(),
+        whitelistEnabled: true
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database: {
+        getAccess: vi.fn().mockRejectedValue(new Error("Database unavailable"))
+      } as unknown as BotDatabase,
+      profileResolver: {} as ProfileResolver,
+      serverResolver: {} as ServerResolver
+    });
+    const interaction = {
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => true,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => false,
+      isRepliable: () => true,
+      commandName: "access",
+      user: { id: "1197857362942378017" },
+      options: { getSubcommand: () => "status" },
+      reply,
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await expect(handler.handle(interaction)).resolves.toBeUndefined();
+    expect(reply).toHaveBeenCalledOnce();
+  });
+
   it("defers report pagination before fetching the next report", async () => {
     const report = reportFixture();
     const deferUpdate = vi.fn().mockResolvedValue(undefined);

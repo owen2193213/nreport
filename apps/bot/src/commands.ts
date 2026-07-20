@@ -102,7 +102,7 @@ const reports = userInstalled()
     .addSubcommand((command) =>
       command
         .setName("retry")
-        .setDescription("Retry a safely retryable failed report")
+        .setDescription("Retry a failed report as a new report")
         .addStringOption((option) =>
           option.setName("report-id").setDescription("Internal report ID").setRequired(true)
         )

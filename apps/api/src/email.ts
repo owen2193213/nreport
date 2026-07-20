@@ -29,9 +29,9 @@ export type DiscordEmailInspection =
   | { kind: "ignored"; diagnostic: IgnoredEmailDiagnostic };
 
 const VERIFICATION_SUBJECT =
-  /^Your (?:one-time verification key|verification code) is ([A-Z0-9]{6})$/i;
+  /^(?:Your (?:one-time verification key|verification code) is|Dein einmaliger Verifizierungsschl(?:üssel|Ã¼ssel) lautet)\s+([A-Z0-9]{6})\.?$/i;
 const VERIFICATION_BODY =
-  /\bYour (?:one-time verification key|verification key|verification code) is\s+([A-Z0-9]{6})\b/i;
+  /\b(?:Your (?:one-time verification key|verification key|verification code) is|Dein einmaliger Verifizierungsschl(?:üssel|Ã¼ssel) lautet|Verifizierungscode (?:lautet|ist))\s+([A-Z0-9]{6})\b/i;
 
 function capturedCode(value: string | undefined, pattern: RegExp): string | undefined {
   const code = pattern.exec(value?.trim() ?? "")?.[1];
@@ -43,6 +43,11 @@ function verificationCode(parsed: ParsedMail): string | undefined {
     capturedCode(parsed.subject, VERIFICATION_SUBJECT) ??
     capturedCode(parsed.text, VERIFICATION_BODY)
   );
+}
+
+function trustedSubjectEndingCode(parsed: ParsedMail): string | undefined {
+  const code = /(?:^|\s)([A-Z0-9]{6})[.!?]?$/.exec(parsed.subject?.trim() ?? "")?.[1];
+  return code !== undefined && /[A-Z]/.test(code) ? code : undefined;
 }
 
 function isDiscordSender(parsed: ParsedMail): boolean {
@@ -65,7 +70,7 @@ function sanitizeDiagnosticText(value: string | undefined, limit: number): strin
 function ignoredClassification(parsed: ParsedMail): IgnoredEmailClassification {
   if (!isDiscordSender(parsed)) return "non_discord_sender";
   const subject = parsed.subject?.trim() ?? "";
-  if (/verification|one-time|\bcode\b|\bkey\b/i.test(subject)) {
+  if (/verification|verifizierung|one-time|\bcode\b|\bkey\b/i.test(subject)) {
     return "discord_verification_subject_unmatched";
   }
   if (/\breport\b/i.test(subject)) return "discord_lifecycle_subject_unmatched";
@@ -126,7 +131,7 @@ export async function inspectDiscordEmail(rawEmail: Buffer): Promise<DiscordEmai
     return { kind: "parsed", email: { kind: "report_update", reportId, status } };
   }
 
-  const code = verificationCode(parsed);
+  const code = verificationCode(parsed) ?? trustedSubjectEndingCode(parsed);
   return code === undefined
     ? { kind: "ignored", diagnostic: ignoredDiagnostic(parsed) }
     : { kind: "parsed", email: { kind: "verification", code } };

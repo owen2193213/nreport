@@ -65,7 +65,8 @@ The bot owns:
 - Bot-side automatic lifecycle retry, arbitrary reporter names, and arbitrary reporter
   emails are intentionally unsupported.
 - The backend localizes the identity, proxy, locale, and timezone by country. Discord's
-  final form-language field is independently fixed to the known-supported value `en`.
+  verification-email request and final form-language field are independently fixed to the
+  known-supported value `en`.
 
 ## 3. Bot environment
 
@@ -782,10 +783,15 @@ These rules are mandatory because all bot instances share one backend API key:
 - The backend worker must remain enabled with `WORKER_ENABLED=true`.
 - Cloudflare must route the report domain catch-all to the email worker.
 - A successful verification email is matched using the exact SMTP envelope recipient.
-- Verification codes are extracted first from Discord's exact English subject form and only then
-  from the same verification phrase in the plain-text body. Codes may be letter-only or
-  alphanumeric; broad six-character scanning is intentionally forbidden because ordinary words
-  and HTML color values are unsafe matches.
+- Verification codes are extracted first from Discord's exact supported English or German subject
+  form, then from the same verification phrase in the plain-text body. The parser also recognizes
+  the `Ã¼` mojibake form observed in Railway. Codes may be letter-only or alphanumeric; broad
+  six-character scanning is intentionally forbidden because ordinary words and HTML color values
+  are unsafe matches.
+- After verifying the sender is exactly `noreply@discord.com`, the parser has a language-independent
+  fallback for a six-character uppercase alphanumeric token at the very end of the subject. The
+  token must contain at least one letter. This fallback never scans arbitrary body text and is not
+  exposed through the sender-agnostic extraction helper.
 - Ignored-email logs classify unmatched Discord verification/lifecycle subjects and include only
   a bounded, sanitized subject and text preview. Generated email addresses and code candidates are
   redacted; raw MIME and HTML are not logged.

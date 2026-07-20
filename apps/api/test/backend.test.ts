@@ -290,6 +290,19 @@ describe("backend secrets and inbound email", () => {
     await expect(extractVerificationCode(raw)).resolves.toBe("STLGSY");
   });
 
+  it.each([
+    "Dein einmaliger VerifizierungsschlÃ¼ssel lautet STLGSY",
+    "=?UTF-8?Q?Dein_einmaliger_Verifizierungsschl=C3=BCssel_lautet_STLGSY?="
+  ])("extracts a German Discord verification key from %s", async (subject) => {
+    const raw = Buffer.from(
+      "From: Discord <noreply@discord.com>\r\n" +
+        `Subject: ${subject}\r\n` +
+        "Content-Type: text/plain\r\n\r\n" +
+        "Gib dafÃ¼r diesen Verifizierungscode im Meldeformular ein."
+    );
+    await expect(extractVerificationCode(raw)).resolves.toBe("STLGSY");
+  });
+
   it("uses a contextual body phrase when the subject has no code", async () => {
     const raw = Buffer.from(
       "From: Discord <noreply@discord.com>\r\n" +
@@ -304,6 +317,34 @@ describe("backend secrets and inbound email", () => {
       "Subject: Please verify\r\nContent-Type: text/plain\r\n\r\nFollow normal instructions."
     );
     await expect(extractVerificationCode(raw)).resolves.toBeUndefined();
+  });
+
+  it.each(["QWERTY", "AB12CD."])(
+    "accepts trusted Discord subject-ending verification token %s",
+    async (token) => {
+      const expected = token.replace(".", "");
+      const raw = Buffer.from(
+        "From: Discord <noreply@discord.com>\r\n" +
+          `Subject: ModÃ¨le de vÃ©rification ${token}\r\n` +
+          "Content-Type: text/plain\r\n\r\nComplete verification."
+      );
+      await expect(parseDiscordEmail(raw)).resolves.toEqual({
+        kind: "verification",
+        code: expected
+      });
+    }
+  );
+
+  it.each([
+    ["alerts@example.org", "Unknown template QWERTY"],
+    ["noreply@discord.com", "Unknown template qwerty"],
+    ["noreply@discord.com", "Unknown template 123456"]
+  ])("rejects unsafe subject-ending token from %s", async (sender, subject) => {
+    const raw = Buffer.from(
+      `From: Sender <${sender}>\r\nSubject: ${subject}\r\n` +
+        "Content-Type: text/plain\r\n\r\nComplete verification."
+    );
+    await expect(parseDiscordEmail(raw)).resolves.toBeUndefined();
   });
 
   it("classifies and sanitizes an unmatched Discord lifecycle email", async () => {

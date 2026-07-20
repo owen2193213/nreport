@@ -161,7 +161,7 @@ export class DiscordDsaClient {
     await this.transport.requestJson<void>({
       method: "POST",
       path: `${flow}/code?b=${emailToCodeQueryB(email)}`,
-      body: { name: flow, email },
+      body: { name: flow, email, language: "en" },
       headers: await this.fingerprintHeaders()
     });
   }

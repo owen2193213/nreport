@@ -62,7 +62,11 @@ describe("DiscordDsaClient", () => {
       {
         method: "POST",
         path: "message_urf/code?b=js30bq",
-        body: { name: "message_urf", email: "projectnebulon@gmail.com" },
+        body: {
+          name: "message_urf",
+          email: "projectnebulon@gmail.com",
+          language: "en"
+        },
         headers: { "x-fingerprint": "test-fp" }
       },
       {

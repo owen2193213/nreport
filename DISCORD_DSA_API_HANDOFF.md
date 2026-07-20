@@ -34,9 +34,14 @@ Content-Type: application/json
 ```json
 {
   "name": "user_urf",
-  "email": "projectnebulon@gmail.com"
+  "email": "projectnebulon@gmail.com",
+  "language": "en"
 }
 ```
+
+The production client explicitly includes `language: "en"` in the code request so Discord sends
+the verification template in English. The parser remains multilingual because Discord may ignore
+or change this hint.
 
 The `b` query value is a deterministic, unsigned 32-bit DJB2-style hash of the
 exact email string, encoded in base 36. Discord's web client currently computes
@@ -202,7 +207,8 @@ Content-Type: application/json
 ```json
 {
   "name": "message_urf",
-  "email": "projectnebulon@gmail.com"
+  "email": "projectnebulon@gmail.com",
+  "language": "en"
 }
 ```
 
@@ -379,7 +385,8 @@ Content-Type: application/json
 ```json
 {
   "name": "guild_urf",
-  "email": "projectnebulon@gmail.com"
+  "email": "projectnebulon@gmail.com",
+  "language": "en"
 }
 ```
 

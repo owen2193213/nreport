@@ -219,6 +219,15 @@ uses the same operation. Both surfaces update to the successor's new report card
   reporting data and are not needed for correlation.
 - Chosen: a short SHA-256 message-ID digest over raw IDs or recipient addresses for duplicate-mail
   investigation without exposing mailbox identifiers.
+- Chosen: exact localized verification-template phrases over a language-agnostic six-character
+  scan. English, German, and the observed German `Ã¼` decoding variant are accepted without turning
+  ordinary body text into a verification code.
+- Chosen: a sender-gated subject-ending token as the final fallback for other locales. It requires
+  the exact Discord sender, exactly six uppercase alphanumeric characters with at least one letter,
+  and subject-final position; numeric references, lowercase prose, non-Discord senders, and generic
+  body tokens remain rejected.
+- Chosen: send `language: "en"` in the verification-code request body as the primary email-language
+  control. Localized parsing remains as defense against Discord ignoring or changing the hint.
 - Chosen: contain secondary Discord response errors in the interaction handler so an expired
   interaction cannot terminate the bot process.
 - Rejected: logging every successful report-status GET beyond Fastify's existing access log; bot

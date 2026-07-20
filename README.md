@@ -40,8 +40,9 @@ Malta use Faker's generic fallback. Names stay in Unicode in reports and are tra
 only for readable internal IDs and email local-parts. Nothing is scraped at runtime.
 
 The selected country controls the pseudonym profile, proxy country, locale,
-`Accept-Language`, and IANA timezone. Discord's current form payload language is the
-supported fixed value `en`; it is intentionally not derived from the country.
+`Accept-Language`, and IANA timezone. Discord's verification-email request and current form payload
+both explicitly use the supported fixed language value `en`; it is intentionally not derived from
+the country.
 
 ## Railway configuration
 

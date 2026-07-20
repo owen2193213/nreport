@@ -1,4 +1,4 @@
-import { DiscordDsaClient } from "../src/client.js";
+import { DiscordDsaClient } from "@discord-dsa/client";
 
 const proxyUrl = process.env.DSA_PROXY_URL;
 if (proxyUrl === undefined || proxyUrl.length === 0) {

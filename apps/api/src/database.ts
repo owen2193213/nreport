@@ -1,7 +1,7 @@
 import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
 
-import type { ReportFlow } from "../types.js";
+import type { ReportFlow } from "@discord-dsa/contracts";
 import type { DiscordReportStatus } from "./email.js";
 import type { CreateReportInput } from "./validation.js";
 

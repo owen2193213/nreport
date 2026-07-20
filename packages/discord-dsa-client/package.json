@@ -1,0 +1,23 @@
+{
+  "name": "@discord-dsa/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run test"
+  },
+  "dependencies": {
+    "tough-cookie": "^6.0.2",
+    "undici": "^8.7.0"
+  }
+}

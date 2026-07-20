@@ -1,8 +1,10 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import { DiscordDsaClient } from "../client.js";
-import { DiscordDsaHttpError } from "../errors.js";
-import type { DiscordDsaSessionState } from "../types.js";
+import {
+  DiscordDsaClient,
+  DiscordDsaHttpError,
+  type DiscordDsaSessionState
+} from "@discord-dsa/client";
 import type { AppConfig } from "./config.js";
 import type { Database, JobRow, ReportRow } from "./database.js";
 import { buildAcceptLanguage, buildProxyUrl } from "./pseudonyms.js";

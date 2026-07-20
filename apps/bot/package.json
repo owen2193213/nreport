@@ -1,0 +1,23 @@
+{
+  "name": "@discord-dsa/bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/main.ts",
+    "register": "tsx src/register-commands.ts",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run test"
+  },
+  "dependencies": {
+    "@discord-dsa/contracts": "0.1.0",
+    "discord.js": "^14.27.0",
+    "pg": "^8.22.0",
+    "tslib": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.20.0"
+  }
+}

@@ -1,8 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
-import { DiscordDsaClient } from "../src/client.js";
-import { REPORT_FLOWS, type ReportFlow } from "../src/types.js";
+import { DiscordDsaClient, REPORT_FLOWS, type ReportFlow } from "@discord-dsa/client";
 
 const proxyUrl = process.env.DSA_PROXY_URL;
 if (proxyUrl === undefined || proxyUrl.length === 0) {

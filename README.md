@@ -1,7 +1,8 @@
-# Discord DSA Reporting Service
+# Discord DSA Reporting Monorepo
 
-An internal TypeScript service for authorized EU Digital Services Act reports involving
-Discord users, messages, and servers. A Discord bot calls the authenticated Railway API;
+An internal TypeScript monorepo for authorized EU Digital Services Act reports involving
+Discord users, messages, and servers. A user-installed Discord app calls an independently
+deployed authenticated Railway API;
 the backend owns reporter pseudonyms, catch-all email addresses, country-matched sticky
 proxy sessions, verification email processing, live menu resolution, submission, retries,
 and status history.
@@ -14,6 +15,8 @@ confirmation email.
 
 - **Bot developers:** [`docs/BOT_API.md`](docs/BOT_API.md) is the canonical API contract,
   with request schemas, status handling, errors, report types, and a TypeScript adapter.
+- **Bot operators:** [`docs/BOT_IMPLEMENTATION.md`](docs/BOT_IMPLEMENTATION.md) documents
+  commands, access credits, lifecycle DMs, and deployment.
 - **Service operators:** use the deployment configuration below.
 - **Backend maintainers:** see [`BACKEND_DESIGN.md`](BACKEND_DESIGN.md).
 - **Low-level client maintainers:** see [`CLIENT_DESIGN.md`](CLIENT_DESIGN.md) and
@@ -23,8 +26,11 @@ confirmation email.
 
 ## Architecture
 
-- Railway Fastify service: authenticated report API, signed email webhook, and durable jobs.
-- Railway PostgreSQL: reports, idempotency, events, encrypted session state, and job leases.
+- `apps/api`: Railway Fastify service, authenticated report API, signed email webhook, and jobs.
+- `apps/bot`: separate Railway Discord service, access credits, report UI, and lifecycle DMs.
+- `packages/discord-dsa-client`: low-level Discord reporting client used only by the API.
+- `packages/report-contracts`: shared API DTOs, semantic catalogs, and typed HTTP adapter.
+- Two PostgreSQL services: one for authoritative reports and one for bot access/notification state.
 - Cloudflare Email Routing: whole-domain catch-all delivered to an Email Worker.
 - IPOasis: one country-specific sticky residential proxy session per lifecycle attempt.
 
@@ -38,6 +44,19 @@ The selected country controls the pseudonym profile, proxy country, locale,
 supported fixed value `en`; it is intentionally not derived from the country.
 
 ## Railway configuration
+
+Connect the same GitHub repository to two Railway services and leave each service root at
+the repository root so npm workspaces and the root lockfile remain available.
+
+| Service | Railway config path |
+|---|---|
+| DSA API | `/apps/api/railway.json` |
+| Discord bot | `/apps/bot/railway.json` |
+
+The config files define independent build/start commands, health checks, and watch paths.
+API-only commits do not rebuild the bot, and bot-only commits do not rebuild the API.
+
+### API service
 
 Connect this repository and a PostgreSQL service in the same Railway EU environment. Set:
 
@@ -62,12 +81,28 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 Use the Base64 value only for `SESSION_ENCRYPTION_KEY`. Use separate hexadecimal values
 for `API_KEY` and `CLOUDFLARE_EMAIL_WEBHOOK_SECRET`.
 
-`railway.json` defines the build, start, `/healthz` health check, and restart policy. The
+[`apps/api/railway.json`](apps/api/railway.json) defines the build, start, `/healthz`
+health check, and restart policy. The
 application creates or updates its database schema idempotently during startup.
+
+### Bot service
+
+Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. The bot
+uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
+report drafts, and calls the API through `DSA_API_BASE_URL`. Register global commands once
+with:
+
+```powershell
+npm.cmd run register -w @discord-dsa/bot
+```
+
+In the Discord Developer Portal, enable **User Install** and disable **Guild Install** for
+this application. The bot health endpoint becomes ready only after both PostgreSQL and the
+Discord Gateway connection are available.
 
 ## Cloudflare Email Worker
 
-Deploy [`cloudflare-email-worker/src/index.ts`](cloudflare-email-worker/src/index.ts) and
+Deploy [`apps/email-worker/src/index.ts`](apps/email-worker/src/index.ts) and
 configure:
 
 ```text

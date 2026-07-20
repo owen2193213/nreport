@@ -509,16 +509,25 @@ Use `retryable` as the authority. Do not infer retry safety from the text or HTT
 
 ## 9. Recommended Discord command contract
 
-Suggested commands:
+Implemented user-installed app commands:
 
 ```text
-/dsa-message country reason message-url context
-/dsa-user country reason reported-username profile-elements server-id? context?
-/dsa-server country reason server-or-invite locations context
-/dsa-status report-id
-/dsa-reports
-/dsa-retry report-id
+/report message [message-link]
+/report profile username [server-id]
+/report server [server-or-invite]
+/reports status report-id
+/reports list
+/reports retry report-id
+/access redeem key
+/access status
+/settings country country
+Apps -> Report Message
 ```
+
+The app is registered globally with `USER_INSTALL` only. Admin key/user commands are
+documented in [`BOT_IMPLEMENTATION.md`](BOT_IMPLEMENTATION.md). The bot stores access,
+encrypted draft, idempotency-reconciliation, and notification metadata in a separate
+database, but the API remains the sole authoritative report database.
 
 For `/dsa-status` and `/dsa-retry`, fetch the report first and compare its
 `submitterDiscordUserId` with `interaction.user.id` before displaying anything.

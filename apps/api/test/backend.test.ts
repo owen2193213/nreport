@@ -6,25 +6,25 @@ import { describe, expect, it } from "vitest";
 import {
   extractVerificationCode,
   parseDiscordEmail
-} from "../src/backend/email.js";
-import { isRetryableFailure } from "../src/backend/database.js";
+} from "../src/email.js";
+import { isRetryableFailure } from "../src/database.js";
 import {
   buildAcceptLanguage,
   generateEmailAlias,
   generateIdentity,
   supportedCountries
-} from "../src/backend/pseudonyms.js";
+} from "../src/pseudonyms.js";
 import {
   decryptJson,
   encryptJson,
   signInboundEmail,
   verifyInboundSignature
-} from "../src/backend/security.js";
+} from "../src/security.js";
 import {
   DISCORD_FORM_LANGUAGE,
   parseCreateReportInput,
   parseRetryReportInput
-} from "../src/backend/validation.js";
+} from "../src/validation.js";
 
 describe("backend identity and validation", () => {
   it("keeps Discord's form language independent from the country locale", () => {

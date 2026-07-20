@@ -1,8 +1,7 @@
 import { ProxyAgent, request } from "undici";
 import type { Dispatcher } from "undici";
 
-import { REPORT_FLOWS } from "../src/types.js";
-import type { ReportFlow } from "../src/types.js";
+import { REPORT_FLOWS, type ReportFlow } from "@discord-dsa/client";
 
 const baseUrl = "https://discord.com/api/v9/reporting/unauthenticated/menu/";
 const proxyUrl = process.env.DSA_PROXY_URL;

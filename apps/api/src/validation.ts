@@ -1,9 +1,9 @@
+import type { ReportDraft } from "@discord-dsa/client";
 import type {
   GuildElement,
-  ReportDraft,
   ReportFlow,
   UserProfileElement
-} from "../types.js";
+} from "@discord-dsa/contracts";
 import { supportedCountries } from "./pseudonyms.js";
 
 const FLOW_VALUES = new Set<ReportFlow>(["user_urf", "message_urf", "guild_urf"]);

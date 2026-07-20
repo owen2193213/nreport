@@ -1,0 +1,12 @@
+{
+  "name": "@discord-dsa/email-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260719.1"
+  }
+}

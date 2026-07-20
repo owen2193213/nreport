@@ -48,9 +48,10 @@ const report = userInstalled()
         .addStringOption((option) =>
           option
             .setName("target")
-            .setDescription("Username, display name, user ID, or mention")
+            .setDescription("Discord username or raw user ID")
             .setRequired(true)
-            .setMaxLength(100)
+            .setMinLength(2)
+            .setMaxLength(32)
         )
         .addStringOption((option) =>
           option

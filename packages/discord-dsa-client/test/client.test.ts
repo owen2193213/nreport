@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DiscordDsaClient } from "../src/client.js";
+import { DiscordDsaNetworkError } from "../src/errors.js";
 import type {
   JsonRequest,
   JsonTransport,
@@ -25,6 +26,19 @@ class FakeTransport implements JsonTransport {
 
   public exportCookies(): string {
     return '{"cookies":[]}';
+  }
+}
+
+class FlakyFingerprintTransport extends FakeTransport {
+  public failuresRemaining = 2;
+
+  public override requestJson<T>(request: JsonRequest): Promise<T> {
+    if (request.path.includes("/experiments?") && this.failuresRemaining > 0) {
+      this.requests.push(request);
+      this.failuresRemaining -= 1;
+      return Promise.reject(new DiscordDsaNetworkError("temporary fingerprint failure"));
+    }
+    return super.requestJson<T>(request);
   }
 }
 
@@ -104,6 +118,18 @@ describe("DiscordDsaClient", () => {
         headers: { "x-fingerprint": "generated-fp" }
       }
     ]);
+  });
+
+  it("retries transient fingerprint bootstrap failures without repeating later requests", async () => {
+    const transport = new FlakyFingerprintTransport();
+    const client = new DiscordDsaClient({ transport, fingerprintRetryDelayMs: 0 });
+
+    await expect(client.bootstrapFingerprint()).resolves.toBe("generated-fp");
+    await client.getMenu("message_urf");
+
+    expect(
+      transport.requests.filter((request) => request.path.includes("/experiments?"))
+    ).toHaveLength(3);
   });
 
   it("exports resumable fingerprint and cookie state", async () => {

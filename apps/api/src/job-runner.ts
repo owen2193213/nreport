@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   DiscordDsaClient,
   DiscordDsaHttpError,
+  DiscordDsaNetworkError,
   type DiscordDsaSessionState
 } from "@discord-dsa/client";
 import type { AppConfig } from "./config.js";
@@ -24,6 +25,12 @@ class SessionNotReadyError extends Error {
 }
 
 function redactedError(error: unknown): { code: string; message: string; retryAfter?: number } {
+  if (error instanceof DiscordDsaNetworkError) {
+    return {
+      code: "discord_network_error",
+      message: "Temporary connection to Discord failed. Please retry this report."
+    };
+  }
   if (error instanceof DiscordDsaHttpError) {
     const detail = error.responseSummary === undefined ? "" : `: ${error.responseSummary}`;
     return {

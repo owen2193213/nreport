@@ -12,6 +12,11 @@ async function main(): Promise<void> {
   const runner = new JobRunner(database, config, app.log);
   const eventDelivery = new EventDeliveryWorker(database, config, app.log);
   if (config.workerEnabled) {
+    if (!config.botEventWebhookUrl) {
+      app.log.warn(
+        "BOT_EVENT_WEBHOOK_URL is not configured; lifecycle DMs will use reconciliation and fallback polling."
+      );
+    }
     runner.start();
     eventDelivery.start();
   }

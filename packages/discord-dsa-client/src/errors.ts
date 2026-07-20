@@ -5,6 +5,13 @@ export class DiscordDsaError extends Error {
   }
 }
 
+export class DiscordDsaNetworkError extends DiscordDsaError {
+  public constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DiscordDsaNetworkError";
+  }
+}
+
 export class DiscordDsaHttpError extends DiscordDsaError {
   public readonly status: number;
   public readonly retryAfterSeconds?: number;

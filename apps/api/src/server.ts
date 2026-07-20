@@ -321,7 +321,11 @@ export async function buildServer(config: AppConfig, database: Database) {
               typeof discordStatus === "string"
                 ? `discord:${discordStatus}`
                 : event.event_type,
-            occurredAt: event.created_at.toISOString()
+            occurredAt: event.created_at.toISOString(),
+            lifecycleAttempt:
+              typeof event.metadata.lifecycleAttempt === "number"
+                ? event.metadata.lifecycleAttempt
+                : 1
           };
         })
       });

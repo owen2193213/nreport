@@ -2,7 +2,11 @@ import { CookieJar } from "tough-cookie";
 import { ProxyAgent, request } from "undici";
 import type { Dispatcher } from "undici";
 
-import { DiscordDsaError, DiscordDsaHttpError } from "./errors.js";
+import {
+  DiscordDsaError,
+  DiscordDsaHttpError,
+  DiscordDsaNetworkError
+} from "./errors.js";
 import type { JsonRequest, JsonTransport } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://discord.com/api/v9/reporting/unauthenticated/";
@@ -159,7 +163,7 @@ export class UndiciJsonTransport implements JsonTransport {
         bodyTimeout: this.timeoutMs
       });
     } catch (error) {
-      throw new DiscordDsaError(
+      throw new DiscordDsaNetworkError(
         `Network request failed for ${requestOptions.method} ${url.pathname}.`,
         { cause: error }
       );

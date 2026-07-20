@@ -20,14 +20,21 @@ import {
   hashAccessKey
   ,verifyReportEventSignature
 } from "../src/crypto.js";
-import { renderNotification } from "../src/notifier.js";
+import { NotificationWorker, renderNotification } from "../src/notifier.js";
 import { matchingCountries } from "../src/countries.js";
 import type { BotConfig } from "../src/config.js";
 import type { BotDatabase } from "../src/database.js";
-import { notificationEventKey } from "../src/database.js";
+import {
+  notificationEventKey,
+  observedNotificationTypes
+} from "../src/database.js";
 import { InteractionHandler } from "../src/interactions.js";
 import { reportEventIngestionStatus } from "../src/health.js";
-import { ProfileResolver, normalizeProfileTarget } from "../src/profile-resolver.js";
+import {
+  isValidProfileTarget,
+  ProfileResolver,
+  normalizeProfileTarget
+} from "../src/profile-resolver.js";
 import { ServerResolver } from "../src/server-resolver.js";
 import type { DsaApi, ReportDetail } from "@discord-dsa/contracts";
 import {
@@ -136,7 +143,12 @@ describe("Discord command registration", () => {
     const target = profile && "options" in profile
       ? profile.options?.find((option) => option.name === "target")
       : undefined;
-    expect(target).toMatchObject({ required: true });
+    expect(target).toMatchObject({
+      required: true,
+      description: "Discord username or raw user ID",
+      min_length: 2,
+      max_length: 32
+    });
   });
 
   it("allows access keys to grant any positive integer number of credits", () => {
@@ -245,8 +257,15 @@ describe("server resolution", () => {
 });
 
 describe("profile resolution", () => {
-  it("normalizes mentions and resolves an immutable public user snapshot", async () => {
-    expect(normalizeProfileTarget("<@!123456789012345678>")).toBe("123456789012345678");
+  it("accepts only usernames or raw user IDs", () => {
+    expect(normalizeProfileTarget("  example.user  ")).toBe("example.user");
+    expect(isValidProfileTarget("example.user")).toBe(true);
+    expect(isValidProfileTarget("123456789012345678")).toBe(true);
+    expect(isValidProfileTarget("<@123456789012345678>")).toBe(false);
+    expect(isValidProfileTarget("Example Display")).toBe(false);
+  });
+
+  it("resolves an immutable public user snapshot from a raw user ID", async () => {
     const fetchUser = vi.fn().mockResolvedValue({
       id: "123456789012345678",
       username: "example",
@@ -430,7 +449,8 @@ describe("lifecycle notification deduplication", () => {
     const base = {
       internalReportId: "report-1",
       submitterDiscordUserId: "1197857362942378017",
-      occurredAt: "2026-07-20T00:00:00.000Z"
+      occurredAt: "2026-07-20T00:00:00.000Z",
+      lifecycleAttempt: 1
     };
     expect(notificationEventKey({ ...base, eventId: "41", type: "discord:received" })).toBe(
       notificationEventKey({ ...base, eventId: "42", type: "discord:received" })
@@ -438,11 +458,116 @@ describe("lifecycle notification deduplication", () => {
     expect(notificationEventKey({ ...base, eventId: "43", type: "discord:actioned" })).not.toBe(
       notificationEventKey({ ...base, eventId: "42", type: "discord:received" })
     );
+    expect(
+      notificationEventKey({
+        ...base,
+        lifecycleAttempt: 2,
+        eventId: "44",
+        type: "discord:received"
+      })
+    ).not.toBe(notificationEventKey({ ...base, eventId: "42", type: "discord:received" }));
+  });
+
+  it("queues notifications for report states observed by fallback polling", () => {
+    const submitted = reportFixture();
+    submitted.status = "submitted";
+    submitted.discordStatus = null;
+    expect(observedNotificationTypes("submitting", null, submitted)).toEqual([
+      "report_submitted"
+    ]);
+
+    submitted.discordStatus = "received";
+    expect(observedNotificationTypes("submitted", null, submitted)).toEqual([
+      "discord:received"
+    ]);
   });
 
   it("asks the API to retry events that arrive before report tracking is linked", () => {
     expect(reportEventIngestionStatus(false)).toBe(409);
     expect(reportEventIngestionStatus(true)).toBe(202);
+  });
+
+  it("reconciles existing lifecycle events when no cursor has been stored yet", async () => {
+    const event = {
+      eventId: "42",
+      internalReportId: "report-1",
+      submitterDiscordUserId: "1197857362942378017",
+      type: "report_submitted",
+      occurredAt: "2026-07-20T00:00:00.000Z",
+      lifecycleAttempt: 1
+    };
+    const ingestLifecycleEvent = vi.fn().mockResolvedValue(true);
+    const setReconciliationCursor = vi.fn().mockResolvedValue(undefined);
+    const database = {
+      claimDueTrackings: vi.fn().mockResolvedValue([]),
+      reconciliationCursor: vi.fn().mockResolvedValue(null),
+      setReconciliationCursor,
+      ingestLifecycleEvent,
+      claimNotifications: vi.fn().mockResolvedValue([])
+    } as unknown as BotDatabase;
+    const lifecycleEvents = vi
+      .fn()
+      .mockResolvedValueOnce({ events: [event] })
+      .mockResolvedValueOnce({ events: [] });
+    const worker = new NotificationWorker(
+      database,
+      { lifecycleEvents } as unknown as DsaApi,
+      {} as Client,
+      {} as BotConfig,
+      {} as ServerResolver
+    );
+
+    await worker.tick();
+
+    expect(setReconciliationCursor).toHaveBeenCalledWith("0");
+    expect(ingestLifecycleEvent).toHaveBeenCalledWith(event);
+    expect(setReconciliationCursor).toHaveBeenLastCalledWith("42");
+  });
+});
+
+describe("report component responsiveness", () => {
+  it("defers report pagination before fetching the next report", async () => {
+    const report = reportFixture();
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn();
+    const api = {
+      reportsFor: vi.fn().mockResolvedValue({ reports: [report] }),
+      report: vi.fn().mockResolvedValue(report)
+    } as unknown as DsaApi;
+    const handler = new InteractionHandler({
+      api,
+      config: {
+        adminUserIds: new Set<string>(),
+        whitelistEnabled: false
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database: {} as BotDatabase,
+      profileResolver: {} as ProfileResolver,
+      serverResolver: {} as ServerResolver
+    });
+    const interaction = {
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => true,
+      isRepliable: () => true,
+      customId: "reports:page:0",
+      user: { id: "1197857362942378017" },
+      deferUpdate,
+      editReply,
+      update,
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    expect(deferUpdate).toHaveBeenCalledOnce();
+    expect(editReply).toHaveBeenCalledOnce();
+    expect(update).not.toHaveBeenCalled();
   });
 });
 

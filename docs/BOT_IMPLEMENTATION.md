@@ -47,8 +47,9 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
 2. Use the searchable command country, then the saved country. If neither exists, ask the
    user to rerun with a country and do not create a draft.
 3. Collect the flow-specific reason, elements, target, and context.
-   Profile targets accept a username, display name, user ID, or mention. Snowflake-shaped
-   values are resolved first and require an ephemeral account-versus-username confirmation.
+   Profile targets accept a Discord username or raw user ID. Display names and mentions are
+   rejected. Snowflake-shaped values are resolved first and require an ephemeral
+   account-versus-username confirmation.
 4. Encrypt the draft at rest with a 30-minute expiry.
 5. Show a final review with submit, edit, country, and cancel controls.
 6. Atomically reserve one credit and create the API report with the interaction ID.
@@ -81,9 +82,11 @@ attempts for that tracked report; `/reports` remains available.
 
 The notification worker uses leased PostgreSQL rows and `SKIP LOCKED`, so restarts do not
 duplicate work and additional replicas remain safe. Pending creation and submission work
-polls approximately every 30 seconds. Submitted reports stop individual polling: the API
-uses a transactional event outbox and signed private webhook, with 15-minute reconciliation
-as a safety net. DMs use a unique `(tracking_id, event_key)` key and bounded retry.
+polls approximately every 30 seconds. Submitted reports retain a durable 15-minute fallback poll
+until Discord returns a terminal outcome. The API also uses a transactional event outbox and
+signed private webhook for fast delivery, with full event-feed reconciliation as a safety net.
+DMs use a per-attempt unique `(tracking_id, event_key)` key and retry transient failures with a
+bounded exponential delay.
 
 Do not register production commands or enable production reporting workers in pull-request
 environments. Use a separate Discord application and mocked API for staging.

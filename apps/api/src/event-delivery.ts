@@ -7,6 +7,7 @@ import type { Database, DeliveryEventRow } from "./database.js";
 import { signReportEvent } from "./security.js";
 
 interface DeliveryLogger {
+  info(data: Record<string, unknown>, message: string): void;
   error(data: Record<string, unknown>, message: string): void;
 }
 
@@ -20,7 +21,11 @@ function publicEvent(event: DeliveryEventRow): ReportLifecycleEvent {
       event.event_type === "discord_status_updated" && typeof discordStatus === "string"
         ? `discord:${discordStatus}`
         : event.event_type,
-    occurredAt: event.created_at.toISOString()
+    occurredAt: event.created_at.toISOString(),
+    lifecycleAttempt:
+      typeof event.metadata.lifecycleAttempt === "number"
+        ? event.metadata.lifecycleAttempt
+        : 1
   };
 }
 
@@ -85,6 +90,16 @@ export class EventDeliveryWorker {
       });
       if (!response.ok) throw new Error(`Bot event endpoint returned HTTP ${response.status}.`);
       await this.database.completeDeliveryEvent(event.id);
+      this.logger.info(
+        {
+          eventId: event.id,
+          reportId: event.report_id,
+          eventType: event.event_type,
+          deliveryAttempt: event.delivery_attempts + 1,
+          httpStatus: response.status
+        },
+        "Report lifecycle event delivered to bot"
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown event delivery error";
       await this.database.retryDeliveryEvent(event.id, event.delivery_attempts, message);

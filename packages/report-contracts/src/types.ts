@@ -143,6 +143,7 @@ export interface ReportLifecycleEvent {
   submitterDiscordUserId: string;
   type: string;
   occurredAt: string;
+  lifecycleAttempt: number;
 }
 
 /** @deprecated Use ReportDetail for a single report and ReportSummary for lists. */

@@ -445,8 +445,9 @@ Authorization: Bearer <DSA_API_KEY>
 ```
 
 Webhook and feed events contain `eventId`, `internalReportId`, `submitterDiscordUserId`,
-`type`, and `occurredAt`. Ingest by immutable `eventId`; webhook receipt must not advance
-the reconciliation cursor because webhook events can arrive out of order.
+`type`, `occurredAt`, and `lifecycleAttempt`. Ingest by immutable `eventId`; use the attempt
+when deduplicating semantic status notifications. Webhook receipt must not advance the
+reconciliation cursor because webhook events can arrive out of order.
 
 ### `POST /v1/reports/{internalReportId}/retry`
 
@@ -564,6 +565,7 @@ Common classes:
 | Code | Meaning |
 |---|---|
 | `discord_http_<status>` | Discord returned a definite HTTP error; safe structured details may follow |
+| `discord_network_error` | A temporary proxy or network failure prevented contact with Discord |
 | `report_processing_failed` | Network, proxy, menu, parsing, or local processing failed |
 | `ambiguous_submission_state` | Worker stopped during verification/submission; manual review required |
 
@@ -585,6 +587,10 @@ Implemented user-installed app commands:
 /settings country country
 Apps -> Report Message
 ```
+
+The profile `target` accepts only a current Discord username or raw user ID. Display names and
+mentions are rejected. A snowflake-shaped value is resolved first, then the user explicitly chooses
+whether it represents the resolved account or a numeric username.
 
 The app is registered globally with `USER_INSTALL` only. Admin key/user commands are
 documented in [`BOT_IMPLEMENTATION.md`](BOT_IMPLEMENTATION.md). The bot stores access,
@@ -796,8 +802,8 @@ These rules are mandatory because all bot instances share one backend API key:
   interaction delivery retries capable of creating duplicate reports.
 - Replies are ephemeral by default because report targets, context, IDs, and decisions may be
   sensitive.
-- The bot polls only briefly and offers explicit status commands; indefinite in-memory polling
-  was rejected because report completion depends on external email delivery.
+- The bot polls briefly during submission, then uses durable 15-minute fallback polling alongside
+  webhook delivery and event-feed reconciliation until Discord returns a terminal outcome.
 - Numeric breadcrumbs remain entirely backend-owned and runtime-resolved.
 - Manual retry remains explicit, owner-checked, attempt-limited, and unavailable after unsafe
   submission failures.

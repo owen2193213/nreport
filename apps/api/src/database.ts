@@ -314,10 +314,15 @@ export class Database {
     eventType: string,
     metadata: Record<string, unknown> = {}
   ): Promise<ReportEventRow> {
+    const attemptResult = await client.query<{ lifecycle_attempt: number }>(
+      "SELECT lifecycle_attempt FROM reports WHERE id = $1",
+      [reportId]
+    );
+    const lifecycleAttempt = attemptResult.rows[0]?.lifecycle_attempt ?? 1;
     const result = await client.query<ReportEventRow>(
       `INSERT INTO report_events (report_id, event_type, metadata)
        VALUES ($1, $2, $3) RETURNING *`,
-      [reportId, eventType, metadata]
+      [reportId, eventType, { ...metadata, lifecycleAttempt }]
     );
     const event = result.rows[0];
     if (!event) throw new Error("Report event insert returned no row.");

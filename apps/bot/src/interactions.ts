@@ -30,6 +30,7 @@ import { AccessError } from "./database.js";
 import type { BotDatabase } from "./database.js";
 import {
   isSnowflakeProfileTarget,
+  isValidProfileTarget,
   normalizeProfileTarget
 } from "./profile-resolver.js";
 import type { ProfileResolver } from "./profile-resolver.js";
@@ -292,6 +293,12 @@ export class InteractionHandler {
     }
     if (subcommand === "profile") {
       const target = normalizeProfileTarget(interaction.options.getString("target", true));
+      if (!isValidProfileTarget(target)) {
+        throw new AccessError(
+          "invalid_profile_target",
+          "Enter a Discord username or raw user ID. Display names and mentions are not accepted."
+        );
+      }
       const serverId = interaction.options.getString("server-id")?.trim();
       if (serverId && !SNOWFLAKE.test(serverId)) {
         throw new AccessError("invalid_server_id", "Server ID must be a Discord snowflake.");
@@ -585,7 +592,8 @@ export class InteractionHandler {
     if (parts[0] === "reports" && parts[1] === "page" && parts[2]) {
       const requestedPage = Number(parts[2]);
       if (!Number.isInteger(requestedPage)) return;
-      await interaction.update({
+      await interaction.deferUpdate();
+      await interaction.editReply({
         ...(await this.reportPage(interaction.user.id, requestedPage)),
         allowedMentions: { parse: [] }
       });
@@ -667,26 +675,32 @@ export class InteractionHandler {
     draftId: string,
     draft: ReportDraft
   ): Promise<void> {
-    await this.requireReportAccess(interaction.user.id);
-    const request = draftToCreateInput(draft, interaction.user.id);
     await interaction.deferUpdate();
-    const tracking = await this.database.reserveSubmission({
-      draftId,
-      userId: interaction.user.id,
-      interactionId: interaction.id,
-      flow: request.flow,
-      country: request.country,
-      reportType: request.reportType,
-      encryptedRequest: encryptJson(request, this.config.dataEncryptionKey),
-      ...(draft.serverSnapshot ? { serverSnapshot: draft.serverSnapshot } : {}),
-      adminBypass: this.isAdmin(interaction.user.id) || !this.config.whitelistEnabled
-    });
-    await interaction.editReply({
-      content: null,
-      embeds: [infoEmbed("Submitting report", "Your report is being prepared and sent securely. This may take a moment.")],
-      components: []
-    });
+    let tracking: Awaited<ReturnType<BotDatabase["reserveSubmission"]>> | undefined;
     try {
+      await this.requireReportAccess(interaction.user.id);
+      const request = draftToCreateInput(draft, interaction.user.id);
+      tracking = await this.database.reserveSubmission({
+        draftId,
+        userId: interaction.user.id,
+        interactionId: interaction.id,
+        flow: request.flow,
+        country: request.country,
+        reportType: request.reportType,
+        encryptedRequest: encryptJson(request, this.config.dataEncryptionKey),
+        ...(draft.serverSnapshot ? { serverSnapshot: draft.serverSnapshot } : {}),
+        adminBypass: this.isAdmin(interaction.user.id) || !this.config.whitelistEnabled
+      });
+      await interaction.editReply({
+        content: null,
+        embeds: [
+          infoEmbed(
+            "Submitting report",
+            "Your report is being prepared and sent securely. This may take a moment."
+          )
+        ],
+        components: []
+      });
       let report = await this.api.createReport(tracking.interactionId, request);
       await this.database.markSubmissionCreated(tracking.id, report);
       await this.database.deleteDraft(interaction.user.id, draftId);
@@ -703,7 +717,7 @@ export class InteractionHandler {
         allowedMentions: { parse: [] }
       });
     } catch (error) {
-      if (isDefinitePreCreationError(error)) {
+      if (tracking && isDefinitePreCreationError(error)) {
         await this.database.releaseReservation(tracking.id, "report_rejected");
       }
       await interaction.editReply({
@@ -722,6 +736,22 @@ export class InteractionHandler {
   private async respondWithError(interaction: Interaction, error: unknown): Promise<void> {
     if (!interaction.isRepliable()) return;
     const embeds = [errorEmbed(conciseError(error))];
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+      const payload = {
+        content: null,
+        embeds,
+        components: [],
+        allowedMentions: { parse: [] as never[] }
+      };
+      if (interaction.deferred) {
+        await interaction.editReply(payload);
+      } else if (!interaction.replied) {
+        await interaction.update(payload);
+      } else {
+        await interaction.followUp({ embeds, flags: EPHEMERAL, allowedMentions: { parse: [] } });
+      }
+      return;
+    }
     if (interaction.deferred || interaction.replied) {
       await interaction.followUp({ embeds, flags: EPHEMERAL, allowedMentions: { parse: [] } });
     } else {

@@ -1,4 +1,11 @@
-import { DiscordDsaError, PayloadValidationError } from "./errors.js";
+import { setTimeout as delay } from "node:timers/promises";
+
+import {
+  DiscordDsaError,
+  DiscordDsaHttpError,
+  DiscordDsaNetworkError,
+  PayloadValidationError
+} from "./errors.js";
 import { validateMenu } from "./menu.js";
 import { buildSubmissionPayload } from "./payload.js";
 import { UndiciJsonTransport } from "./transport.js";
@@ -24,6 +31,7 @@ export interface DiscordDsaClientOptions {
   userAgent?: string;
   extraHeaders?: Record<string, string>;
   timeoutMs?: number;
+  fingerprintRetryDelayMs?: number;
   transport?: JsonTransport;
   sessionState?: DiscordDsaSessionState;
 }
@@ -68,11 +76,13 @@ function defaultHeaders(options: DiscordDsaClientOptions): Record<string, string
 
 export class DiscordDsaClient {
   private readonly transport: JsonTransport;
+  private readonly fingerprintRetryDelayMs: number;
   private fingerprint: string | undefined;
   private fingerprintPromise: Promise<string> | undefined;
 
   public constructor(options: DiscordDsaClientOptions) {
     this.fingerprint = options.fingerprint ?? options.sessionState?.fingerprint;
+    this.fingerprintRetryDelayMs = options.fingerprintRetryDelayMs ?? 250;
     this.transport =
       options.transport ??
       new UndiciJsonTransport({
@@ -99,23 +109,42 @@ export class DiscordDsaClient {
 
   public async bootstrapFingerprint(): Promise<string> {
     if (this.fingerprint !== undefined) return this.fingerprint;
-    this.fingerprintPromise ??= this.transport
-      .requestJson<FingerprintResponse>({
-        method: "GET",
-        path: "https://discord.com/api/v9/experiments?with_guild_experiments=true"
-      })
-      .then((response) => {
-        if (
-          typeof response.fingerprint !== "string" ||
-          response.fingerprint.length === 0
-        ) {
-          throw new DiscordDsaError(
-            "Discord experiments response did not contain a fingerprint."
+    this.fingerprintPromise ??= (async () => {
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          const response = await this.transport.requestJson<FingerprintResponse>({
+            method: "GET",
+            path: "https://discord.com/api/v9/experiments?with_guild_experiments=true"
+          });
+          if (
+            typeof response.fingerprint !== "string" ||
+            response.fingerprint.length === 0
+          ) {
+            throw new DiscordDsaError(
+              "Discord experiments response did not contain a fingerprint."
+            );
+          }
+          this.fingerprint = response.fingerprint;
+          return response.fingerprint;
+        } catch (error) {
+          lastError = error;
+          const retryable =
+            error instanceof DiscordDsaNetworkError ||
+            (error instanceof DiscordDsaHttpError &&
+              (error.status === 429 || error.status >= 500));
+          if (!retryable || attempt === 3) throw error;
+          const retryAfterMs =
+            error instanceof DiscordDsaHttpError && error.retryAfterSeconds !== undefined
+              ? error.retryAfterSeconds * 1_000
+              : 0;
+          await delay(
+            Math.min(5_000, Math.max(retryAfterMs, this.fingerprintRetryDelayMs * attempt))
           );
         }
-        this.fingerprint = response.fingerprint;
-        return response.fingerprint;
-      })
+      }
+      throw lastError;
+    })()
       .finally(() => {
         this.fingerprintPromise = undefined;
       });

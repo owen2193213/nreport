@@ -3,11 +3,15 @@ import type { Client, Guild, User } from "discord.js";
 import type { ReportedUserSnapshot } from "@discord-dsa/contracts";
 
 const SNOWFLAKE = /^\d{15,22}$/;
-const USER_MENTION = /^<@!?(\d{15,22})>$/;
+const USERNAME = /^[a-z0-9._]{2,32}$/;
 
 export function normalizeProfileTarget(value: string): string {
-  const target = value.trim();
-  return USER_MENTION.exec(target)?.[1] ?? target;
+  return value.trim();
+}
+
+export function isValidProfileTarget(value: string): boolean {
+  const target = normalizeProfileTarget(value);
+  return SNOWFLAKE.test(target) || USERNAME.test(target);
 }
 
 export function isSnowflakeProfileTarget(value: string): boolean {

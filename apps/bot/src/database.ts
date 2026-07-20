@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 
-import type { ReportLifecycleEvent, ReportView } from "@discord-dsa/contracts";
+import type {
+  DiscordReportStatus,
+  ReportLifecycleEvent,
+  ReportStatus,
+  ReportView
+} from "@discord-dsa/contracts";
 import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
 
@@ -194,10 +199,40 @@ export interface NotificationJob extends QueryResultRow {
   attempts: number;
 }
 
+const STATE_NOTIFICATION_TYPES = new Set([
+  "report_submitted",
+  "report_failed",
+  "discord:received",
+  "discord:actioned",
+  "discord:closed_no_action",
+  "discord:review_not_approved"
+]);
+
+export function notificationStateKey(eventType: string, lifecycleAttempt: number): string {
+  return `lifecycle:${eventType}:attempt:${lifecycleAttempt}`;
+}
+
 export function notificationEventKey(event: ReportLifecycleEvent): string {
-  return event.type.startsWith("discord:")
-    ? `lifecycle:${event.type}`
+  return STATE_NOTIFICATION_TYPES.has(event.type)
+    ? notificationStateKey(event.type, event.lifecycleAttempt)
     : `api:${event.eventId}`;
+}
+
+export function observedNotificationTypes(
+  lastStatus: ReportStatus | null,
+  lastDiscordStatus: DiscordReportStatus | null,
+  report: ReportView
+): string[] {
+  const types: string[] = [];
+  if (lastStatus !== report.status && report.status === "submitted") {
+    types.push("report_submitted");
+  } else if (lastStatus !== report.status && report.status === "failed") {
+    types.push("report_failed");
+  }
+  if (report.discordStatus !== null && lastDiscordStatus !== report.discordStatus) {
+    types.push(`discord:${report.discordStatus}`);
+  }
+  return types;
 }
 
 export class AccessError extends Error {
@@ -716,6 +751,35 @@ export class BotDatabase {
       const tracking = result.rows[0];
       if (!tracking) throw new Error("Tracked report was not found.");
 
+      const notificationTypes = observedNotificationTypes(
+        tracking.last_status,
+        tracking.last_discord_status,
+        report
+      );
+      for (const eventType of notificationTypes) {
+        const occurredAt = eventType.startsWith("discord:")
+          ? report.discordStatusUpdatedAt ?? report.updatedAt
+          : report.updatedAt;
+        const payload: NotificationPayload = {
+          eventId: `observed:${report.internalReportId}:${eventType}:${report.lifecycleAttempt}`,
+          eventType,
+          internalReportId: report.internalReportId,
+          occurredAt
+        };
+        await client.query(
+          `INSERT INTO notification_outbox
+             (tracking_id, discord_user_id, event_key, payload)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (tracking_id, event_key) DO NOTHING`,
+          [
+            tracking.id,
+            tracking.discord_user_id,
+            notificationStateKey(eventType, report.lifecycleAttempt),
+            payload
+          ]
+        );
+      }
+
       const terminal =
         report.status === "failed" ||
         report.discordStatus === "actioned" ||
@@ -724,7 +788,7 @@ export class BotDatabase {
       await client.query(
         `UPDATE report_tracking SET internal_report_id = $2, last_status = $3,
            last_discord_status = $4, poll_at = CASE WHEN $5 THEN NULL
-             WHEN $3 = 'submitted' THEN NULL
+             WHEN $3 = 'submitted' THEN now() + interval '15 minutes'
              ELSE now() + interval '30 seconds' END,
            locked_at = NULL, updated_at = now() WHERE id = $1`,
         [trackingId, report.internalReportId, report.status, report.discordStatus, terminal]
@@ -886,13 +950,12 @@ export class BotDatabase {
       );
       return;
     }
-    const failed = job.attempts >= 5;
     const delaySeconds = Math.min(60 * 2 ** job.attempts, 3600);
     await this.pool.query(
-      `UPDATE notification_outbox SET state = $2, locked_at = NULL,
-         run_at = now() + ($3 * interval '1 second'), last_error = $4,
+      `UPDATE notification_outbox SET state = 'pending', locked_at = NULL,
+         run_at = now() + ($2 * interval '1 second'), last_error = $3,
          updated_at = now() WHERE id = $1`,
-      [job.id, failed ? "failed" : "pending", delaySeconds, message.slice(0, 500)]
+      [job.id, delaySeconds, message.slice(0, 500)]
     );
   }
 }

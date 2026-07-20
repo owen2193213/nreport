@@ -12,6 +12,11 @@ import { ServerResolver } from "./server-resolver.js";
 
 async function main(): Promise<void> {
   const config = loadBotConfig();
+  if (!config.reportEventWebhookSecret) {
+    process.stderr.write(
+      "REPORT_EVENT_WEBHOOK_SECRET is not configured; lifecycle DMs will use reconciliation and fallback polling.\n"
+    );
+  }
   if (config.environment === "production") {
     const count = await registerGlobalCommands({
       applicationId: config.applicationId,

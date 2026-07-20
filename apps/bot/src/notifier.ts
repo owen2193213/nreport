@@ -7,6 +7,7 @@ import { DiscordAPIError, type Client } from "discord.js";
 import type { BotConfig } from "./config.js";
 import { decryptJson } from "./crypto.js";
 import type { BotDatabase } from "./database.js";
+import { botLog, errorFields } from "./observability.js";
 import type { ServerResolver } from "./server-resolver.js";
 import type { ServerSnapshot } from "./types.js";
 import { reportEmbed } from "./ui.js";
@@ -80,7 +81,7 @@ export class NotificationWorker {
       }
       await this.deliverNotifications();
     } catch (error) {
-      process.stderr.write(`Notification worker tick failed: ${errorMessage(error)}\n`);
+      botLog("notification_worker_tick_failed", errorFields(error), "error");
     } finally {
       this.ticking = false;
     }
@@ -98,11 +99,36 @@ export class NotificationWorker {
           const report = await this.api.createReport(tracking.interaction_id, request);
           await this.database.markSubmissionCreated(tracking.id, report);
           await this.database.observeReport(tracking.id, report);
+          botLog("report_poll_observed", {
+            trackingId: tracking.id,
+            reportId: report.internalReportId,
+            status: report.status,
+            discordStatus: report.discordStatus,
+            lifecycleAttempt: report.lifecycleAttempt,
+            recoveredCreation: true
+          });
         } else {
           const report = await this.api.report(tracking.internal_report_id);
           await this.database.observeReport(tracking.id, report);
+          botLog("report_poll_observed", {
+            trackingId: tracking.id,
+            reportId: report.internalReportId,
+            status: report.status,
+            discordStatus: report.discordStatus,
+            lifecycleAttempt: report.lifecycleAttempt,
+            recoveredCreation: false
+          });
         }
       } catch (error) {
+        botLog(
+          "report_poll_failed",
+          {
+            trackingId: tracking.id,
+            hasReportId: tracking.internal_report_id !== null,
+            ...errorFields(error)
+          },
+          "warn"
+        );
         if (tracking.internal_report_id === null && definiteCreateFailure(error)) {
           await this.database.releaseReservation(tracking.id, "reconciliation_rejected");
         } else {
@@ -118,29 +144,34 @@ export class NotificationWorker {
   private async reconcileEvents(): Promise<void> {
     let cursor = await this.database.reconciliationCursor();
     if (cursor === null) {
-      cursor = await this.latestEventCursor();
+      cursor = "0";
       await this.database.setReconciliationCursor(cursor);
-      return;
     }
+    botLog("lifecycle_reconciliation_started", { cursor });
+    let eventCount = 0;
     while (true) {
       const { events } = await this.api.lifecycleEvents(cursor, 100);
-      if (events.length === 0) return;
+      if (events.length === 0) {
+        botLog("lifecycle_reconciliation_completed", { cursor, eventCount });
+        return;
+      }
       for (const event of events) {
-        await this.database.ingestLifecycleEvent(event);
+        const tracked = await this.database.ingestLifecycleEvent(event);
+        botLog("lifecycle_event_reconciled", {
+          eventId: event.eventId,
+          reportId: event.internalReportId,
+          eventType: event.type,
+          lifecycleAttempt: event.lifecycleAttempt,
+          tracked
+        });
+        eventCount += 1;
         cursor = event.eventId;
         await this.database.setReconciliationCursor(cursor);
       }
-      if (events.length < 100) return;
-    }
-  }
-
-  private async latestEventCursor(): Promise<string> {
-    let cursor = "0";
-    while (true) {
-      const { events } = await this.api.lifecycleEvents(cursor, 100);
-      if (events.length === 0) return cursor;
-      cursor = events.at(-1)?.eventId ?? cursor;
-      if (events.length < 100) return cursor;
+      if (events.length < 100) {
+        botLog("lifecycle_reconciliation_completed", { cursor, eventCount });
+        return;
+      }
     }
   }
 
@@ -157,6 +188,13 @@ export class NotificationWorker {
     const jobs = await this.database.claimNotifications();
     for (const job of jobs) {
       try {
+        botLog("notification_send_started", {
+          notificationId: job.id,
+          trackingId: job.tracking_id,
+          reportId: job.payload.internalReportId,
+          eventType: job.payload.eventType,
+          deliveryAttempt: job.attempts
+        });
         const report = await this.api.report(job.payload.internalReportId);
         const user = await this.client.users.fetch(job.discord_user_id);
         await user.send({
@@ -170,8 +208,28 @@ export class NotificationWorker {
           allowedMentions: { parse: [] }
         });
         await this.database.completeNotification(job.id);
+        botLog("notification_send_completed", {
+          notificationId: job.id,
+          trackingId: job.tracking_id,
+          reportId: job.payload.internalReportId,
+          eventType: job.payload.eventType,
+          deliveryAttempt: job.attempts
+        });
       } catch (error) {
         const permanentlyBlocked = error instanceof DiscordAPIError && error.code === 50_007;
+        botLog(
+          "notification_send_failed",
+          {
+            notificationId: job.id,
+            trackingId: job.tracking_id,
+            reportId: job.payload.internalReportId,
+            eventType: job.payload.eventType,
+            deliveryAttempt: job.attempts,
+            permanentlyBlocked,
+            ...errorFields(error)
+          },
+          permanentlyBlocked ? "warn" : "error"
+        );
         await this.database.failNotification(job, errorMessage(error), permanentlyBlocked);
       }
     }

@@ -5,6 +5,7 @@ import type { ReportLifecycleEvent } from "@discord-dsa/contracts";
 
 import { verifyReportEventSignature } from "./crypto.js";
 import type { BotDatabase } from "./database.js";
+import { botLog, errorFields } from "./observability.js";
 
 export function reportEventIngestionStatus(tracked: boolean): 202 | 409 {
   return tracked ? 202 : 409;
@@ -94,6 +95,7 @@ export class HealthServer {
           body
         })
       ) {
+        botLog("lifecycle_webhook_rejected", { reason: "invalid_signature" }, "warn");
         response.writeHead(401, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: "invalid_signature" }));
         return;
@@ -105,20 +107,31 @@ export class HealthServer {
         !/^\d{15,22}$/.test(event.submitterDiscordUserId) ||
         typeof event.internalReportId !== "string" ||
         typeof event.type !== "string" ||
+        !Number.isInteger(event.lifecycleAttempt) ||
+        event.lifecycleAttempt < 1 ||
         !Number.isFinite(new Date(event.occurredAt).getTime())
       ) {
+        botLog("lifecycle_webhook_rejected", { reason: "invalid_event" }, "warn");
         response.writeHead(400, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: "invalid_event" }));
         return;
       }
       const tracked = await this.database.ingestLifecycleEvent(event);
+      botLog("lifecycle_webhook_ingested", {
+        eventId: event.eventId,
+        reportId: event.internalReportId,
+        eventType: event.type,
+        lifecycleAttempt: event.lifecycleAttempt,
+        tracked
+      });
       response.writeHead(reportEventIngestionStatus(tracked), {
         "content-type": "application/json"
       });
       response.end(
         JSON.stringify({ status: tracked ? "accepted" : "report_not_tracked_yet" })
       );
-    } catch {
+    } catch (error) {
+      botLog("lifecycle_webhook_rejected", { reason: "invalid_event", ...errorFields(error) }, "warn");
       response.writeHead(400, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "invalid_event" }));
     }

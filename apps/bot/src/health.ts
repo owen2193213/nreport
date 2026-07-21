@@ -4,11 +4,11 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { ReportLifecycleEvent } from "@discord-dsa/contracts";
 
 import { verifyReportEventSignature } from "./crypto.js";
-import type { BotDatabase } from "./database.js";
+import type { BotDatabase, ReportEventIngestionResult } from "./database.js";
 import { botLog, errorFields } from "./observability.js";
 
-export function reportEventIngestionStatus(tracked: boolean): 202 | 409 {
-  return tracked ? 202 : 409;
+export function reportEventIngestionStatus(result: ReportEventIngestionResult): 202 | 409 {
+  return result === "not_tracked_yet" ? 409 : 202;
 }
 
 function readBody(request: IncomingMessage): Promise<string> {
@@ -116,20 +116,18 @@ export class HealthServer {
         response.end(JSON.stringify({ error: "invalid_event" }));
         return;
       }
-      const tracked = await this.database.ingestLifecycleEvent(event);
+      const ingestionResult = await this.database.ingestLifecycleEvent(event);
       botLog("lifecycle_webhook_ingested", {
         eventId: event.eventId,
         reportId: event.internalReportId,
         eventType: event.type,
         lifecycleAttempt: event.lifecycleAttempt,
-        tracked
+        ingestionResult
       });
-      response.writeHead(reportEventIngestionStatus(tracked), {
+      response.writeHead(reportEventIngestionStatus(ingestionResult), {
         "content-type": "application/json"
       });
-      response.end(
-        JSON.stringify({ status: tracked ? "accepted" : "report_not_tracked_yet" })
-      );
+      response.end(JSON.stringify({ status: ingestionResult }));
     } catch (error) {
       botLog("lifecycle_webhook_rejected", { reason: "invalid_event", ...errorFields(error) }, "warn");
       response.writeHead(400, { "content-type": "application/json" });

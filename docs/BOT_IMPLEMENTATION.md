@@ -99,6 +99,42 @@ bounded exponential delay.
 - Delaying the submission acknowledgement or removing `received` from the API timeline were
   rejected because they would reduce responsiveness or audit detail.
 
+## Bounded lifecycle polling
+
+### Understanding and assumptions
+
+- Signed webhooks provide immediate lifecycle delivery and the paginated event feed reconciles
+  missed webhook deliveries every 15 minutes with one request for all tracked reports.
+- Per-report polling is a fallback and must not grow into a high-frequency request stream as the
+  report history grows.
+- Report history remains available after tracking expires; expiration only stops background
+  polling and lifecycle DMs.
+
+### Final design
+
+Active creation states are polled every 30 seconds. Individual polling stops as soon as a report
+is submitted; signed webhooks provide immediate updates and the cursor feed provides durable
+recovery with a constant baseline of one request every 15 minutes. Each tracking row expires 60
+days after its original creation time. Expired rows are excluded from polling, lifecycle-event
+ingestion, and notification delivery, while existing report records and user-facing history remain
+intact. Existing rows are migrated using their original `created_at`.
+
+Webhook ingestion distinguishes accepted, expired, and not-yet-tracked events. Accepted and
+expired events receive HTTP `202`; expired events are intentionally discarded. Only a genuine
+creation/linking race receives HTTP `409`, allowing the API outbox to retry without retrying events
+that have deliberately aged out.
+
+### Decision log
+
+- Chosen: active-only per-report polling plus webhook/feed delivery and 60-day retention. Silent
+  submitted reports perform no report-specific work while retaining immediate updates.
+- Rejected: six-hour or age-tiered submitted polling. It duplicates the durable event pipeline and
+  continues to scale with unresolved report count.
+- Deferred: a batch integrity endpoint. Add it only if production evidence shows report state and
+  lifecycle events diverging.
+- Rejected: retaining 15-minute per-report polling. It duplicates the event feed and scales
+  linearly with unresolved reports.
+
 ## Verification timeout and immutable retries
 
 ### Understanding and assumptions

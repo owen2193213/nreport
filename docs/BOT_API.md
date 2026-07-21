@@ -451,7 +451,13 @@ always substitute `interaction.user.id`; never accept an arbitrary user ID optio
 ### `GET /v1/report-events`
 
 Returns up to 100 externally meaningful lifecycle events after a numeric event cursor.
-The bot uses this feed every 15 minutes to reconcile signed webhook delivery.
+The bot uses this feed every 15 minutes to reconcile signed webhook delivery. This is the primary
+recovery path for submitted reports: one feed request covers every tracked report. Per-report
+polling is limited to active creation states, which are checked every 30 seconds. Individual
+polling stops once a report is submitted. Tracking expires 60 days after creation; expiration
+stops lifecycle DMs but does not delete report history or the API report. The bot acknowledges
+post-expiry webhook events with HTTP `202` and discards them, while HTTP `409` remains reserved
+for the short race where API report creation finished before bot tracking was linked.
 
 ```http
 GET /v1/report-events?after=1234&limit=100

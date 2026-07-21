@@ -25,8 +25,12 @@ import { matchingCountries } from "../src/countries.js";
 import type { BotConfig } from "../src/config.js";
 import type { BotDatabase } from "../src/database.js";
 import {
+  ACTIVE_REPORT_POLL_SECONDS,
+  nextReportPollDelaySeconds,
   notificationEventKey,
   observedNotificationTypes,
+  reportEventTrackingResult,
+  REPORT_TRACKING_RETENTION_DAYS,
   shouldNotifyLifecycleType
 } from "../src/database.js";
 import { InteractionHandler, shouldBypassReportCredits } from "../src/interactions.js";
@@ -493,6 +497,21 @@ describe("report UI", () => {
 });
 
 describe("lifecycle notification deduplication", () => {
+  it("polls only active processing and bounds the tracking lifetime", () => {
+    const report = reportFixture();
+    report.status = "submitted";
+    expect(nextReportPollDelaySeconds(report)).toBeNull();
+
+    report.status = "failed";
+    expect(nextReportPollDelaySeconds(report)).toBeNull();
+
+    report.status = "verifying";
+    report.discordStatus = null;
+    expect(nextReportPollDelaySeconds(report)).toBe(ACTIVE_REPORT_POLL_SECONDS);
+    expect(ACTIVE_REPORT_POLL_SECONDS).toBe(30);
+    expect(REPORT_TRACKING_RETENTION_DAYS).toBe(60);
+  });
+
   it("deduplicates equal Discord states even when the API event IDs differ", () => {
     const base = {
       internalReportId: "report-1",
@@ -545,9 +564,13 @@ describe("lifecycle notification deduplication", () => {
     expect(reportRetryComponents(failed)).toEqual([]);
   });
 
-  it("asks the API to retry events that arrive before report tracking is linked", () => {
-    expect(reportEventIngestionStatus(false)).toBe(409);
-    expect(reportEventIngestionStatus(true)).toBe(202);
+  it("retries unlinked events but acknowledges accepted and expired events", () => {
+    expect(reportEventTrackingResult(undefined)).toBe("not_tracked_yet");
+    expect(reportEventTrackingResult({ tracking_expired: false })).toBe("accepted");
+    expect(reportEventTrackingResult({ tracking_expired: true })).toBe("expired");
+    expect(reportEventIngestionStatus("not_tracked_yet")).toBe(409);
+    expect(reportEventIngestionStatus("accepted")).toBe(202);
+    expect(reportEventIngestionStatus("expired")).toBe(202);
   });
 
   it("reconciles existing lifecycle events when no cursor has been stored yet", async () => {
@@ -559,7 +582,7 @@ describe("lifecycle notification deduplication", () => {
       occurredAt: "2026-07-20T00:00:00.000Z",
       lifecycleAttempt: 1
     };
-    const ingestLifecycleEvent = vi.fn().mockResolvedValue(true);
+    const ingestLifecycleEvent = vi.fn().mockResolvedValue("accepted");
     const setReconciliationCursor = vi.fn().mockResolvedValue(undefined);
     const database = {
       claimDueTrackings: vi.fn().mockResolvedValue([]),

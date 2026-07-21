@@ -3,6 +3,8 @@ interface Env {
   INGEST_SHARED_SECRET: string;
 }
 
+const DISCORD_VERIFICATION_SENDER = "noreply@discord.com";
+
 function hex(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)]
     .map((value) => value.toString(16).padStart(2, "0"))
@@ -27,6 +29,17 @@ async function hmac(secret: string, value: string): Promise<string> {
 
 export default {
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
+    const sender = message.from.trim().toLowerCase();
+    if (sender !== DISCORD_VERIFICATION_SENDER) {
+      console.warn(JSON.stringify({
+        event: "email_rejected",
+        reason: "untrusted_sender",
+        senderDomain: sender.split("@", 2)[1] ?? "invalid"
+      }));
+      message.setReject("Only Discord verification email is accepted");
+      return;
+    }
+
     const recipient = message.to.trim().toLowerCase();
     const localPart = recipient.split("@", 1)[0] ?? "";
     if (!/^[a-z0-9]+(?:[.-][a-z0-9]+)*\.[0-9a-hjkmnp-tv-z]{16}$/.test(localPart)) {

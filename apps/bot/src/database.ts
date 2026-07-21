@@ -17,6 +17,30 @@ import type {
   ServerSnapshot
 } from "./types.js";
 
+export const ACTIVE_REPORT_POLL_SECONDS = 30;
+export const REPORT_TRACKING_RETENTION_DAYS = 60;
+
+export type ReportEventIngestionResult = "accepted" | "expired" | "not_tracked_yet";
+
+export function reportEventTrackingResult(
+  tracking: { tracking_expired: boolean } | undefined
+): ReportEventIngestionResult {
+  if (!tracking) return "not_tracked_yet";
+  return tracking.tracking_expired ? "expired" : "accepted";
+}
+
+export function nextReportPollDelaySeconds(
+  report: Pick<ReportView, "status" | "discordStatus">
+): number | null {
+  const terminalDiscordStatus =
+    report.discordStatus === "actioned" ||
+    report.discordStatus === "closed_no_action" ||
+    report.discordStatus === "review_not_approved";
+  return report.status === "submitted" || report.status === "failed" || terminalDiscordStatus
+    ? null
+    : ACTIVE_REPORT_POLL_SECONDS;
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS bot_users (
   discord_user_id text PRIMARY KEY,
@@ -93,6 +117,8 @@ CREATE TABLE IF NOT EXISTS report_tracking (
   poll_at timestamptz,
   locked_at timestamptz,
   dm_blocked boolean NOT NULL DEFAULT false,
+  tracking_expires_at timestamptz NOT NULL DEFAULT
+    (now() + interval '${REPORT_TRACKING_RETENTION_DAYS} days'),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -145,10 +171,19 @@ END
 $$;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS draft_id uuid;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS server_snapshot jsonb;
+ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS tracking_expires_at timestamptz;
+UPDATE report_tracking
+   SET tracking_expires_at = created_at + interval '${REPORT_TRACKING_RETENTION_DAYS} days'
+ WHERE tracking_expires_at IS NULL;
+ALTER TABLE report_tracking ALTER COLUMN tracking_expires_at SET DEFAULT
+  (now() + interval '${REPORT_TRACKING_RETENTION_DAYS} days');
+ALTER TABLE report_tracking ALTER COLUMN tracking_expires_at SET NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS report_tracking_draft_idx
   ON report_tracking(draft_id) WHERE draft_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS report_drafts_expiry_idx ON report_drafts(expires_at);
 CREATE INDEX IF NOT EXISTS report_tracking_poll_idx ON report_tracking(poll_at, locked_at);
+CREATE INDEX IF NOT EXISTS report_tracking_expiry_idx
+  ON report_tracking(tracking_expires_at);
 CREATE INDEX IF NOT EXISTS notification_outbox_claim_idx
   ON notification_outbox(state, run_at, locked_at);
 `;
@@ -177,6 +212,7 @@ export interface TrackingRow extends QueryResultRow {
   flow: string;
   country: string;
   report_type: string;
+  tracking_expires_at: Date;
 }
 
 export interface AccessKeyView extends QueryResultRow {
@@ -705,9 +741,14 @@ export class BotDatabase {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query(
+        `UPDATE report_tracking SET poll_at = NULL, locked_at = NULL, updated_at = now()
+         WHERE tracking_expires_at <= now() AND poll_at IS NOT NULL`
+      );
       const result = await client.query<TrackingRow>(
         `SELECT * FROM report_tracking
          WHERE poll_at <= now()
+           AND tracking_expires_at > now()
            AND (locked_at IS NULL OR locked_at < now() - interval '5 minutes')
            AND credit_state <> 'released'
          ORDER BY poll_at, created_at
@@ -841,18 +882,20 @@ export class BotDatabase {
         );
       }
 
-      const terminal =
-        report.status === "failed" ||
-        report.discordStatus === "actioned" ||
-        report.discordStatus === "closed_no_action" ||
-        report.discordStatus === "review_not_approved";
+      const pollDelaySeconds = nextReportPollDelaySeconds(report);
       await client.query(
         `UPDATE report_tracking SET internal_report_id = $2, last_status = $3,
-           last_discord_status = $4, poll_at = CASE WHEN $5 THEN NULL
-             WHEN $3 = 'submitted' THEN now() + interval '15 minutes'
-             ELSE now() + interval '30 seconds' END,
+           last_discord_status = $4, poll_at = CASE
+             WHEN $5::integer IS NULL OR tracking_expires_at <= now() THEN NULL
+             ELSE now() + ($5::integer * interval '1 second') END,
            locked_at = NULL, updated_at = now() WHERE id = $1`,
-        [trackingId, report.internalReportId, report.status, report.discordStatus, terminal]
+        [
+          trackingId,
+          report.internalReportId,
+          report.status,
+          report.discordStatus,
+          pollDelaySeconds
+        ]
       );
       await client.query("COMMIT");
     } catch (error) {
@@ -887,20 +930,26 @@ export class BotDatabase {
     );
   }
 
-  public async ingestLifecycleEvent(event: ReportLifecycleEvent): Promise<boolean> {
+  public async ingestLifecycleEvent(
+    event: ReportLifecycleEvent
+  ): Promise<ReportEventIngestionResult> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const trackingResult = await client.query<TrackingRow>(
-        `SELECT * FROM report_tracking
-         WHERE internal_report_id = $1 AND discord_user_id = $2 FOR UPDATE`,
+      const trackingResult = await client.query<TrackingRow & { tracking_expired: boolean }>(
+        `SELECT *, tracking_expires_at <= now() AS tracking_expired
+         FROM report_tracking
+         WHERE internal_report_id = $1 AND discord_user_id = $2
+         FOR UPDATE`,
         [event.internalReportId, event.submitterDiscordUserId]
       );
       const tracking = trackingResult.rows[0];
-      if (!tracking) {
+      const ingestionResult = reportEventTrackingResult(tracking);
+      if (ingestionResult !== "accepted") {
         await client.query("COMMIT");
-        return false;
+        return ingestionResult;
       }
+      if (!tracking) throw new Error("Accepted lifecycle event has no tracking row.");
       const inserted = await client.query(
         `INSERT INTO api_event_inbox
            (event_id, internal_report_id, discord_user_id, event_type, occurred_at)
@@ -929,8 +978,13 @@ export class BotDatabase {
           [tracking.id, tracking.discord_user_id, notificationEventKey(event), payload]
         );
       }
+      await client.query(
+        `UPDATE report_tracking SET poll_at = NULL, locked_at = NULL, updated_at = now()
+         WHERE id = $1`,
+        [tracking.id]
+      );
       await client.query("COMMIT");
-      return true;
+      return "accepted";
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -958,12 +1012,21 @@ export class BotDatabase {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query(
+        `UPDATE notification_outbox AS outbox SET state = 'failed', locked_at = NULL,
+           last_error = 'tracking_expired', updated_at = now()
+         FROM report_tracking AS tracking
+         WHERE tracking.id = outbox.tracking_id
+           AND tracking.tracking_expires_at <= now()
+           AND outbox.state IN ('pending', 'sending')`
+      );
       const result = await client.query<NotificationJob>(
         `SELECT outbox.* FROM notification_outbox AS outbox
          JOIN report_tracking AS tracking ON tracking.id = outbox.tracking_id
          WHERE outbox.state IN ('pending', 'sending') AND outbox.run_at <= now()
            AND (outbox.locked_at IS NULL OR outbox.locked_at < now() - interval '5 minutes')
            AND tracking.dm_blocked = false
+           AND tracking.tracking_expires_at > now()
          ORDER BY outbox.run_at, outbox.id
          FOR UPDATE OF outbox SKIP LOCKED LIMIT $1`,
         [Math.min(Math.max(limit, 1), 100)]

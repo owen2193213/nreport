@@ -156,13 +156,13 @@ export class NotificationWorker {
         return;
       }
       for (const event of events) {
-        const tracked = await this.database.ingestLifecycleEvent(event);
+        const ingestionResult = await this.database.ingestLifecycleEvent(event);
         botLog("lifecycle_event_reconciled", {
           eventId: event.eventId,
           reportId: event.internalReportId,
           eventType: event.type,
           lifecycleAttempt: event.lifecycleAttempt,
-          tracked
+          ingestionResult
         });
         eventCount += 1;
         cursor = event.eventId;

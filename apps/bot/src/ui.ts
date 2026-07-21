@@ -753,7 +753,7 @@ export function accessKeysEmbed(keys: readonly AccessKeyView[]): EmbedBuilder {
       name: `${key.code_prefix} • ${statusLabel(key.status)}`,
       value: [
         `ID: \`${key.id}\``,
-        `Credits: **${key.credits_total}** • Expires: ${key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never"}`,
+        `Credits granted: **${key.credits_total}** • Expires: ${key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never"}`,
         key.redeemed_by
           ? `Redeemed by: \`${key.redeemed_by}\`${key.redeemed_at ? ` • ${discordTimestamp(key.redeemed_at.toISOString())}` : ""}`
           : "Redeemed by: Nobody"
@@ -771,7 +771,7 @@ export function accessKeyEmbed(key: AccessKeyView): EmbedBuilder {
     .setDescription(`\`${key.id}\``)
     .addFields(
       { name: "Prefix", value: key.code_prefix, inline: true },
-      { name: "Credits", value: key.credits_total.toString(), inline: true },
+      { name: "Credits granted", value: key.credits_total.toString(), inline: true },
       { name: "Status", value: statusLabel(key.status), inline: true },
       { name: "Expires", value: key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never", inline: true },
       { name: "Redeemed by", value: key.redeemed_by ? `\`${key.redeemed_by}\`` : "Nobody", inline: true },

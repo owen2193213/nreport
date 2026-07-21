@@ -642,6 +642,21 @@ export class Database {
     }
   }
 
+  private async cancelPendingVerificationResends(
+    client: PoolClient,
+    reportId: string
+  ): Promise<void> {
+    await client.query(
+      `UPDATE report_jobs
+       SET state = 'completed', last_error = 'verification no longer pending', updated_at = now()
+       WHERE report_id = $1
+         AND kind = 'request_code'
+         AND state = 'pending'
+         AND payload->>'resend' = 'true'`,
+      [reportId]
+    );
+  }
+
   public async saveResentVerificationSession(
     reportId: string,
     encryptedSessionState: string,
@@ -700,6 +715,7 @@ export class Database {
           failureStage: "awaiting_verification",
           retryable
         });
+        await this.cancelPendingVerificationResends(client, report.id);
       }
       await client.query("COMMIT");
       return expired.rows.map((report) => report.id);
@@ -764,6 +780,7 @@ export class Database {
            updated_at = now() WHERE id = $1`,
         [report.id]
       );
+      await this.cancelPendingVerificationResends(client, report.id);
       await this.event(client, report.id, "verification_email_received");
       await client.query("COMMIT");
       return { status: "accepted", reportId: report.id };
@@ -923,6 +940,7 @@ export class Database {
         lifecycleAttempt: report.lifecycle_attempt,
         retryable
       });
+      await this.cancelPendingVerificationResends(client, job.report_id);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");

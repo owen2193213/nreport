@@ -26,6 +26,7 @@ import type { BotConfig } from "../src/config.js";
 import type { BotDatabase } from "../src/database.js";
 import {
   ACTIVE_REPORT_POLL_SECONDS,
+  creditBalanceAfterReservation,
   nextReportPollDelaySeconds,
   notificationEventKey,
   observedNotificationTypes,
@@ -263,6 +264,16 @@ describe("access key administration views", () => {
     expect(shouldBypassReportCredits(false, true)).toBe(false);
     expect(shouldBypassReportCredits(true, true)).toBe(true);
     expect(shouldBypassReportCredits(false, false)).toBe(true);
+  });
+
+  it("deducts exactly one credit from large balances unless bypassed", () => {
+    expect(creditBalanceAfterReservation(9_999, false)).toBe(9_998);
+    expect(creditBalanceAfterReservation(9_999, true)).toBe(9_999);
+  });
+
+  it("labels key credits as the original grant rather than a live balance", () => {
+    const output = JSON.stringify(accessKeyEmbed(redeemedKey).toJSON());
+    expect(output).toContain("Credits granted");
   });
 });
 

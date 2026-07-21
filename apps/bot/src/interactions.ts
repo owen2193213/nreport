@@ -777,7 +777,10 @@ export class InteractionHandler {
         flow: request.flow,
         country: request.country,
         creditState: tracking.creditState,
-        creditBypassReason
+        creditBypassReason,
+        reservationReplayed: tracking.replayed,
+        creditBalanceBefore: tracking.balanceBefore,
+        creditBalanceAfter: tracking.balanceAfter
       });
       await interaction.editReply({
         content: null,
@@ -790,12 +793,15 @@ export class InteractionHandler {
         components: []
       });
       let report = await this.api.createReport(tracking.interactionId, request);
-      await this.database.markSubmissionCreated(tracking.id, report);
+      const creditStateAfterCreation = await this.database.markSubmissionCreated(
+        tracking.id,
+        report
+      );
       botLog("report_submission_created", {
         trackingId: tracking.id,
         reportId: report.internalReportId,
         status: report.status,
-        creditState: tracking.creditState
+        creditState: creditStateAfterCreation
       });
       await this.database.deleteDraft(interaction.user.id, draftId);
       for (let attempt = 0; attempt < 5; attempt += 1) {

@@ -202,6 +202,11 @@ uses the same operation. Both surfaces update to the successor's new report card
   for every user.
 - Credit reservation remains transactional and suitable for concurrent submissions; no new schema
   or additional external service is required.
+- Administrative key views display the immutable number of credits originally granted by a key;
+  they are not a live user-balance view.
+- Reservation logs record whether the operation was an idempotent replay and the safe numeric
+  balance before and after the transaction. Creation logs record the persisted post-creation
+  credit state rather than the stale in-memory reservation state.
 
 ### Decision log
 
@@ -210,6 +215,22 @@ uses the same operation. Both surfaces update to the successor's new report card
 - Chosen: render raw Discord user IDs without mentions so administrative output cannot ping users.
 - Chosen: preserve the established admin and disabled-whitelist bypass policy. Operators who want
   to exercise credit accounting must test with a non-admin while whitelisting is enabled.
+- Chosen: clarify the key grant label and log transactional balance changes instead of adding a
+  second balance store or an administrative ledger command without evidence that either is needed.
+
+## Verification resend cleanup
+
+### Understanding and assumptions
+
+- Verification resend jobs are useful only while a report is awaiting its verification email.
+- Once a code is accepted, the report times out, or processing fails, pending resend jobs cannot
+  help and should not later wake merely to log that they were skipped.
+- A resend already claimed by a worker may still finish its status check; this race remains safe.
+
+### Decision log
+
+- Chosen: complete only pending resend jobs in the same transaction that advances or fails the
+  report. This removes stale work while preserving claimed-job concurrency and report history.
 
 ## Operational lifecycle logging
 

@@ -41,6 +41,13 @@ export function nextReportPollDelaySeconds(
     : ACTIVE_REPORT_POLL_SECONDS;
 }
 
+export function creditBalanceAfterReservation(
+  currentCredits: number,
+  bypassCredits: boolean
+): number {
+  return bypassCredits ? currentCredits : currentCredits - 1;
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS bot_users (
   discord_user_id text PRIMARY KEY,
@@ -606,6 +613,9 @@ export class BotDatabase {
     id: string;
     interactionId: string;
     creditState: SubmissionTracking["creditState"];
+    replayed: boolean;
+    balanceBefore: number | null;
+    balanceAfter: number | null;
   }> {
     const client = await this.pool.connect();
     try {
@@ -621,7 +631,10 @@ export class BotDatabase {
         return {
           id: replay.id,
           interactionId: replay.interaction_id,
-          creditState: replay.credit_state
+          creditState: replay.credit_state,
+          replayed: true,
+          balanceBefore: null,
+          balanceAfter: null
         };
       }
       await this.ensureUser(client, input.userId);
@@ -639,17 +652,18 @@ export class BotDatabase {
       }
       const id = randomUUID();
       const creditState = input.adminBypass ? "none" : "reserved";
+      const balanceBefore = user.credits;
+      const balanceAfter = creditBalanceAfterReservation(user.credits, input.adminBypass);
       if (!input.adminBypass) {
-        const balance = user.credits - 1;
         await client.query(
           "UPDATE bot_users SET credits = $2, updated_at = now() WHERE discord_user_id = $1",
-          [input.userId, balance]
+          [input.userId, balanceAfter]
         );
         await client.query(
           `INSERT INTO credit_ledger
              (discord_user_id, delta, balance_after, reason, tracking_id)
            VALUES ($1, -1, $2, 'report_reserved', $3)`,
-          [input.userId, balance, id]
+          [input.userId, balanceAfter, id]
         );
       }
       await client.query(
@@ -673,7 +687,14 @@ export class BotDatabase {
         ]
       );
       await client.query("COMMIT");
-      return { id, interactionId: input.interactionId, creditState };
+      return {
+        id,
+        interactionId: input.interactionId,
+        creditState,
+        replayed: false,
+        balanceBefore,
+        balanceAfter
+      };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -682,15 +703,22 @@ export class BotDatabase {
     }
   }
 
-  public async markSubmissionCreated(trackingId: string, report: ReportView): Promise<void> {
-    await this.pool.query(
+  public async markSubmissionCreated(
+    trackingId: string,
+    report: ReportView
+  ): Promise<SubmissionTracking["creditState"]> {
+    const result = await this.pool.query<Pick<TrackingRow, "credit_state">>(
       `UPDATE report_tracking SET internal_report_id = $2,
          credit_state = CASE WHEN credit_state = 'reserved' THEN 'consumed' ELSE credit_state END,
          poll_at = now() + interval '30 seconds',
          locked_at = NULL, updated_at = now()
-       WHERE id = $1`,
+       WHERE id = $1
+       RETURNING credit_state`,
       [trackingId, report.internalReportId]
     );
+    const updated = result.rows[0];
+    if (!updated) throw new Error("Tracked report submission was not found.");
+    return updated.credit_state;
   }
 
   public async releaseReservation(trackingId: string, reason: string): Promise<void> {

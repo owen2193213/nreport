@@ -21,6 +21,7 @@ export function countryChoice(code: string): CountryChoice {
 }
 
 export function countryDisplay(code: string): string {
+  if (code.toUpperCase() === "AUTO") return "✨ Auto — Grok chooses";
   return countryChoice(code).display;
 }
 
@@ -29,7 +30,7 @@ export function matchingCountries(
   query: string
 ): Array<{ name: string; value: string }> {
   const normalizedQuery = query.trim().toLocaleLowerCase("en");
-  return countries
+  const choices = countries
     .map(countryChoice)
     .filter(
       (country) =>
@@ -38,6 +39,11 @@ export function matchingCountries(
         country.code.toLocaleLowerCase("en").includes(normalizedQuery)
     )
     .sort((left, right) => left.name.localeCompare(right.name, "en"))
-    .slice(0, 25)
     .map((country) => ({ name: country.display, value: country.code }));
+  const auto = { name: countryDisplay("AUTO"), value: "AUTO" };
+  const includeAuto =
+    normalizedQuery.length === 0 ||
+    "auto".includes(normalizedQuery) ||
+    "grok chooses".includes(normalizedQuery);
+  return [...(includeAuto ? [auto] : []), ...choices].slice(0, 25);
 }

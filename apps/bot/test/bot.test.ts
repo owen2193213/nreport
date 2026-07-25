@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 
 import {
@@ -20,7 +21,11 @@ import {
   hashAccessKey
   ,verifyReportEventSignature
 } from "../src/crypto.js";
-import { NotificationWorker, renderNotification } from "../src/notifier.js";
+import {
+  lifecycleReplyText,
+  NotificationWorker,
+  renderNotification
+} from "../src/notifier.js";
 import { matchingCountries } from "../src/countries.js";
 import type { BotConfig } from "../src/config.js";
 import type { BotDatabase } from "../src/database.js";
@@ -34,17 +39,26 @@ import {
   REPORT_TRACKING_RETENTION_DAYS,
   shouldNotifyLifecycleType
 } from "../src/database.js";
-import { InteractionHandler, shouldBypassReportCredits } from "../src/interactions.js";
+import {
+  InteractionHandler,
+  reportCountryFields,
+  shouldBypassReportCredits
+} from "../src/interactions.js";
 import { reportEventIngestionStatus } from "../src/health.js";
+import type { MessageResolver } from "../src/message-resolver.js";
 import {
   isValidProfileTarget,
   ProfileResolver,
   normalizeProfileTarget
 } from "../src/profile-resolver.js";
+import type { ReportWriter } from "../src/report-writer.js";
 import { ServerResolver } from "../src/server-resolver.js";
 import type { DsaApi, ReportDetail } from "@discord-dsa/contracts";
 import {
   buildCountryPicker,
+  accessEmbed,
+  buildManualReportModal,
+  buildRefinementModal,
   buildReportModal,
   buildReview,
   accessKeyEmbed,
@@ -158,9 +172,9 @@ describe("Discord command registration", () => {
       : undefined;
     expect(target).toMatchObject({
       required: true,
-      description: "Discord username or raw user ID",
-      min_length: 2,
-      max_length: 32
+      description: "Raw Discord user ID",
+      min_length: 15,
+      max_length: 22
     });
   });
 
@@ -192,7 +206,9 @@ describe("bot cryptography", () => {
     const encrypted = encryptJson({ context: "sensitive", country: "DE" }, key);
     expect(encrypted).not.toContain("sensitive");
     expect(decryptJson(encrypted, key)).toEqual({ context: "sensitive", country: "DE" });
-    expect(() => decryptJson(`${encrypted.slice(0, -1)}A`, key)).toThrow();
+    const tampered = Buffer.from(encrypted, "base64url");
+    tampered[12] = tampered[12]! ^ 1;
+    expect(() => decryptJson(tampered.toString("base64url"), key)).toThrow();
   });
 
   it("authenticates fresh API lifecycle event payloads", () => {
@@ -290,6 +306,9 @@ describe("server resolution", () => {
       name: "Example server",
       description: "Example description",
       iconURL: () => "https://cdn.example/icon.png",
+      bannerURL: () => null,
+      splashURL: () => null,
+      discoverySplashURL: () => null,
       memberCount: 42,
       approximatePresenceCount: 7
     } as unknown as Guild;
@@ -304,6 +323,8 @@ describe("server resolution", () => {
       name: "Preview server",
       description: null,
       iconURL: () => null,
+      splashURL: () => null,
+      discoverySplashURL: () => null,
       approximateMemberCount: 100,
       approximatePresenceCount: 10
     };
@@ -320,9 +341,9 @@ describe("server resolution", () => {
 });
 
 describe("profile resolution", () => {
-  it("accepts only usernames or raw user IDs", () => {
-    expect(normalizeProfileTarget("  example.user  ")).toBe("example.user");
-    expect(isValidProfileTarget("example.user")).toBe(true);
+  it("accepts only raw Discord user IDs", () => {
+    expect(normalizeProfileTarget("  123456789012345678  ")).toBe("123456789012345678");
+    expect(isValidProfileTarget("example.user")).toBe(false);
     expect(isValidProfileTarget("123456789012345678")).toBe(true);
     expect(isValidProfileTarget("<@123456789012345678>")).toBe(false);
     expect(isValidProfileTarget("Example Display")).toBe(false);
@@ -334,7 +355,8 @@ describe("profile resolution", () => {
       username: "example",
       globalName: "Example Display",
       bot: false,
-      displayAvatarURL: () => "https://cdn.discordapp.com/avatar.png"
+      displayAvatarURL: () => "https://cdn.discordapp.com/avatar.png",
+      bannerURL: () => "https://cdn.discordapp.com/banner.png"
     });
     const client = {
       users: { fetch: fetchUser },
@@ -344,16 +366,43 @@ describe("profile resolution", () => {
       userId: "123456789012345678",
       username: "example",
       globalDisplayName: "Example Display",
-      avatarUrl: "https://cdn.discordapp.com/avatar.png"
+      avatarUrl: "https://cdn.discordapp.com/avatar.png",
+      bannerUrl: "https://cdn.discordapp.com/banner.png"
     });
     expect(fetchUser).toHaveBeenCalledWith("123456789012345678", { force: true });
   });
 });
 
 describe("report UI", () => {
+  it("shows cumulative AI usage without exposing AI content", () => {
+    const embed = accessEmbed(
+      {
+        aiCostCredits: 0.012345,
+        aiInputTokens: 1_000,
+        aiOutputTokens: 200,
+        aiReasoningTokens: 100,
+        aiRequestCount: 4,
+        aiSearchRequests: 2,
+        credits: 3,
+        defaultCountry: null,
+        suspended: false,
+        suspensionReason: null
+      },
+      false
+    );
+    const text = JSON.stringify(embed.toJSON());
+    expect(text).toContain("AI usage");
+    expect(text).toContain("1,000");
+    expect(text).toContain("200");
+    expect(text).toContain("0.012345 credits");
+  });
+
   it("searches full country names and returns flags with ISO values", () => {
     expect(matchingCountries(["DE", "FR", "IE"], "ger")).toEqual([
       { name: "🇩🇪 Germany", value: "DE" }
+    ]);
+    expect(matchingCountries(["DE", "FR"], "auto")).toEqual([
+      { name: "✨ Auto — Grok chooses", value: "AUTO" }
     ]);
     expect(matchingCountries(Array.from({ length: 27 }, () => "DE"), "")).toHaveLength(25);
   });
@@ -369,7 +418,7 @@ describe("report UI", () => {
     const secondSelect = second.components[0]?.toJSON().components[0];
     expect(first.components[0]?.toJSON().components).toHaveLength(1);
     expect(firstSelect && "options" in firstSelect ? firstSelect.options : []).toHaveLength(24);
-    expect(secondSelect && "options" in secondSelect ? secondSelect.options : []).toHaveLength(3);
+    expect(secondSelect && "options" in secondSelect ? secondSelect.options : []).toHaveLength(4);
   });
 
   it("builds flow-specific modals within Discord's five-component limit", () => {
@@ -394,7 +443,14 @@ describe("report UI", () => {
           reportType: "sub_other_hate_speech",
           messageUrl:
             "https://discord.com/channels/@me/123456789012345678/123456789012345679",
-          context: "The message contains unlawful hate speech."
+          context: "[Basic Law Article 1] The message contains unlawful hate speech.",
+          legalResearch: {
+            country: "DE",
+            summary: "Basic Law Article 1 protects human dignity.",
+            sources: [{ title: "Basic Law", url: "https://www.gesetze-im-internet.de/gg/" }],
+            researchedAt: "2026-07-20T00:00:00.000Z",
+            searchRequests: 1
+          }
         },
         "1197857362942378017"
       )
@@ -404,7 +460,7 @@ describe("report UI", () => {
       reportType: "sub_other_hate_speech",
       submitterDiscordUserId: "1197857362942378017",
       messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679",
-      context: "The message contains unlawful hate speech."
+      context: "[Basic Law Article 1] The message contains unlawful hate speech."
     });
   });
 
@@ -414,6 +470,7 @@ describe("report UI", () => {
       username: "example",
       globalDisplayName: "Example Display",
       avatarUrl: "https://cdn.discordapp.com/avatar.png",
+      bannerUrl: null,
       bot: false,
       resolvedAt: "2026-07-20T00:00:00.000Z"
     };
@@ -427,7 +484,14 @@ describe("report UI", () => {
           reportedUserId: snapshot.userId,
           reportedUserSnapshot: snapshot,
           profileElements: ["name"],
-          context: "The profile name contains unlawful hate speech."
+          context: "[Basic Law Article 1] The profile name contains unlawful hate speech.",
+          legalResearch: {
+            country: "DE",
+            summary: "Basic Law Article 1 protects human dignity.",
+            sources: [{ title: "Basic Law", url: "https://www.gesetze-im-internet.de/gg/" }],
+            researchedAt: "2026-07-20T00:00:00.000Z",
+            searchRequests: 1
+          }
         },
         "1197857362942378017"
       )
@@ -438,15 +502,74 @@ describe("report UI", () => {
     });
   });
 
+  it("blocks submission when a manual edit removes the verified law label", () => {
+    expect(() =>
+      draftToCreateInput(
+        {
+          flow: "message_urf",
+          country: "DE",
+          reportType: "sub_other_hate_speech",
+          messageUrl:
+            "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+          context: "The report no longer contains its legal basis.",
+          legalResearch: {
+            country: "DE",
+            summary: "Basic Law Article 1 protects human dignity.",
+            sources: [
+              {
+                title: "Basic Law Article 1",
+                url: "https://www.gesetze-im-internet.de/gg/art_1.html"
+              }
+            ],
+            researchedAt: "2026-07-20T00:00:00.000Z",
+            searchRequests: 1
+          }
+        },
+        "1197857362942378017"
+      )
+    ).toThrow("Report draft is incomplete.");
+  });
+
   it("keeps review embeds below Discord's embed limit", () => {
     const review = buildReview("draft", {
       flow: "message_urf",
       country: "DE",
       reportType: "sub_other_hate_speech",
       messageUrl: `https://discord.com/channels/@me/${"1".repeat(18)}/${"2".repeat(18)}`,
-      context: "x".repeat(4000)
+      context: `[Basic Law]${"x".repeat(501)}`,
+      countrySelection: "auto",
+      legalResearch: {
+        country: "DE",
+        summary: "Research",
+        sources: [{ title: "Basic Law", url: "https://www.gesetze-im-internet.de/gg/" }],
+        researchedAt: "2026-07-20T00:00:00.000Z",
+        searchRequests: 1
+      }
     });
     expect(JSON.stringify(review.embeds[0]?.toJSON()).length).toBeLessThan(6000);
+    const buttons = review.components[0]?.toJSON().components ?? [];
+    expect(buttons).toHaveLength(5);
+    expect(JSON.stringify(buttons)).toContain("Refine");
+    expect(JSON.stringify(buttons)).toContain("Regenerate");
+    expect(JSON.stringify(buttons)).toContain("Edit manually");
+    const reviewJson = JSON.stringify(review.embeds[0]?.toJSON());
+    expect(reviewJson).toContain("512/512 characters");
+    expect(reviewJson).toContain("Auto-selected by Grok");
+    expect(reviewJson).not.toContain("https://www.gesetze-im-internet.de/gg/");
+    expect(JSON.stringify(review.components[1]?.toJSON())).toContain("Change country");
+  });
+
+  it("builds refinement and manual-edit modals with bounded inputs", () => {
+    const refinement = buildRefinementModal("draft").toJSON();
+    const manual = buildManualReportModal("draft", {
+      flow: "message_urf",
+      reportBrief: "Original reason",
+      context: "Current report"
+    }).toJSON();
+    expect(refinement.custom_id).toBe("writer:refine:draft");
+    expect(manual.custom_id).toBe("writer:edit:draft");
+    expect(JSON.stringify(manual)).toContain("Current report");
+    expect(JSON.stringify(manual)).toContain('"max_length":512');
   });
 
   it("builds stateless report pagination with readable status embeds", () => {
@@ -505,6 +628,13 @@ describe("report UI", () => {
     expect(json.fields?.some((field) => field.name === "Discord review")).toBe(false);
     expect(json.fields?.some((field) => field.name === "Progress")).toBe(false);
   });
+
+  it("uses plain reply notifications for final Discord decisions", () => {
+    const report = reportFixture();
+    expect(lifecycleReplyText("discord:actioned", report)).toContain("accepted");
+    expect(lifecycleReplyText("discord:closed_no_action", report)).toContain("denied");
+    expect(lifecycleReplyText("discord:received", report)).toBeNull();
+  });
 });
 
 describe("lifecycle notification deduplication", () => {
@@ -555,10 +685,124 @@ describe("lifecycle notification deduplication", () => {
     ]);
 
     submitted.discordStatus = "received";
-    expect(observedNotificationTypes("submitted", null, submitted)).toEqual([]);
+    expect(observedNotificationTypes("submitted", null, submitted)).toEqual([
+      "discord:received"
+    ]);
     expect(shouldNotifyLifecycleType("report_submitted")).toBe(true);
-    expect(shouldNotifyLifecycleType("discord:received")).toBe(false);
+    expect(shouldNotifyLifecycleType("discord:received")).toBe(true);
     expect(shouldNotifyLifecycleType("discord:actioned")).toBe(true);
+  });
+
+  it("edits the saved status DM and replies when Discord makes a decision", async () => {
+    const report = reportFixture();
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn();
+    const statusMessage = { edit, reply };
+    const user = {
+      createDM: vi.fn().mockResolvedValue({
+        messages: { fetch: vi.fn().mockResolvedValue(statusMessage) }
+      }),
+      send
+    };
+    const completeNotification = vi.fn().mockResolvedValue(undefined);
+    const database = {
+      claimDueTrackings: vi.fn().mockResolvedValue([]),
+      reconciliationCursor: vi.fn().mockResolvedValue("0"),
+      setReconciliationCursor: vi.fn(),
+      claimNotifications: vi.fn().mockResolvedValue([
+        {
+          id: "1",
+          tracking_id: "tracking-1",
+          discord_user_id: "1197857362942378017",
+          payload: {
+            eventId: "42",
+            eventType: "discord:actioned",
+            internalReportId: report.internalReportId,
+            occurredAt: report.updatedAt
+          },
+          attempts: 0
+        }
+      ]),
+      statusDmMessageId: vi.fn().mockResolvedValue("dm-message-1"),
+      completeNotification
+    } as unknown as BotDatabase;
+    const api = {
+      lifecycleEvents: vi.fn().mockResolvedValue({ events: [] }),
+      report: vi.fn().mockResolvedValue(report)
+    } as unknown as DsaApi;
+    const client = {
+      users: { fetch: vi.fn().mockResolvedValue(user) }
+    } as unknown as Client;
+    const worker = new NotificationWorker(
+      database,
+      api,
+      client,
+      {} as BotConfig,
+      {} as ServerResolver
+    );
+
+    await worker.tick();
+
+    expect(edit).toHaveBeenCalledOnce();
+    expect(reply).toHaveBeenCalledOnce();
+    const replyPayload = reply.mock.calls[0]?.[0] as { content: string } | undefined;
+    expect(replyPayload?.content).toContain("accepted");
+    expect(send).not.toHaveBeenCalled();
+    expect(completeNotification).toHaveBeenCalledWith("1");
+  });
+
+  it("sends pre-submission failures as plain text without an embed", async () => {
+    const report = reportFixture();
+    report.status = "failed";
+    report.discordReportId = null;
+    report.discordStatus = null;
+    report.retryable = true;
+    report.error = { code: "verification_email_timeout", message: "Verification timed out." };
+    const send = vi.fn().mockResolvedValue(undefined);
+    const completeNotification = vi.fn().mockResolvedValue(undefined);
+    const database = {
+      claimDueTrackings: vi.fn().mockResolvedValue([]),
+      reconciliationCursor: vi.fn().mockResolvedValue("0"),
+      setReconciliationCursor: vi.fn(),
+      claimNotifications: vi.fn().mockResolvedValue([
+        {
+          id: "2",
+          tracking_id: "tracking-2",
+          discord_user_id: "1197857362942378017",
+          payload: {
+            eventId: "43",
+            eventType: "report_failed",
+            internalReportId: report.internalReportId,
+            occurredAt: report.updatedAt
+          },
+          attempts: 0
+        }
+      ]),
+      completeNotification
+    } as unknown as BotDatabase;
+    const worker = new NotificationWorker(
+      database,
+      {
+        lifecycleEvents: vi.fn().mockResolvedValue({ events: [] }),
+        report: vi.fn().mockResolvedValue(report)
+      } as unknown as DsaApi,
+      {
+        users: { fetch: vi.fn().mockResolvedValue({ send }) }
+      } as unknown as Client,
+      {} as BotConfig,
+      {} as ServerResolver
+    );
+
+    await worker.tick();
+
+    expect(send).toHaveBeenCalledOnce();
+    const payload = send.mock.calls[0]?.[0] as
+      | { content: string; embeds?: unknown[] }
+      | undefined;
+    expect(payload?.content).toContain("failed before Discord confirmed submission");
+    expect(payload?.embeds).toBeUndefined();
+    expect(completeNotification).toHaveBeenCalledWith("2");
   });
 
   it("shows a new-report retry button only for safely retryable failures", () => {
@@ -638,7 +882,9 @@ describe("report component responsiveness", () => {
       database: {
         getAccess: vi.fn().mockRejectedValue(new Error("Database unavailable"))
       } as unknown as BotDatabase,
+      messageResolver: {} as MessageResolver,
       profileResolver: {} as ProfileResolver,
+      reportWriter: {} as ReportWriter,
       serverResolver: {} as ServerResolver
     });
     const interaction = {
@@ -678,7 +924,9 @@ describe("report component responsiveness", () => {
       } as unknown as BotConfig,
       countries: ["DE"],
       database: {} as BotDatabase,
+      messageResolver: {} as MessageResolver,
       profileResolver: {} as ProfileResolver,
+      reportWriter: {} as ReportWriter,
       serverResolver: {} as ServerResolver
     });
     const interaction = {
@@ -707,10 +955,20 @@ describe("report component responsiveness", () => {
 });
 
 describe("report interaction country precedence", () => {
-  it("asks how to interpret a snowflake-shaped profile target before opening the report modal", async () => {
+  it("marks an explicit country or Auto as the report-level override", () => {
+    expect(reportCountryFields("FR")).toEqual({
+      country: "FR",
+      countrySelection: "override"
+    });
+    expect(reportCountryFields("AUTO")).toEqual({ countrySelection: "auto" });
+    expect(reportCountryFields(undefined)).toEqual({});
+  });
+
+  it("resolves a raw user ID before opening the report modal", async () => {
     const deferReply = vi.fn();
     const editReply = vi.fn();
     const showModal = vi.fn();
+    const saveDraft = vi.fn().mockResolvedValue("draft-id");
     const database = {
       getAccess: vi.fn().mockResolvedValue({
         credits: 0,
@@ -718,7 +976,7 @@ describe("report interaction country precedence", () => {
         suspended: false,
         suspensionReason: null
       }),
-      saveDraft: vi.fn().mockResolvedValue("draft-id"),
+      saveDraft,
       updateDraft: vi.fn()
     } as unknown as BotDatabase;
     const resolveProfile = vi.fn().mockResolvedValue({
@@ -726,6 +984,7 @@ describe("report interaction country precedence", () => {
       username: "example",
       globalDisplayName: "Example Display",
       avatarUrl: "https://cdn.discordapp.com/avatar.png",
+      bannerUrl: null,
       bot: false,
       resolvedAt: "2026-07-20T00:00:00.000Z"
     });
@@ -742,7 +1001,9 @@ describe("report interaction country precedence", () => {
       config,
       countries: ["DE"],
       database,
+      messageResolver: {} as MessageResolver,
       profileResolver,
+      reportWriter: {} as ReportWriter,
       serverResolver: {} as ServerResolver
     });
     const interaction = {
@@ -771,14 +1032,17 @@ describe("report interaction country precedence", () => {
     await handler.handle(interaction);
 
     expect(resolveProfile).toHaveBeenCalled();
+    expect(
+      decryptJson(String(saveDraft.mock.calls[0]?.[1]), config.dataEncryptionKey)
+    ).toMatchObject({ country: "DE", countrySelection: "default" });
     expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
-    expect(JSON.stringify(editReply.mock.calls[0]?.[0])).toContain("Report This Account");
+    expect(JSON.stringify(editReply.mock.calls[0]?.[0])).toContain("Continue");
     expect(showModal).not.toHaveBeenCalled();
   });
 
-  it("does not create a draft when neither an explicit nor default country exists", async () => {
-    const reply = vi.fn();
-    const saveDraft = vi.fn();
+  it("uses Auto when neither an explicit nor saved country exists", async () => {
+    const showModal = vi.fn();
+    const saveDraft = vi.fn().mockResolvedValue("draft-id");
     const database = {
       getAccess: vi.fn().mockResolvedValue({
         credits: 0,
@@ -798,7 +1062,9 @@ describe("report interaction country precedence", () => {
       config,
       countries: ["DE", "FR"],
       database,
+      messageResolver: {} as MessageResolver,
       profileResolver: {} as ProfileResolver,
+      reportWriter: {} as ReportWriter,
       serverResolver: {} as ServerResolver
     });
     const interaction = {
@@ -818,14 +1084,19 @@ describe("report interaction country precedence", () => {
             ? "https://discord.com/channels/@me/123456789012345678/123456789012345679"
             : null
       },
-      reply,
+      showModal,
       deferred: false,
       replied: false
     } as unknown as Interaction;
 
     await handler.handle(interaction);
 
-    expect(saveDraft).not.toHaveBeenCalled();
-    expect(JSON.stringify(reply.mock.calls[0]?.[0])).toContain("A country is required");
+    expect(saveDraft).toHaveBeenCalledOnce();
+    const encrypted: unknown = saveDraft.mock.calls[0]?.[1] as unknown;
+    expect(typeof encrypted).toBe("string");
+    expect(decryptJson(String(encrypted), config.dataEncryptionKey)).toMatchObject({
+      countrySelection: "auto"
+    });
+    expect(showModal).toHaveBeenCalledOnce();
   });
 });

@@ -93,8 +93,14 @@ application creates or updates its database schema idempotently during startup.
 Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. The bot
 uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
-the global commands automatically. To synchronize them manually, set only the Discord token
-and application ID and run:
+the global commands automatically. Set `OPENROUTER_API_KEY` for the bot-side report writer;
+`OPENROUTER_MODEL` defaults to `x-ai/grok-4.5`.
+`OPENROUTER_WRITER_REASONING_EFFORT` defaults to `medium`. Combined Auto-country/legal research
+uses `openrouter:web_search` with the complete report context and selected images, standard result
+settings, and at most three searches. The bot records per-user request/token/reasoning/search/cost
+totals, but AI prompts, responses, search queries, sources, conversations, research, evidence, and
+selected Discord image URLs must never be logged. To synchronize commands manually, set only the
+Discord token and application ID and run:
 
 ```powershell
 npm.cmd run register -w @discord-dsa/bot

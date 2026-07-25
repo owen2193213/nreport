@@ -3,18 +3,12 @@ import type { Client, Guild, User } from "discord.js";
 import type { ReportedUserSnapshot } from "@discord-dsa/contracts";
 
 const SNOWFLAKE = /^\d{15,22}$/;
-const USERNAME = /^[a-z0-9._]{2,32}$/;
 
 export function normalizeProfileTarget(value: string): string {
   return value.trim();
 }
 
 export function isValidProfileTarget(value: string): boolean {
-  const target = normalizeProfileTarget(value);
-  return SNOWFLAKE.test(target) || USERNAME.test(target);
-}
-
-export function isSnowflakeProfileTarget(value: string): boolean {
   return SNOWFLAKE.test(normalizeProfileTarget(value));
 }
 
@@ -25,6 +19,7 @@ function snapshot(user: User, serverDisplayName?: string): ReportedUserSnapshot 
     globalDisplayName: user.globalName,
     ...(serverDisplayName === undefined ? {} : { serverDisplayName }),
     avatarUrl: user.displayAvatarURL(),
+    bannerUrl: user.bannerURL() ?? null,
     bot: user.bot,
     resolvedAt: new Date().toISOString()
   };

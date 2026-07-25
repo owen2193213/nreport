@@ -123,7 +123,7 @@ function redactedError(error: unknown): RedactedError {
 export class JobRunner {
   private stopped = false;
   private runningPromise: Promise<void> | undefined;
-  private nextVerificationSweepAt = 0;
+  private nextTimeoutSweepAt = 0;
 
   public constructor(
     private readonly database: Database,
@@ -145,13 +145,20 @@ export class JobRunner {
     await this.database.recoverInterruptedJobs();
     while (!this.stopped) {
       try {
-        if (Date.now() >= this.nextVerificationSweepAt) {
+        if (Date.now() >= this.nextTimeoutSweepAt) {
           const expiredReportIds = await this.database.expireVerificationWaits();
-          this.nextVerificationSweepAt = Date.now() + 5_000;
+          const expiredReceiptReportIds = await this.database.expireDiscordReceiptWaits();
+          this.nextTimeoutSweepAt = Date.now() + 5_000;
           for (const reportId of expiredReportIds) {
             this.logger.info(
               { event: "verification_wait_expired", reportId },
               "Verification email wait expired"
+            );
+          }
+          for (const reportId of expiredReceiptReportIds) {
+            this.logger.info(
+              { event: "discord_receipt_wait_expired", reportId },
+              "Discord receipt confirmation wait expired"
             );
           }
         }

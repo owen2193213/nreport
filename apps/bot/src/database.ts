@@ -11,6 +11,7 @@ import type { PoolClient, QueryResultRow } from "pg";
 
 import type {
   AccessView,
+  AiUsage,
   NotificationPayload,
   PollingTracking,
   SubmissionTracking,
@@ -53,6 +54,13 @@ CREATE TABLE IF NOT EXISTS bot_users (
   discord_user_id text PRIMARY KEY,
   default_country char(2),
   credits integer NOT NULL DEFAULT 0 CHECK (credits >= 0),
+  ai_request_count bigint NOT NULL DEFAULT 0,
+  ai_input_tokens bigint NOT NULL DEFAULT 0,
+  ai_output_tokens bigint NOT NULL DEFAULT 0,
+  ai_reasoning_tokens bigint NOT NULL DEFAULT 0,
+  ai_search_requests bigint NOT NULL DEFAULT 0,
+  ai_cost_credits double precision NOT NULL DEFAULT 0,
+  ai_last_used_at timestamptz,
   suspended boolean NOT NULL DEFAULT false,
   suspension_reason text,
   suspended_at timestamptz,
@@ -124,6 +132,7 @@ CREATE TABLE IF NOT EXISTS report_tracking (
   poll_at timestamptz,
   locked_at timestamptz,
   dm_blocked boolean NOT NULL DEFAULT false,
+  status_dm_message_id text,
   tracking_expires_at timestamptz NOT NULL DEFAULT
     (now() + interval '${REPORT_TRACKING_RETENTION_DAYS} days'),
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -162,6 +171,13 @@ CREATE TABLE IF NOT EXISTS bot_state (
 );
 
 CREATE INDEX IF NOT EXISTS access_keys_status_idx ON access_keys(status, created_at DESC);
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_request_count bigint NOT NULL DEFAULT 0;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_input_tokens bigint NOT NULL DEFAULT 0;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_output_tokens bigint NOT NULL DEFAULT 0;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_reasoning_tokens bigint NOT NULL DEFAULT 0;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_search_requests bigint NOT NULL DEFAULT 0;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_cost_credits double precision NOT NULL DEFAULT 0;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_last_used_at timestamptz;
 ALTER TABLE access_keys DROP CONSTRAINT IF EXISTS access_keys_credits_total_check;
 DO $$
 BEGIN
@@ -178,6 +194,7 @@ END
 $$;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS draft_id uuid;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS server_snapshot jsonb;
+ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS status_dm_message_id text;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS tracking_expires_at timestamptz;
 UPDATE report_tracking
    SET tracking_expires_at = created_at + interval '${REPORT_TRACKING_RETENTION_DAYS} days'
@@ -196,6 +213,12 @@ CREATE INDEX IF NOT EXISTS notification_outbox_claim_idx
 `;
 
 interface UserRow extends QueryResultRow {
+  ai_cost_credits: number | string;
+  ai_input_tokens: number | string;
+  ai_output_tokens: number | string;
+  ai_reasoning_tokens: number | string;
+  ai_request_count: number | string;
+  ai_search_requests: number | string;
   credits: number;
   default_country: string | null;
   suspended: boolean;
@@ -219,6 +242,7 @@ export interface TrackingRow extends QueryResultRow {
   flow: string;
   country: string;
   report_type: string;
+  status_dm_message_id: string | null;
   tracking_expires_at: Date;
 }
 
@@ -265,7 +289,7 @@ export function notificationEventKey(event: ReportLifecycleEvent): string {
 }
 
 export function shouldNotifyLifecycleType(eventType: string): boolean {
-  return eventType !== "discord:received";
+  return STATE_NOTIFICATION_TYPES.has(eventType);
 }
 
 export function observedNotificationTypes(
@@ -298,6 +322,12 @@ export class AccessError extends Error {
 
 function accessView(row: UserRow): AccessView {
   return {
+    aiCostCredits: Number(row.ai_cost_credits),
+    aiInputTokens: Number(row.ai_input_tokens),
+    aiOutputTokens: Number(row.ai_output_tokens),
+    aiReasoningTokens: Number(row.ai_reasoning_tokens),
+    aiRequestCount: Number(row.ai_request_count),
+    aiSearchRequests: Number(row.ai_search_requests),
     credits: row.credits,
     defaultCountry: row.default_country,
     suspended: row.suspended,
@@ -337,7 +367,11 @@ export class BotDatabase {
       await client.query("BEGIN");
       await this.ensureUser(client, userId);
       const result = await client.query<UserRow>(
-        "SELECT credits, default_country, suspended, suspension_reason FROM bot_users WHERE discord_user_id = $1",
+        `SELECT credits, default_country, suspended, suspension_reason,
+                ai_request_count, ai_input_tokens, ai_output_tokens,
+                ai_reasoning_tokens, ai_search_requests, ai_cost_credits
+           FROM bot_users
+          WHERE discord_user_id = $1`,
         [userId]
       );
       await client.query("COMMIT");
@@ -352,7 +386,7 @@ export class BotDatabase {
     }
   }
 
-  public async setDefaultCountry(userId: string, country: string): Promise<AccessView> {
+  public async setDefaultCountry(userId: string, country: string | null): Promise<AccessView> {
     await this.pool.query(
       `INSERT INTO bot_users (discord_user_id, default_country)
        VALUES ($1, $2)
@@ -361,6 +395,35 @@ export class BotDatabase {
       [userId, country]
     );
     return this.getAccess(userId);
+  }
+
+  public async recordAiUsage(userId: string, usage: AiUsage): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO bot_users (
+         discord_user_id, ai_request_count, ai_input_tokens, ai_output_tokens,
+         ai_reasoning_tokens, ai_search_requests, ai_cost_credits, ai_last_used_at
+       )
+       VALUES ($1, 1, $2, $3, $4, $5, $6, now())
+       ON CONFLICT (discord_user_id) DO UPDATE SET
+         ai_request_count = bot_users.ai_request_count + 1,
+         ai_input_tokens = bot_users.ai_input_tokens + EXCLUDED.ai_input_tokens,
+         ai_output_tokens = bot_users.ai_output_tokens + EXCLUDED.ai_output_tokens,
+         ai_reasoning_tokens =
+           bot_users.ai_reasoning_tokens + EXCLUDED.ai_reasoning_tokens,
+         ai_search_requests =
+           bot_users.ai_search_requests + EXCLUDED.ai_search_requests,
+         ai_cost_credits = bot_users.ai_cost_credits + EXCLUDED.ai_cost_credits,
+         ai_last_used_at = now(),
+         updated_at = now()`,
+      [
+        userId,
+        usage.inputTokens,
+        usage.outputTokens,
+        usage.reasoningTokens,
+        usage.searchRequests,
+        usage.costCredits
+      ]
+    );
   }
 
   public async insertAccessKey(input: {
@@ -955,6 +1018,22 @@ export class BotDatabase {
       `UPDATE report_tracking SET server_snapshot = $3, updated_at = now()
        WHERE internal_report_id = $1 AND discord_user_id = $2`,
       [internalReportId, userId, snapshot]
+    );
+  }
+
+  public async statusDmMessageId(trackingId: string): Promise<string | null> {
+    const result = await this.pool.query<{ status_dm_message_id: string | null }>(
+      "SELECT status_dm_message_id FROM report_tracking WHERE id = $1",
+      [trackingId]
+    );
+    return result.rows[0]?.status_dm_message_id ?? null;
+  }
+
+  public async saveStatusDmMessageId(trackingId: string, messageId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE report_tracking SET status_dm_message_id = $2, updated_at = now()
+       WHERE id = $1`,
+      [trackingId, messageId]
     );
   }
 

@@ -9,7 +9,9 @@ import {
   parseDiscordEmail
 } from "../src/email.js";
 import {
+  DISCORD_RECEIPT_TIMEOUT_SECONDS,
   isRetryableFailure,
+  shouldExpireDiscordReceipt,
   statusAfterSessionPersistence,
   shouldResendVerification,
   shouldApplyDiscordStatus,
@@ -162,6 +164,7 @@ describe("backend identity and validation", () => {
         username: "example",
         globalDisplayName: "Example Display",
         avatarUrl: "https://cdn.discordapp.com/avatar.png",
+        bannerUrl: "https://cdn.discordapp.com/banner.png",
         bot: false,
         resolvedAt: "2026-07-20T00:00:00.000Z"
       },
@@ -177,6 +180,31 @@ describe("backend identity and validation", () => {
         reportedUserId: "223456789012345678"
       })
     ).toThrow(/must match reportedUserId/);
+    expect(() =>
+      parseCreateReportInput({
+        ...input,
+        reportedUsername: "different"
+      })
+    ).toThrow(/must match reportedUsername/);
+    expect(() =>
+      parseCreateReportInput({
+        ...input,
+        reportedUserId: undefined
+      })
+    ).toThrow(/reportedUserId/);
+  });
+
+  it("rejects final report text over 512 characters", () => {
+    expect(() =>
+      parseCreateReportInput({
+        country: "DE",
+        flow: "message_urf",
+        reportType: "sub_other_hate_speech",
+        messageUrl:
+          "https://discord.com/channels/427067963137589258/427069953078853633/1414818522701369355",
+        context: "x".repeat(513)
+      })
+    ).toThrow(/context/);
   });
 
   it("rotates the email alias without changing the pseudonym", () => {
@@ -194,6 +222,7 @@ describe("backend identity and validation", () => {
 
   it("validates retry ownership and blocks unsafe failure stages", () => {
     expect(VERIFICATION_EMAIL_TIMEOUT_SECONDS).toBe(60);
+    expect(DISCORD_RECEIPT_TIMEOUT_SECONDS).toBe(120);
     expect(
       parseRetryReportInput({ submitterDiscordUserId: "1197857362942378017" })
     ).toEqual({ submitterDiscordUserId: "1197857362942378017" });
@@ -209,6 +238,28 @@ describe("backend identity and validation", () => {
     expect(isRetryableFailure("submitting", "report_processing_failed", 1)).toBe(false);
     expect(isRetryableFailure("verifying", "ambiguous_submission_state", 1)).toBe(false);
     expect(isRetryableFailure("verifying", "report_processing_failed", 2)).toBe(false);
+  });
+
+  it("expires only submitted reports still waiting for Discord receipt", () => {
+    const deadline = new Date("2026-07-20T12:02:00.000Z");
+    expect(
+      shouldExpireDiscordReceipt(
+        { status: "submitted", discord_status: null, receipt_deadline: deadline },
+        deadline
+      )
+    ).toBe(true);
+    expect(
+      shouldExpireDiscordReceipt(
+        { status: "submitted", discord_status: "received", receipt_deadline: deadline },
+        deadline
+      )
+    ).toBe(false);
+    expect(
+      shouldExpireDiscordReceipt(
+        { status: "failed", discord_status: null, receipt_deadline: deadline },
+        deadline
+      )
+    ).toBe(false);
   });
 
   it("preserves an email that arrives before session persistence completes", () => {

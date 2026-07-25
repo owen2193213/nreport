@@ -23,6 +23,7 @@ import {
 
 import type { AccessKeyView } from "./database.js";
 import { countryDisplay } from "./countries.js";
+import { reportHasSupportedCitation } from "./report-writer.js";
 import type { AccessView, ReportDraft, ServerSnapshot } from "./types.js";
 
 const FLOW_LABELS: Record<ReportFlow, string> = {
@@ -245,17 +246,51 @@ export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuil
   }
   modal.addLabelComponents(
     textLabel({
-      customId: "context",
-      label: "Why is this unlawful?",
-      description: "Explain specifically why this violates the law in the selected country.",
+      customId: "brief",
+      label: "Briefly explain the report",
+      description: "A short or vague reason is okay. Grok will draft the final report for review.",
       required: true,
       style: TextInputStyle.Paragraph,
       minLength: 1,
-      maxLength: 4000,
-      ...(draft.context === undefined ? {} : { value: draft.context })
+      maxLength: 1_000,
+      ...(draft.reportBrief === undefined ? {} : { value: draft.reportBrief })
     })
   );
   return modal;
+}
+
+export function buildRefinementModal(draftId: string): ModalBuilder {
+  return new ModalBuilder()
+    .setCustomId(`writer:refine:${draftId}`)
+    .setTitle("Refine AI report")
+    .addLabelComponents(
+      textLabel({
+        customId: "instruction",
+        label: "What should Grok change?",
+        description: "This continues the existing AI conversation.",
+        style: TextInputStyle.Paragraph,
+        minLength: 1,
+        maxLength: 1_000
+      })
+    );
+}
+
+export function buildManualReportModal(draftId: string, draft: ReportDraft): ModalBuilder {
+  const current = (draft.context ?? draft.reportBrief ?? "").slice(0, 512);
+  return new ModalBuilder()
+    .setCustomId(`writer:edit:${draftId}`)
+    .setTitle("Edit report manually")
+    .addLabelComponents(
+      textLabel({
+        customId: "report_text",
+        label: "Final report",
+        description: "Maximum 512 characters. Keep an inline [law and provision] citation.",
+        style: TextInputStyle.Paragraph,
+        minLength: 1,
+        maxLength: 512,
+        ...(current ? { value: current } : {})
+      })
+    );
 }
 
 export function buildCountryPicker(
@@ -264,9 +299,10 @@ export function buildCountryPicker(
   page: number
 ): { embeds: EmbedBuilder[]; components: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] } {
   const pageSize = 24;
-  const pageCount = Math.max(1, Math.ceil(countries.length / pageSize));
+  const choices = ["AUTO", ...countries];
+  const pageCount = Math.max(1, Math.ceil(choices.length / pageSize));
   const safePage = Math.min(Math.max(page, 0), pageCount - 1);
-  const options = countries.slice(safePage * pageSize, (safePage + 1) * pageSize);
+  const options = choices.slice(safePage * pageSize, (safePage + 1) * pageSize);
   const picker = new StringSelectMenuBuilder()
     .setCustomId(`country:select:${draftId}:${safePage}`)
     .setPlaceholder("Choose the relevant EU country")
@@ -296,7 +332,7 @@ export function buildCountryPicker(
     embeds: [
       infoEmbed(
         "Choose the applicable country",
-        `Select the EU country whose law applies to this report.\n\nPage **${safePage + 1} of ${pageCount}**`
+        `Choose **Auto** to let Grok select a supported country based on legal relevance, or select a country override.\n\nPage **${safePage + 1} of ${pageCount}**`
       )
     ],
     components
@@ -326,11 +362,11 @@ export function buildProfileTargetConfirmation(
   const resolved = profileSnapshotText(draft.reportedUserSnapshot);
   const embed = new EmbedBuilder()
     .setColor(resolved ? Colors.Blurple : Colors.Orange)
-    .setTitle(resolved ? "What does this value represent?" : "User ID lookup was unsuccessful")
+    .setTitle(resolved ? "Discord account found" : "User ID lookup was unsuccessful")
     .setDescription(
       resolved
-        ? `\`${draft.profileTargetRaw}\` could be a Discord user ID or a numeric username.`
-        : `Discord could not resolve \`${draft.profileTargetRaw}\`. This may be temporary, or the value may be a numeric username.`
+        ? "Review the resolved account before continuing."
+        : `Discord could not resolve \`${draft.profileTargetRaw}\`. The account may not exist or Discord may be temporarily unavailable.`
     )
     .addFields(
       resolved
@@ -344,17 +380,11 @@ export function buildProfileTargetConfirmation(
   if (resolved) {
     buttons.addComponents(
       new ButtonBuilder()
-        .setCustomId(`profile:account:${draftId}`)
-        .setLabel("Report This Account")
+        .setCustomId(`profile:continue:${draftId}`)
+        .setLabel("Continue")
         .setStyle(ButtonStyle.Danger)
     );
   }
-  buttons.addComponents(
-    new ButtonBuilder()
-      .setCustomId(`profile:username:${draftId}`)
-      .setLabel("Use as Username")
-      .setStyle(ButtonStyle.Primary)
-  );
   if (!resolved) {
     buttons.addComponents(
       new ButtonBuilder()
@@ -389,11 +419,24 @@ function truncate(value: string, maximum: number): string {
   return value.length <= maximum ? value : `${value.slice(0, maximum - 1)}…`;
 }
 
+function countryOrigin(draft: ReportDraft): string {
+  switch (draft.countrySelection) {
+    case "auto":
+      return "Auto-selected by Grok";
+    case "default":
+      return "Saved default";
+    case "override":
+      return "Report override";
+    default:
+      return "Report country";
+  }
+}
+
 export function buildReview(draftId: string, draft: ReportDraft): {
   embeds: EmbedBuilder[];
   components: ActionRowBuilder<ButtonBuilder>[];
 } {
-  if (!draft.country || !draft.reportType || !draft.context) {
+  if (!draft.country || !draft.reportType || !draft.context || !draft.legalResearch) {
     throw new Error("Report draft is incomplete.");
   }
   const elements =
@@ -418,14 +461,18 @@ export function buildReview(draftId: string, draft: ReportDraft): {
     .addFields(
       { name: "Reported thing", value: truncate(targetSummary(draft), 1_000) },
       { name: "Report category", value: FLOW_LABELS[draft.flow], inline: true },
-      { name: "Country", value: countryDisplay(draft.country), inline: true },
+      {
+        name: "Country",
+        value: `${countryDisplay(draft.country)}\n${countryOrigin(draft)}`,
+        inline: true
+      },
       { name: "Reason", value: reasonText(draft.flow, draft.reportType, elements) },
       ...splitField(details).map((value, index) => ({
         name: index === 0 ? "Reported details" : `Reported details (${index + 1})`,
         value
       }))
-    )
-    .setFooter({ text: "Review carefully before submitting" });
+    );
+  embed.setFooter({ text: `${draft.context.length}/512 characters • Review carefully before submitting` });
   if (draft.flow === "user_urf" && draft.reportedUserSnapshot?.avatarUrl) {
     embed.setThumbnail(draft.reportedUserSnapshot.avatarUrl);
   } else if (draft.serverSnapshot?.iconUrl) {
@@ -437,23 +484,81 @@ export function buildReview(draftId: string, draft: ReportDraft): {
       .setLabel("Submit DSA Report")
       .setStyle(ButtonStyle.Danger),
     new ButtonBuilder()
-      .setCustomId(`draft:edit:${draftId}`)
-      .setLabel("Edit")
+      .setCustomId(`draft:refine:${draftId}`)
+      .setLabel("Refine")
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
-      .setCustomId(`draft:country:${draftId}`)
-      .setLabel("Change Country")
+      .setCustomId(`draft:regenerate:${draftId}`)
+      .setLabel("Regenerate")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`draft:edit:${draftId}`)
+      .setLabel("Edit manually")
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`draft:cancel:${draftId}`)
       .setLabel("Cancel")
       .setStyle(ButtonStyle.Secondary)
   );
-  return { embeds: [embed], components: [buttons] };
+  const countryButton = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`draft:country:${draftId}`)
+      .setLabel("Change country")
+      .setStyle(ButtonStyle.Secondary)
+  );
+  return { embeds: [embed], components: [buttons, countryButton] };
+}
+
+export function buildWriterFailure(
+  draftId: string,
+  description: string,
+  retryAction: "refine" | "regenerate" = "regenerate",
+  canManualEdit = false
+): {
+  embeds: EmbedBuilder[];
+  components: ActionRowBuilder<ButtonBuilder>[];
+} {
+  return {
+    embeds: [errorEmbed(description)],
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`draft:${retryAction}:${draftId}`)
+          .setLabel("Retry")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`draft:country:${draftId}`)
+          .setLabel("Change country")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(`draft:brief:${draftId}`)
+          .setLabel("Edit details")
+          .setStyle(ButtonStyle.Secondary),
+        ...(canManualEdit
+          ? [
+              new ButtonBuilder()
+                .setCustomId(`draft:edit:${draftId}`)
+                .setLabel("Edit manually")
+                .setStyle(ButtonStyle.Secondary)
+            ]
+          : []),
+        new ButtonBuilder()
+          .setCustomId(`draft:cancel:${draftId}`)
+          .setLabel("Cancel")
+          .setStyle(ButtonStyle.Secondary)
+      )
+    ]
+  };
 }
 
 export function draftToCreateInput(draft: ReportDraft, userId: string): CreateReportInput {
-  if (!draft.country || !draft.reportType || !draft.context) {
+  if (
+    !draft.country ||
+    !draft.reportType ||
+    !draft.context ||
+    !draft.legalResearch ||
+    !reportHasSupportedCitation(draft.context, draft.legalResearch)
+  ) {
     throw new Error("Report draft is incomplete.");
   }
   const common = {
@@ -467,19 +572,20 @@ export function draftToCreateInput(draft: ReportDraft, userId: string): CreateRe
       if (!draft.messageUrl) throw new Error("A message link is required.");
       return { ...common, flow: draft.flow, messageUrl: draft.messageUrl };
     case "user_urf":
-      if (!draft.reportedUsername || !draft.profileElements?.length) {
-        throw new Error("A username and profile element are required.");
+      if (
+        !draft.reportedUsername ||
+        !draft.reportedUserId ||
+        !draft.reportedUserSnapshot ||
+        !draft.profileElements?.length
+      ) {
+        throw new Error("A resolved Discord user and profile element are required.");
       }
       return {
         ...common,
         flow: draft.flow,
         reportedUsername: draft.reportedUsername,
-        ...(draft.reportedUserId === undefined
-          ? {}
-          : { reportedUserId: draft.reportedUserId }),
-        ...(draft.reportedUserSnapshot === undefined
-          ? {}
-          : { reportedUserSnapshot: draft.reportedUserSnapshot }),
+        reportedUserId: draft.reportedUserId,
+        reportedUserSnapshot: draft.reportedUserSnapshot,
         profileElements: draft.profileElements,
         ...(draft.reportedUserServerId === undefined
           ? {}
@@ -507,10 +613,21 @@ export function accessEmbed(access: AccessView, admin: boolean, userId?: string)
       { name: "Credits", value: admin ? "Unlimited" : access.credits.toString(), inline: true },
       {
         name: "Default country",
-        value: access.defaultCountry ? countryDisplay(access.defaultCountry) : "Not configured",
+        value: access.defaultCountry ? countryDisplay(access.defaultCountry) : countryDisplay("AUTO"),
         inline: true
       },
-      { name: "Account status", value: access.suspended ? "Suspended" : "Active", inline: true }
+      { name: "Account status", value: access.suspended ? "Suspended" : "Active", inline: true },
+      {
+        name: "AI usage",
+        value: [
+          `Requests: **${access.aiRequestCount.toLocaleString("en")}**`,
+          `Input tokens: **${access.aiInputTokens.toLocaleString("en")}**`,
+          `Output tokens: **${access.aiOutputTokens.toLocaleString("en")}**`,
+          `Reasoning tokens: **${access.aiReasoningTokens.toLocaleString("en")}**`,
+          `Web searches: **${access.aiSearchRequests.toLocaleString("en")}**`,
+          `OpenRouter cost: **${access.aiCostCredits.toFixed(6)} credits**`
+        ].join("\n")
+      }
     );
   if (userId) embed.setDescription(`Discord user: \`${userId}\``);
   if (access.suspensionReason) embed.addFields({ name: "Suspension reason", value: access.suspensionReason });

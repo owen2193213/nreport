@@ -9,10 +9,33 @@ export interface BotConfig {
   dataEncryptionKey: Buffer;
   environment: string;
   keyPepper: string;
+  openRouterApiKey: string;
+  openRouterModel: string;
+  openRouterWriterReasoningEffort: ReasoningEffort;
   port: number;
   token: string;
   whitelistEnabled: boolean;
   reportEventWebhookSecret?: string;
+}
+
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+function reasoningEffort(value: string | undefined): ReasoningEffort {
+  const normalized = value?.trim().toLowerCase() || "medium";
+  if (
+    normalized !== "none" &&
+    normalized !== "minimal" &&
+    normalized !== "low" &&
+    normalized !== "medium" &&
+    normalized !== "high" &&
+    normalized !== "xhigh" &&
+    normalized !== "max"
+  ) {
+    throw new Error(
+      "OPENROUTER_WRITER_REASONING_EFFORT must be none, minimal, low, medium, high, xhigh, or max."
+    );
+  }
+  return normalized;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -72,6 +95,11 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     dataEncryptionKey: encryptionKey(env),
     environment: env.NODE_ENV?.trim() || "development",
     keyPepper: secret(env, "ACCESS_KEY_PEPPER"),
+    openRouterApiKey: required(env, "OPENROUTER_API_KEY"),
+    openRouterModel: env.OPENROUTER_MODEL?.trim() || "x-ai/grok-4.5",
+    openRouterWriterReasoningEffort: reasoningEffort(
+      env.OPENROUTER_WRITER_REASONING_EFFORT
+    ),
     port: port(env.PORT),
     token: required(env, "DISCORD_BOT_TOKEN"),
     whitelistEnabled: env.WHITELIST_ENABLED !== "false",

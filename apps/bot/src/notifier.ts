@@ -2,7 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { DsaApiError } from "@discord-dsa/contracts";
 import type { CreateReportInput, DsaApi, ReportDetail } from "@discord-dsa/contracts";
-import { DiscordAPIError, type Client } from "discord.js";
+import { DiscordAPIError, type Client, type Message, type User } from "discord.js";
 
 import type { BotConfig } from "./config.js";
 import { decryptJson } from "./crypto.js";
@@ -33,11 +33,50 @@ export function renderNotification(
     "discord:closed_no_action": "Discord closed the report without action",
     "discord:review_not_approved": "Discord did not approve the report"
   };
+  const currentEventType =
+    report.discordStatus !== null
+      ? `discord:${report.discordStatus}`
+      : report.status === "failed"
+        ? "report_failed"
+        : eventType;
+  const timeoutTitle =
+    report.error?.code === "discord_receipt_timeout"
+      ? "Discord receipt confirmation timed out"
+      : undefined;
   return reportEmbed(report, snapshot, {
-    title: (eventType && titles[eventType]) ?? "Discord DSA report update",
+    title:
+      timeoutTitle ??
+      (currentEventType && titles[currentEventType]) ??
+      "Discord DSA report update",
     hideStatusDescription: true
   })
     .setTimestamp(new Date(report.discordStatusUpdatedAt ?? report.updatedAt));
+}
+
+export function lifecycleReplyText(eventType: string, report: ReportDetail): string | null {
+  switch (eventType) {
+    case "discord:actioned":
+      return "Your DSA report was accepted and Discord took action.";
+    case "discord:closed_no_action":
+      return "Your DSA report was reviewed and denied; Discord closed it without taking action.";
+    case "discord:review_not_approved":
+      return "Your DSA report review request was denied by Discord.";
+    case "report_failed":
+      return report.error?.code === "discord_receipt_timeout"
+        ? "Discord did not confirm receipt within 2 minutes. You can retry this as a new report below."
+        : null;
+    default:
+      return null;
+  }
+}
+
+function failureNotificationText(report: ReportDetail): string {
+  const detail = report.error?.message ?? "The report could not be submitted to Discord.";
+  return `Your DSA report failed before Discord confirmed submission.\n\n${detail}\n\nReport ID: \`${report.internalReportId}\``;
+}
+
+function isUnknownMessage(error: unknown): boolean {
+  return error instanceof DiscordAPIError && error.code === 10_008;
 }
 
 export class NotificationWorker {
@@ -184,6 +223,18 @@ export class NotificationWorker {
     return snapshot;
   }
 
+  private async storedStatusMessage(user: User, trackingId: string): Promise<Message | null> {
+    const messageId = await this.database.statusDmMessageId(trackingId);
+    if (messageId === null) return null;
+    const channel = await user.createDM();
+    try {
+      return await channel.messages.fetch(messageId);
+    } catch (error) {
+      if (isUnknownMessage(error)) return null;
+      throw error;
+    }
+  }
+
   private async deliverNotifications(): Promise<void> {
     const jobs = await this.database.claimNotifications();
     for (const job of jobs) {
@@ -195,7 +246,7 @@ export class NotificationWorker {
             trackingId: job.tracking_id,
             reportId: job.payload.internalReportId,
             eventType: job.payload.eventType,
-            reason: "submission_acknowledgement_already_sent"
+            reason: "non_status_lifecycle_event"
           });
           continue;
         }
@@ -208,17 +259,43 @@ export class NotificationWorker {
         });
         const report = await this.api.report(job.payload.internalReportId);
         const user = await this.client.users.fetch(job.discord_user_id);
-        await user.send({
-          embeds: [
-            renderNotification(
-              report,
-              await this.snapshotFor(report, job.discord_user_id),
-              job.payload.eventType
-            )
-          ],
-          components: reportRetryComponents(report),
-          allowedMentions: { parse: [] }
-        });
+        const components = reportRetryComponents(report);
+        if (report.discordReportId === null) {
+          await user.send({
+            content: failureNotificationText(report),
+            components,
+            allowedMentions: { parse: [] }
+          });
+        } else {
+          const embed = renderNotification(
+            report,
+            await this.snapshotFor(report, job.discord_user_id),
+            job.payload.eventType
+          );
+          let statusMessage = await this.storedStatusMessage(user, job.tracking_id);
+          if (statusMessage === null) {
+            statusMessage = await user.send({
+              embeds: [embed],
+              components,
+              allowedMentions: { parse: [] }
+            });
+            await this.database.saveStatusDmMessageId(job.tracking_id, statusMessage.id);
+          } else {
+            await statusMessage.edit({
+              embeds: [embed],
+              components,
+              allowedMentions: { parse: [] }
+            });
+          }
+          const replyText = lifecycleReplyText(job.payload.eventType, report);
+          if (replyText !== null) {
+            await statusMessage.reply({
+              content: replyText,
+              components: job.payload.eventType === "report_failed" ? components : [],
+              allowedMentions: { parse: [] }
+            });
+          }
+        }
         await this.database.completeNotification(job.id);
         botLog("notification_send_completed", {
           notificationId: job.id,

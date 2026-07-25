@@ -44,22 +44,28 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
 ## Report lifecycle
 
 1. Enforce access or configured-admin bypass.
-2. Use the searchable command country, then the saved country. If neither exists, ask the
-   user to rerun with a country and do not create a draft.
-3. Collect the flow-specific reason, elements, target, and context.
-   Profile targets accept a Discord username or raw user ID. Display names and mentions are
-   rejected. Snowflake-shaped values are resolved first and require an ephemeral
-   account-versus-username confirmation.
-4. Encrypt the draft at rest with a 30-minute expiry.
-5. Show a final review with submit, edit, country, and cancel controls.
+2. Resolve country in this order: a `/report` override, the saved `/settings country` value,
+   then Auto. A saved `NULL` country means Auto, including for existing users.
+3. Collect the flow-specific reason, elements, target, and a short explanation.
+   Profile targets accept only a raw Discord user ID. The bot resolves the account and requires
+   confirmation before collecting the report details; unresolved IDs can be retried or cancelled.
+4. Encrypt the draft and its OpenRouter conversation at rest with a 30-minute expiry.
+5. In one multimodal OpenRouter request, resolve Auto when needed and research a supporting law.
+   Then ask `x-ai/grok-4.5` to write a factual report of at most 512 characters with an inline
+   `[law and provision]` citation. Show an ephemeral review with submit, refine, regenerate,
+   country-change, manual-edit, and cancel controls.
 6. Atomically reserve one credit and create the API report with the interaction ID.
 7. Consume the reservation after HTTP 202 or idempotent HTTP 200.
 8. Release it after a definite pre-creation rejection; reconcile ambiguous responses with
    the exact body and idempotency key.
 9. Poll briefly in the interaction, then let the durable worker continue.
-10. Push lifecycle changes from the API to the bot and DM the complete current report card
-    for submission, failure, actioned, closed, or rejected review. `received` remains visible in
-    the timeline but does not create a second acknowledgement DM.
+10. On successful submission, DM one complete current report card and persist that Discord
+    message ID. Later lifecycle events edit the same card. Receipt updates are silent; final
+    accepted/denied outcomes edit the card and send a short plain-text reply to it. Failures before
+    Discord returns a report ID use a plain-text DM rather than an embed.
+11. If Discord does not confirm receipt within two minutes after returning a report ID, the API
+    fails the report with `discord_receipt_timeout`, edits the saved card, and offers the existing
+    immutable new-report retry.
 
 Report cards include the target, category, full country name and flag, human reason plus
 selected elements, reported details, references, and a simplified milestone history. The API
@@ -67,6 +73,58 @@ retains the complete technical timeline. Server metadata and ID-backed profile m
 resolved best-effort and captured at submission time. DMs include full report details but omit the
 generated reporter identity and email. A Discord 50007 response permanently disables DM
 attempts for that tracked report; `/reports` remains available.
+
+## AI report writing
+
+The bot calls OpenRouter directly; the API and low-level Discord client never receive the
+reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KEY` is required and
+`OPENROUTER_MODEL` defaults to `x-ai/grok-4.5`. Provider routing requires zero data retention,
+denies provider data collection, and requires structured-output support. The complete generation
+workflow is capped at 90 seconds.
+
+Every generation begins with one combined country-selection and legal-research request using the
+`openrouter:web_search` server tool. It receives the complete report category, selected elements,
+supported country names/codes, reporter explanation, resolved evidence, and selected images.
+The prompt prefers one search but allows up to three when results conflict or another supported
+country may have a stronger basis. Search uses OpenRouter's standard result settings with no
+domain or result-list filter. At least one searched HTTPS `url_citation` is still required.
+
+The prompt contains the selected semantic reason, the reporter's brief, and only the useful
+resolved target data. Message reports include the accessible message content, author, timestamp,
+server/channel context, embed summary, and attachment metadata; image attachments are supplied as
+images. Link-based reports fall back to the link and brief when Discord does not allow the bot to
+fetch the message. Profile reports include the ID, usernames, display names, and bot status.
+When `photos` is selected, the bot supplies both the current avatar and banner when available.
+Server icon, banner, invite splash, and discovery splash URLs are supplied only when their matching
+elements are selected. Discord's supported bot API does not expose profile About Me text, so the
+bot does not claim or attempt to retrieve it.
+
+The review identifies whether the country was Auto-selected, a saved default, or a report
+override. The law and provision appear only inline in the 512-character report; the review does
+not add separate legal-basis or source fields.
+Changing country clears the AI conversation and research before running both again. Refine appends
+the instruction and result to the same encrypted conversation and reuses the existing research
+with optional web search when the requested change needs new legal facts or challenges Auto's
+country. Regenerate starts a new conversation and reruns combined research; Auto may choose a
+different country. Manual edits become the current assistant answer so a later refinement
+continues from that text, but the supported inline citation cannot be removed. Repair also
+continues the same conversation, performs no search, and is attempted only once.
+
+Writing, refinement, and repair use OpenRouter reasoning with
+`OPENROUTER_WRITER_REASONING_EFFORT` (default `medium`) and exclude reasoning text from responses.
+Reasoning, input/output tokens, search requests, request counts, and OpenRouter-reported cost are
+accumulated per user in `bot_users` and displayed by `/access status`. Safe logs use a keyed
+pseudonymous actor value plus stage, model, latency, usage, cost, and failure category.
+
+If a model result exceeds 512 characters or omits its law label, the bot asks once for a repair; a
+second invalid result is never silently truncated. Insufficient OpenRouter balance, rate limits,
+timeouts, malformed output, unsupported Auto countries, missing searched citations, and unsafe URLs
+use the safe AI failure screen. Retry, country override, detail editing, and cancel remain
+available. Manual editing is offered only when the encrypted draft already has valid research.
+No report is created and no credit is reserved until valid reviewed text is submitted. Drafts hold
+the country choice, source title/URL, research summary, and conversation only until normal expiry.
+Logs may contain only pseudonymous actor keys and safe operational usage/failure fields, never raw
+user IDs, queries, sources, evidence, images, prompts, research, reports, or AI responses.
 
 ## Access credits
 
@@ -81,23 +139,31 @@ attempts for that tracked report; `/reports` remains available.
 
 ## Operations
 
-The notification worker uses leased PostgreSQL rows and `SKIP LOCKED`, so restarts do not
-duplicate work and additional replicas remain safe. Pending creation and submission work
-polls approximately every 30 seconds. Submitted reports retain a durable 15-minute fallback poll
-until Discord returns a terminal outcome. The API also uses a transactional event outbox and
-signed private webhook for fast delivery, with full event-feed reconciliation as a safety net.
-DMs use a per-attempt unique `(tracking_id, event_key)` key and retry transient failures with a
-bounded exponential delay.
+The notification worker uses leased PostgreSQL rows and `SKIP LOCKED`, so restarts and additional
+replicas can process work safely. Pending creation and submission work polls approximately every
+30 seconds; individual polling stops after submission. The API owns the two-minute receipt
+deadline and emits a durable failure event if it expires. Signed private webhooks provide fast
+delivery, with full 15-minute event-feed reconciliation as a safety net. DMs use a per-attempt
+unique `(tracking_id, event_key)` key, persist the successful status-card message ID, and retry
+transient failures with a bounded exponential delay.
 
 ### Notification decision log
 
-- A successful `report_submitted` event is the single user-facing acknowledgement that Discord
-  received the report submission. A following `discord:received` event is stored and displayed in
-  report history but is not sent as another DM.
-- Suppression happens both when events are ingested and immediately before delivery, so pending
-  `received` jobs created by an older bot version are also discarded safely.
-- Delaying the submission acknowledgement or removing `received` from the API timeline were
-  rejected because they would reduce responsiveness or audit detail.
+- A successful `report_submitted` event creates the only lifecycle status embed and stores its
+  Discord message ID on the tracking row.
+- `discord:received`, timeout, and outcome events edit that saved embed instead of sending another
+  report card. Receipt is a silent edit. `actioned`, `closed_no_action`, and
+  `review_not_approved` additionally send a plain-text reply to the saved card so the user receives
+  a new Discord notification.
+- Pre-submission failures send plain text plus the retry control. They never create a failure
+  embed.
+- A missing or user-deleted saved status message is replaced only when Discord had already
+  returned a report ID.
+- Chosen: persist the message ID on `report_tracking`, keeping Discord delivery metadata in the
+  bot database and report lifecycle state in the API database.
+- Chosen: enforce the 120-second receipt deadline in the API and make that explicit timeout
+  retryable, even though Discord returned a report ID. A late authenticated Discord update
+  recovers the timed-out record to submitted and disables further retry from that record.
 
 ## Bounded lifecycle polling
 
@@ -243,8 +309,8 @@ uses the same operation. Both surfaces update to the successor's new report card
   `error`.
 - Logs may contain internal report, job, event, notification, and tracking IDs. They must never
   contain raw email addresses or messages, verification codes, access-key plaintext/hashes,
-  report context, proxy credentials, encryption material, Discord interaction tokens, or request
-  bodies.
+  report context, OpenRouter prompts/responses/image URLs/conversation history, proxy credentials,
+  encryption material, Discord interaction tokens, or request bodies.
 - Logging failures must not affect report processing. A failure while replying to an expired
   Discord interaction is contained and logged rather than escaping the event handler.
 
@@ -254,7 +320,8 @@ uses the same operation. Both surfaces update to the successor's new report card
   `report_job_stage_started`, `report_job_stage_completed`, `report_job_completed`,
   `report_job_stage_failed`, `report_job_retry_scheduled`, `report_job_failed`,
   `verification_resend_completed`, `verification_resend_skipped`,
-  `verification_resend_failed`, `verification_wait_expired`, `inbound_email_rejected`,
+  `verification_resend_failed`, `verification_wait_expired`, `discord_receipt_wait_expired`,
+  `inbound_email_rejected`,
   `inbound_email_ignored`, and `inbound_email_correlated`.
 - Bot: `interaction_failed`, `interaction_error_response_failed`,
   `report_submission_reserved`, `report_submission_created`, and

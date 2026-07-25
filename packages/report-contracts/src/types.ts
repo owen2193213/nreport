@@ -30,6 +30,7 @@ export interface ReportedUserSnapshot {
   globalDisplayName: string | null;
   serverDisplayName?: string;
   avatarUrl: string | null;
+  bannerUrl?: string | null;
   bot: boolean;
   resolvedAt: string;
 }
@@ -62,8 +63,8 @@ export interface MessageCreateReportInput extends BaseCreateReportInput {
 export interface UserCreateReportInput extends BaseCreateReportInput {
   flow: "user_urf";
   reportedUsername: string;
-  reportedUserId?: string;
-  reportedUserSnapshot?: ReportedUserSnapshot;
+  reportedUserId: string;
+  reportedUserSnapshot: ReportedUserSnapshot;
   reportedUserServerId?: string;
   profileElements: UserProfileElement[];
 }

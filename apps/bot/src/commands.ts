@@ -36,7 +36,7 @@ const report = userInstalled()
         .addStringOption((option) =>
           option
             .setName("country")
-            .setDescription("Applicable EU country")
+            .setDescription("Auto or an EU country override")
             .setAutocomplete(true)
             .setMaxLength(100)
         )
@@ -48,10 +48,10 @@ const report = userInstalled()
         .addStringOption((option) =>
           option
             .setName("target")
-            .setDescription("Discord username or raw user ID")
+            .setDescription("Raw Discord user ID")
             .setRequired(true)
-            .setMinLength(2)
-            .setMaxLength(32)
+            .setMinLength(15)
+            .setMaxLength(22)
         )
         .addStringOption((option) =>
           option
@@ -63,7 +63,7 @@ const report = userInstalled()
         .addStringOption((option) =>
           option
             .setName("country")
-            .setDescription("Applicable EU country")
+            .setDescription("Auto or an EU country override")
             .setAutocomplete(true)
             .setMaxLength(100)
         )
@@ -81,7 +81,7 @@ const report = userInstalled()
         .addStringOption((option) =>
           option
             .setName("country")
-            .setDescription("Applicable EU country")
+            .setDescription("Auto or an EU country override")
             .setAutocomplete(true)
             .setMaxLength(100)
         )
@@ -127,11 +127,11 @@ const settings = userInstalled()
     .addSubcommand((command) =>
       command
         .setName("country")
-        .setDescription("Set your default EU country")
+        .setDescription("Set Auto or a default EU country")
         .addStringOption((option) =>
           option
             .setName("country")
-            .setDescription("EU country")
+            .setDescription("Auto or an EU country")
             .setRequired(true)
             .setAutocomplete(true)
         )

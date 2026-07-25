@@ -28,13 +28,19 @@ import { countryDisplay, matchingCountries } from "./countries.js";
 import { decryptJson, encryptJson, generateAccessKey, hashAccessKey } from "./crypto.js";
 import { AccessError } from "./database.js";
 import type { BotDatabase } from "./database.js";
-import { botLog, errorFields } from "./observability.js";
+import { snapshotMessage } from "./message-resolver.js";
+import type { MessageResolver } from "./message-resolver.js";
+import { botLog, errorFields, pseudonymousActorKey } from "./observability.js";
 import {
-  isSnowflakeProfileTarget,
   isValidProfileTarget,
   normalizeProfileTarget
 } from "./profile-resolver.js";
 import type { ProfileResolver } from "./profile-resolver.js";
+import {
+  initialWriterPrompt,
+  reportHasSupportedCitation
+} from "./report-writer.js";
+import type { ReportWriter } from "./report-writer.js";
 import type { ServerResolver } from "./server-resolver.js";
 import type { ReportDraft } from "./types.js";
 import {
@@ -43,8 +49,11 @@ import {
   accessKeysEmbed,
   buildCountryPicker,
   buildProfileTargetConfirmation,
+  buildManualReportModal,
+  buildRefinementModal,
   buildReportModal,
   buildReview,
+  buildWriterFailure,
   draftToCreateInput,
   errorEmbed,
   generatedKeysEmbed,
@@ -58,12 +67,20 @@ import {
 const EPHEMERAL = MessageFlags.Ephemeral;
 const SNOWFLAKE = /^\d{15,22}$/;
 
+export function reportCountryFields(country: string | undefined): Partial<ReportDraft> {
+  if (country === "AUTO") return { countrySelection: "auto" };
+  if (country) return { country, countrySelection: "override" };
+  return {};
+}
+
 export interface InteractionHandlerOptions {
   api: DsaApi;
   config: BotConfig;
   countries: readonly string[];
   database: BotDatabase;
+  messageResolver: MessageResolver;
   profileResolver: ProfileResolver;
+  reportWriter: ReportWriter;
   serverResolver: ServerResolver;
 }
 
@@ -121,7 +138,9 @@ export class InteractionHandler {
   private readonly config: BotConfig;
   private readonly countries: readonly string[];
   private readonly database: BotDatabase;
+  private readonly messageResolver: MessageResolver;
   private readonly profileResolver: ProfileResolver;
+  private readonly reportWriter: ReportWriter;
   private readonly serverResolver: ServerResolver;
 
   public constructor(options: InteractionHandlerOptions) {
@@ -129,7 +148,9 @@ export class InteractionHandler {
     this.config = options.config;
     this.countries = options.countries;
     this.database = options.database;
+    this.messageResolver = options.messageResolver;
     this.profileResolver = options.profileResolver;
+    this.reportWriter = options.reportWriter;
     this.serverResolver = options.serverResolver;
   }
 
@@ -168,6 +189,13 @@ export class InteractionHandler {
 
   private isAdmin(userId: string): boolean {
     return this.config.adminUserIds.has(userId);
+  }
+
+  private aiActor(userId: string) {
+    return {
+      actorKey: pseudonymousActorKey(userId, this.config.keyPepper),
+      userId
+    };
   }
 
   private async requireReportAccess(userId: string): Promise<void> {
@@ -249,19 +277,15 @@ export class InteractionHandler {
   ): Promise<string | null> {
     await this.requireReportAccess(interaction.user.id);
     const access = await this.database.getAccess(interaction.user.id);
-    if (draft.country === undefined && access.defaultCountry !== null) {
-      draft.country = access.defaultCountry;
-    }
-    if (draft.country === undefined) {
-      const guidance = interaction.isMessageContextMenuCommand()
-        ? "Set a default with `/settings country`, or copy the message link and run `/report message` with the country option."
-        : "Run this command again and choose a country from the searchable `country` option, or save one with `/settings country`.";
-      await interaction.reply({
-        embeds: [errorEmbed(`A country is required. ${guidance}`)],
-        flags: EPHEMERAL,
-        allowedMentions: { parse: [] }
-      });
-      return null;
+    if (!draft.countrySelection) {
+      if (draft.country) {
+        draft.countrySelection = "override";
+      } else if (access.defaultCountry !== null) {
+        draft.country = access.defaultCountry;
+        draft.countrySelection = "default";
+      } else {
+        draft.countrySelection = "auto";
+      }
     }
     if (draft.flow === "guild_urf" && draft.guildIdOrInviteCode && !draft.serverSnapshot) {
       const snapshot = await this.serverResolver.resolve(
@@ -275,7 +299,7 @@ export class InteractionHandler {
 
   private countryOption(interaction: ChatInputCommandInteraction): string | undefined {
     const country = interaction.options.getString("country")?.trim().toUpperCase();
-    if (country !== undefined && !this.countries.includes(country)) {
+    if (country !== undefined && country !== "AUTO" && !this.countries.includes(country)) {
       throw new AccessError("invalid_country", "Choose a country returned by autocomplete.");
     }
     return country;
@@ -319,7 +343,8 @@ export class InteractionHandler {
     if (interaction.commandName !== "Report Message") return;
     await this.startDraft(interaction, {
       flow: "message_urf",
-      messageUrl: interaction.targetMessage.url
+      messageUrl: interaction.targetMessage.url,
+      messageSnapshot: snapshotMessage(interaction.targetMessage)
     });
   }
 
@@ -351,7 +376,7 @@ export class InteractionHandler {
       await this.startDraft(interaction, {
         flow: "message_urf",
         messageUrl,
-        ...(country ? { country } : {})
+        ...reportCountryFields(country)
       });
       return;
     }
@@ -360,7 +385,7 @@ export class InteractionHandler {
       if (!isValidProfileTarget(target)) {
         throw new AccessError(
           "invalid_profile_target",
-          "Enter a Discord username or raw user ID. Display names and mentions are not accepted."
+          "Enter a raw Discord user ID containing 15 to 22 digits."
         );
       }
       const serverId = interaction.options.getString("server-id")?.trim();
@@ -369,15 +394,10 @@ export class InteractionHandler {
       }
       const draft: ReportDraft = {
         flow: "user_urf",
-        reportedUsername: target,
-        ...(country ? { country } : {}),
+        profileTargetRaw: target,
+        ...reportCountryFields(country),
         ...(serverId ? { reportedUserServerId: serverId } : {})
       };
-      if (!isSnowflakeProfileTarget(target)) {
-        await this.startDraft(interaction, draft);
-        return;
-      }
-      draft.profileTargetRaw = target;
       const draftId = await this.prepareDraft(interaction, draft);
       if (!draftId) return;
       await interaction.deferReply({ flags: EPHEMERAL });
@@ -399,7 +419,7 @@ export class InteractionHandler {
     const target = suppliedTarget || guildTarget;
     await this.startDraft(interaction, {
       flow: "guild_urf",
-      ...(country ? { country } : {}),
+      ...reportCountryFields(country),
       ...(target ? { guildIdOrInviteCode: target } : {})
     });
   }
@@ -468,16 +488,18 @@ export class InteractionHandler {
   }
 
   private async handleSettingsCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-    const country = interaction.options.getString("country", true).toUpperCase();
-    if (!this.countries.includes(country)) {
+    const country = interaction.options.getString("country", true).trim().toUpperCase();
+    if (country !== "AUTO" && !this.countries.includes(country)) {
       throw new AccessError("invalid_country", "Choose a country returned by autocomplete.");
     }
-    await this.database.setDefaultCountry(interaction.user.id, country);
+    await this.database.setDefaultCountry(interaction.user.id, country === "AUTO" ? null : country);
     await interaction.reply({
       embeds: [
         successEmbed(
           "Default country updated",
-          `New reports will default to **${countryDisplay(country)}**. You can still change it during review.`
+          country === "AUTO"
+            ? "New reports will use **Auto**, so Grok will select a supported country based on legal relevance. You can still override it per report."
+            : `New reports will default to **${countryDisplay(country)}**. You can still override it per report.`
         )
       ],
       flags: EPHEMERAL
@@ -591,12 +613,75 @@ export class InteractionHandler {
 
   private async handleModal(interaction: ModalSubmitInteraction): Promise<void> {
     const [scope, action, draftId] = customParts(interaction.customId);
-    if (scope !== "report" || action !== "modal" || !draftId) return;
+    if (!draftId) return;
+    if (scope === "writer" && action === "refine") {
+      const draft = await this.loadDraft(interaction.user.id, draftId);
+      const instruction = interaction.fields.getTextInputValue("instruction").trim();
+      await interaction.deferUpdate();
+      await interaction.editReply({
+        embeds: [infoEmbed("Refining report", "Grok is applying your feedback in the same conversation.")],
+        components: []
+      });
+      try {
+        const result = await this.reportWriter.refine(
+          draft,
+          instruction,
+          this.aiActor(interaction.user.id)
+        );
+        draft.country = result.country;
+        draft.legalResearch = result.legalResearch;
+        draft.context = result.report;
+        draft.writerConversation = result.conversation;
+        await this.replaceDraft(interaction.user.id, draftId, draft);
+        await interaction.editReply({ ...buildReview(draftId, draft), allowedMentions: { parse: [] } });
+      } catch (error) {
+        await interaction.editReply({
+          ...buildWriterFailure(
+            draftId,
+            conciseError(error),
+            "refine",
+            Boolean(draft.legalResearch)
+          ),
+          allowedMentions: { parse: [] }
+        });
+      }
+      return;
+    }
+    if (scope === "writer" && action === "edit") {
+      const draft = await this.loadDraft(interaction.user.id, draftId);
+      const report = interaction.fields.getTextInputValue("report_text").trim();
+      if (!report || report.length > 512) {
+        throw new AccessError("invalid_report_text", "The final report must contain 1 to 512 characters.");
+      }
+      if (!draft.legalResearch || !reportHasSupportedCitation(report, draft.legalResearch)) {
+        throw new AccessError(
+          "missing_law_citation",
+          "The final report must retain an inline [law and provision] citation."
+        );
+      }
+      draft.context = report;
+      const conversation = draft.writerConversation ?? [
+        { role: "user" as const, content: initialWriterPrompt() }
+      ];
+      draft.writerConversation = [
+        ...conversation,
+        { role: "user", content: "Use this manually edited text as the current report." },
+        { role: "assistant", content: JSON.stringify({ report }) }
+      ];
+      await interaction.deferUpdate();
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+      await interaction.editReply({
+        ...buildReview(draftId, draft),
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
+    if (scope !== "report" || action !== "modal") return;
     const draft = await this.loadDraft(interaction.user.id, draftId);
     const reportType = interaction.fields.getStringSelectValues("report_type")[0];
     if (!reportType) throw new AccessError("invalid_reason", "Choose a report reason.");
     draft.reportType = reportType;
-    draft.context = interaction.fields.getTextInputValue("context").trim();
+    draft.reportBrief = interaction.fields.getTextInputValue("brief").trim();
     if (draft.flow === "message_urf" && draft.messageUrl === undefined) {
       draft.messageUrl = interaction.fields.getTextInputValue("message_url").trim();
     }
@@ -614,6 +699,22 @@ export class InteractionHandler {
       draft.guildElements = values.filter((value): value is GuildElement =>
         (GUILD_ELEMENTS as readonly string[]).includes(value)
       );
+    }
+    await interaction.deferReply({ flags: EPHEMERAL });
+    await interaction.editReply({
+      embeds: [
+        infoEmbed(
+          "Researching and writing report",
+          "Grok is choosing the applicable country when needed, researching the law, and preparing a concise report."
+        )
+      ],
+      components: []
+    });
+    if (draft.flow === "message_urf" && draft.messageUrl && !draft.messageSnapshot) {
+      const snapshot = await this.messageResolver.resolve(draft.messageUrl);
+      if (snapshot) draft.messageSnapshot = snapshot;
+    }
+    if (draft.flow === "guild_urf") {
       if (draft.guildIdOrInviteCode) {
         const snapshot = await this.serverResolver.resolve(
           draft.guildIdOrInviteCode,
@@ -622,29 +723,84 @@ export class InteractionHandler {
         if (snapshot) draft.serverSnapshot = snapshot;
       }
     }
-    draftToCreateInput(draft, interaction.user.id);
+    delete draft.context;
+    delete draft.writerConversation;
+    delete draft.legalResearch;
     await this.replaceDraft(interaction.user.id, draftId, draft);
-    await interaction.reply({
-      ...buildReview(draftId, draft),
-      flags: EPHEMERAL,
-      allowedMentions: { parse: [] }
-    });
+    try {
+      const result = await this.reportWriter.generate(
+        draft,
+        this.aiActor(interaction.user.id)
+      );
+      draft.country = result.country;
+      draft.legalResearch = result.legalResearch;
+      draft.context = result.report;
+      draft.writerConversation = result.conversation;
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+      await interaction.editReply({
+        ...buildReview(draftId, draft),
+        allowedMentions: { parse: [] }
+      });
+    } catch (error) {
+      await interaction.editReply({
+        ...buildWriterFailure(draftId, conciseError(error), "regenerate", false),
+        allowedMentions: { parse: [] }
+      });
+    }
   }
 
   private async handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
     const [scope, action, draftId] = customParts(interaction.customId);
     if (scope !== "country" || action !== "select" || !draftId) return;
     const country = interaction.values[0];
-    if (!country || !this.countries.includes(country)) {
+    if (!country || (country !== "AUTO" && !this.countries.includes(country))) {
       throw new AccessError("invalid_country", "Choose a supported country.");
     }
     const draft = await this.loadDraft(interaction.user.id, draftId);
-    draft.country = country;
-    await this.replaceDraft(interaction.user.id, draftId, draft);
-    if (draft.reportType && draft.context) {
-      await interaction.update({ ...buildReview(draftId, draft), allowedMentions: { parse: [] } });
+    if (country === "AUTO") {
+      delete draft.country;
+      draft.countrySelection = "auto";
     } else {
+      draft.country = country;
+      draft.countrySelection = "override";
+    }
+    delete draft.context;
+    delete draft.writerConversation;
+    delete draft.legalResearch;
+    await this.replaceDraft(interaction.user.id, draftId, draft);
+    if (!draft.reportType || !draft.reportBrief) {
       await interaction.showModal(buildReportModal(draftId, draft));
+      return;
+    }
+    await interaction.deferUpdate();
+    await interaction.editReply({
+      embeds: [
+        infoEmbed(
+          "Researching new country",
+          "Grok is finding an official legal source and rewriting the report."
+        )
+      ],
+      components: []
+    });
+    try {
+      const result = await this.reportWriter.generate(
+        draft,
+        this.aiActor(interaction.user.id)
+      );
+      draft.country = result.country;
+      draft.legalResearch = result.legalResearch;
+      draft.context = result.report;
+      draft.writerConversation = result.conversation;
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+      await interaction.editReply({
+        ...buildReview(draftId, draft),
+        allowedMentions: { parse: [] }
+      });
+    } catch (error) {
+      await interaction.editReply({
+        ...buildWriterFailure(draftId, conciseError(error), "regenerate", false),
+        allowedMentions: { parse: [] }
+      });
     }
   }
 
@@ -695,15 +851,11 @@ export class InteractionHandler {
         });
         return;
       }
-      if (action === "account") {
+      if (action === "continue") {
         if (!draft.reportedUserSnapshot || !draft.reportedUserId) {
           throw new AccessError("user_not_resolved", "Try resolving that user ID again.");
         }
         draft.reportedUsername = draft.reportedUserSnapshot.username;
-      } else if (action === "username") {
-        draft.reportedUsername = draft.profileTargetRaw;
-        delete draft.reportedUserId;
-        delete draft.reportedUserSnapshot;
       } else {
         return;
       }
@@ -730,11 +882,57 @@ export class InteractionHandler {
     }
     const draft = await this.loadDraft(interaction.user.id, draftId);
     if (action === "edit") {
-      await interaction.showModal(buildReportModal(draftId, draft));
+      await interaction.showModal(buildManualReportModal(draftId, draft));
       return;
     }
     if (action === "country") {
       await interaction.update(buildCountryPicker(this.countries, draftId, 0));
+      return;
+    }
+    if (action === "brief") {
+      await interaction.showModal(buildReportModal(draftId, draft));
+      return;
+    }
+    if (action === "refine") {
+      await interaction.showModal(buildRefinementModal(draftId));
+      return;
+    }
+    if (action === "regenerate") {
+      await interaction.deferUpdate();
+      await interaction.editReply({
+        embeds: [
+          infoEmbed(
+            "Rewriting report",
+            "Grok is rerunning country research and starting a fresh writing conversation."
+          )
+        ],
+        components: []
+      });
+      try {
+        const result = await this.reportWriter.generate(
+          draft,
+          this.aiActor(interaction.user.id)
+        );
+        draft.country = result.country;
+        draft.legalResearch = result.legalResearch;
+        draft.context = result.report;
+        draft.writerConversation = result.conversation;
+        await this.replaceDraft(interaction.user.id, draftId, draft);
+        await interaction.editReply({
+          ...buildReview(draftId, draft),
+          allowedMentions: { parse: [] }
+        });
+      } catch (error) {
+        await interaction.editReply({
+          ...buildWriterFailure(
+            draftId,
+            conciseError(error),
+            "regenerate",
+            Boolean(draft.legalResearch)
+          ),
+          allowedMentions: { parse: [] }
+        });
+      }
       return;
     }
     if (action === "submit") {

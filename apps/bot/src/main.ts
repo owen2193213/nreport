@@ -6,9 +6,11 @@ import { loadBotConfig } from "./config.js";
 import { BotDatabase } from "./database.js";
 import { HealthServer } from "./health.js";
 import { InteractionHandler } from "./interactions.js";
+import { MessageResolver } from "./message-resolver.js";
 import { NotificationWorker } from "./notifier.js";
 import { BOT_PRESENCE } from "./presence.js";
 import { ProfileResolver } from "./profile-resolver.js";
+import { ReportWriter } from "./report-writer.js";
 import { ServerResolver } from "./server-resolver.js";
 
 async function main(): Promise<void> {
@@ -35,12 +37,24 @@ async function main(): Promise<void> {
   });
   const serverResolver = new ServerResolver(client);
   const profileResolver = new ProfileResolver(client);
+  const messageResolver = new MessageResolver(client);
+  const reportWriter = new ReportWriter(
+    config.openRouterApiKey,
+    config.openRouterModel,
+    countries,
+    {
+      reasoningEffort: config.openRouterWriterReasoningEffort,
+      recordUsage: (userId, usage) => database.recordAiUsage(userId, usage)
+    }
+  );
   const handler = new InteractionHandler({
     api,
     config,
     countries,
     database,
+    messageResolver,
     profileResolver,
+    reportWriter,
     serverResolver
   });
   client.on(Events.InteractionCreate, (interaction) => void handler.handle(interaction));

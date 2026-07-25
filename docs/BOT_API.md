@@ -75,9 +75,12 @@ The bot needs only these reporting-service variables:
 ```text
 DSA_API_BASE_URL=https://discord-dsa-production.up.railway.app
 DSA_API_KEY=<same API_KEY configured on the Railway API service>
+OPENROUTER_API_KEY=<bot-only OpenRouter key>
+OPENROUTER_MODEL=x-ai/grok-4.5
+OPENROUTER_WRITER_REASONING_EFFORT=medium
 ```
 
-Keep `DSA_API_KEY` in the bot host's secret manager. Never place it in slash-command
+Keep both API keys in the bot host's secret manager. Never place them in slash-command
 options, embeds, exception messages, source control, or browser-delivered code.
 
 ## 4. HTTP conventions
@@ -180,6 +183,7 @@ interface ReportedUserSnapshot {
   globalDisplayName: string | null;
   serverDisplayName?: string;
   avatarUrl: string | null;
+  bannerUrl: string | null;
   bot: boolean;
   resolvedAt: string;
 }
@@ -233,6 +237,12 @@ queued
 After submission, `discordStatus` can independently progress from `received` to
 `actioned`, `closed_no_action`, or `review_not_approved`.
 
+After Discord returns a report ID, the API waits up to 120 seconds for the first report-update
+email. If no update is correlated in that window, the report moves from `submitted` to a
+retryable `failed` state with `discord_receipt_timeout`. A late valid update restores the timed-out
+record to `submitted`, clears its retry flag and timeout error, and applies the received Discord
+status. A successor already created from the timeout remains a separate lifecycle.
+
 `awaiting_verification` has a fixed 60-second deadline. The API repeats the same Discord
 verification-code request at 20 and 40 seconds while the report is still waiting, using the same
 email alias, sticky proxy identity, and persisted Discord session. Resends never extend the
@@ -280,7 +290,7 @@ Common request fields:
 | `flow` | yes | `user_urf`, `message_urf`, or `guild_urf` |
 | `reportType` | yes | Current semantic type listed in section 7 |
 | `submitterDiscordUserId` | bot: yes | Interaction user's 15-22 digit snowflake |
-| `context` | no | Non-empty when present; maximum 4,000 characters |
+| `context` | no | Final reviewed report text; non-empty when present; maximum 512 characters |
 | `reporterUsername` | no | Organization's Discord username; maximum 100 characters |
 
 Identity fields such as `name`, `legalName`, `email`, `reporterLegalName`, and
@@ -324,6 +334,7 @@ or `@me`, channel IDs, and message IDs are accepted in the appropriate positions
     "username": "reported-user",
     "globalDisplayName": "Reported Display Name",
     "avatarUrl": "https://cdn.discordapp.com/avatars/123456789012345678/example.png",
+    "bannerUrl": "https://cdn.discordapp.com/banners/123456789012345678/example.png",
     "bot": false,
     "resolvedAt": "2026-07-20T12:00:00.000Z"
   },
@@ -344,10 +355,10 @@ descriptors
 `reportedUserServerId` is optional and, when supplied, must be a 15-22 digit Discord
 snowflake.
 
-`reportedUserId` and `reportedUserSnapshot` are optional, immutable evidence captured by the
-bot after the user confirms a snowflake-shaped target as an account. The snapshot user ID must
-match `reportedUserId`. `reportedUsername` remains the value submitted to Discord's DSA form.
-Name-only reports omit the ID and snapshot.
+New profile-report requests require `reportedUserId` and `reportedUserSnapshot`. The snapshot user
+ID and username must match `reportedUserId` and `reportedUsername`. `reportedUsername` remains the
+value submitted to Discord's DSA form. Historical report responses may omit the ID or snapshot
+because reports created under the former name-only contract remain readable.
 
 #### Server report
 
@@ -486,7 +497,7 @@ Content-Type: application/json
 }
 ```
 
-The backend verifies ownership, leaves the failed report immutable, and returns a new report with
+The backend verifies ownership, leaves ordinary failed report attempts immutable, and returns a new report with
 a new `internalReportId`, pseudonym, catch-all email alias, sticky proxy session, database row, and
 timeline. `retryOfReportId` links the successor to the failed report and `retriedAsReportId` links
 the failed report forward to its successor, while `retrySequence` enforces
@@ -505,7 +516,9 @@ report.submitterDiscordUserId === interaction.user.id
 report.retrySequence < 2
 ```
 
-Final-submission failures and ambiguous outcomes are deliberately non-retryable.
+Ambiguous final-submission outcomes are deliberately non-retryable. The explicit
+`discord_receipt_timeout` state is the exception: Discord returned a report ID, but no receipt
+email arrived within two minutes, so the API exposes a user-requested new-lifecycle retry.
 
 ## 7. Current report types
 
@@ -592,6 +605,7 @@ Common classes:
 | `discord_network_error` | A temporary proxy or network failure prevented contact with Discord |
 | `report_processing_failed` | Network, proxy, menu, parsing, or local processing failed |
 | `verification_email_timeout` | Discord's verification email did not arrive within 60 seconds |
+| `discord_receipt_timeout` | Discord returned a report ID but did not confirm receipt within 120 seconds |
 | `ambiguous_submission_state` | Worker stopped during verification/submission; manual review required |
 
 Use `retryable` as the authority. Do not infer retry safety from the text or HTTP number.
@@ -601,9 +615,9 @@ Use `retryable` as the authority. Do not infer retry safety from the text or HTT
 Implemented user-installed app commands:
 
 ```text
-/report message [message-link]
+/report message message-link [country]
 /report profile target [server-id] [country]
-/report server [server-or-invite]
+/report server [server-or-invite] [country]
 /reports status report-id
 /reports list
 /reports retry report-id
@@ -613,9 +627,33 @@ Implemented user-installed app commands:
 Apps -> Report Message
 ```
 
-The profile `target` accepts only a current Discord username or raw user ID. Display names and
-mentions are rejected. A snowflake-shaped value is resolved first, then the user explicitly chooses
-whether it represents the resolved account or a numeric username.
+The profile `target` accepts only a 15-22 digit raw Discord user ID. Usernames, display names, and
+mentions are rejected. The bot resolves the ID and shows the account for confirmation before
+opening the report form.
+
+`/settings country` and each report country option accept `AUTO` or a code returned by
+`/v1/countries`. An explicit report option wins over the saved default; a missing or `NULL` saved
+default means Auto. Auto uses Grok to select one supported code based on conduct and legal
+relevance, never guessed location.
+
+The bot asks for a short explanation and sends the report category, selected elements, supported
+country names/codes, reporter text, resolved evidence, and applicable images to one combined
+Auto-country/legal-research request using OpenRouter's `openrouter:web_search` server tool. It
+prefers one search but allows up to three and uses standard result settings without a domain list.
+The final maximum-512-character text must contain a research-supported inline `[law and provision]`
+citation; no separate sources section is shown.
+
+Refine continues the encrypted conversation and may search up to twice only when new legal facts
+or an Auto-country reassessment are needed. Repair continues the same conversation without search
+and receives one attempt. Regenerate reruns combined research, and changing country clears the
+conversation. Writing/refinement reasoning defaults to `medium` and is configurable through
+`OPENROUTER_WRITER_REASONING_EFFORT`.
+
+Only the resolved ISO country and final reviewed text cross the bot-to-API boundary, so the public
+create-report request remains unchanged. Message content, author details, embed summaries,
+attachments, country-selection reasoning, sources, research, and conversation remain only in the
+encrypted, expiring bot draft. OpenRouter usage is accumulated per bot user without storing or
+logging any AI content.
 
 The app is registered globally with `USER_INSTALL` only. Admin key/user commands are
 documented in [`BOT_IMPLEMENTATION.md`](BOT_IMPLEMENTATION.md). The bot stores access,

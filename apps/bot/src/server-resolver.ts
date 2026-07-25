@@ -41,6 +41,9 @@ export class ServerResolver {
         name: currentGuild.name,
         description: currentGuild.description,
         iconUrl: currentGuild.iconURL(),
+        bannerUrl: currentGuild.bannerURL(),
+        inviteSplashUrl: currentGuild.splashURL(),
+        discoverySplashUrl: currentGuild.discoverySplashURL(),
         approximateMemberCount: currentGuild.memberCount,
         approximatePresenceCount: currentGuild.approximatePresenceCount ?? null
       });
@@ -54,6 +57,9 @@ export class ServerResolver {
         name: invite.guild.name,
         description: invite.guild.description,
         iconUrl: invite.guild.iconURL(),
+        bannerUrl: invite.guild.bannerURL(),
+        inviteSplashUrl: invite.guild.splashURL(),
+        discoverySplashUrl: null,
         approximateMemberCount: invite.memberCount,
         approximatePresenceCount: invite.presenceCount
       });
@@ -67,6 +73,9 @@ export class ServerResolver {
         name: guild.name,
         description: guild.description,
         iconUrl: guild.iconURL(),
+        bannerUrl: guild.bannerURL(),
+        inviteSplashUrl: guild.splashURL(),
+        discoverySplashUrl: guild.discoverySplashURL(),
         approximateMemberCount: guild.memberCount,
         approximatePresenceCount: guild.approximatePresenceCount ?? null
       });
@@ -79,6 +88,9 @@ export class ServerResolver {
       name: preview.name,
       description: preview.description,
       iconUrl: preview.iconURL(),
+      bannerUrl: null,
+      inviteSplashUrl: preview.splashURL(),
+      discoverySplashUrl: preview.discoverySplashURL(),
       approximateMemberCount: preview.approximateMemberCount,
       approximatePresenceCount: preview.approximatePresenceCount
     });

@@ -18,6 +18,7 @@ export type ReportStatus =
 export const MAX_LIFECYCLE_ATTEMPTS = 3;
 export const VERIFICATION_EMAIL_TIMEOUT_SECONDS = 60;
 export const VERIFICATION_EMAIL_RESEND_DELAYS_SECONDS = [20, 40] as const;
+export const DISCORD_RECEIPT_TIMEOUT_SECONDS = 120;
 
 export function statusAfterSessionPersistence(current: ReportStatus): ReportStatus {
   return current === "verification_received" ? current : "awaiting_verification";
@@ -32,6 +33,18 @@ export function shouldResendVerification(
     report.session_state !== null &&
     report.verification_deadline !== null &&
     report.verification_deadline.getTime() > now.getTime()
+  );
+}
+
+export function shouldExpireDiscordReceipt(
+  report: Pick<ReportRow, "status" | "discord_status" | "receipt_deadline">,
+  now = new Date()
+): boolean {
+  return (
+    report.status === "submitted" &&
+    report.discord_status === null &&
+    report.receipt_deadline !== null &&
+    report.receipt_deadline.getTime() <= now.getTime()
   );
 }
 
@@ -79,6 +92,7 @@ export interface ReportRow extends QueryResultRow {
   retried_as_report_id: string | null;
   retry_sequence: number;
   verification_deadline: Date | null;
+  receipt_deadline: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -196,6 +210,7 @@ CREATE TABLE IF NOT EXISTS reports (
   retried_as_report_id text REFERENCES reports(id),
   retry_sequence integer NOT NULL DEFAULT 0,
   verification_deadline timestamptz,
+  receipt_deadline timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -268,6 +283,7 @@ ALTER TABLE reports ADD COLUMN IF NOT EXISTS retry_of_report_id text REFERENCES 
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS retried_as_report_id text REFERENCES reports(id);
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS retry_sequence integer NOT NULL DEFAULT 0;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS verification_deadline timestamptz;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS receipt_deadline timestamptz;
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_report_id text;
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_status text;
 
@@ -278,6 +294,8 @@ CREATE INDEX IF NOT EXISTS reports_submitter_idx
   ON reports(submitter_discord_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS reports_verification_deadline_idx
   ON reports(verification_deadline) WHERE status = 'awaiting_verification';
+CREATE INDEX IF NOT EXISTS reports_receipt_deadline_idx
+  ON reports(receipt_deadline) WHERE status = 'submitted' AND discord_status IS NULL;
 
 UPDATE reports
 SET retry_sequence = lifecycle_attempt - 1
@@ -286,6 +304,14 @@ WHERE retry_sequence = 0 AND lifecycle_attempt > 1;
 UPDATE reports
 SET verification_deadline = updated_at + interval '60 seconds'
 WHERE status = 'awaiting_verification' AND verification_deadline IS NULL;
+
+UPDATE reports
+SET receipt_deadline = updated_at + interval '120 seconds'
+WHERE status = 'submitted' AND discord_status IS NULL AND receipt_deadline IS NULL;
+
+UPDATE reports
+SET receipt_deadline = NULL
+WHERE discord_status IS NOT NULL AND receipt_deadline IS NOT NULL;
 
 UPDATE reports
 SET retryable = false
@@ -727,6 +753,46 @@ export class Database {
     }
   }
 
+  public async expireDiscordReceiptWaits(): Promise<string[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const expired = await client.query<ReportRow>(
+        `SELECT * FROM reports
+         WHERE status = 'submitted'
+           AND discord_status IS NULL
+           AND receipt_deadline IS NOT NULL
+           AND receipt_deadline <= now()
+         ORDER BY receipt_deadline
+         FOR UPDATE SKIP LOCKED`
+      );
+      for (const report of expired.rows) {
+        const retryable = report.retry_sequence < MAX_LIFECYCLE_ATTEMPTS - 1;
+        await client.query(
+          `UPDATE reports
+           SET status = 'failed', error_code = 'discord_receipt_timeout',
+               error_message = 'Discord did not confirm receipt within 2 minutes.',
+               retryable = $2, failure_stage = 'submitted',
+               receipt_deadline = NULL, updated_at = now()
+           WHERE id = $1`,
+          [report.id, retryable]
+        );
+        await this.event(client, report.id, "report_failed", {
+          errorCode: "discord_receipt_timeout",
+          failureStage: "submitted",
+          retryable
+        });
+      }
+      await client.query("COMMIT");
+      return expired.rows.map((report) => report.id);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   public async registerVerificationEmail(input: {
     messageId: string;
     recipient: string;
@@ -835,10 +901,23 @@ export class Database {
         await client.query("COMMIT");
         return { status: "accepted", reportId: report.id };
       }
+      if (report.error_code === "discord_receipt_timeout") {
+        await client.query(
+          `UPDATE reports
+           SET status = 'submitted', error_code = NULL, error_message = NULL,
+               retryable = false, failure_stage = NULL, receipt_deadline = NULL,
+               updated_at = now()
+           WHERE id = $1`,
+          [report.id]
+        );
+        await this.event(client, report.id, "report_receipt_recovered", {
+          discordStatus: input.discordStatus
+        });
+      }
       await client.query(
         `UPDATE reports
          SET discord_status = $2,
-             discord_status_updated_at = now(), updated_at = now()
+             discord_status_updated_at = now(), receipt_deadline = NULL, updated_at = now()
          WHERE id = $1`,
         [report.id, input.discordStatus]
       );
@@ -1048,10 +1127,11 @@ export class Database {
         `UPDATE reports
          SET status = 'submitted', discord_report_id = $2, session_state = NULL,
              verification_deadline = NULL,
+             receipt_deadline = now() + ($3 * interval '1 second'),
              error_code = NULL, error_message = NULL, retryable = false,
              failure_stage = NULL, updated_at = now()
          WHERE id = $1`,
-        [reportId, discordReportId]
+        [reportId, discordReportId, DISCORD_RECEIPT_TIMEOUT_SECONDS]
       );
       await this.event(client, reportId, "report_submitted", { discordReportId });
       const pending = await client.query<{ external_status: DiscordReportStatus }>(
@@ -1068,7 +1148,8 @@ export class Database {
       if (pendingStatus !== undefined) {
         await client.query(
           `UPDATE reports
-           SET discord_status = $2, discord_status_updated_at = now(), updated_at = now()
+           SET discord_status = $2, discord_status_updated_at = now(),
+               receipt_deadline = NULL, updated_at = now()
            WHERE id = $1`,
           [reportId, pendingStatus]
         );

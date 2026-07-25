@@ -127,6 +127,11 @@ function optionalReportedUserSnapshot(
   if (avatarUrl !== null && !/^https:\/\//i.test(avatarUrl)) {
     throw new Error("reportedUserSnapshot.avatarUrl must be an HTTPS URL.");
   }
+  const bannerValue = value.bannerUrl;
+  const bannerUrl = bannerValue === null ? null : requiredString(value, "bannerUrl", 500);
+  if (bannerUrl !== null && !/^https:\/\//i.test(bannerUrl)) {
+    throw new Error("reportedUserSnapshot.bannerUrl must be an HTTPS URL.");
+  }
   if (typeof value.bot !== "boolean") {
     throw new Error("reportedUserSnapshot.bot must be a boolean.");
   }
@@ -140,6 +145,7 @@ function optionalReportedUserSnapshot(
     globalDisplayName,
     ...(serverDisplayName === undefined ? {} : { serverDisplayName }),
     avatarUrl,
+    bannerUrl,
     bot: value.bot,
     resolvedAt
   };
@@ -172,7 +178,7 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
   ) {
     throw new Error("submitterDiscordUserId must be a Discord snowflake.");
   }
-  const context = optionalString(input, "context", 4_000);
+  const context = optionalString(input, "context", 512);
   const reporterUsername = optionalString(input, "reporterUsername", 100);
   const base = {
     country,
@@ -192,13 +198,19 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
   }
   if (flow === "user_urf") {
     const reportedUsername = requiredString(input, "reportedUsername", 100);
-    const reportedUserId = optionalString(input, "reportedUserId", 22);
-    if (reportedUserId !== undefined && !/^\d{15,22}$/.test(reportedUserId)) {
+    const reportedUserId = requiredString(input, "reportedUserId", 22);
+    if (!/^\d{15,22}$/.test(reportedUserId)) {
       throw new Error("reportedUserId must be a Discord snowflake.");
     }
     const reportedUserSnapshot = optionalReportedUserSnapshot(input);
-    if (reportedUserSnapshot !== undefined && reportedUserSnapshot.userId !== reportedUserId) {
+    if (reportedUserSnapshot === undefined) {
+      throw new Error("reportedUserSnapshot is required.");
+    }
+    if (reportedUserSnapshot.userId !== reportedUserId) {
       throw new Error("reportedUserSnapshot.userId must match reportedUserId.");
+    }
+    if (reportedUserSnapshot.username !== reportedUsername) {
+      throw new Error("reportedUserSnapshot.username must match reportedUsername.");
     }
     const reportedUserServerId = optionalString(input, "reportedUserServerId", 32);
     if (reportedUserServerId !== undefined && !/^\d{15,22}$/.test(reportedUserServerId)) {
@@ -208,8 +220,8 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
       ...base,
       flow,
       reportedUsername,
-      ...(reportedUserId === undefined ? {} : { reportedUserId }),
-      ...(reportedUserSnapshot === undefined ? {} : { reportedUserSnapshot }),
+      reportedUserId,
+      reportedUserSnapshot,
       ...(reportedUserServerId === undefined ? {} : { reportedUserServerId }),
       profileElements: stringArray(input, "profileElements", PROFILE_ELEMENTS)
     };

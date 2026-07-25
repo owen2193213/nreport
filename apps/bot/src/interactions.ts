@@ -38,7 +38,8 @@ import {
 import type { ProfileResolver } from "./profile-resolver.js";
 import {
   initialWriterPrompt,
-  reportHasSupportedCitation
+  reportHasLawReference,
+  ReportWriterError
 } from "./report-writer.js";
 import type { ReportWriter } from "./report-writer.js";
 import type { ServerResolver } from "./server-resolver.js";
@@ -84,9 +85,14 @@ export interface InteractionHandlerOptions {
   serverResolver: ServerResolver;
 }
 
-function conciseError(error: unknown): string {
-  if (error instanceof AccessError || error instanceof DsaApiError) return error.message;
-  if (error instanceof Error) return error.message;
+export function conciseError(error: unknown): string {
+  if (
+    error instanceof AccessError ||
+    error instanceof DsaApiError ||
+    error instanceof ReportWriterError
+  ) {
+    return error.message;
+  }
   return "An unexpected error occurred.";
 }
 
@@ -653,10 +659,10 @@ export class InteractionHandler {
       if (!report || report.length > 512) {
         throw new AccessError("invalid_report_text", "The final report must contain 1 to 512 characters.");
       }
-      if (!draft.legalResearch || !reportHasSupportedCitation(report, draft.legalResearch)) {
+      if (!draft.legalResearch || !reportHasLawReference(report, draft.legalResearch)) {
         throw new AccessError(
-          "missing_law_citation",
-          "The final report must retain an inline [law and provision] citation."
+          "missing_law_reference",
+          "The final report must retain the researched law or provision."
         );
       }
       draft.context = report;
@@ -777,7 +783,7 @@ export class InteractionHandler {
       embeds: [
         infoEmbed(
           "Researching new country",
-          "Grok is finding an official legal source and rewriting the report."
+          "Grok is researching a relevant law and rewriting the report."
         )
       ],
       components: []

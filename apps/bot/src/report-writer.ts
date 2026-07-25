@@ -15,7 +15,6 @@ const MAX_REPORT_LENGTH = 512;
 const WORKFLOW_TIMEOUT_MS = 90_000;
 const REQUEST_TIMEOUT_MS = 45_000;
 const MAX_RESEARCH_SUMMARY_LENGTH = 6_000;
-const INLINE_CITATION = /\[([^\]\r\n]{4,160})\]/;
 const WRITER_SYSTEM_PROMPT = [
   "Task: Write or revise a concise, factual EU Digital Services Act report for Discord.",
   "Use the supplied conversation, evidence, and research.",
@@ -75,6 +74,7 @@ interface OpenRouterResult {
 
 interface ResearchCompletion {
   country: string;
+  lawReference: string;
   researchSummary: string;
 }
 
@@ -202,18 +202,21 @@ function researchPrompt(draft: ReportDraft, countries: readonly string[]): strin
     "Prefer one web search. Search again only if results are insufficient, conflicting, or another supported country may have a clearly stronger legal basis.",
     "Base an Auto country on legal evidence, not anyone's presumed location.",
     "Identify a relevant law and provision, but do not claim that a violation definitely occurred.",
-    "Return the selected country and a short grounded research summary."
+    "Return the selected country, a short exact lawReference suitable for natural use in the report, and a concise research summary."
   ].join("\n");
 }
 
 export function initialWriterPrompt(): string {
   return [
     "Task: Write the final Discord DSA report from the preceding evidence and legal research.",
-    "Write in neutral, factual language.",
-    "Use only the supplied facts.",
+    "Use this adaptable structure: I am reporting [target or content] because [observed fact or quoted term]. This means or suggests [brief contextual explanation] and may be harmful because [specific impact]. This may conflict with Discord's Community Guidelines and [specific law or provision], which addresses [brief legal relevance]. I request review, removal where appropriate, and suitable enforcement action.",
+    "Adapt the structure naturally for any username, profile, message, server, image, attachment, or other reported element. Omit clauses that do not apply and do not copy the template mechanically.",
+    "Style example 1: I am reporting the user \"Femboy6767\" for inappropriate content. The username contains the term \"femboy,\" which commonly refers to a male presenting in a feminine manner and is frequently associated online with gender identity and sexualized communities. This conflicts with Hungarian Act XXXI of 1997, as amended in 2021, restricting minors' exposure to certain content relating to gender identity, and violates Discord Community Guidelines on age-appropriate content. I request review & removal of the username.",
+    "Style example 2: I am reporting the username \"usrname\" because it contains hate-based language targeting a protected group, which is abusive and degrading. This violates Discord's Community Guidelines and §130 StGB (Volksverhetzung), which prohibits incitement of hatred and attacks on human dignity. The username normalizes discriminatory abuse and creates a hostile environment. I request removal of the username and appropriate enforcement action.",
+    "The examples demonstrate tone and organization only. Never reuse their names, terms, facts, countries, laws, or conclusions unless the supplied evidence and research independently support them.",
+    "Write in neutral, factual language and use only the supplied facts.",
     "Keep the report at 512 characters or fewer.",
-    "Include the relevant law and provision inline in square brackets, copied exactly from the research summary or cited source title.",
-    "Do not add a separate sources section.",
+    "Name the supplied lawReference naturally in the report. Do not add a URL, brackets, footnote, or separate sources section.",
     "Do not state that a violation definitely occurred.",
     "Do not mention AI."
   ].join("\n");
@@ -225,7 +228,7 @@ function refinementPrompt(draft: ReportDraft, instruction: string): string {
     "Task: Refine the current report using the user's latest instruction.",
     `Instruction: ${instruction.trim()}`,
     "Preserve the established facts and conversational context.",
-    "Keep the report at 512 characters or fewer with an applicable inline [law and provision] citation.",
+    "Keep the report at 512 characters or fewer and retain the applicable lawReference naturally in the text.",
     "Use web search only if the instruction needs new legal facts, challenges the current country, or makes the existing research insufficient.",
     fixed
       ? `The selected country ${draft.country ?? ""} is fixed and must not change.`
@@ -240,7 +243,7 @@ function repairPrompt(problem: string): string {
     `Problems detected: ${problem}`,
     "Preserve the conversation's facts, selected country, research, and user instructions.",
     "Return a valid report of no more than 512 characters.",
-    "Include the relevant law and provision inline in square brackets, copied exactly from the research summary or cited source title."
+    "Retain the researched lawReference naturally in the report without requiring brackets or a URL."
   ].join("\n");
 }
 
@@ -262,32 +265,34 @@ function parsedResearch(
 ): ResearchCompletion {
   const value = parseJsonObject(content);
   const country = typeof value.country === "string" ? value.country.trim().toUpperCase() : "";
+  const lawReference =
+    typeof value.lawReference === "string" ? value.lawReference.trim() : "";
   const researchSummary =
     typeof value.researchSummary === "string" ? value.researchSummary.trim() : "";
-  if (!country || !researchSummary || !supportedCountries.includes(country)) {
+  if (
+    !country ||
+    !lawReference ||
+    lawReference.length > 160 ||
+    !researchSummary ||
+    !supportedCountries.includes(country)
+  ) {
     throw new ReportWriterError(
-      "Grok could not produce grounded research for a supported country. Retry or choose a country override."
+      "Grok could not produce usable legal research for a supported country. Retry or choose a country override."
     );
   }
   if (draft.countrySelection !== "auto" && draft.country !== country) {
     throw new ReportWriterError("Grok changed a fixed country. Retry the research.");
   }
-  return { country, researchSummary };
+  return { country, lawReference, researchSummary };
 }
 
-function inlineCitation(report: string): string | null {
-  return INLINE_CITATION.exec(report)?.[1]?.trim() ?? null;
-}
-
-export function reportHasSupportedCitation(
+export function reportHasLawReference(
   report: string,
   research: LegalResearch
 ): boolean {
-  const citation = inlineCitation(report)?.toLocaleLowerCase("en");
-  if (!citation) return false;
-  return [research.summary, ...research.sources.map((source) => source.title)].some((value) =>
-    value.toLocaleLowerCase("en").includes(citation)
-  );
+  const lawReference = research.lawReference?.trim();
+  if (!lawReference) return true;
+  return report.toLocaleLowerCase("en").includes(lawReference.toLocaleLowerCase("en"));
 }
 
 function parsedReport(content: unknown, research: LegalResearch): string {
@@ -297,8 +302,8 @@ function parsedReport(content: unknown, research: LegalResearch): string {
   if (report.length > MAX_REPORT_LENGTH) {
     throw new ReportWriterError("The AI report exceeded 512 characters.");
   }
-  if (!reportHasSupportedCitation(report, research)) {
-    throw new ReportWriterError("The AI report did not include a supported inline legal citation.");
+  if (!reportHasLawReference(report, research)) {
+    throw new ReportWriterError("The AI report did not name the researched law or provision.");
   }
   return report;
 }
@@ -405,6 +410,7 @@ export class ReportWriter {
   public async generate(draft: ReportDraft, actor: AiRequestContext): Promise<WriterResult> {
     const deadline = Date.now() + WORKFLOW_TIMEOUT_MS;
     const images = selectedImages(draft);
+    this.logWorkflowStarted(draft, images, actor, "generate");
     const researchUserPrompt = researchPrompt(draft, this.supportedCountries);
     const researchResult = await this.requestResearch(
       researchUserPrompt,
@@ -418,13 +424,9 @@ export class ReportWriter {
       this.supportedCountries
     );
     const sources = validatedSources(researchResult.message);
-    if (researchResult.usage.searchRequests < 1 || sources.length === 0) {
-      throw new ReportWriterError(
-        "Legal research did not return a grounded HTTPS citation. Retry the research."
-      );
-    }
     const legalResearch: LegalResearch = {
       country: research.country,
+      lawReference: research.lawReference,
       summary: research.researchSummary.slice(0, MAX_RESEARCH_SUMMARY_LENGTH),
       sources,
       researchedAt: new Date().toISOString(),
@@ -463,6 +465,8 @@ export class ReportWriter {
       throw new ReportWriterError("This report has no verified AI conversation to refine.");
     }
     const deadline = Date.now() + WORKFLOW_TIMEOUT_MS;
+    const images = selectedImages(draft);
+    this.logWorkflowStarted(draft, images, actor, "refine");
     const conversation = [
       ...draft.writerConversation,
       { role: "user" as const, content: refinementPrompt(draft, instruction) }
@@ -472,7 +476,7 @@ export class ReportWriter {
         model: this.model,
         messages: this.multimodalMessages(
           [{ role: "system", content: WRITER_SYSTEM_PROMPT }, ...conversation],
-          selectedImages(draft)
+          images
         ),
         max_tokens: 900,
         max_tool_calls: 2,
@@ -482,10 +486,11 @@ export class ReportWriter {
           "discord_dsa_report_refinement",
           {
             country: { type: "string" },
+            lawReference: { type: "string" },
             researchSummary: { type: "string" },
             report: { type: "string" }
           },
-          ["country", "researchSummary", "report"]
+          ["country", "lawReference", "researchSummary", "report"]
         ),
         provider: this.provider()
       },
@@ -495,10 +500,9 @@ export class ReportWriter {
     );
     const searchedSources = validatedSources(result.message);
     const sources =
-      result.usage.searchRequests > 0 ? searchedSources : draft.legalResearch.sources;
-    if (result.usage.searchRequests > 0 && sources.length === 0) {
-      throw new ReportWriterError("Refinement research did not return a grounded HTTPS citation.");
-    }
+      result.usage.searchRequests > 0 && searchedSources.length > 0
+        ? searchedSources
+        : draft.legalResearch.sources;
     const completion = parsedRefinement(
       result.message.content,
       draft,
@@ -510,8 +514,12 @@ export class ReportWriter {
     const summary = searched
       ? completion.researchSummary.slice(0, MAX_RESEARCH_SUMMARY_LENGTH)
       : draft.legalResearch.summary;
+    const lawReference = searched
+      ? completion.lawReference
+      : draft.legalResearch.lawReference ?? completion.lawReference;
     const legalResearch: LegalResearch = {
       country,
+      lawReference,
       summary,
       sources,
       researchedAt:
@@ -533,6 +541,16 @@ export class ReportWriter {
       report = parsedReport(JSON.stringify({ report: completion.report }), legalResearch);
     } catch (error) {
       const problem = error instanceof Error ? error.message : "invalid refined report";
+      botLog(
+        "ai_output_validation_failed",
+        {
+          actorKey: actor.actorKey,
+          outputLength: completion.report.length,
+          stage: "refine",
+          validationIssue: problem
+        },
+        "warn"
+      );
       const repairConversation = [
         ...responseConversation,
         { role: "user" as const, content: repairPrompt(problem) }
@@ -595,9 +613,10 @@ export class ReportWriter {
           "discord_dsa_country_research",
           {
             country: { type: "string" },
+            lawReference: { type: "string" },
             researchSummary: { type: "string" }
           },
-          ["country", "researchSummary"]
+          ["country", "lawReference", "researchSummary"]
         ),
         provider: this.provider()
       },
@@ -630,6 +649,16 @@ export class ReportWriter {
       };
     } catch (error) {
       const problem = error instanceof Error ? error.message : "invalid report output";
+      botLog(
+        "ai_output_validation_failed",
+        {
+          actorKey: actor.actorKey,
+          outputLength: safeAssistantContent(first.message.content).length,
+          stage,
+          validationIssue: problem
+        },
+        "warn"
+      );
       currentConversation = [
         ...currentConversation,
         { role: "user", content: repairPrompt(problem) }
@@ -801,7 +830,9 @@ export class ReportWriter {
       latencyMs: Date.now() - startedAt,
       model: this.model,
       outputTokens: usage.outputTokens,
+      requestLength: JSON.stringify(body).length,
       reasoningTokens: usage.reasoningTokens,
+      responseLength: safeAssistantContent(message.content).length,
       searchRequests: usage.searchRequests,
       stage
     });
@@ -827,5 +858,26 @@ export class ReportWriter {
       },
       "warn"
     );
+  }
+
+  private logWorkflowStarted(
+    draft: ReportDraft,
+    images: SelectedImage[],
+    actor: AiRequestContext,
+    action: "generate" | "refine"
+  ): void {
+    botLog("ai_workflow_started", {
+      action,
+      actorKey: actor.actorKey,
+      attachmentCount: draft.messageSnapshot?.attachments.length ?? 0,
+      country: draft.country ?? null,
+      countryMode: draft.countrySelection ?? (draft.country ? "override" : "auto"),
+      evidenceLength: JSON.stringify(targetEvidence(draft)).length,
+      flow: draft.flow,
+      imageCount: images.length,
+      reportBriefLength: draft.reportBrief?.length ?? 0,
+      reportType: draft.reportType ?? null,
+      selectedElements: selectedElements(draft).join(",") || "none"
+    });
   }
 }

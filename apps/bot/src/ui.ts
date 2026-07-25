@@ -23,7 +23,7 @@ import {
 
 import type { AccessKeyView } from "./database.js";
 import { countryDisplay } from "./countries.js";
-import { reportHasSupportedCitation } from "./report-writer.js";
+import { reportHasLawReference } from "./report-writer.js";
 import type { AccessView, ReportDraft, ServerSnapshot } from "./types.js";
 
 const FLOW_LABELS: Record<ReportFlow, string> = {
@@ -284,7 +284,7 @@ export function buildManualReportModal(draftId: string, draft: ReportDraft): Mod
       textLabel({
         customId: "report_text",
         label: "Final report",
-        description: "Maximum 512 characters. Keep an inline [law and provision] citation.",
+        description: "Maximum 512 characters. Keep the researched law or provision in the text.",
         style: TextInputStyle.Paragraph,
         minLength: 1,
         maxLength: 512,
@@ -557,7 +557,7 @@ export function draftToCreateInput(draft: ReportDraft, userId: string): CreateRe
     !draft.reportType ||
     !draft.context ||
     !draft.legalResearch ||
-    !reportHasSupportedCitation(draft.context, draft.legalResearch)
+    !reportHasLawReference(draft.context, draft.legalResearch)
   ) {
     throw new Error("Report draft is incomplete.");
   }

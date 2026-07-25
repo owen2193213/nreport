@@ -6,10 +6,11 @@ const MESSAGE_URL =
   /^https:\/\/(?:www\.)?discord\.com\/channels\/(?:@me|\d+)\/(\d+)\/(\d+)$/;
 
 export function snapshotMessage(message: Message): MessageSnapshot {
+  const channel = message.channel;
   return {
     messageId: message.id,
     channelId: message.channelId,
-    channelName: "name" in message.channel ? message.channel.name : null,
+    channelName: channel && "name" in channel ? channel.name : null,
     serverId: message.guildId,
     serverName: message.guild?.name ?? null,
     authorId: message.author.id,

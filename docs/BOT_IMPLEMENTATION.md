@@ -51,8 +51,8 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
    confirmation before collecting the report details; unresolved IDs can be retried or cancelled.
 4. Encrypt the draft and its OpenRouter conversation at rest with a 30-minute expiry.
 5. In one multimodal OpenRouter request, resolve Auto when needed and research a supporting law.
-   Then ask `x-ai/grok-4.5` to write a factual report of at most 512 characters with an inline
-   `[law and provision]` citation. Show an ephemeral review with submit, refine, regenerate,
+   Then ask `x-ai/grok-4.5` to write a factual report of at most 512 characters that naturally
+   names the researched law or provision. Show an ephemeral review with submit, refine, regenerate,
    country-change, manual-edit, and cancel controls.
 6. Atomically reserve one credit and create the API report with the interaction ID.
 7. Consume the reservation after HTTP 202 or idempotent HTTP 200.
@@ -87,7 +87,8 @@ Every generation begins with one combined country-selection and legal-research r
 supported country names/codes, reporter explanation, resolved evidence, and selected images.
 The prompt prefers one search but allows up to three when results conflict or another supported
 country may have a stronger basis. Search uses OpenRouter's standard result settings with no
-domain or result-list filter. At least one searched HTTPS `url_citation` is still required.
+domain or result-list filter. OpenRouter search counts and URL annotations are retained when
+available but are not required for a usable result.
 
 The prompt contains the selected semantic reason, the reporter's brief, and only the useful
 resolved target data. Message reports include the accessible message content, author, timestamp,
@@ -100,14 +101,14 @@ elements are selected. Discord's supported bot API does not expose profile About
 bot does not claim or attempt to retrieve it.
 
 The review identifies whether the country was Auto-selected, a saved default, or a report
-override. The law and provision appear only inline in the 512-character report; the review does
-not add separate legal-basis or source fields.
+override. The researched law or provision appears naturally inside the 512-character report;
+brackets, URLs, footnotes, and separate source fields are not required.
 Changing country clears the AI conversation and research before running both again. Refine appends
 the instruction and result to the same encrypted conversation and reuses the existing research
 with optional web search when the requested change needs new legal facts or challenges Auto's
 country. Regenerate starts a new conversation and reruns combined research; Auto may choose a
 different country. Manual edits become the current assistant answer so a later refinement
-continues from that text, but the supported inline citation cannot be removed. Repair also
+continues from that text, but the researched law reference must remain. Repair also
 continues the same conversation, performs no search, and is attempted only once.
 
 Writing, refinement, and repair use OpenRouter reasoning with
@@ -116,15 +117,27 @@ Reasoning, input/output tokens, search requests, request counts, and OpenRouter-
 accumulated per user in `bot_users` and displayed by `/access status`. Safe logs use a keyed
 pseudonymous actor value plus stage, model, latency, usage, cost, and failure category.
 
-If a model result exceeds 512 characters or omits its law label, the bot asks once for a repair; a
-second invalid result is never silently truncated. Insufficient OpenRouter balance, rate limits,
-timeouts, malformed output, unsupported Auto countries, missing searched citations, and unsafe URLs
-use the safe AI failure screen. Retry, country override, detail editing, and cancel remain
+If a model result exceeds 512 characters or omits its law reference, the bot asks once for a repair;
+a second invalid result is never silently truncated. Insufficient OpenRouter balance, rate limits,
+timeouts, malformed output, unsupported Auto countries, and unusable legal research use the safe
+AI failure screen. Retry, country override, detail editing, and cancel remain
 available. Manual editing is offered only when the encrypted draft already has valid research.
 No report is created and no credit is reserved until valid reviewed text is submitted. Drafts hold
-the country choice, source title/URL, research summary, and conversation only until normal expiry.
-Logs may contain only pseudonymous actor keys and safe operational usage/failure fields, never raw
-user IDs, queries, sources, evidence, images, prompts, research, reports, or AI responses.
+the country choice, optional source annotations, research summary, and conversation only until
+normal expiry. Logs include pseudonymous actor keys, report flow/category, country mode, selected
+element names, evidence/image/attachment counts or lengths, request/response lengths, usage, cost,
+latency, and failure category. They never contain raw user IDs, queries, sources, evidence, images,
+prompts, research, reports, AI responses, or secrets.
+
+The initial writer prompt contains one generalized report structure plus two style examples. They
+appear once in the retained conversation and are explicitly examples of tone and organization,
+not reusable facts or legal conclusions. Refine and Repair append compact instructions to that
+same conversation instead of adding another copy of the examples.
+
+Message snapshots support ordinary text channels, threads, forum posts, Stage chat, voice-channel
+chat, and DMs. A context-menu message can have a valid channel ID while Discord.js has no hydrated
+channel object; in that case the snapshot stores a null channel name and preserves the remaining
+message evidence instead of failing.
 
 ## Access credits
 

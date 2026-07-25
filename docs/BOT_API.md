@@ -640,8 +640,9 @@ The bot asks for a short explanation and sends the report category, selected ele
 country names/codes, reporter text, resolved evidence, and applicable images to one combined
 Auto-country/legal-research request using OpenRouter's `openrouter:web_search` server tool. It
 prefers one search but allows up to three and uses standard result settings without a domain list.
-The final maximum-512-character text must contain a research-supported inline `[law and provision]`
-citation; no separate sources section is shown.
+The final maximum-512-character text must naturally name the structured research result's specific
+law or provision. Brackets, URLs, footnotes, OpenRouter URL annotations, and a separate sources
+section are not required.
 
 Refine continues the encrypted conversation and may search up to twice only when new legal facts
 or an Auto-country reassessment are needed. Repair continues the same conversation without search

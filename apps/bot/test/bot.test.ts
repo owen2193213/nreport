@@ -40,6 +40,7 @@ import {
   shouldNotifyLifecycleType
 } from "../src/database.js";
 import {
+  conciseError,
   InteractionHandler,
   reportCountryFields,
   shouldBypassReportCredits
@@ -119,6 +120,14 @@ function reportFixture(): ReportDetail {
     ]
   };
 }
+
+describe("interaction error messages", () => {
+  it("does not expose unexpected JavaScript exception text to users", () => {
+    expect(conciseError(new TypeError("Cannot use 'in' operator on null"))).toBe(
+      "An unexpected error occurred."
+    );
+  });
+});
 
 describe("Discord command registration", () => {
   it("synchronizes the complete global command set", async () => {
@@ -502,7 +511,7 @@ describe("report UI", () => {
     });
   });
 
-  it("blocks submission when a manual edit removes the verified law label", () => {
+  it("blocks submission when a manual edit removes the researched law reference", () => {
     expect(() =>
       draftToCreateInput(
         {
@@ -514,6 +523,7 @@ describe("report UI", () => {
           context: "The report no longer contains its legal basis.",
           legalResearch: {
             country: "DE",
+            lawReference: "Basic Law Article 1",
             summary: "Basic Law Article 1 protects human dignity.",
             sources: [
               {

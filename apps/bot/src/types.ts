@@ -39,6 +39,7 @@ export interface LegalSource {
 
 export interface LegalResearch {
   country: string;
+  lawReference?: string;
   summary: string;
   sources: LegalSource[];
   researchedAt: string;

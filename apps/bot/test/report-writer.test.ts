@@ -6,7 +6,7 @@ import type { AiUsage, ReportDraft } from "../src/types.js";
 
 const COUNTRIES = ["DE", "FR", "IE"] as const;
 const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
-const CITATION = "Basic Law Article 1";
+const LAW_REFERENCE = "Basic Law Article 1";
 
 function profileDraft(): ReportDraft {
   return {
@@ -66,7 +66,7 @@ function completion(
 function citationAnnotation(url = "https://example.gov/law"): unknown {
   return {
     type: "url_citation",
-    url_citation: { url, title: CITATION }
+    url_citation: { url, title: LAW_REFERENCE }
   };
 }
 
@@ -74,24 +74,28 @@ function researchCompletion(country = "DE"): Response {
   return completion(
     {
       country,
-      researchSummary: `${CITATION} protects human dignity.`
+      lawReference: LAW_REFERENCE,
+      researchSummary: `${LAW_REFERENCE} protects human dignity.`
     },
     { annotations: [citationAnnotation()], searchRequests: 1 }
   );
 }
 
-function reportCompletion(report = `[${CITATION}] The profile imagery may contain hate speech.`) {
+function reportCompletion(
+  report = `The profile imagery may contain hate speech under ${LAW_REFERENCE}.`
+) {
   return completion({ report });
 }
 
 function refinementCompletion(
-  report = `[${CITATION}] Refined report.`,
+  report = `${LAW_REFERENCE} may apply. Refined report.`,
   searchRequests = 0
 ): Response {
   return completion(
     {
       country: "DE",
-      researchSummary: `${CITATION} protects human dignity.`,
+      lawReference: LAW_REFERENCE,
+      researchSummary: `${LAW_REFERENCE} protects human dignity.`,
       report
     },
     {
@@ -175,44 +179,45 @@ describe("OpenRouter report writer", () => {
     );
   });
 
-  it("requires a searched HTTPS citation but accepts any HTTPS domain", async () => {
-    const noSearch = vi.fn().mockResolvedValueOnce(
+  it("accepts usable legal research without a search count or HTTPS annotation", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
       completion(
-        { country: "DE", researchSummary: `${CITATION} applies.` },
-        { annotations: [citationAnnotation()], searchRequests: 0 }
+          {
+            country: "DE",
+            lawReference: LAW_REFERENCE,
+            researchSummary: `${LAW_REFERENCE} applies.`
+          },
+          { annotations: [], searchRequests: 0 }
+        )
       )
-    );
-    await expect(fixedWriter(noSearch).generate(profileDraft(), ACTOR)).rejects.toThrow(
-      /grounded HTTPS citation/
-    );
-
-    const unsafe = vi.fn().mockResolvedValueOnce(
-      completion(
-        { country: "DE", researchSummary: `${CITATION} applies.` },
-        {
-          annotations: [citationAnnotation("http://example.com/law")],
-          searchRequests: 1
-        }
-      )
-    );
-    await expect(fixedWriter(unsafe).generate(profileDraft(), ACTOR)).rejects.toThrow(
-      /grounded HTTPS citation/
-    );
+      .mockResolvedValueOnce(reportCompletion());
+    const result = await fixedWriter(request).generate(profileDraft(), ACTOR);
+    expect(result.legalResearch.sources).toEqual([]);
+    expect(result.legalResearch.searchRequests).toBe(0);
   });
 
-  it("writes with configured medium reasoning and an inline citation", async () => {
+  it("writes with configured medium reasoning and a natural inline law reference", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion())
       .mockResolvedValueOnce(reportCompletion());
     const result = await fixedWriter(request).generate(profileDraft(), ACTOR);
-    expect(result.report).toContain(`[${CITATION}]`);
+    expect(result.report).toContain(LAW_REFERENCE);
     const writing = requestBody<{
       reasoning: { effort: string; exclude: boolean };
       response_format: unknown;
     }>(request, 1);
     expect(writing.reasoning).toEqual({ effort: "medium", exclude: true });
     expect(JSON.stringify(writing.response_format)).not.toContain("lawCitation");
+    const messages = JSON.stringify(
+      requestBody<{ messages: unknown[] }>(request, 1).messages
+    );
+    expect(messages).toContain("Style example 1");
+    expect(messages).toContain("Femboy6767");
+    expect(messages).toContain("Style example 2");
+    expect(messages).toContain("usrname");
   });
 
   it("refines in the same conversation and offers search only when needed", async () => {
@@ -252,8 +257,9 @@ describe("OpenRouter report writer", () => {
         completion(
           {
             country: "FR",
+            lawReference: "French Law Article 1",
             researchSummary: "French Law Article 1 applies.",
-            report: "[French Law Article 1] Revised report."
+            report: "French Law Article 1 may apply. Revised report."
           },
           {
             annotations: [
@@ -289,8 +295,10 @@ describe("OpenRouter report writer", () => {
       .fn()
       .mockResolvedValueOnce(researchCompletion())
       .mockResolvedValueOnce(reportCompletion())
-      .mockResolvedValueOnce(refinementCompletion("Missing its citation."))
-      .mockResolvedValueOnce(reportCompletion(`[${CITATION}] Repaired refinement.`));
+      .mockResolvedValueOnce(refinementCompletion("Missing its law reference."))
+      .mockResolvedValueOnce(
+        reportCompletion(`${LAW_REFERENCE} may apply. Repaired refinement.`)
+      );
     const writer = fixedWriter(request);
     const draft = profileDraft();
     const initial = await writer.generate(draft, ACTOR);
@@ -305,7 +313,7 @@ describe("OpenRouter report writer", () => {
     const repair = requestBody<{ messages: unknown[] }>(request, 3);
     const messages = JSON.stringify(repair.messages);
     expect(messages).toContain("Make it shorter.");
-    expect(messages).toContain("Missing its citation.");
+    expect(messages).toContain("Missing its law reference.");
     expect(messages).toContain("Task: Repair the current report.");
   });
 
@@ -313,12 +321,14 @@ describe("OpenRouter report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion())
-      .mockResolvedValueOnce(reportCompletion("No citation here."))
-      .mockResolvedValueOnce(reportCompletion(`[${CITATION}] Repaired report.`));
+      .mockResolvedValueOnce(reportCompletion("No law reference here."))
+      .mockResolvedValueOnce(
+        reportCompletion(`${LAW_REFERENCE} may apply. Repaired report.`)
+      );
     const result = await fixedWriter(request).generate(profileDraft(), ACTOR);
     expect(result.report).toContain("Repaired report");
     const repair = requestBody<{ messages: unknown[] }>(request, 2);
-    expect(JSON.stringify(repair.messages)).toContain("No citation here.");
+    expect(JSON.stringify(repair.messages)).toContain("No law reference here.");
     expect(JSON.stringify(repair.messages)).toContain("Task: Repair the current report.");
   });
 

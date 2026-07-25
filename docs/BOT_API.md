@@ -644,6 +644,11 @@ The final maximum-512-character text must naturally name the structured research
 law or provision. Brackets, URLs, footnotes, OpenRouter URL annotations, and a separate sources
 section are not required.
 
+AI media processing is temporarily disabled for all categories. The bot does not attach images,
+GIFs, videos, avatars, banners, server art, or media URLs to OpenRouter. It removes profile/server
+media URLs plus message attachment/embed URLs from AI evidence. Attachment names and content types
+may remain as text metadata.
+
 Refine continues the encrypted conversation and may search up to twice only when new legal facts
 or an Auto-country reassessment are needed. Repair continues the same conversation without search
 and receives one attempt. Regenerate reruns combined research, and changing country clears the

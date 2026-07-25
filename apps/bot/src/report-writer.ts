@@ -101,7 +101,12 @@ interface SelectedImage {
   url: string;
 }
 
+function mediaAllowed(): boolean {
+  return false;
+}
+
 function selectedImages(draft: ReportDraft): SelectedImage[] {
+  if (!mediaAllowed()) return [];
   const images: Array<{ label: string; url: string | null | undefined }> = [];
   if (draft.flow === "message_urf") {
     for (const attachment of draft.messageSnapshot?.attachments ?? []) {
@@ -151,8 +156,10 @@ function selectedElements(draft: ReportDraft): readonly string[] {
 }
 
 function targetEvidence(draft: ReportDraft): Record<string, unknown> {
+  const includeMedia = mediaAllowed();
   if (draft.flow === "user_urf") {
     const snapshot = draft.reportedUserSnapshot;
+    const includePhotos = includeMedia && draft.profileElements?.includes("photos");
     return {
       kind: "profile",
       discordUserId: snapshot?.userId,
@@ -160,22 +167,58 @@ function targetEvidence(draft: ReportDraft): Record<string, unknown> {
       globalDisplayName: snapshot?.globalDisplayName,
       serverDisplayName: snapshot?.serverDisplayName,
       bot: snapshot?.bot,
-      avatarUrl: snapshot?.avatarUrl,
-      bannerUrl: snapshot?.bannerUrl,
+      avatarUrl: includePhotos ? snapshot?.avatarUrl : undefined,
+      bannerUrl: includePhotos ? snapshot?.bannerUrl : undefined,
       observedServerId: draft.reportedUserServerId
     };
   }
   if (draft.flow === "guild_urf") {
+    const snapshot = draft.serverSnapshot;
     return {
       kind: "server",
       target: draft.guildIdOrInviteCode,
-      snapshot: draft.serverSnapshot
+      snapshot: snapshot
+        ? {
+            ...snapshot,
+            iconUrl:
+              includeMedia && draft.guildElements?.includes("icon")
+                ? snapshot.iconUrl
+                : undefined,
+            bannerUrl:
+              includeMedia && draft.guildElements?.includes("banner")
+                ? snapshot.bannerUrl
+                : undefined,
+            inviteSplashUrl:
+              includeMedia && draft.guildElements?.includes("invite_splash")
+                ? snapshot.inviteSplashUrl
+                : undefined,
+            discoverySplashUrl:
+              includeMedia && draft.guildElements?.includes("discovery_splash")
+                ? snapshot.discoverySplashUrl
+                : undefined
+          }
+        : undefined
     };
   }
+  const snapshot = draft.messageSnapshot;
   return {
     kind: "message",
     messageUrl: draft.messageUrl,
-    message: draft.messageSnapshot
+    message: snapshot
+      ? {
+          ...snapshot,
+          attachments: snapshot.attachments.map((attachment) => ({
+            name: attachment.name,
+            contentType: attachment.contentType,
+            ...(includeMedia ? { url: attachment.url } : {})
+          })),
+          embeds: snapshot.embeds.map((embed) => ({
+            title: embed.title,
+            description: embed.description,
+            ...(includeMedia ? { url: embed.url } : {})
+          }))
+        }
+      : undefined
   };
 }
 
@@ -875,6 +918,7 @@ export class ReportWriter {
       evidenceLength: JSON.stringify(targetEvidence(draft)).length,
       flow: draft.flow,
       imageCount: images.length,
+      mediaAllowed: mediaAllowed(),
       reportBriefLength: draft.reportBrief?.length ?? 0,
       reportType: draft.reportType ?? null,
       selectedElements: selectedElements(draft).join(",") || "none"

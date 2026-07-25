@@ -50,7 +50,7 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
    Profile targets accept only a raw Discord user ID. The bot resolves the account and requires
    confirmation before collecting the report details; unresolved IDs can be retried or cancelled.
 4. Encrypt the draft and its OpenRouter conversation at rest with a 30-minute expiry.
-5. In one multimodal OpenRouter request, resolve Auto when needed and research a supporting law.
+5. In one structured OpenRouter request, resolve Auto when needed and research a supporting law.
    Then ask `x-ai/grok-4.5` to write a factual report of at most 512 characters that naturally
    names the researched law or provision. Show an ephemeral review with submit, refine, regenerate,
    country-change, manual-edit, and cancel controls.
@@ -84,7 +84,7 @@ workflow is capped at 90 seconds.
 
 Every generation begins with one combined country-selection and legal-research request using the
 `openrouter:web_search` server tool. It receives the complete report category, selected elements,
-supported country names/codes, reporter explanation, resolved evidence, and selected images.
+supported country names/codes, reporter explanation, and resolved text evidence.
 The prompt prefers one search but allows up to three when results conflict or another supported
 country may have a stronger basis. Search uses OpenRouter's standard result settings with no
 domain or result-list filter. OpenRouter search counts and URL annotations are retained when
@@ -92,13 +92,19 @@ available but are not required for a usable result.
 
 The prompt contains the selected semantic reason, the reporter's brief, and only the useful
 resolved target data. Message reports include the accessible message content, author, timestamp,
-server/channel context, embed summary, and attachment metadata; image attachments are supplied as
-images. Link-based reports fall back to the link and brief when Discord does not allow the bot to
-fetch the message. Profile reports include the ID, usernames, display names, and bot status.
-When `photos` is selected, the bot supplies both the current avatar and banner when available.
-Server icon, banner, invite splash, and discovery splash URLs are supplied only when their matching
-elements are selected. Discord's supported bot API does not expose profile About Me text, so the
-bot does not claim or attempt to retrieve it.
+server/channel context, embed summary, and attachment names/content types. Link-based reports fall
+back to the link and brief when Discord does not allow the bot to fetch the message. Profile
+reports include the ID, usernames, display names, and bot status. Selecting profile photos or
+server media records the selected report element, but no media or media URL is sent to OpenRouter
+while processing is disabled. Discord's supported bot API does not expose profile About Me text,
+so the bot does not claim or attempt to retrieve it.
+
+AI media processing is temporarily disabled for every report category. No images, GIFs, videos,
+avatars, banners, server art, or attachment/embed media URLs are attached or included in
+OpenRouter requests. This prevents child-safety media, gore, and other potentially prohibited
+media from reaching the provider. Attachment names and content types may remain as factual text
+metadata. This is intentionally conservative even though OpenRouter supports multimodal inputs
+for compatible models.
 
 The review identifies whether the country was Auto-selected, a saved default, or a report
 override. The researched law or provision appears naturally inside the 512-character report;
@@ -126,8 +132,8 @@ No report is created and no credit is reserved until valid reviewed text is subm
 the country choice, optional source annotations, research summary, and conversation only until
 normal expiry. Logs include pseudonymous actor keys, report flow/category, country mode, selected
 element names, evidence/image/attachment counts or lengths, request/response lengths, usage, cost,
-latency, and failure category. They never contain raw user IDs, queries, sources, evidence, images,
-prompts, research, reports, AI responses, or secrets.
+latency, media-allowed status, and failure category. They never contain raw user IDs, queries,
+sources, evidence, images, prompts, research, reports, AI responses, or secrets.
 
 The initial writer prompt contains one generalized report structure plus two style examples. They
 appear once in the retained conversation and are explicitly examples of tone and organization,

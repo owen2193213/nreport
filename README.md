@@ -96,14 +96,18 @@ report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup 
 the global commands automatically. Set `OPENROUTER_API_KEY` for the bot-side report writer;
 `OPENROUTER_MODEL` defaults to `x-ai/grok-4.5`.
 `OPENROUTER_WRITER_REASONING_EFFORT` defaults to `medium`. Combined Auto-country/legal research
-uses `openrouter:web_search` with the complete report context and selected images, standard result
-settings, and at most three searches. Search-count metadata and HTTPS source annotations are
+uses `openrouter:web_search` with the complete text report context, standard result settings, and
+at most three searches. Search-count metadata and HTTPS source annotations are
 optional; a report is accepted from usable structured legal research without requiring either.
 The bot records per-user request/token/reasoning/search/cost totals and logs safe workflow metadata
 such as flow, category, country mode, selected elements, counts, lengths, latency, and validation
 failures. AI prompts, responses, search queries, sources, conversations, research, evidence, and
 selected Discord image URLs must never be logged. To synchronize commands manually, set only the
 Discord token and application ID and run:
+
+AI media processing is temporarily disabled for every report category. The bot never attaches
+images, GIFs, videos, avatars, banners, server art, or attachment/embed media URLs to OpenRouter.
+Attachment names and content types may remain as text metadata.
 
 ```powershell
 npm.cmd run register -w @discord-dsa/bot

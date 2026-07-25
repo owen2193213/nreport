@@ -123,7 +123,7 @@ function requestBody<T>(request: ReturnType<typeof vi.fn>, index: number): T {
 }
 
 describe("OpenRouter report writer", () => {
-  it("merges Auto country selection and research with full multimodal context", async () => {
+  it("merges Auto country selection and research with full text context", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion())
@@ -146,8 +146,83 @@ describe("OpenRouter report writer", () => {
     expect(text).toContain("Germany (DE)");
     expect(text).toContain("123456789012345678");
     expect(text).toContain("profile imagery");
-    expect(text).toContain("https://cdn.discordapp.com/avatar.png");
-    expect(text).toContain("https://cdn.discordapp.com/banner.png");
+    expect(text).not.toContain('"type":"image_url"');
+    expect(text).not.toContain("https://cdn.discordapp.com/avatar.png");
+    expect(text).not.toContain("https://cdn.discordapp.com/banner.png");
+  });
+
+  it("does not send media or media URLs for any report category", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(researchCompletion())
+      .mockResolvedValueOnce(reportCompletion());
+    const draft = profileDraft();
+    draft.reportType = "sub_csam";
+
+    await fixedWriter(request).generate(draft, ACTOR);
+
+    for (const index of [0, 1]) {
+      const body = requestBody<{ messages: unknown[] }>(request, index);
+      const text = JSON.stringify(body.messages);
+      expect(text).not.toContain('"type":"image_url"');
+      expect(text).not.toContain("https://cdn.discordapp.com/avatar.png");
+      expect(text).not.toContain("https://cdn.discordapp.com/banner.png");
+    }
+  });
+
+  it("keeps GIF and video names as metadata without sending their media URLs", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(researchCompletion())
+      .mockResolvedValueOnce(reportCompletion());
+    const draft: ReportDraft = {
+      flow: "message_urf",
+      country: "DE",
+      countrySelection: "override",
+      reportType: "sub_other_hate_speech",
+      reportBrief: "The attached media contains hateful imagery.",
+      messageUrl:
+        "https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+      messageSnapshot: {
+        messageId: "323456789012345678",
+        channelId: "223456789012345678",
+        channelName: "reports",
+        serverId: "123456789012345678",
+        serverName: "Example",
+        authorId: "423456789012345678",
+        authorUsername: "example",
+        authorDisplayName: null,
+        authorBot: false,
+        content: "",
+        createdAt: "2026-07-20T00:00:00.000Z",
+        attachments: [
+          {
+            name: "evidence.gif",
+            url: "https://cdn.discordapp.com/evidence.gif",
+            contentType: "image/gif"
+          },
+          {
+            name: "evidence.mp4",
+            url: "https://cdn.discordapp.com/evidence.mp4",
+            contentType: "video/mp4"
+          }
+        ],
+        embeds: []
+      }
+    };
+
+    await fixedWriter(request).generate(draft, ACTOR);
+
+    const body = requestBody<{ messages: unknown[] }>(request, 0);
+    const text = JSON.stringify(body.messages);
+    expect(text).not.toContain('"type":"image_url"');
+    expect(text).not.toContain('"type":"video_url"');
+    expect(text).not.toContain("https://cdn.discordapp.com/evidence.gif");
+    expect(text).not.toContain("https://cdn.discordapp.com/evidence.mp4");
+    expect(text).toContain("evidence.gif");
+    expect(text).toContain("image/gif");
+    expect(text).toContain("evidence.mp4");
+    expect(text).toContain("video/mp4");
   });
 
   it("uses standard search settings without domain or result restrictions", async () => {

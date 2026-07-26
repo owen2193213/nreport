@@ -137,12 +137,11 @@ INGEST_SHARED_SECRET=<same value as CLOUDFLARE_EMAIL_WEBHOOK_SECRET>
 ```
 
 Store `INGEST_SHARED_SECRET` as an encrypted Worker secret. Route the domain catch-all to
-the Worker. It accepts Discord's `noreply@discord.com` envelope sender and its
-`postmaster@*.discord.com` delivery envelope, then requires the generated recipient format.
-The API independently requires the parsed message sender to be exactly `noreply@discord.com`.
-Accepted mail is signed and posted to Railway; it does not forward report mail to a personal
-inbox. HTTP requests receive a normal `404` response because this deployment exposes no public
-HTTP endpoint.
+the Worker. It accepts SMTP envelope senders only when their domain is exactly `discord.com` or a
+true subdomain of it, then requires the generated recipient format. The API independently requires
+the parsed message sender to be exactly `noreply@discord.com`. Accepted mail is signed and posted
+to Railway; it does not forward report mail to a personal inbox. HTTP requests receive a normal
+`404` response because this deployment exposes no public HTTP endpoint.
 
 ## Local development and validation
 

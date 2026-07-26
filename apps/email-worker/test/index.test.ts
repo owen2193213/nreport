@@ -42,14 +42,18 @@ describe("email worker", () => {
     logSpy.mockRestore();
   });
 
-  it("accepts Discord's postmaster envelope sender", async () => {
+  it.each([
+    "noreply@discord.com",
+    "postmaster@o15.ptr9908.discord.com",
+    "bounces+12551241-recipient=example.org@mail.discord.com"
+  ])("accepts Discord envelope sender %s", async (from) => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(null, { status: 202 }));
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     await worker.email(
-      emailMessage({ from: "postmaster@o15.ptr9908.discord.com" }),
+      emailMessage({ from }),
       {
         INGEST_URL: "https://example.com/ingest",
         INGEST_SHARED_SECRET: "test-secret"

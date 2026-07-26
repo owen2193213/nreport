@@ -4,7 +4,7 @@ interface Env {
 }
 
 const DISCORD_VERIFICATION_ENVELOPE_SENDER =
-  /^(?:noreply@discord\.com|postmaster@(?:[a-z0-9-]+\.)+discord\.com)$/i;
+  /^[^@\s]+@(?:[a-z0-9-]+\.)*discord\.com$/i;
 
 function hex(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)]

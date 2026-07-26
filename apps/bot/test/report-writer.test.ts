@@ -6,7 +6,7 @@ import type { AiUsage, ReportDraft } from "../src/types.js";
 
 const COUNTRIES = ["DE", "FR", "IE"] as const;
 const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
-const LAW_REFERENCE = "Basic Law Article 1";
+const LAW_REFERENCE = "Germany's Basic Law (Grundgesetz), Article 1";
 
 function profileDraft(): ReportDraft {
   return {
@@ -146,6 +146,10 @@ describe("OpenRouter report writer", () => {
     expect(text).toContain("Germany (DE)");
     expect(text).toContain("123456789012345678");
     expect(text).toContain("profile imagery");
+    expect(text).toContain("Consider every supported country impartially");
+    expect(text).toContain("regardless of list order");
+    expect(text).toContain("strongest applicable legal basis");
+    expect(text).not.toContain("Germany's Criminal Code");
     expect(text).not.toContain('"type":"image_url"');
     expect(text).not.toContain("https://cdn.discordapp.com/avatar.png");
     expect(text).not.toContain("https://cdn.discordapp.com/banner.png");
@@ -289,10 +293,11 @@ describe("OpenRouter report writer", () => {
     const messages = JSON.stringify(
       requestBody<{ messages: unknown[] }>(request, 1).messages
     );
-    expect(messages).toContain("Style example 1");
-    expect(messages).toContain("Femboy6767");
-    expect(messages).toContain("Style example 2");
-    expect(messages).toContain("usrname");
+    expect(messages).toContain("Use this adaptable structure");
+    expect(messages).not.toContain("Femboy6767");
+    expect(messages).not.toContain("Hungarian Act");
+    expect(messages).not.toContain("§130 StGB");
+    expect(messages).toContain("country-qualified lawReference");
   });
 
   it("refines in the same conversation and offers search only when needed", async () => {
@@ -332,9 +337,9 @@ describe("OpenRouter report writer", () => {
         completion(
           {
             country: "FR",
-            lawReference: "French Law Article 1",
-            researchSummary: "French Law Article 1 applies.",
-            report: "French Law Article 1 may apply. Revised report."
+            lawReference: "France's Example Law, Article 1",
+            researchSummary: "France's Example Law, Article 1 may apply.",
+            report: "France's Example Law, Article 1 may apply. Revised report."
           },
           {
             annotations: [

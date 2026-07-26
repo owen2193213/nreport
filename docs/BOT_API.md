@@ -615,9 +615,9 @@ Use `retryable` as the authority. Do not infer retry safety from the text or HTT
 Implemented user-installed app commands:
 
 ```text
-/report message message-link [country]
-/report profile target [server-id] [country]
-/report server [server-or-invite] [country]
+/report message message-link [country] [dont-use-ai]
+/report profile target [server-id] [country] [dont-use-ai]
+/report server [server-or-invite] [country] [dont-use-ai]
 /reports status report-id
 /reports list
 /reports retry report-id
@@ -643,6 +643,8 @@ prefers one search but allows up to three and uses standard result settings with
 The final maximum-512-character text must naturally name the structured research result's specific
 law or provision. Brackets, URLs, footnotes, OpenRouter URL annotations, and a separate sources
 section are not required.
+The law reference includes its country, clear full law title, and relevant provision before any
+abbreviation, such as `Germany's Criminal Code (StGB), §86a` rather than `§86a StGB`.
 
 AI media processing is temporarily disabled for all categories. The bot does not attach images,
 GIFs, videos, avatars, banners, server art, or media URLs to OpenRouter. It removes profile/server
@@ -654,6 +656,11 @@ or an Auto-country reassessment are needed. Repair continues the same conversati
 and receives one attempt. Regenerate reruns combined research, and changing country clears the
 conversation. Writing/refinement reasoning defaults to `medium` and is configurable through
 `OPENROUTER_WRITER_REASONING_EFFORT`.
+
+The optional `dont-use-ai` boolean defaults to `false`. When true, the reporter supplies the final
+maximum-512-character text, the bot makes no OpenRouter call, and AI-only review controls are
+omitted. Auto cannot resolve a country without AI, so the bot requires a saved or explicit country
+before showing the manual review. The bot-to-API request shape remains unchanged.
 
 Only the resolved ISO country and final reviewed text cross the bot-to-API boundary, so the public
 create-report request remains unchanged. Message content, author details, embed summaries,

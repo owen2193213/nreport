@@ -9,6 +9,7 @@ import type {
 } from "@discord-dsa/contracts";
 
 export interface ReportDraft {
+  aiDisabled?: boolean;
   country?: string;
   countrySelection?: CountrySelection;
   context?: string;

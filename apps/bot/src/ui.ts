@@ -247,12 +247,14 @@ export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuil
   modal.addLabelComponents(
     textLabel({
       customId: "brief",
-      label: "Briefly explain the report",
-      description: "A short or vague reason is okay. Grok will draft the final report for review.",
+      label: draft.aiDisabled ? "Final report text" : "Briefly explain the report",
+      description: draft.aiDisabled
+        ? "AI is disabled. Write the final report in 512 characters or fewer."
+        : "A short or vague reason is okay. Grok will draft the final report for review.",
       required: true,
       style: TextInputStyle.Paragraph,
       minLength: 1,
-      maxLength: 1_000,
+      maxLength: draft.aiDisabled ? 512 : 1_000,
       ...(draft.reportBrief === undefined ? {} : { value: draft.reportBrief })
     })
   );
@@ -296,10 +298,11 @@ export function buildManualReportModal(draftId: string, draft: ReportDraft): Mod
 export function buildCountryPicker(
   countries: readonly string[],
   draftId: string,
-  page: number
+  page: number,
+  allowAuto = true
 ): { embeds: EmbedBuilder[]; components: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] } {
   const pageSize = 24;
-  const choices = ["AUTO", ...countries];
+  const choices = allowAuto ? ["AUTO", ...countries] : [...countries];
   const pageCount = Math.max(1, Math.ceil(choices.length / pageSize));
   const safePage = Math.min(Math.max(page, 0), pageCount - 1);
   const options = choices.slice(safePage * pageSize, (safePage + 1) * pageSize);
@@ -332,7 +335,11 @@ export function buildCountryPicker(
     embeds: [
       infoEmbed(
         "Choose the applicable country",
-        `Choose **Auto** to let Grok select a supported country based on legal relevance, or select a country override.\n\nPage **${safePage + 1} of ${pageCount}**`
+        `${
+          allowAuto
+            ? "Choose **Auto** to let Grok select a supported country based on legal relevance, or select a country override."
+            : "AI is disabled for this report, so select a country manually."
+        }\n\nPage **${safePage + 1} of ${pageCount}**`
       )
     ],
     components
@@ -436,7 +443,12 @@ export function buildReview(draftId: string, draft: ReportDraft): {
   embeds: EmbedBuilder[];
   components: ActionRowBuilder<ButtonBuilder>[];
 } {
-  if (!draft.country || !draft.reportType || !draft.context || !draft.legalResearch) {
+  if (
+    !draft.country ||
+    !draft.reportType ||
+    !draft.context ||
+    (!draft.aiDisabled && !draft.legalResearch)
+  ) {
     throw new Error("Report draft is incomplete.");
   }
   const elements =
@@ -483,14 +495,18 @@ export function buildReview(draftId: string, draft: ReportDraft): {
       .setCustomId(`draft:submit:${draftId}`)
       .setLabel("Submit DSA Report")
       .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId(`draft:refine:${draftId}`)
-      .setLabel("Refine")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId(`draft:regenerate:${draftId}`)
-      .setLabel("Regenerate")
-      .setStyle(ButtonStyle.Secondary),
+    ...(draft.aiDisabled
+      ? []
+      : [
+          new ButtonBuilder()
+            .setCustomId(`draft:refine:${draftId}`)
+            .setLabel("Refine")
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId(`draft:regenerate:${draftId}`)
+            .setLabel("Regenerate")
+            .setStyle(ButtonStyle.Secondary)
+        ]),
     new ButtonBuilder()
       .setCustomId(`draft:edit:${draftId}`)
       .setLabel("Edit manually")
@@ -556,8 +572,8 @@ export function draftToCreateInput(draft: ReportDraft, userId: string): CreateRe
     !draft.country ||
     !draft.reportType ||
     !draft.context ||
-    !draft.legalResearch ||
-    !reportHasLawReference(draft.context, draft.legalResearch)
+    (!draft.aiDisabled &&
+      (!draft.legalResearch || !reportHasLawReference(draft.context, draft.legalResearch)))
   ) {
     throw new Error("Report draft is incomplete.");
   }

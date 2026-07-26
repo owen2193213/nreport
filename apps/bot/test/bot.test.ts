@@ -169,6 +169,8 @@ describe("Discord command registration", () => {
       if (!("options" in subcommand)) continue;
       const country = subcommand.options?.find((option) => option.name === "country");
       expect(country).toMatchObject({ required: false, autocomplete: true });
+      const dontUseAi = subcommand.options?.find((option) => option.name === "dont-use-ai");
+      expect(dontUseAi).toMatchObject({ required: false });
     }
     const message = subcommands.find((subcommand) => subcommand.name === "message");
     const messageLink = message && "options" in message
@@ -428,6 +430,12 @@ describe("report UI", () => {
     expect(first.components[0]?.toJSON().components).toHaveLength(1);
     expect(firstSelect && "options" in firstSelect ? firstSelect.options : []).toHaveLength(24);
     expect(secondSelect && "options" in secondSelect ? secondSelect.options : []).toHaveLength(4);
+
+    const manual = buildCountryPicker(countries, "draft-id", 0, false);
+    const manualSelect = manual.components[0]?.toJSON().components[0];
+    const manualOptions = manualSelect && "options" in manualSelect ? manualSelect.options : [];
+    expect(manualOptions.some((option) => option.value === "AUTO")).toBe(false);
+    expect(JSON.stringify(manual.embeds[0]?.toJSON())).toContain("AI is disabled");
   });
 
   it("builds flow-specific modals within Discord's five-component limit", () => {
@@ -441,6 +449,14 @@ describe("report UI", () => {
     expect(message.components.length).toBeLessThanOrEqual(5);
     expect(profile.components.length).toBeLessThanOrEqual(5);
     expect(guild.components.length).toBeLessThanOrEqual(5);
+
+    const manual = buildReportModal("draft", {
+      flow: "message_urf",
+      country: "DE",
+      aiDisabled: true
+    }).toJSON();
+    expect(JSON.stringify(manual)).toContain("AI is disabled");
+    expect(JSON.stringify(manual)).toContain('"max_length":512');
   });
 
   it("converts a reviewed message draft into the canonical API request", () => {
@@ -470,6 +486,30 @@ describe("report UI", () => {
       submitterDiscordUserId: "1197857362942378017",
       messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679",
       context: "[Basic Law Article 1] The message contains unlawful hate speech."
+    });
+  });
+
+  it("reviews and submits a manual report without AI research", () => {
+    const draft = {
+      aiDisabled: true,
+      flow: "message_urf" as const,
+      country: "DE",
+      countrySelection: "override" as const,
+      reportType: "sub_other_hate_speech",
+      messageUrl:
+        "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+      context: "I am reporting this message because it contains abusive language."
+    };
+
+    const review = buildReview("draft", draft);
+    const buttons = JSON.stringify(review.components[0]?.toJSON());
+    expect(buttons).not.toContain("Refine");
+    expect(buttons).not.toContain("Regenerate");
+    expect(buttons).toContain("Edit manually");
+    expect(draftToCreateInput(draft, "1197857362942378017")).toMatchObject({
+      country: "DE",
+      context: draft.context,
+      reportType: "sub_other_hate_speech"
     });
   });
 
@@ -1108,5 +1148,72 @@ describe("report interaction country precedence", () => {
       countrySelection: "auto"
     });
     expect(showModal).toHaveBeenCalledOnce();
+  });
+
+  it("skips OpenRouter when a manual report modal is submitted", async () => {
+    const dataEncryptionKey = randomBytes(32);
+    const draft = {
+      aiDisabled: true,
+      flow: "message_urf" as const,
+      country: "DE",
+      countrySelection: "override" as const,
+      messageUrl:
+        "https://discord.com/channels/@me/123456789012345678/123456789012345679"
+    };
+    const updateDraft = vi.fn();
+    const database = {
+      getDraft: vi.fn().mockResolvedValue(encryptJson(draft, dataEncryptionKey)),
+      updateDraft
+    } as unknown as BotDatabase;
+    const generate = vi.fn();
+    const handler = new InteractionHandler({
+      api: {} as DsaApi,
+      config: {
+        whitelistEnabled: false,
+        adminUserIds: new Set<string>(),
+        dataEncryptionKey
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database,
+      messageResolver: {} as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: { generate } as unknown as ReportWriter,
+      serverResolver: {} as ServerResolver
+    });
+    const deferReply = vi.fn();
+    const editReply = vi.fn();
+    const interaction = {
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => true,
+      isStringSelectMenu: () => false,
+      isButton: () => false,
+      isRepliable: () => true,
+      customId: "report:modal:draft-id",
+      user: { id: "1197857362942378017" },
+      fields: {
+        getStringSelectValues: (name: string) =>
+          name === "report_type" ? ["sub_other_hate_speech"] : [],
+        getTextInputValue: (name: string) =>
+          name === "brief" ? "I am reporting this message for abusive language." : ""
+      },
+      deferReply,
+      editReply,
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    const encrypted = String(updateDraft.mock.calls.at(-1)?.[2]);
+    expect(decryptJson(encrypted, dataEncryptionKey)).toMatchObject({
+      aiDisabled: true,
+      context: "I am reporting this message for abusive language.",
+      reportType: "sub_other_hate_speech"
+    });
+    expect(JSON.stringify(editReply.mock.calls.at(-1)?.[0])).toContain("Submit DSA Report");
   });
 });

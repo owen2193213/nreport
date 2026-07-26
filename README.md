@@ -109,6 +109,10 @@ AI media processing is temporarily disabled for every report category. The bot n
 images, GIFs, videos, avatars, banners, server art, or attachment/embed media URLs to OpenRouter.
 Attachment names and content types may remain as text metadata.
 
+Every `/report` subcommand also accepts optional `dont-use-ai:true`. It defaults to AI when
+omitted. Manual mode sends nothing to OpenRouter, limits the reporter's final text to 512
+characters, and requires a saved or explicit country because Auto normally depends on Grok.
+
 ```powershell
 npm.cmd run register -w @discord-dsa/bot
 ```
@@ -133,8 +137,10 @@ INGEST_SHARED_SECRET=<same value as CLOUDFLARE_EMAIL_WEBHOOK_SECRET>
 ```
 
 Store `INGEST_SHARED_SECRET` as an encrypted Worker secret. Route the domain catch-all to
-the Worker. It accepts only generated address formats, signs the raw message, and posts it
-to Railway; it does not forward report mail to a personal inbox.
+the Worker. It silently ignores mail unless the sender is exactly `noreply@discord.com` and
+the recipient uses the generated address format. Accepted mail is signed and posted to
+Railway; it does not forward report mail to a personal inbox. HTTP requests receive a
+normal `404` response because this deployment exposes no public HTTP endpoint.
 
 ## Local development and validation
 

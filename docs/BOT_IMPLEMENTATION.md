@@ -23,9 +23,9 @@ Discord's bulk global-command endpoint before connecting to the Gateway. The sta
 registration script requires only `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_ID`.
 
 ```text
-/report message message-link [country]
-/report profile target [server-id] [country]
-/report server [server-or-invite] [country]
+/report message message-link [country] [dont-use-ai]
+/report profile target [server-id] [country] [dont-use-ai]
+/report server [server-or-invite] [country] [dont-use-ai]
 /reports list
 /reports status report-id
 /reports retry report-id
@@ -106,9 +106,18 @@ media from reaching the provider. Attachment names and content types may remain 
 metadata. This is intentionally conservative even though OpenRouter supports multimodal inputs
 for compatible models.
 
+Each `/report` subcommand has an optional `dont-use-ai` boolean that defaults to `false`. When it
+is `true`, the modal asks for final report text with a 512-character limit, performs no OpenRouter
+request, and shows the normal review with Submit, Edit manually, Change country, and Cancel.
+Refine and Regenerate are omitted. Because Auto country selection requires Grok, a manual report
+with no saved or explicit country must select a country before review. The message context-menu
+command has no command options and continues to use the default AI flow.
+
 The review identifies whether the country was Auto-selected, a saved default, or a report
 override. The researched law or provision appears naturally inside the 512-character report;
 brackets, URLs, footnotes, and separate source fields are not required.
+The structured `lawReference` and final report name the country, clear full law title, and
+provision instead of relying on an unexplained abbreviation or section number.
 Changing country clears the AI conversation and research before running both again. Refine appends
 the instruction and result to the same encrypted conversation and reuses the existing research
 with optional web search when the requested change needs new legal facts or challenges Auto's
@@ -346,8 +355,9 @@ uses the same operation. Both surfaces update to the successor's new report card
   `report_submission_reserved`, `report_submission_created`, and
   `report_submission_observed` or `report_submission_failed`, in addition to the existing polling,
   reconciliation, webhook, and notification events.
-- Email worker: `email_rejected`, `email_forward_completed`, and `email_forward_failed`, correlated
-  using the same one-way message-ID digest recorded by the API.
+- Email worker: `email_ignored`, `email_forward_started`, `email_forward_completed`, and
+  `email_forward_failed`. Forwarding events use the same one-way message-ID digest recorded by the
+  API; ignored events record only the routing reason.
 - Inbound-email correlation records the parsed email kind, database result, correlated report ID
   when available, and a one-way message-ID digest. It does not record recipient or email content.
 - Ignored inbound email records a stable failure classification, sender addresses, sanitized

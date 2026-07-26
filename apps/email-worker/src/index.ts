@@ -28,26 +28,27 @@ async function hmac(secret: string, value: string): Promise<string> {
 }
 
 export default {
+  fetch(): Response {
+    return new Response("Not found", { status: 404 });
+  },
+
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
     const sender = message.from.trim().toLowerCase();
     if (sender !== DISCORD_VERIFICATION_SENDER) {
-      console.warn(JSON.stringify({
-        event: "email_rejected",
-        reason: "untrusted_sender",
-        senderDomain: sender.split("@", 2)[1] ?? "invalid"
+      console.log(JSON.stringify({
+        event: "email_ignored",
+        reason: "untrusted_sender"
       }));
-      message.setReject("Only Discord verification email is accepted");
       return;
     }
 
     const recipient = message.to.trim().toLowerCase();
     const localPart = recipient.split("@", 1)[0] ?? "";
     if (!/^[a-z0-9]+(?:[.-][a-z0-9]+)*\.[0-9a-hjkmnp-tv-z]{16}$/.test(localPart)) {
-      console.warn(JSON.stringify({
-        event: "email_rejected",
-        reason: "unknown_recipient_pattern"
+      console.log(JSON.stringify({
+        event: "email_ignored",
+        reason: "invalid_recipient_pattern"
       }));
-      message.setReject("Unknown recipient");
       return;
     }
 
@@ -61,6 +62,12 @@ export default {
     );
     const messageIdDigest = (await sha256(messageId)).slice(0, 16);
     try {
+      console.log(JSON.stringify({
+        event: "email_forward_started",
+        messageIdDigest,
+        ingestUrlConfigured:
+          typeof env.INGEST_URL === "string" && env.INGEST_URL.length > 0
+      }));
       const response = await fetch(env.INGEST_URL, {
         method: "POST",
         headers: {

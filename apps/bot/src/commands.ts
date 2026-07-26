@@ -40,6 +40,11 @@ const report = userInstalled()
             .setAutocomplete(true)
             .setMaxLength(100)
         )
+        .addBooleanOption((option) =>
+          option
+            .setName("dont-use-ai")
+            .setDescription("Write the final report manually instead of using Grok")
+        )
     )
     .addSubcommand((command) =>
       command
@@ -67,6 +72,11 @@ const report = userInstalled()
             .setAutocomplete(true)
             .setMaxLength(100)
         )
+        .addBooleanOption((option) =>
+          option
+            .setName("dont-use-ai")
+            .setDescription("Write the final report manually instead of using Grok")
+        )
     )
     .addSubcommand((command) =>
       command
@@ -84,6 +94,11 @@ const report = userInstalled()
             .setDescription("Auto or an EU country override")
             .setAutocomplete(true)
             .setMaxLength(100)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName("dont-use-ai")
+            .setDescription("Write the final report manually instead of using Grok")
         )
     );
 

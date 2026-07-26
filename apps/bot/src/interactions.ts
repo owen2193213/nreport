@@ -377,11 +377,13 @@ export class InteractionHandler {
   private async handleReportCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     const subcommand = interaction.options.getSubcommand();
     const country = this.countryOption(interaction);
+    const aiDisabled = interaction.options.getBoolean?.("dont-use-ai") ?? false;
     if (subcommand === "message") {
       const messageUrl = interaction.options.getString("message-link", true).trim();
       await this.startDraft(interaction, {
         flow: "message_urf",
         messageUrl,
+        aiDisabled,
         ...reportCountryFields(country)
       });
       return;
@@ -400,6 +402,7 @@ export class InteractionHandler {
       }
       const draft: ReportDraft = {
         flow: "user_urf",
+        aiDisabled,
         profileTargetRaw: target,
         ...reportCountryFields(country),
         ...(serverId ? { reportedUserServerId: serverId } : {})
@@ -425,6 +428,7 @@ export class InteractionHandler {
     const target = suppliedTarget || guildTarget;
     await this.startDraft(interaction, {
       flow: "guild_urf",
+      aiDisabled,
       ...reportCountryFields(country),
       ...(target ? { guildIdOrInviteCode: target } : {})
     });
@@ -659,21 +663,28 @@ export class InteractionHandler {
       if (!report || report.length > 512) {
         throw new AccessError("invalid_report_text", "The final report must contain 1 to 512 characters.");
       }
-      if (!draft.legalResearch || !reportHasLawReference(report, draft.legalResearch)) {
+      if (
+        !draft.aiDisabled &&
+        (!draft.legalResearch || !reportHasLawReference(report, draft.legalResearch))
+      ) {
         throw new AccessError(
           "missing_law_reference",
           "The final report must retain the researched law or provision."
         );
       }
       draft.context = report;
-      const conversation = draft.writerConversation ?? [
-        { role: "user" as const, content: initialWriterPrompt() }
-      ];
-      draft.writerConversation = [
-        ...conversation,
-        { role: "user", content: "Use this manually edited text as the current report." },
-        { role: "assistant", content: JSON.stringify({ report }) }
-      ];
+      if (draft.aiDisabled) {
+        delete draft.writerConversation;
+      } else {
+        const conversation = draft.writerConversation ?? [
+          { role: "user" as const, content: initialWriterPrompt() }
+        ];
+        draft.writerConversation = [
+          ...conversation,
+          { role: "user", content: "Use this manually edited text as the current report." },
+          { role: "assistant", content: JSON.stringify({ report }) }
+        ];
+      }
       await interaction.deferUpdate();
       await this.replaceDraft(interaction.user.id, draftId, draft);
       await interaction.editReply({
@@ -707,6 +718,24 @@ export class InteractionHandler {
       );
     }
     await interaction.deferReply({ flags: EPHEMERAL });
+    if (draft.aiDisabled) {
+      draft.context = draft.reportBrief;
+      delete draft.writerConversation;
+      delete draft.legalResearch;
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+      if (!draft.country) {
+        await interaction.editReply({
+          ...buildCountryPicker(this.countries, draftId, 0, false),
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+      await interaction.editReply({
+        ...buildReview(draftId, draft),
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
     await interaction.editReply({
       embeds: [
         infoEmbed(
@@ -763,6 +792,10 @@ export class InteractionHandler {
       throw new AccessError("invalid_country", "Choose a supported country.");
     }
     const draft = await this.loadDraft(interaction.user.id, draftId);
+    if (country === "AUTO" && draft.aiDisabled) {
+      await interaction.update(buildCountryPicker(this.countries, draftId, 0, false));
+      return;
+    }
     if (country === "AUTO") {
       delete draft.country;
       draft.countrySelection = "auto";
@@ -779,6 +812,17 @@ export class InteractionHandler {
       return;
     }
     await interaction.deferUpdate();
+    if (draft.aiDisabled) {
+      draft.context = draft.reportBrief.slice(0, 512);
+      delete draft.writerConversation;
+      delete draft.legalResearch;
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+      await interaction.editReply({
+        ...buildReview(draftId, draft),
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
     await interaction.editReply({
       embeds: [
         infoEmbed(
@@ -870,8 +914,15 @@ export class InteractionHandler {
       return;
     }
     if (parts[0] === "country" && parts[1] === "page" && parts[2] && parts[3]) {
-      await this.loadDraft(interaction.user.id, parts[2]);
-      await interaction.update(buildCountryPicker(this.countries, parts[2], Number(parts[3])));
+      const countryDraft = await this.loadDraft(interaction.user.id, parts[2]);
+      await interaction.update(
+        buildCountryPicker(
+          this.countries,
+          parts[2],
+          Number(parts[3]),
+          !countryDraft.aiDisabled
+        )
+      );
       return;
     }
     if (parts[0] !== "draft" || !parts[1] || !parts[2]) return;
@@ -892,7 +943,9 @@ export class InteractionHandler {
       return;
     }
     if (action === "country") {
-      await interaction.update(buildCountryPicker(this.countries, draftId, 0));
+      await interaction.update(
+        buildCountryPicker(this.countries, draftId, 0, !draft.aiDisabled)
+      );
       return;
     }
     if (action === "brief") {
@@ -900,10 +953,16 @@ export class InteractionHandler {
       return;
     }
     if (action === "refine") {
+      if (draft.aiDisabled) {
+        throw new AccessError("ai_disabled", "AI is disabled for this report. Edit it manually.");
+      }
       await interaction.showModal(buildRefinementModal(draftId));
       return;
     }
     if (action === "regenerate") {
+      if (draft.aiDisabled) {
+        throw new AccessError("ai_disabled", "AI is disabled for this report. Edit it manually.");
+      }
       await interaction.deferUpdate();
       await interaction.editReply({
         embeds: [

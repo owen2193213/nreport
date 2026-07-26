@@ -42,6 +42,45 @@ describe("email worker", () => {
     logSpy.mockRestore();
   });
 
+  it("accepts Discord's postmaster envelope sender", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 202 }));
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await worker.email(
+      emailMessage({ from: "postmaster@o15.ptr9908.discord.com" }),
+      {
+        INGEST_URL: "https://example.com/ingest",
+        INGEST_SHARED_SECRET: "test-secret"
+      }
+    );
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    fetchSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  it("rejects lookalike domains outside discord.com", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await worker.email(
+      emailMessage({ from: "postmaster@o15.ptr9908.discord.com.example.org" }),
+      {
+        INGEST_URL: "https://example.com/ingest",
+        INGEST_SHARED_SECRET: "test-secret"
+      }
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(
+      JSON.stringify({ event: "email_ignored", reason: "untrusted_sender" })
+    );
+    fetchSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
   it("silently ignores Discord mail sent to an unrelated recipient", async () => {
     const setReject = vi.fn();
     const message = emailMessage({ to: "omar.kuznetsov+7980@poccnr.ru", setReject });

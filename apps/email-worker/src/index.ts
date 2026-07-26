@@ -3,7 +3,8 @@ interface Env {
   INGEST_SHARED_SECRET: string;
 }
 
-const DISCORD_VERIFICATION_SENDER = "noreply@discord.com";
+const DISCORD_VERIFICATION_ENVELOPE_SENDER =
+  /^(?:noreply@discord\.com|postmaster@(?:[a-z0-9-]+\.)+discord\.com)$/i;
 
 function hex(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)]
@@ -34,7 +35,7 @@ export default {
 
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
     const sender = message.from.trim().toLowerCase();
-    if (sender !== DISCORD_VERIFICATION_SENDER) {
+    if (!DISCORD_VERIFICATION_ENVELOPE_SENDER.test(sender)) {
       console.log(JSON.stringify({
         event: "email_ignored",
         reason: "untrusted_sender"

@@ -360,6 +360,9 @@ uses the same operation. Both surfaces update to the successor's new report card
 - Email worker: `email_ignored`, `email_forward_started`, `email_forward_completed`, and
   `email_forward_failed`. Forwarding events use the same one-way message-ID digest recorded by the
   API; ignored events record only the routing reason.
+- Discord currently delivers verification mail with a `postmaster@*.discord.com` SMTP envelope
+  even though the parsed message sender is `noreply@discord.com`. The worker accepts only those two
+  Discord envelope forms; the API retains the exact parsed-sender check.
 - Inbound-email correlation records the parsed email kind, database result, correlated report ID
   when available, and a one-way message-ID digest. It does not record recipient or email content.
 - Ignored inbound email records a stable failure classification, sender addresses, sanitized

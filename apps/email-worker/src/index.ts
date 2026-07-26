@@ -3,9 +3,6 @@ interface Env {
   INGEST_SHARED_SECRET: string;
 }
 
-const DISCORD_VERIFICATION_ENVELOPE_SENDER =
-  /^[^@\s]+@(?:[a-z0-9-]+\.)*discord\.com$/i;
-
 function hex(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)]
     .map((value) => value.toString(16).padStart(2, "0"))
@@ -28,14 +25,20 @@ async function hmac(secret: string, value: string): Promise<string> {
   return hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
 }
 
+function isDiscordEnvelopeSender(address: string): boolean {
+  const separator = address.lastIndexOf("@");
+  if (separator <= 0) return false;
+  const domain = address.slice(separator + 1).toLowerCase();
+  return domain === "discord.com" || domain.endsWith(".discord.com");
+}
+
 export default {
   fetch(): Response {
     return new Response("Not found", { status: 404 });
   },
 
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
-    const sender = message.from.trim().toLowerCase();
-    if (!DISCORD_VERIFICATION_ENVELOPE_SENDER.test(sender)) {
+    if (!isDiscordEnvelopeSender(message.from.trim())) {
       console.log(JSON.stringify({
         event: "email_ignored",
         reason: "untrusted_sender"

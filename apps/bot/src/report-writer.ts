@@ -91,9 +91,26 @@ export interface WriterResult {
 }
 
 export class ReportWriterError extends Error {
-  public constructor(message = "The AI report writer could not produce a valid report.") {
+  public candidateReport: string | undefined;
+  public conversation: WriterConversationMessage[] | undefined;
+  public country: string | undefined;
+  public legalResearch: LegalResearch | undefined;
+
+  public constructor(
+    message = "The AI report writer could not produce a valid report.",
+    options: {
+      candidateReport?: string;
+      conversation?: WriterConversationMessage[];
+      country?: string;
+      legalResearch?: LegalResearch;
+    } = {}
+  ) {
     super(message);
     this.name = "ReportWriterError";
+    this.candidateReport = options.candidateReport;
+    this.conversation = options.conversation;
+    this.country = options.country;
+    this.legalResearch = options.legalResearch;
   }
 }
 
@@ -346,24 +363,26 @@ function parsedResearch(
   return { country, lawReference, researchSummary };
 }
 
-export function reportHasLawReference(
-  report: string,
-  research: LegalResearch
-): boolean {
-  const lawReference = research.lawReference?.trim();
-  if (!lawReference) return true;
-  return report.toLocaleLowerCase("en").includes(lawReference.toLocaleLowerCase("en"));
+function reportCandidate(content: unknown): string {
+  if (typeof content !== "string") return safeAssistantContent(content).trim();
+  try {
+    const value: unknown = JSON.parse(content);
+    if (typeof value === "object" && value !== null && "report" in value) {
+      const report = (value as { report?: unknown }).report;
+      if (typeof report === "string") return report.trim();
+    }
+  } catch {
+    // Preserve malformed model text so the user can repair it manually.
+  }
+  return content.trim();
 }
 
-function parsedReport(content: unknown, research: LegalResearch): string {
+function parsedReport(content: unknown): string {
   const value = parseJsonObject(content);
   const report = typeof value.report === "string" ? value.report.trim() : "";
   if (!report) throw new ReportWriterError("The AI report was empty.");
   if (report.length > MAX_REPORT_LENGTH) {
     throw new ReportWriterError("The AI report exceeded 512 characters.");
-  }
-  if (!reportHasLawReference(report, research)) {
-    throw new ReportWriterError("The AI report did not name the researched law or provision.");
   }
   return report;
 }
@@ -500,14 +519,16 @@ export class ReportWriter {
       },
       { role: "user", content: initialWriterPrompt() }
     ];
-    const completed = await this.completeReport(
-      conversation,
-      images,
-      legalResearch,
-      deadline,
-      actor,
-      "write"
-    );
+    let completed: Awaited<ReturnType<ReportWriter["completeReport"]>>;
+    try {
+      completed = await this.completeReport(conversation, images, deadline, actor, "write");
+    } catch (error) {
+      if (error instanceof ReportWriterError && error.candidateReport) {
+        error.country = research.country;
+        error.legalResearch = legalResearch;
+      }
+      throw error;
+    }
     return {
       country: research.country,
       legalResearch,
@@ -598,7 +619,7 @@ export class ReportWriter {
     let report: string;
     let finalConversation = responseConversation;
     try {
-      report = parsedReport(JSON.stringify({ report: completion.report }), legalResearch);
+      report = parsedReport(JSON.stringify({ report: completion.report }));
     } catch (error) {
       const problem = error instanceof Error ? error.message : "invalid refined report";
       botLog(
@@ -623,10 +644,20 @@ export class ReportWriter {
         "repair"
       );
       try {
-        report = parsedReport(repaired.message.content, legalResearch);
+        report = parsedReport(repaired.message.content);
       } catch {
         throw new ReportWriterError(
-          "The refined report remained invalid after one conversational repair."
+          "The refined report remained invalid after one conversational repair.",
+          {
+            candidateReport: reportCandidate(repaired.message.content),
+            conversation: [
+              ...repairConversation,
+              {
+                role: "assistant",
+                content: safeAssistantContent(repaired.message.content)
+              }
+            ]
+          }
         );
       }
       finalConversation = [
@@ -689,7 +720,6 @@ export class ReportWriter {
   private async completeReport(
     conversation: WriterConversationMessage[],
     images: SelectedImage[],
-    research: LegalResearch,
     deadline: number,
     actor: AiRequestContext,
     stage: "write" | "repair"
@@ -704,7 +734,7 @@ export class ReportWriter {
     ];
     try {
       return {
-        report: parsedReport(first.message.content, research),
+        report: parsedReport(first.message.content),
         conversation: currentConversation
       };
     } catch (error) {
@@ -739,12 +769,16 @@ export class ReportWriter {
       ];
       try {
         return {
-          report: parsedReport(repaired.message.content, research),
+          report: parsedReport(repaired.message.content),
           conversation: finalConversation
         };
       } catch {
         throw new ReportWriterError(
-          "The AI report remained invalid after one conversational repair. Retry or edit it manually."
+          "The AI report remained invalid after one conversational repair. Retry or edit it manually.",
+          {
+            candidateReport: reportCandidate(repaired.message.content),
+            conversation: finalConversation
+          }
         );
       }
     }

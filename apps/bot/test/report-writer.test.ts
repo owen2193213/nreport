@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { AiRequestContext } from "../src/report-writer.js";
-import { ReportWriter } from "../src/report-writer.js";
+import { ReportWriter, ReportWriterError } from "../src/report-writer.js";
 import type { AiUsage, ReportDraft } from "../src/types.js";
 
 const COUNTRIES = ["DE", "FR", "IE"] as const;
@@ -396,11 +396,12 @@ describe("OpenRouter report writer", () => {
   });
 
   it("repairs an invalid refinement inside the same conversation", async () => {
+    const overlength = "x".repeat(513);
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion())
       .mockResolvedValueOnce(reportCompletion())
-      .mockResolvedValueOnce(refinementCompletion("Missing its law reference."))
+      .mockResolvedValueOnce(refinementCompletion(overlength))
       .mockResolvedValueOnce(
         reportCompletion(`${LAW_REFERENCE} may apply. Repaired refinement.`)
       );
@@ -418,23 +419,47 @@ describe("OpenRouter report writer", () => {
     const repair = requestBody<{ messages: unknown[] }>(request, 3);
     const messages = JSON.stringify(repair.messages);
     expect(messages).toContain("Make it shorter.");
-    expect(messages).toContain("Missing its law reference.");
+    expect(messages).toContain(overlength);
     expect(messages).toContain("Task: Repair the current report.");
   });
 
   it("repairs invalid output in the same conversation once", async () => {
+    const overlength = "y".repeat(513);
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion())
-      .mockResolvedValueOnce(reportCompletion("No law reference here."))
+      .mockResolvedValueOnce(reportCompletion(overlength))
       .mockResolvedValueOnce(
         reportCompletion(`${LAW_REFERENCE} may apply. Repaired report.`)
       );
     const result = await fixedWriter(request).generate(profileDraft(), ACTOR);
     expect(result.report).toContain("Repaired report");
     const repair = requestBody<{ messages: unknown[] }>(request, 2);
-    expect(JSON.stringify(repair.messages)).toContain("No law reference here.");
+    expect(JSON.stringify(repair.messages)).toContain(overlength);
     expect(JSON.stringify(repair.messages)).toContain("Task: Repair the current report.");
+  });
+
+  it("preserves the latest invalid AI report for manual repair", async () => {
+    const first = "a".repeat(513);
+    const repaired = "b".repeat(514);
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(researchCompletion())
+      .mockResolvedValueOnce(reportCompletion(first))
+      .mockResolvedValueOnce(reportCompletion(repaired));
+
+    const failure = await fixedWriter(request)
+      .generate(profileDraft(), ACTOR)
+      .then(
+        () => undefined,
+        (error: unknown) => error
+      );
+    expect(failure).toBeInstanceOf(ReportWriterError);
+    if (!(failure instanceof ReportWriterError)) throw new Error("Expected ReportWriterError.");
+    expect(failure.candidateReport).toBe(repaired);
+    expect(failure.country).toBe("DE");
+    expect(failure.legalResearch?.country).toBe("DE");
+    expect(failure.conversation?.length).toBeGreaterThan(0);
   });
 
   it("records each successful request's usage without making another API call", async () => {

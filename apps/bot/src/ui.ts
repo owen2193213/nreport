@@ -17,13 +17,13 @@ import {
   ModalBuilder,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  TextDisplayBuilder,
   TextInputBuilder,
   TextInputStyle
 } from "discord.js";
 
 import type { AccessKeyView } from "./database.js";
 import { countryDisplay } from "./countries.js";
-import { reportHasLawReference } from "./report-writer.js";
 import type { AccessView, ReportDraft, ServerSnapshot } from "./types.js";
 
 const FLOW_LABELS: Record<ReportFlow, string> = {
@@ -254,7 +254,7 @@ export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuil
       required: true,
       style: TextInputStyle.Paragraph,
       minLength: 1,
-      maxLength: draft.aiDisabled ? 512 : 1_000,
+      maxLength: 512,
       ...(draft.reportBrief === undefined ? {} : { value: draft.reportBrief })
     })
   );
@@ -272,27 +272,41 @@ export function buildRefinementModal(draftId: string): ModalBuilder {
         description: "This continues the existing AI conversation.",
         style: TextInputStyle.Paragraph,
         minLength: 1,
-        maxLength: 1_000
+        maxLength: 512
       })
     );
 }
 
 export function buildManualReportModal(draftId: string, draft: ReportDraft): ModalBuilder {
-  const current = (draft.context ?? draft.reportBrief ?? "").slice(0, 512);
-  return new ModalBuilder()
+  const current = (draft.context ?? draft.reportBrief ?? "").trim();
+  const displayLimit = 3_940;
+  const displayed =
+    current.length <= displayLimit
+      ? current
+      : `${current.slice(0, displayLimit - 36)}\n\n[AI draft display truncated]`;
+  const modal = new ModalBuilder()
     .setCustomId(`writer:edit:${draftId}`)
-    .setTitle("Edit report manually")
-    .addLabelComponents(
+    .setTitle("Edit report manually");
+  if (displayed) {
+    modal.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`**AI draft to repair — copy from below**\n\n${displayed}`)
+    );
+  }
+  modal.addLabelComponents(
       textLabel({
         customId: "report_text",
         label: "Final report",
-        description: "Maximum 512 characters. Keep the researched law or provision in the text.",
+        description:
+          current.length > 512
+            ? "Shorten the AI draft above, then paste up to 512 characters here."
+            : "Review the AI draft above. Maximum 512 characters.",
         style: TextInputStyle.Paragraph,
         minLength: 1,
         maxLength: 512,
-        ...(current ? { value: current } : {})
+        ...(current.length > 0 && current.length <= 512 ? { value: current } : {})
       })
     );
+  return modal;
 }
 
 export function buildCountryPicker(
@@ -572,8 +586,7 @@ export function draftToCreateInput(draft: ReportDraft, userId: string): CreateRe
     !draft.country ||
     !draft.reportType ||
     !draft.context ||
-    (!draft.aiDisabled &&
-      (!draft.legalResearch || !reportHasLawReference(draft.context, draft.legalResearch)))
+    draft.context.length > 512
   ) {
     throw new Error("Report draft is incomplete.");
   }

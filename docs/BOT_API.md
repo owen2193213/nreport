@@ -640,9 +640,11 @@ The bot asks for a short explanation and sends the report category, selected ele
 country names/codes, reporter text, resolved evidence, and applicable images to one combined
 Auto-country/legal-research request using OpenRouter's `openrouter:web_search` server tool. It
 prefers one search but allows up to three and uses standard result settings without a domain list.
-The final maximum-512-character text must naturally name the structured research result's specific
-law or provision. Brackets, URLs, footnotes, OpenRouter URL annotations, and a separate sources
-section are not required.
+The writing prompt asks the final maximum-512-character text to naturally name the structured
+research result's specific law or provision. Brackets, URLs, footnotes, OpenRouter URL annotations,
+and a separate sources section are not required. Bot validation requires only non-empty text of at
+most 512 characters; it does not verify that the law exists or require the final text to retain
+the law reference.
 The law reference includes its country, clear full law title, and relevant provision before any
 abbreviation, such as `Germany's Criminal Code (StGB), §86a` rather than `§86a StGB`.
 

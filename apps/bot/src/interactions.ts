@@ -38,7 +38,6 @@ import {
 import type { ProfileResolver } from "./profile-resolver.js";
 import {
   initialWriterPrompt,
-  reportHasLawReference,
   ReportWriterError
 } from "./report-writer.js";
 import type { ReportWriter } from "./report-writer.js";
@@ -267,6 +266,23 @@ export class InteractionHandler {
       draftId,
       encryptJson(draft, this.config.dataEncryptionKey)
     );
+  }
+
+  private async preserveWriterCandidate(
+    userId: string,
+    draftId: string,
+    draft: ReportDraft,
+    error: unknown
+  ): Promise<boolean> {
+    if (!(error instanceof ReportWriterError) || !error.candidateReport?.trim()) {
+      return Boolean(draft.context);
+    }
+    draft.context = error.candidateReport.trim();
+    if (error.conversation) draft.writerConversation = error.conversation;
+    if (error.country) draft.country = error.country;
+    if (error.legalResearch) draft.legalResearch = error.legalResearch;
+    await this.replaceDraft(userId, draftId, draft);
+    return true;
   }
 
   private async startDraft(
@@ -645,12 +661,18 @@ export class InteractionHandler {
         await this.replaceDraft(interaction.user.id, draftId, draft);
         await interaction.editReply({ ...buildReview(draftId, draft), allowedMentions: { parse: [] } });
       } catch (error) {
+        const canManualEdit = await this.preserveWriterCandidate(
+          interaction.user.id,
+          draftId,
+          draft,
+          error
+        );
         await interaction.editReply({
           ...buildWriterFailure(
             draftId,
             conciseError(error),
             "refine",
-            Boolean(draft.legalResearch)
+            canManualEdit
           ),
           allowedMentions: { parse: [] }
         });
@@ -662,15 +684,6 @@ export class InteractionHandler {
       const report = interaction.fields.getTextInputValue("report_text").trim();
       if (!report || report.length > 512) {
         throw new AccessError("invalid_report_text", "The final report must contain 1 to 512 characters.");
-      }
-      if (
-        !draft.aiDisabled &&
-        (!draft.legalResearch || !reportHasLawReference(report, draft.legalResearch))
-      ) {
-        throw new AccessError(
-          "missing_law_reference",
-          "The final report must retain the researched law or provision."
-        );
       }
       draft.context = report;
       if (draft.aiDisabled) {
@@ -777,8 +790,14 @@ export class InteractionHandler {
         allowedMentions: { parse: [] }
       });
     } catch (error) {
+      const canManualEdit = await this.preserveWriterCandidate(
+        interaction.user.id,
+        draftId,
+        draft,
+        error
+      );
       await interaction.editReply({
-        ...buildWriterFailure(draftId, conciseError(error), "regenerate", false),
+        ...buildWriterFailure(draftId, conciseError(error), "regenerate", canManualEdit),
         allowedMentions: { parse: [] }
       });
     }
@@ -847,8 +866,14 @@ export class InteractionHandler {
         allowedMentions: { parse: [] }
       });
     } catch (error) {
+      const canManualEdit = await this.preserveWriterCandidate(
+        interaction.user.id,
+        draftId,
+        draft,
+        error
+      );
       await interaction.editReply({
-        ...buildWriterFailure(draftId, conciseError(error), "regenerate", false),
+        ...buildWriterFailure(draftId, conciseError(error), "regenerate", canManualEdit),
         allowedMentions: { parse: [] }
       });
     }
@@ -988,12 +1013,18 @@ export class InteractionHandler {
           allowedMentions: { parse: [] }
         });
       } catch (error) {
+        const canManualEdit = await this.preserveWriterCandidate(
+          interaction.user.id,
+          draftId,
+          draft,
+          error
+        );
         await interaction.editReply({
           ...buildWriterFailure(
             draftId,
             conciseError(error),
             "regenerate",
-            Boolean(draft.legalResearch)
+            canManualEdit
           ),
           allowedMentions: { parse: [] }
         });

@@ -125,7 +125,7 @@ the instruction and result to the same encrypted conversation and reuses the exi
 with optional web search when the requested change needs new legal facts or challenges Auto's
 country. Regenerate starts a new conversation and reruns combined research; Auto may choose a
 different country. Manual edits become the current assistant answer so a later refinement
-continues from that text, but the researched law reference must remain. Repair also
+continues from that text. Repair also
 continues the same conversation, performs no search, and is attempted only once.
 
 Writing, refinement, and repair use OpenRouter reasoning with
@@ -134,11 +134,16 @@ Reasoning, input/output tokens, search requests, request counts, and OpenRouter-
 accumulated per user in `bot_users` and displayed by `/access status`. Safe logs use a keyed
 pseudonymous actor value plus stage, model, latency, usage, cost, and failure category.
 
-If a model result exceeds 512 characters or omits its law reference, the bot asks once for a repair;
-a second invalid result is never silently truncated. Insufficient OpenRouter balance, rate limits,
-timeouts, malformed output, unsupported Auto countries, and unusable legal research use the safe
-AI failure screen. Retry, country override, detail editing, and cancel remain
-available. Manual editing is offered only when the encrypted draft already has valid research.
+If a model result is empty, malformed, or exceeds 512 characters, the bot asks once for a repair.
+If the repaired result is still invalid, the encrypted draft retains the latest AI text and
+conversation. The manual-edit modal shows the AI draft in a copyable read-only text display and
+provides a separate required 512-character input. Drafts already within the limit prefill that
+input; overlength drafts leave it blank for the user to shorten and paste. Insufficient
+OpenRouter balance, rate limits, timeouts, malformed output, unsupported Auto countries, and
+unusable legal research use the safe AI failure screen. Retry, country override, detail editing,
+manual editing when candidate text is available, and cancel remain available. The bot asks Grok
+to include the researched law but does not reject reviewed text for omitting it or attempt to
+verify that the law exists.
 No report is created and no credit is reserved until valid reviewed text is submitted. Drafts hold
 the country choice, optional source annotations, research summary, and conversation only until
 normal expiry. Logs include pseudonymous actor keys, report flow/category, country mode, selected
@@ -374,6 +379,9 @@ uses the same operation. Both surfaces update to the successor's new report card
 
 ### Decision log
 
+- Chosen: validate only the Cloudflare envelope domain (`discord.com` or a true subdomain) and the
+  generated recipient shape in the email worker. The API remains the sole MIME parser and exact
+  visible-sender validator, avoiding duplicated checks for Discord's changing bounce formats.
 - Chosen: explicit lifecycle boundary events over logging response bodies. Bodies contain private
   reporting data and are not needed for correlation.
 - Chosen: a short SHA-256 message-ID digest over raw IDs or recipient addresses for duplicate-mail

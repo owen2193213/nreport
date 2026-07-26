@@ -551,33 +551,27 @@ describe("report UI", () => {
     });
   });
 
-  it("blocks submission when a manual edit removes the researched law reference", () => {
-    expect(() =>
-      draftToCreateInput(
-        {
-          flow: "message_urf",
+  it("accepts manually repaired text without requiring the researched law reference", () => {
+    const input = draftToCreateInput(
+      {
+        flow: "message_urf",
+        country: "DE",
+        reportType: "sub_other_hate_speech",
+        messageUrl:
+          "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+        context: "The report no longer contains its legal basis.",
+        legalResearch: {
           country: "DE",
-          reportType: "sub_other_hate_speech",
-          messageUrl:
-            "https://discord.com/channels/@me/123456789012345678/123456789012345679",
-          context: "The report no longer contains its legal basis.",
-          legalResearch: {
-            country: "DE",
-            lawReference: "Basic Law Article 1",
-            summary: "Basic Law Article 1 protects human dignity.",
-            sources: [
-              {
-                title: "Basic Law Article 1",
-                url: "https://www.gesetze-im-internet.de/gg/art_1.html"
-              }
-            ],
-            researchedAt: "2026-07-20T00:00:00.000Z",
-            searchRequests: 1
-          }
-        },
-        "1197857362942378017"
-      )
-    ).toThrow("Report draft is incomplete.");
+          lawReference: "Basic Law Article 1",
+          summary: "Basic Law Article 1 protects human dignity.",
+          sources: [],
+          researchedAt: "2026-07-20T00:00:00.000Z",
+          searchRequests: 1
+        }
+      },
+      "1197857362942378017"
+    );
+    expect(input.context).toBe("The report no longer contains its legal basis.");
   });
 
   it("keeps review embeds below Discord's embed limit", () => {
@@ -611,15 +605,26 @@ describe("report UI", () => {
 
   it("builds refinement and manual-edit modals with bounded inputs", () => {
     const refinement = buildRefinementModal("draft").toJSON();
+    const overlengthCandidate = "c".repeat(600);
     const manual = buildManualReportModal("draft", {
       flow: "message_urf",
       reportBrief: "Original reason",
-      context: "Current report"
+      context: overlengthCandidate
     }).toJSON();
     expect(refinement.custom_id).toBe("writer:refine:draft");
     expect(manual.custom_id).toBe("writer:edit:draft");
-    expect(JSON.stringify(manual)).toContain("Current report");
+    expect(JSON.stringify(manual)).toContain("AI draft to repair");
+    expect(JSON.stringify(manual)).toContain("c".repeat(513));
+    expect(JSON.stringify(manual)).not.toContain('"value":"c');
+    expect(JSON.stringify(manual)).toContain("paste up to 512 characters here");
     expect(JSON.stringify(manual)).toContain('"max_length":512');
+    expect(JSON.stringify(refinement)).toContain('"max_length":512');
+    const report = buildReportModal("draft", {
+      flow: "message_urf",
+      country: "DE"
+    }).toJSON();
+    expect(JSON.stringify(report)).toContain('"custom_id":"brief"');
+    expect(JSON.stringify(report)).toContain('"max_length":512');
   });
 
   it("builds stateless report pagination with readable status embeds", () => {

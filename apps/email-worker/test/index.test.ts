@@ -85,6 +85,23 @@ describe("email worker", () => {
     logSpy.mockRestore();
   });
 
+  it.each(["discord.com", "@discord.com", "sender@evildiscord.com"])(
+    "rejects malformed or unrelated envelope sender %s",
+    async (from) => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+      await worker.email(emailMessage({ from }), {
+        INGEST_URL: "https://example.com/ingest",
+        INGEST_SHARED_SECRET: "test-secret"
+      });
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      fetchSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  );
+
   it("silently ignores Discord mail sent to an unrelated recipient", async () => {
     const setReject = vi.fn();
     const message = emailMessage({ to: "omar.kuznetsov+7980@poccnr.ru", setReject });

@@ -155,6 +155,31 @@ describe("OpenRouter report writer", () => {
     expect(text).not.toContain("https://cdn.discordapp.com/banner.png");
   });
 
+  it("normalizes a supported country display name and constrains structured output to ISO codes", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(researchCompletion("Germany"))
+      .mockResolvedValueOnce(reportCompletion());
+    const draft = profileDraft();
+    delete draft.country;
+    draft.countrySelection = "auto";
+
+    const result = await fixedWriter(request).generate(draft, ACTOR);
+
+    expect(result.country).toBe("DE");
+    const research = requestBody<{
+      response_format: {
+        json_schema: {
+          schema: { properties: { country: { enum: string[]; type: string } } };
+        };
+      };
+    }>(request, 0);
+    expect(research.response_format.json_schema.schema.properties.country).toEqual({
+      type: "string",
+      enum: ["DE", "FR", "IE"]
+    });
+  });
+
   it("does not send media or media URLs for any report category", async () => {
     const request = vi
       .fn()

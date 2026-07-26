@@ -85,6 +85,8 @@ workflow is capped at 90 seconds.
 Every generation begins with one combined country-selection and legal-research request using the
 `openrouter:web_search` server tool. It receives the complete report category, selected elements,
 supported country names/codes, reporter explanation, and resolved text evidence.
+The response schema requires a supported two-letter country code. The bot also defensively
+normalizes an exact supported English country name to its code before validation.
 The prompt prefers one search but allows up to three when results conflict or another supported
 country may have a stronger basis. Search uses OpenRouter's standard result settings with no
 domain or result-list filter. OpenRouter search counts and URL annotations are retained when

@@ -1,74 +1,47 @@
 import { randomBytes, randomInt } from "node:crypto";
 
-import {
-  fakerCS_CZ,
-  fakerDA,
-  fakerDE,
-  fakerDE_AT,
-  fakerEL,
-  fakerEN,
-  fakerEN_IE,
-  fakerES,
-  fakerFI,
-  fakerFR,
-  fakerFR_BE,
-  fakerFR_LU,
-  fakerHR,
-  fakerHU,
-  fakerIT,
-  fakerLV,
-  fakerNL,
-  fakerNL_BE,
-  fakerPL,
-  fakerPT_PT,
-  fakerRO,
-  fakerSK,
-  fakerSL_SI,
-  fakerSV
-} from "@faker-js/faker";
-import type { Faker } from "@faker-js/faker";
+import { faker } from "@faker-js/faker";
 import transliterate from "@sindresorhus/transliterate";
 
 const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";
 
 interface CountryProfile {
-  faker: Faker;
   locale: string;
   language: string;
   timezone: string;
 }
 
 const COUNTRY_PROFILES: Readonly<Record<string, readonly CountryProfile[]>> = {
-  AT: [{ faker: fakerDE_AT, locale: "de-AT", language: "de", timezone: "Europe/Vienna" }],
+  AT: [{ locale: "de-AT", language: "de", timezone: "Europe/Vienna" }],
   BE: [
-    { faker: fakerNL_BE, locale: "nl-BE", language: "nl", timezone: "Europe/Brussels" },
-    { faker: fakerFR_BE, locale: "fr-BE", language: "fr", timezone: "Europe/Brussels" }
+    { locale: "nl-BE", language: "nl", timezone: "Europe/Brussels" },
+    { locale: "fr-BE", language: "fr", timezone: "Europe/Brussels" }
   ],
-  BG: [{ faker: fakerEN, locale: "bg-BG", language: "bg", timezone: "Europe/Sofia" }],
-  HR: [{ faker: fakerHR, locale: "hr-HR", language: "hr", timezone: "Europe/Zagreb" }],
-  CY: [{ faker: fakerEL, locale: "el-CY", language: "el", timezone: "Asia/Nicosia" }],
-  CZ: [{ faker: fakerCS_CZ, locale: "cs-CZ", language: "cs", timezone: "Europe/Prague" }],
-  DK: [{ faker: fakerDA, locale: "da-DK", language: "da", timezone: "Europe/Copenhagen" }],
-  EE: [{ faker: fakerEN, locale: "et-EE", language: "et", timezone: "Europe/Tallinn" }],
-  FI: [{ faker: fakerFI, locale: "fi-FI", language: "fi", timezone: "Europe/Helsinki" }],
-  FR: [{ faker: fakerFR, locale: "fr-FR", language: "fr", timezone: "Europe/Paris" }],
-  DE: [{ faker: fakerDE, locale: "de-DE", language: "de", timezone: "Europe/Berlin" }],
-  GR: [{ faker: fakerEL, locale: "el-GR", language: "el", timezone: "Europe/Athens" }],
-  HU: [{ faker: fakerHU, locale: "hu-HU", language: "hu", timezone: "Europe/Budapest" }],
-  IE: [{ faker: fakerEN_IE, locale: "en-IE", language: "en", timezone: "Europe/Dublin" }],
-  IT: [{ faker: fakerIT, locale: "it-IT", language: "it", timezone: "Europe/Rome" }],
-  LV: [{ faker: fakerLV, locale: "lv-LV", language: "lv", timezone: "Europe/Riga" }],
-  LT: [{ faker: fakerEN, locale: "lt-LT", language: "lt", timezone: "Europe/Vilnius" }],
-  LU: [{ faker: fakerFR_LU, locale: "fr-LU", language: "fr", timezone: "Europe/Luxembourg" }],
-  MT: [{ faker: fakerEN, locale: "mt-MT", language: "mt", timezone: "Europe/Malta" }],
-  NL: [{ faker: fakerNL, locale: "nl-NL", language: "nl", timezone: "Europe/Amsterdam" }],
-  PL: [{ faker: fakerPL, locale: "pl-PL", language: "pl", timezone: "Europe/Warsaw" }],
-  PT: [{ faker: fakerPT_PT, locale: "pt-PT", language: "pt", timezone: "Europe/Lisbon" }],
-  RO: [{ faker: fakerRO, locale: "ro-RO", language: "ro", timezone: "Europe/Bucharest" }],
-  SK: [{ faker: fakerSK, locale: "sk-SK", language: "sk", timezone: "Europe/Bratislava" }],
-  SI: [{ faker: fakerSL_SI, locale: "sl-SI", language: "sl", timezone: "Europe/Ljubljana" }],
-  ES: [{ faker: fakerES, locale: "es-ES", language: "es", timezone: "Europe/Madrid" }],
-  SE: [{ faker: fakerSV, locale: "sv-SE", language: "sv", timezone: "Europe/Stockholm" }]
+  BG: [{ locale: "bg-BG", language: "bg", timezone: "Europe/Sofia" }],
+  HR: [{ locale: "hr-HR", language: "hr", timezone: "Europe/Zagreb" }],
+  CY: [{ locale: "el-CY", language: "el", timezone: "Asia/Nicosia" }],
+  CZ: [{ locale: "cs-CZ", language: "cs", timezone: "Europe/Prague" }],
+  DK: [{ locale: "da-DK", language: "da", timezone: "Europe/Copenhagen" }],
+  EE: [{ locale: "et-EE", language: "et", timezone: "Europe/Tallinn" }],
+  FI: [{ locale: "fi-FI", language: "fi", timezone: "Europe/Helsinki" }],
+  FR: [{ locale: "fr-FR", language: "fr", timezone: "Europe/Paris" }],
+  DE: [{ locale: "de-DE", language: "de", timezone: "Europe/Berlin" }],
+  GR: [{ locale: "el-GR", language: "el", timezone: "Europe/Athens" }],
+  HU: [{ locale: "hu-HU", language: "hu", timezone: "Europe/Budapest" }],
+  IE: [{ locale: "en-IE", language: "en", timezone: "Europe/Dublin" }],
+  IT: [{ locale: "it-IT", language: "it", timezone: "Europe/Rome" }],
+  LV: [{ locale: "lv-LV", language: "lv", timezone: "Europe/Riga" }],
+  LT: [{ locale: "lt-LT", language: "lt", timezone: "Europe/Vilnius" }],
+  LU: [{ locale: "fr-LU", language: "fr", timezone: "Europe/Luxembourg" }],
+  MT: [{ locale: "mt-MT", language: "mt", timezone: "Europe/Malta" }],
+  NL: [{ locale: "nl-NL", language: "nl", timezone: "Europe/Amsterdam" }],
+  PL: [{ locale: "pl-PL", language: "pl", timezone: "Europe/Warsaw" }],
+  PT: [{ locale: "pt-PT", language: "pt", timezone: "Europe/Lisbon" }],
+  RO: [{ locale: "ro-RO", language: "ro", timezone: "Europe/Bucharest" }],
+  SK: [{ locale: "sk-SK", language: "sk", timezone: "Europe/Bratislava" }],
+  SI: [{ locale: "sl-SI", language: "sl", timezone: "Europe/Ljubljana" }],
+  ES: [{ locale: "es-ES", language: "es", timezone: "Europe/Madrid" }],
+  SE: [{ locale: "sv-SE", language: "sv", timezone: "Europe/Stockholm" }]
 };
 
 export interface GeneratedIdentity {
@@ -113,8 +86,9 @@ function select<T>(values: readonly T[]): T {
   return value;
 }
 
-function generateDisplayName(profile: CountryProfile): string {
-  return profile.faker.person.fullName();
+function generateDisplayName(): string {
+  const sex = faker.person.sexType();
+  return `${faker.person.firstName(sex)} ${faker.person.lastName(sex)}`;
 }
 
 export function buildAcceptLanguage(locale: string, language: string): string {
@@ -147,7 +121,7 @@ export function generateIdentity(country: string, emailDomain: string): Generate
     );
   }
   const profile = select(profiles);
-  const displayName = generateDisplayName(profile);
+  const displayName = generateDisplayName();
   const slug = slugify(displayName, profile.language);
   if (slug.length === 0) throw new Error("Pseudonym could not be converted to an email-safe ID.");
   const suffix = uniqueSuffix();

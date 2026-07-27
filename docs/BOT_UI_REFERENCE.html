@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Discord DSA Bot UI Reference</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #111318;
+      --panel: #1a1d24;
+      --panel-2: #20242d;
+      --text: #f2f3f5;
+      --muted: #b5bac1;
+      --line: #343944;
+      --blurple: #5865f2;
+      --green: #3ba55d;
+      --yellow: #f0b232;
+      --orange: #e67e22;
+      --red: #ed4245;
+      --grey: #747f8d;
+      --code: #0d0f13;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--text);
+      font: 15px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 48px 0 80px;
+    }
+
+    h1, h2, h3 {
+      line-height: 1.2;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(30px, 5vw, 48px);
+    }
+
+    h2 {
+      margin: 54px 0 18px;
+      font-size: 26px;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    a {
+      color: #aeb5ff;
+    }
+
+    code {
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--code);
+      color: #dbdee1;
+      font-family: "Cascadia Code", Consolas, monospace;
+    }
+
+    .lede {
+      max-width: 850px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .meta,
+    .legend,
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .meta {
+      margin: 22px 0 0;
+    }
+
+    .chip {
+      padding: 5px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--panel);
+      font-size: 13px;
+    }
+
+    .notice {
+      margin-top: 28px;
+      padding: 16px 18px;
+      border-left: 4px solid var(--blurple);
+      border-radius: 4px;
+      background: var(--panel);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+    }
+
+    .card > :last-child {
+      margin-bottom: 0;
+    }
+
+    .legend {
+      margin: 0 0 22px;
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+    }
+
+    .embed {
+      position: relative;
+      overflow: hidden;
+      min-height: 100%;
+      padding: 16px 16px 14px 20px;
+      border-radius: 4px;
+      background: var(--panel-2);
+    }
+
+    .embed::before {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 4px;
+      background: var(--embed-color, var(--blurple));
+      content: "";
+    }
+
+    .embed-title {
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+
+    .embed-description,
+    .embed-footer,
+    .small {
+      color: var(--muted);
+    }
+
+    .embed-fields {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 16px;
+      margin-top: 14px;
+    }
+
+    .field {
+      min-width: 0;
+    }
+
+    .field.wide {
+      grid-column: 1 / -1;
+    }
+
+    .field-name {
+      margin-bottom: 2px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .field-value {
+      overflow-wrap: anywhere;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .embed-footer {
+      margin-top: 14px;
+      font-size: 12px;
+    }
+
+    .button {
+      display: inline-block;
+      padding: 5px 10px;
+      border-radius: 4px;
+      background: #4e5058;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .button.primary {
+      background: var(--blurple);
+    }
+
+    .button.danger {
+      background: var(--red);
+    }
+
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: stretch;
+      margin-top: 14px;
+      padding: 0;
+      list-style: none;
+    }
+
+    .flow li {
+      position: relative;
+      flex: 1 1 145px;
+      min-width: 0;
+      padding: 10px 30px 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel-2);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .flow li:not(:last-child)::after {
+      position: absolute;
+      top: 50%;
+      right: 9px;
+      color: #8b92a1;
+      content: "→";
+      transform: translateY(-50%);
+    }
+
+    .flow strong {
+      display: block;
+      color: var(--text);
+    }
+
+    .command {
+      margin-bottom: 16px;
+    }
+
+    .command-name {
+      display: inline-block;
+      margin-bottom: 8px;
+      font-size: 15px;
+    }
+
+    .command p {
+      color: var(--muted);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+    }
+
+    th,
+    td {
+      padding: 11px 13px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--text);
+      background: var(--panel-2);
+      font-size: 13px;
+    }
+
+    td {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .color-blurple { --embed-color: var(--blurple); }
+    .color-green { --embed-color: var(--green); }
+    .color-yellow { --embed-color: var(--yellow); }
+    .color-orange { --embed-color: var(--orange); }
+    .color-red { --embed-color: var(--red); }
+    .color-grey { --embed-color: var(--grey); }
+
+    @media (max-width: 620px) {
+      main {
+        width: min(100% - 20px, 1180px);
+        padding-top: 28px;
+      }
+
+      .embed-fields {
+        grid-template-columns: 1fr;
+      }
+
+      .field.wide {
+        grid-column: auto;
+      }
+
+      .flow {
+        display: grid;
+      }
+
+      .flow li {
+        padding-right: 12px;
+      }
+
+      .flow li:not(:last-child)::after {
+        top: auto;
+        right: 12px;
+        bottom: -9px;
+        z-index: 1;
+        padding: 0 3px;
+        background: var(--panel);
+        content: "↓";
+        transform: none;
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Discord DSA bot UI reference</h1>
+    <p class="lede">
+      Source-derived inventory of every current command, modal, select, button, embed family, and
+      lifecycle DM. Command responses are ephemeral. Lifecycle notifications are ordinary private
+      DMs because Discord does not support ephemeral DMs.
+    </p>
+    <div class="meta">
+      <span class="chip">Source: apps/bot/src/commands.ts</span>
+      <span class="chip">Source: apps/bot/src/ui.ts</span>
+      <span class="chip">Source: apps/bot/src/interactions.ts</span>
+      <span class="chip">Source: apps/bot/src/notifier.ts</span>
+      <span class="chip">Updated: 28 July 2026</span>
+    </div>
+    <div class="notice">
+      <strong>Visual language.</strong> The bot uses Discord-native embeds with no author strip,
+      banner, or decorative image. Profile avatars and server icons are used as thumbnails.
+      Blurple means informational, orange means review, yellow means in progress, green means
+      success/actioned, red means failure/rejection, and grey means closed without action.
+    </div>
+  </header>
+
+  <section aria-labelledby="overview-heading">
+    <h2 id="overview-heading">Shared report flow</h2>
+    <ol class="flow">
+      <li><strong>Access check</strong>Admin/whitelist bypass or at least one credit.</li>
+      <li><strong>Resolve target</strong>Message snapshot, profile account, or server metadata.</li>
+      <li><strong>Report modal</strong>Reason, affected elements, and brief/final text.</li>
+      <li><strong>Country</strong>Saved override, explicit override, or DeepSeek Auto.</li>
+      <li><strong>Draft</strong>Research/write, manual path, refine, regenerate, or edit.</li>
+      <li><strong>Orange review</strong>Truthfulness warning and final 512-character content.</li>
+      <li><strong>Submit</strong>Reserve credit, create API report, then observe status.</li>
+      <li><strong>Status + DM</strong>History embed, durable updates, outcome reply, optional retry.</li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="report-commands-heading">
+    <h2 id="report-commands-heading">Report creation commands</h2>
+    <div class="grid">
+      <article class="card command">
+        <code class="command-name">/report message</code>
+        <p>Inputs: required message link, optional country, optional <code>dont-use-ai</code>.</p>
+        <ol class="flow">
+          <li><strong>Modal: Report Message</strong>Reason + brief/final report.</li>
+          <li><strong>Resolve message</strong>Best-effort message evidence snapshot.</li>
+          <li><strong>AI/manual branch</strong>Writing status or direct review.</li>
+          <li><strong>Review message report</strong>Orange review embed and controls.</li>
+          <li><strong>Message report</strong>Final status/history embed.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">Apps → Report Message</code>
+        <p>The message context command pre-fills the message URL and message snapshot.</p>
+        <ol class="flow">
+          <li><strong>Selected Discord message</strong>URL and snapshot captured.</li>
+          <li><strong>Modal: Report Message</strong>Reason + brief/final report.</li>
+          <li><strong>AI/manual branch</strong>Country and content preparation.</li>
+          <li><strong>Review message report</strong>Orange review embed and controls.</li>
+          <li><strong>Message report</strong>Final status/history embed.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/report profile</code>
+        <p>Inputs: raw user ID, optional observed server ID, country, and AI opt-out.</p>
+        <ol class="flow">
+          <li><strong>Resolve user ID</strong>Fetch username, display names, bot flag, and avatar.</li>
+          <li><strong>Account confirmation</strong>Found or unsuccessful lookup embed.</li>
+          <li><strong>Modal: Report Profile</strong>Reason, profile elements, and brief.</li>
+          <li><strong>Review profile report</strong>Orange review with avatar thumbnail.</li>
+          <li><strong>Profile report</strong>Status/history plus submitted account name.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/report server</code>
+        <p>Inputs: server ID/invite or current server, country, and AI opt-out.</p>
+        <ol class="flow">
+          <li><strong>Resolve server</strong>Best-effort name, description, counts, and icon.</li>
+          <li><strong>Modal: Report Server</strong>Target if missing, reason, server elements, brief.</li>
+          <li><strong>AI/manual branch</strong>Country and content preparation.</li>
+          <li><strong>Review server report</strong>Orange review with server summary/icon.</li>
+          <li><strong>Server report</strong>Status/history with resolved server details.</li>
+        </ol>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="report-management-heading">
+    <h2 id="report-management-heading">Report management commands</h2>
+    <div class="grid">
+      <article class="card command">
+        <code class="command-name">/reports list</code>
+        <ol class="flow">
+          <li><strong>Fetch recent reports</strong>Owner-scoped API list.</li>
+          <li><strong>No reports yet</strong>Blurple empty-state embed, if empty.</li>
+          <li><strong>Report browser</strong>One full report embed per page.</li>
+          <li><strong>Previous / Next</strong>Buttons when more than one report exists.</li>
+          <li><strong>Retry as new report</strong>Button only for an eligible failure.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/reports status</code>
+        <ol class="flow">
+          <li><strong>Fetch report</strong>Verify ownership or administrator access.</li>
+          <li><strong>Message/Profile/Server report</strong>Complete status and history embed.</li>
+          <li><strong>Retry control</strong>Shown only when failed, retryable, and below limit.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/reports retry</code>
+        <ol class="flow">
+          <li><strong>Eligibility checks</strong>Ownership, access, retryable stage, max three reports.</li>
+          <li><strong>Create fresh lifecycle</strong>New report ID, identity, alias, and session.</li>
+          <li><strong>Message/Profile/Server report</strong>New report status/history embed.</li>
+        </ol>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="access-heading">
+    <h2 id="access-heading">Access, settings, and administrator commands</h2>
+    <div class="grid">
+      <article class="card command">
+        <code class="command-name">/access redeem</code>
+        <ol class="flow">
+          <li><strong>Validate access key</strong>Hash and redeem transactionally.</li>
+          <li><strong>Access key redeemed</strong>Green embed with new credit balance.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/access status</code>
+        <ol class="flow">
+          <li><strong>Fetch access</strong>Credits, suspension, country, AI usage, cost.</li>
+          <li><strong>Your reporting access</strong>Blurple or red access embed.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/settings country</code>
+        <ol class="flow">
+          <li><strong>Autocomplete</strong>Auto or supported EU country.</li>
+          <li><strong>Save default</strong>Null for Auto, ISO code otherwise.</li>
+          <li><strong>Default country updated</strong>Green confirmation embed.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/admin key create</code>
+        <ol class="flow">
+          <li><strong>Admin check</strong>Credits, count, optional expiry.</li>
+          <li><strong>Create 1–20 keys</strong>Store hashes; plaintext shown once.</li>
+          <li><strong>Access keys created</strong>Green embed containing plaintext keys.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/admin key list</code>
+        <ol class="flow">
+          <li><strong>Admin check</strong>Load recent keys.</li>
+          <li><strong>Access keys</strong>Blurple list embed with status, credits, expiry, redeemer.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/admin key inspect</code>
+        <ol class="flow">
+          <li><strong>Admin check</strong>Fetch exact key ID.</li>
+          <li><strong>Access key details</strong>Status-colored detail embed.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/admin key revoke</code>
+        <ol class="flow">
+          <li><strong>Admin check</strong>Key ID and optional reason.</li>
+          <li><strong>Revoke + suspend</strong>Revoke key and suspend its redeemer.</li>
+          <li><strong>Access key revoked</strong>Green confirmation embed.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/admin user inspect</code>
+        <ol class="flow">
+          <li><strong>Admin check</strong>Validate Discord snowflake.</li>
+          <li><strong>User access</strong>Access embed with user ID and suspension reason.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/admin user suspend</code>
+        <ol class="flow">
+          <li><strong>Admin check</strong>User ID and optional reason.</li>
+          <li><strong>Suspend user</strong>Clear remaining credits.</li>
+          <li><strong>User suspended</strong>Green confirmation embed.</li>
+        </ol>
+      </article>
+
+      <article class="card command">
+        <code class="command-name">/admin user reinstate</code>
+        <ol class="flow">
+          <li><strong>Admin check</strong>Validate Discord user ID.</li>
+          <li><strong>Reinstate user</strong>Return active with zero credits.</li>
+          <li><strong>User reinstated</strong>Green confirmation embed.</li>
+        </ol>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="embed-heading">
+    <h2 id="embed-heading">Embed mockups and field composition</h2>
+    <div class="legend" aria-label="Embed color legend">
+      <span class="swatch" style="background: var(--blurple)"></span><span>Information / submitted / received</span>
+      <span class="swatch" style="background: var(--orange)"></span><span>Review</span>
+      <span class="swatch" style="background: var(--yellow)"></span><span>In progress</span>
+      <span class="swatch" style="background: var(--green)"></span><span>Success / actioned</span>
+      <span class="swatch" style="background: var(--red)"></span><span>Failure / rejected</span>
+      <span class="swatch" style="background: var(--grey)"></span><span>Closed without action</span>
+    </div>
+
+    <div class="grid">
+      <article class="embed color-orange">
+        <div class="embed-title">Review profile report</div>
+        <div class="embed-description">Submitting creates a real DSA report. Confirm that the information is truthful and authorized.</div>
+        <div class="embed-fields">
+          <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Resolved display name, @username, user ID, server display name, bot flag.</div></div>
+          <div class="field"><div class="field-name">Report category</div><div class="field-value">Profile</div></div>
+          <div class="field"><div class="field-name">Country</div><div class="field-value">Country display + selection origin</div></div>
+          <div class="field wide"><div class="field-name">Reason</div><div class="field-value">Semantic reason + selected profile elements.</div></div>
+          <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Observed server and final report text, split across fields if needed.</div></div>
+        </div>
+        <div class="embed-footer">000/512 characters • Review carefully before submitting</div>
+        <div class="chips" style="margin-top: 12px">
+          <span class="button danger">Submit DSA Report</span>
+          <span class="button primary">Refine</span>
+          <span class="button">Regenerate</span>
+          <span class="button">Edit manually</span>
+          <span class="button">Cancel</span>
+          <span class="button">Change country</span>
+        </div>
+      </article>
+
+      <article class="embed color-blurple">
+        <div class="embed-title">Profile report</div>
+        <div class="embed-description"><strong>Submitted to Discord</strong></div>
+        <div class="embed-fields">
+          <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Resolved target summary.</div></div>
+          <div class="field"><div class="field-name">Report category</div><div class="field-value">Profile</div></div>
+          <div class="field"><div class="field-name">Country</div><div class="field-value">Germany</div></div>
+          <div class="field wide"><div class="field-name">Reason</div><div class="field-value">Semantic reason and affected elements.</div></div>
+          <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Submitted account name, capture time, and final context.</div></div>
+          <div class="field"><div class="field-name">References</div><div class="field-value">Internal ID, Discord ID, predecessor/successor.</div></div>
+          <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated relative timestamps.</div></div>
+          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created → submitted → received → outcome, grouped by retry attempt.</div></div>
+        </div>
+        <div class="embed-footer">Full ID: generated-name-and-unique-suffix</div>
+      </article>
+
+      <article class="embed color-blurple">
+        <div class="embed-title">Discord account found</div>
+        <div class="embed-description">Review the resolved account before continuing.</div>
+        <div class="embed-fields">
+          <div class="field wide"><div class="field-name">Resolved account</div><div class="field-value">Display name, @username, user ID, server display name, and bot account marker.</div></div>
+        </div>
+        <div class="chips" style="margin-top: 12px">
+          <span class="button danger">Continue</span>
+          <span class="button">Cancel</span>
+        </div>
+      </article>
+
+      <article class="embed color-orange">
+        <div class="embed-title">User ID lookup was unsuccessful</div>
+        <div class="embed-description">Discord could not resolve the supplied ID. The account may not exist or Discord may be temporarily unavailable.</div>
+        <div class="embed-fields">
+          <div class="field wide"><div class="field-name">Original value</div><div class="field-value">The raw Discord user ID.</div></div>
+        </div>
+        <div class="chips" style="margin-top: 12px">
+          <span class="button">Try Lookup Again</span>
+          <span class="button">Cancel</span>
+        </div>
+      </article>
+
+      <article class="embed color-blurple">
+        <div class="embed-title">Choose the applicable country</div>
+        <div class="embed-description">Choose Auto for DeepSeek selection or select a supported country override. Manual reports require an explicit country.</div>
+        <div class="embed-fields">
+          <div class="field wide"><div class="field-name">Select menu</div><div class="field-value">24 choices per page, including Auto when AI is enabled.</div></div>
+        </div>
+        <div class="chips" style="margin-top: 12px">
+          <span class="button">Previous</span>
+          <span class="button primary">Next</span>
+        </div>
+      </article>
+
+      <article class="embed color-red">
+        <div class="embed-title">Unable to complete that action</div>
+        <div class="embed-description">Concise error text, limited to 4,000 characters.</div>
+        <div class="chips" style="margin-top: 12px">
+          <span class="button primary">Retry</span>
+          <span class="button">Change country</span>
+          <span class="button">Edit details</span>
+          <span class="button">Edit manually</span>
+          <span class="button">Cancel</span>
+        </div>
+      </article>
+
+      <article class="embed color-blurple">
+        <div class="embed-title">Your reporting access</div>
+        <div class="embed-fields">
+          <div class="field"><div class="field-name">Access level</div><div class="field-value">Administrator or credit-based.</div></div>
+          <div class="field"><div class="field-name">Credits</div><div class="field-value">Balance or Unlimited.</div></div>
+          <div class="field"><div class="field-name">Default country</div><div class="field-value">Auto or saved country.</div></div>
+          <div class="field"><div class="field-name">Account status</div><div class="field-value">Active or Suspended.</div></div>
+          <div class="field wide"><div class="field-name">AI usage</div><div class="field-value">Requests, input/output/reasoning tokens, web searches, and OpenRouter cost.</div></div>
+          <div class="field wide"><div class="field-name">Suspension reason</div><div class="field-value">Only when present.</div></div>
+        </div>
+      </article>
+
+      <article class="embed color-green">
+        <div class="embed-title">Access keys created</div>
+        <div class="embed-description">Plaintext values are shown once and must be stored securely. The embed lists each generated key.</div>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="inventory-heading">
+    <h2 id="inventory-heading">Complete embed title inventory</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Embed title</th>
+            <th>Color</th>
+            <th>Where it appears</th>
+            <th>Controls or special behavior</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Choose the applicable country</td><td>Blurple</td><td>Report country picker</td><td>Select, Previous, Next</td></tr>
+          <tr><td>Discord account found</td><td>Blurple</td><td><code>/report profile</code></td><td>Avatar thumbnail, Continue, Cancel</td></tr>
+          <tr><td>User ID lookup was unsuccessful</td><td>Orange</td><td><code>/report profile</code></td><td>Try Lookup Again, Cancel</td></tr>
+          <tr><td>Researching and writing report</td><td>Blurple</td><td>Initial AI generation</td><td>Temporary, no controls</td></tr>
+          <tr><td>Refining report</td><td>Blurple</td><td>Refine action</td><td>Temporary, no controls</td></tr>
+          <tr><td>Researching new country</td><td>Blurple</td><td>Country changed after draft</td><td>Temporary, no controls</td></tr>
+          <tr><td>Rewriting report</td><td>Blurple</td><td>Regenerate action</td><td>Temporary, no controls</td></tr>
+          <tr><td>Review message report</td><td>Orange</td><td>Message final review</td><td>Submit, refine/regenerate, edit, cancel, country</td></tr>
+          <tr><td>Review profile report</td><td>Orange</td><td>Profile final review</td><td>Avatar thumbnail and review controls</td></tr>
+          <tr><td>Review server report</td><td>Orange</td><td>Server final review</td><td>Server icon thumbnail and review controls</td></tr>
+          <tr><td>Submitting report</td><td>Blurple</td><td>After final confirmation</td><td>Temporary, no controls</td></tr>
+          <tr><td>Report cancelled</td><td>Blurple</td><td>Cancel draft</td><td>Draft deleted; controls removed</td></tr>
+          <tr><td>Unable to complete that action</td><td>Red</td><td>All interaction/writer/submission failures</td><td>Writer failures can expose recovery controls</td></tr>
+          <tr><td>No reports yet</td><td>Blurple</td><td><code>/reports list</code> empty state</td><td>No controls</td></tr>
+          <tr><td>Message report</td><td>Status-dependent</td><td>Message report status/browser</td><td>History, paging, optional retry</td></tr>
+          <tr><td>Profile report</td><td>Status-dependent</td><td>Profile report status/browser</td><td>Avatar, history, paging, optional retry</td></tr>
+          <tr><td>Server report</td><td>Status-dependent</td><td>Server report status/browser</td><td>Server icon, history, paging, optional retry</td></tr>
+          <tr><td>Access key redeemed</td><td>Green</td><td><code>/access redeem</code></td><td>New balance</td></tr>
+          <tr><td>Your reporting access</td><td>Blurple/Red</td><td><code>/access status</code></td><td>Credit and AI usage fields</td></tr>
+          <tr><td>User access</td><td>Blurple/Red</td><td><code>/admin user inspect</code></td><td>User ID and suspension reason</td></tr>
+          <tr><td>Default country updated</td><td>Green</td><td><code>/settings country</code></td><td>No controls</td></tr>
+          <tr><td>Access keys created</td><td>Green</td><td><code>/admin key create</code></td><td>Plaintext shown once</td></tr>
+          <tr><td>Access keys</td><td>Blurple</td><td><code>/admin key list</code></td><td>One field per recent key</td></tr>
+          <tr><td>Access key details</td><td>Status-dependent</td><td><code>/admin key inspect</code></td><td>Prefix, credits, status, expiry, redeemer, revoked time</td></tr>
+          <tr><td>Access key revoked</td><td>Green</td><td><code>/admin key revoke</code></td><td>No controls</td></tr>
+          <tr><td>User suspended</td><td>Green</td><td><code>/admin user suspend</code></td><td>No controls</td></tr>
+          <tr><td>User reinstated</td><td>Green</td><td><code>/admin user reinstate</code></td><td>No controls</td></tr>
+          <tr><td>Report submitted to Discord</td><td>Status-dependent</td><td>Lifecycle DM</td><td>Creates or edits the saved status DM</td></tr>
+          <tr><td>Report processing failed</td><td>Red</td><td>Lifecycle DM</td><td>Optional retry; pre-ID failure is plain text instead</td></tr>
+          <tr><td>Discord receipt confirmation timed out</td><td>Red</td><td>Lifecycle DM</td><td>Reply explains two-minute timeout and offers retry</td></tr>
+          <tr><td>Report received by Discord</td><td>Blurple</td><td>Lifecycle DM</td><td>Edits saved status DM</td></tr>
+          <tr><td>Discord took action</td><td>Green</td><td>Lifecycle DM</td><td>Edits embed and replies with acceptance text</td></tr>
+          <tr><td>Discord closed the report without action</td><td>Grey</td><td>Lifecycle DM</td><td>Edits embed and replies with denial text</td></tr>
+          <tr><td>Discord did not approve the report</td><td>Red</td><td>Lifecycle DM</td><td>Edits embed and replies with denial text</td></tr>
+          <tr><td>Discord DSA report update</td><td>Status-dependent</td><td>Lifecycle fallback title</td><td>Timestamped status embed</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="components-heading">
+    <h2 id="components-heading">Modal and component inventory</h2>
+    <div class="grid">
+      <article class="card">
+        <h3>Report Message/Profile/Server modal</h3>
+        <p class="small">Always includes report reason and a 1–512 character brief/final report.</p>
+        <ul>
+          <li>Message link appears only when it was not already supplied.</li>
+          <li>Profile reports add a required multi-select of unlawful profile elements.</li>
+          <li>Server reports add the target when missing and a required multi-select of server elements.</li>
+          <li>AI copy says a vague reason is acceptable; manual copy says this is the final report.</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h3>Refine AI report modal</h3>
+        <p class="small">One 1–512 character paragraph: “What should DeepSeek change?” It continues the existing conversation.</p>
+      </article>
+      <article class="card">
+        <h3>Edit report manually modal</h3>
+        <p class="small">Displays the current AI candidate for copying, including a truncation notice when necessary, then accepts a final 1–512 character report.</p>
+      </article>
+      <article class="card">
+        <h3>Country picker</h3>
+        <p class="small">A required single-select with 24 entries per page. Auto is present only for AI-enabled reports. Previous and Next appear when needed.</p>
+      </article>
+      <article class="card">
+        <h3>Review controls</h3>
+        <p class="small">Submit DSA Report, Refine, Regenerate, Edit manually, Cancel, and Change country. Manual reports omit Refine and Regenerate.</p>
+      </article>
+      <article class="card">
+        <h3>Report browser controls</h3>
+        <p class="small">Previous and Next appear for multi-report lists. Retry as new report appears only for safe, eligible failures below the retry limit.</p>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="dm-heading">
+    <h2 id="dm-heading">Lifecycle DM flow</h2>
+    <ol class="flow">
+      <li><strong>Submitted</strong>Send one status embed and save its Discord message ID.</li>
+      <li><strong>Received</strong>Edit that same embed; do not create a second status message.</li>
+      <li><strong>Outcome</strong>Edit the embed to green/grey/red and reply beneath it.</li>
+      <li><strong>Receipt timeout</strong>Edit red, reply with the two-minute explanation, show retry.</li>
+      <li><strong>Pre-ID failure</strong>Send plain text with failure detail and internal report ID.</li>
+      <li><strong>Reconciliation</strong>Webhook events plus a 15-minute paginated API event feed.</li>
+    </ol>
+  </section>
+</main>
+</body>
+</html>

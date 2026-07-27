@@ -39,7 +39,7 @@ sequenceDiagram
 
 The backend owns:
 
-- country-appropriate pseudonym and catch-all email generation;
+- country-independent first-name plus last-name pseudonym and catch-all email generation;
 - one sticky, country-specific proxy session for the report lifecycle;
 - Discord fingerprint, cookie, verification-code, token, and menu handling;
 - live breadcrumb resolution from the current Discord menu;

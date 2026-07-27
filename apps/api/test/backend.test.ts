@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 
+import { faker } from "@faker-js/faker";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -77,7 +78,7 @@ describe("backend identity and validation", () => {
     expect(DISCORD_FORM_LANGUAGE).toBe("en");
   });
 
-  it("generates a localized unique German identity", () => {
+  it("generates a unique identity with localized session settings", () => {
     const identity = generateIdentity("de", "reports.example.org");
     expect(identity.country).toBe("DE");
     expect(identity.displayName).toContain(" ");
@@ -88,6 +89,15 @@ describe("backend identity and validation", () => {
     expect(identity.timezone).toBe("Europe/Berlin");
     expect(identity.locale).toBe("de-DE");
     expect(identity.language).toBe("de");
+  });
+
+  it("generates reporter names independently from the selected country", () => {
+    faker.seed(20_260_728);
+    const germanName = generateIdentity("DE", "reports.example.org").displayName;
+    faker.seed(20_260_728);
+    const frenchName = generateIdentity("FR", "reports.example.org").displayName;
+
+    expect(germanName).toBe(frenchName);
   });
 
   it("generates an internally consistent identity for every EU member state", () => {
@@ -108,17 +118,6 @@ describe("backend identity and validation", () => {
       expect(buildAcceptLanguage(identity.locale, identity.language)).toContain(identity.locale);
     }
   });
-
-  it.each(["BG", "EE", "LT", "MT"])(
-    "uses Faker's generic English name fallback for %s",
-    (country) => {
-      for (let sample = 0; sample < 10; sample += 1) {
-        expect(generateIdentity(country, "reports.example.org").displayName).toMatch(
-          /^[\x20-\x7E]+$/
-        );
-      }
-    }
-  );
 
   it("rejects caller-supplied reporter identities", () => {
     expect(() =>

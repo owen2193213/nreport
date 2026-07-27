@@ -79,10 +79,6 @@ interface ResearchCompletion {
   researchSummary: string;
 }
 
-interface RefinementCompletion extends ResearchCompletion {
-  report: string;
-}
-
 export interface WriterResult {
   conversation: WriterConversationMessage[];
   country: string;
@@ -283,17 +279,13 @@ export function initialWriterPrompt(): string {
 }
 
 function refinementPrompt(draft: ReportDraft, instruction: string): string {
-  const fixed = draft.countrySelection !== "auto";
   return [
     "Task: Refine the current report using the user's latest instruction.",
     `Instruction: ${instruction.trim()}`,
     "Preserve the established facts and conversational context.",
     "Keep the report at 512 characters or fewer and retain the applicable country-qualified lawReference naturally in the text.",
-    "Use web search only if the instruction needs new legal facts, challenges the current country, or makes the existing research insufficient.",
-    fixed
-      ? `The selected country ${draft.country ?? ""} is fixed and must not change.`
-      : "If stronger searched legal evidence supports another country, you may update the Auto country.",
-    "Return the country as its exact two-letter code from the supported-country list, the existing or updated research summary, and the report."
+    "Use the existing legal research; do not research or change the country or law reference.",
+    "Return only the report text."
   ].join("\n");
 }
 
@@ -385,27 +377,6 @@ function parsedReport(content: unknown): string {
     throw new ReportWriterError("The AI report exceeded 512 characters.");
   }
   return report;
-}
-
-function parsedRefinement(
-  content: unknown,
-  draft: ReportDraft,
-  supportedCountries: readonly string[],
-  usage: AiUsage
-): RefinementCompletion {
-  const value = parseJsonObject(content);
-  const research = parsedResearch(content, draft, supportedCountries);
-  const report = typeof value.report === "string" ? value.report.trim() : "";
-  if (
-    draft.countrySelection === "auto" &&
-    draft.country &&
-    research.country !== draft.country &&
-    usage.searchRequests === 0
-  ) {
-    throw new ReportWriterError("Grok changed the Auto country without new web research.");
-  }
-  if (!report) throw new ReportWriterError("The refined report was empty.");
-  return { ...research, report };
 }
 
 function validatedSources(message: OpenRouterMessage): LegalSource[] {
@@ -560,18 +531,13 @@ export class ReportWriter {
           images
         ),
         max_tokens: 900,
-        max_tool_calls: 2,
-        tools: [{ type: "openrouter:web_search" }],
         reasoning: { effort: this.reasoningEffort, exclude: true },
         response_format: responseSchema(
           "discord_dsa_report_refinement",
           {
-            country: { type: "string", enum: this.supportedCountries },
-            lawReference: { type: "string" },
-            researchSummary: { type: "string" },
             report: { type: "string" }
           },
-          ["country", "lawReference", "researchSummary", "report"]
+          ["report"]
         ),
         provider: this.provider()
       },
@@ -579,36 +545,9 @@ export class ReportWriter {
       actor,
       "refine"
     );
-    const searchedSources = validatedSources(result.message);
-    const sources =
-      result.usage.searchRequests > 0 && searchedSources.length > 0
-        ? searchedSources
-        : draft.legalResearch.sources;
-    const completion = parsedRefinement(
-      result.message.content,
-      draft,
-      this.supportedCountries,
-      result.usage
-    );
-    const searched = result.usage.searchRequests > 0;
-    const country = searched ? completion.country : draft.country;
-    const summary = searched
-      ? completion.researchSummary.slice(0, MAX_RESEARCH_SUMMARY_LENGTH)
-      : draft.legalResearch.summary;
-    const lawReference = searched
-      ? completion.lawReference
-      : draft.legalResearch.lawReference ?? completion.lawReference;
-    const legalResearch: LegalResearch = {
-      country,
-      lawReference,
-      summary,
-      sources,
-      researchedAt:
-        searched
-          ? new Date().toISOString()
-          : draft.legalResearch.researchedAt,
-      searchRequests: draft.legalResearch.searchRequests + result.usage.searchRequests
-    };
+    const completion = reportCandidate(result.message.content);
+    const country = draft.country;
+    const legalResearch = draft.legalResearch;
     const responseConversation = [
       ...conversation,
       {
@@ -619,14 +558,14 @@ export class ReportWriter {
     let report: string;
     let finalConversation = responseConversation;
     try {
-      report = parsedReport(JSON.stringify({ report: completion.report }));
+      report = parsedReport(JSON.stringify({ report: completion }));
     } catch (error) {
       const problem = error instanceof Error ? error.message : "invalid refined report";
       botLog(
         "ai_output_validation_failed",
         {
           actorKey: actor.actorKey,
-          outputLength: completion.report.length,
+          outputLength: completion.length,
           stage: "refine",
           validationIssue: problem
         },

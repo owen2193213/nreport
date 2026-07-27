@@ -125,9 +125,9 @@ provision instead of relying on an unexplained abbreviation or section number. T
 `lawReference` is required but has no report-length limit; only the submitted report is capped at
 512 characters.
 Changing country clears the AI conversation and research before running both again. Refine appends
-the instruction and result to the same encrypted conversation and reuses the existing research
-with optional web search when the requested change needs new legal facts or challenges Auto's
-country. Regenerate starts a new conversation and reruns combined research; Auto may choose a
+the instruction and report-only result to the same encrypted conversation and reuses the existing
+research without web search or country changes. Regenerate starts a new conversation and reruns
+combined research; Auto may choose a
 different country. Manual edits become the current assistant answer so a later refinement
 continues from that text. Repair also
 continues the same conversation, performs no search, and is attempted only once.

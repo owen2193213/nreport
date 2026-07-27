@@ -92,12 +92,7 @@ function refinementCompletion(
   searchRequests = 0
 ): Response {
   return completion(
-    {
-      country: "DE",
-      lawReference: LAW_REFERENCE,
-      researchSummary: `${LAW_REFERENCE} protects human dignity.`,
-      report
-    },
+    { report },
     {
       annotations: searchRequests > 0 ? [citationAnnotation()] : [],
       searchRequests
@@ -345,7 +340,7 @@ describe("OpenRouter report writer", () => {
     expect(messages).toContain("country-qualified lawReference");
   });
 
-  it("refines in the same conversation and offers search only when needed", async () => {
+  it("refines in the same conversation using the existing research", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion())
@@ -363,43 +358,19 @@ describe("OpenRouter report writer", () => {
 
     const refined = await writer.refine(draft, "Make it clearer.", ACTOR);
     expect(refined.report).toContain("Refined report");
-    const body = requestBody<{ max_tool_calls: number; tools: unknown[]; messages: unknown[] }>(
-      request,
-      2
-    );
-    expect(body.tools).toEqual([{ type: "openrouter:web_search" }]);
-    expect(body.max_tool_calls).toBe(2);
+    const body = requestBody<{ messages: unknown[]; response_format: unknown }>(request, 2);
+    expect(JSON.stringify(body.response_format)).toContain('"required":["report"]');
+    expect(JSON.stringify(body.response_format)).not.toContain("researchSummary");
     expect(JSON.stringify(body.messages)).toContain("Make it clearer.");
     expect(JSON.stringify(body.messages)).toContain(initial.report);
   });
 
-  it("updates Auto research when refinement searches again", async () => {
+  it("preserves Auto research during refinement", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion())
       .mockResolvedValueOnce(reportCompletion())
-      .mockResolvedValueOnce(
-        completion(
-          {
-            country: "FR",
-            lawReference: "France's Example Law, Article 1",
-            researchSummary: "France's Example Law, Article 1 may apply.",
-            report: "France's Example Law, Article 1 may apply. Revised report."
-          },
-          {
-            annotations: [
-              {
-                type: "url_citation",
-                url_citation: {
-                  url: "https://example.fr/law",
-                  title: "French Law Article 1"
-                }
-              }
-            ],
-            searchRequests: 1
-          }
-        )
-      );
+      .mockResolvedValueOnce(refinementCompletion("Refined report."));
     const writer = fixedWriter(request);
     const draft = profileDraft();
     draft.countrySelection = "auto";
@@ -410,9 +381,9 @@ describe("OpenRouter report writer", () => {
       context: initial.report,
       writerConversation: initial.conversation
     });
-    const refined = await writer.refine(draft, "Check French law.", ACTOR);
-    expect(refined.country).toBe("FR");
-    expect(refined.legalResearch.searchRequests).toBe(2);
+    const refined = await writer.refine(draft, "Make it clearer.", ACTOR);
+    expect(refined.country).toBe("DE");
+    expect(refined.legalResearch).toEqual(initial.legalResearch);
   });
 
   it("repairs an invalid refinement inside the same conversation", async () => {

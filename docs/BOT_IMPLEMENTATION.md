@@ -87,6 +87,8 @@ Every generation begins with one combined country-selection and legal-research r
 supported country names/codes, reporter explanation, and resolved text evidence.
 The response schema requires a supported two-letter country code. The bot also defensively
 normalizes an exact supported English country name to its code before validation.
+The internal law reference has no length limit; validation distinguishes an invalid country,
+missing reference, and missing research summary.
 The prompt prefers one search but allows up to three when results conflict or another supported
 country may have a stronger basis. Search uses OpenRouter's standard result settings with no
 domain or result-list filter. OpenRouter search counts and URL annotations are retained when
@@ -119,7 +121,9 @@ The review identifies whether the country was Auto-selected, a saved default, or
 override. The researched law or provision appears naturally inside the 512-character report;
 brackets, URLs, footnotes, and separate source fields are not required.
 The structured `lawReference` and final report name the country, clear full law title, and
-provision instead of relying on an unexplained abbreviation or section number.
+provision instead of relying on an unexplained abbreviation or section number. The internal
+`lawReference` is required but has no report-length limit; only the submitted report is capped at
+512 characters.
 Changing country clears the AI conversation and research before running both again. Refine appends
 the instruction and result to the same encrypted conversation and reuses the existing research
 with optional web search when the requested change needs new legal facts or challenges Auto's

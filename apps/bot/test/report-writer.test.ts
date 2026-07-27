@@ -302,6 +302,26 @@ describe("OpenRouter report writer", () => {
     expect(result.legalResearch.searchRequests).toBe(0);
   });
 
+  it("accepts an internal law reference longer than the final report limit", async () => {
+    const detailedLawReference = `Germany, Criminal Code, Section 176 (${`detail `.repeat(100)})`;
+    expect(detailedLawReference.length).toBeGreaterThan(512);
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completion({
+          country: "DE",
+          lawReference: detailedLawReference,
+          researchSummary: "The provision may be relevant to the reported conduct."
+        })
+      )
+      .mockResolvedValueOnce(reportCompletion("Concise reviewed report."));
+
+    const result = await fixedWriter(request).generate(profileDraft(), ACTOR);
+
+    expect(result.legalResearch.lawReference).toBe(detailedLawReference);
+    expect(result.report).toBe("Concise reviewed report.");
+  });
+
   it("writes with configured medium reasoning and a natural inline law reference", async () => {
     const request = vi
       .fn()

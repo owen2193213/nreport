@@ -346,16 +346,16 @@ function parsedResearch(
     typeof value.lawReference === "string" ? value.lawReference.trim() : "";
   const researchSummary =
     typeof value.researchSummary === "string" ? value.researchSummary.trim() : "";
-  if (
-    !country ||
-    !lawReference ||
-    lawReference.length > 160 ||
-    !researchSummary ||
-    !supportedCountries.includes(country)
-  ) {
+  if (!country || !supportedCountries.includes(country)) {
     throw new ReportWriterError(
       "Grok could not produce usable legal research for a supported country. Retry or choose a country override."
     );
+  }
+  if (!lawReference) {
+    throw new ReportWriterError("Grok returned legal research without a law reference.");
+  }
+  if (!researchSummary) {
+    throw new ReportWriterError("Grok returned legal research without a research summary.");
   }
   if (draft.countrySelection !== "auto" && draft.country !== country) {
     throw new ReportWriterError("Grok changed a fixed country. Retry the research.");

@@ -76,8 +76,8 @@ The bot needs only these reporting-service variables:
 DSA_API_BASE_URL=https://discord-dsa-production.up.railway.app
 DSA_API_KEY=<same API_KEY configured on the Railway API service>
 OPENROUTER_API_KEY=<bot-only OpenRouter key>
-OPENROUTER_MODEL=x-ai/grok-4.5
-OPENROUTER_WRITER_REASONING_EFFORT=medium
+OPENROUTER_MODEL=deepseek/deepseek-v4-pro
+OPENROUTER_WRITER_REASONING_EFFORT=high
 ```
 
 Keep both API keys in the bot host's secret manager. Never place them in slash-command
@@ -633,7 +633,7 @@ opening the report form.
 
 `/settings country` and each report country option accept `AUTO` or a code returned by
 `/v1/countries`. An explicit report option wins over the saved default; a missing or `NULL` saved
-default means Auto. Auto uses Grok to select one supported code based on conduct and legal
+default means Auto. Auto uses DeepSeek to select one supported code based on conduct and legal
 relevance, never guessed location.
 
 The bot asks for a short explanation and sends the report category, selected elements, supported
@@ -656,7 +656,7 @@ may remain as text metadata.
 Refine continues the encrypted conversation and may search up to twice only when new legal facts
 or an Auto-country reassessment are needed. Repair continues the same conversation without search
 and receives one attempt. Regenerate reruns combined research, and changing country clears the
-conversation. Writing/refinement reasoning defaults to `medium` and is configurable through
+conversation. Writing/refinement reasoning defaults to `high` and is configurable through
 `OPENROUTER_WRITER_REASONING_EFFORT`.
 
 The optional `dont-use-ai` boolean defaults to `false`. When true, the reporter supplies the final

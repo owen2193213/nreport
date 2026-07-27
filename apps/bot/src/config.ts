@@ -21,7 +21,7 @@ export interface BotConfig {
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 function reasoningEffort(value: string | undefined): ReasoningEffort {
-  const normalized = value?.trim().toLowerCase() || "medium";
+  const normalized = value?.trim().toLowerCase() || "high";
   if (
     normalized !== "none" &&
     normalized !== "minimal" &&
@@ -96,7 +96,7 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     environment: env.NODE_ENV?.trim() || "development",
     keyPepper: secret(env, "ACCESS_KEY_PEPPER"),
     openRouterApiKey: required(env, "OPENROUTER_API_KEY"),
-    openRouterModel: env.OPENROUTER_MODEL?.trim() || "x-ai/grok-4.5",
+    openRouterModel: env.OPENROUTER_MODEL?.trim() || "deepseek/deepseek-v4-pro",
     openRouterWriterReasoningEffort: reasoningEffort(
       env.OPENROUTER_WRITER_REASONING_EFFORT
     ),

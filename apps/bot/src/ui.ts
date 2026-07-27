@@ -250,7 +250,7 @@ export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuil
       label: draft.aiDisabled ? "Final report text" : "Briefly explain the report",
       description: draft.aiDisabled
         ? "AI is disabled. Write the final report in 512 characters or fewer."
-        : "A short or vague reason is okay. Grok will draft the final report for review.",
+        : "A short or vague reason is okay. DeepSeek will draft the final report for review.",
       required: true,
       style: TextInputStyle.Paragraph,
       minLength: 1,
@@ -268,7 +268,7 @@ export function buildRefinementModal(draftId: string): ModalBuilder {
     .addLabelComponents(
       textLabel({
         customId: "instruction",
-        label: "What should Grok change?",
+        label: "What should DeepSeek change?",
         description: "This continues the existing AI conversation.",
         style: TextInputStyle.Paragraph,
         minLength: 1,
@@ -351,7 +351,7 @@ export function buildCountryPicker(
         "Choose the applicable country",
         `${
           allowAuto
-            ? "Choose **Auto** to let Grok select a supported country based on legal relevance, or select a country override."
+            ? "Choose **Auto** to let DeepSeek select a supported country based on legal relevance, or select a country override."
             : "AI is disabled for this report, so select a country manually."
         }\n\nPage **${safePage + 1} of ${pageCount}**`
       )
@@ -443,7 +443,7 @@ function truncate(value: string, maximum: number): string {
 function countryOrigin(draft: ReportDraft): string {
   switch (draft.countrySelection) {
     case "auto":
-      return "Auto-selected by Grok";
+      return "Auto-selected by DeepSeek";
     case "default":
       return "Saved default";
     case "override":

@@ -524,7 +524,7 @@ export class InteractionHandler {
         successEmbed(
           "Default country updated",
           country === "AUTO"
-            ? "New reports will use **Auto**, so Grok will select a supported country based on legal relevance. You can still override it per report."
+            ? "New reports will use **Auto**, so DeepSeek will select a supported country based on legal relevance. You can still override it per report."
             : `New reports will default to **${countryDisplay(country)}**. You can still override it per report.`
         )
       ],
@@ -645,7 +645,7 @@ export class InteractionHandler {
       const instruction = interaction.fields.getTextInputValue("instruction").trim();
       await interaction.deferUpdate();
       await interaction.editReply({
-        embeds: [infoEmbed("Refining report", "Grok is applying your feedback in the same conversation.")],
+        embeds: [infoEmbed("Refining report", "DeepSeek is applying your feedback in the same conversation.")],
         components: []
       });
       try {
@@ -753,7 +753,7 @@ export class InteractionHandler {
       embeds: [
         infoEmbed(
           "Researching and writing report",
-          "Grok is choosing the applicable country when needed, researching the law, and preparing a concise report."
+          "DeepSeek is choosing the applicable country when needed, researching the law, and preparing a concise report."
         )
       ],
       components: []
@@ -846,7 +846,7 @@ export class InteractionHandler {
       embeds: [
         infoEmbed(
           "Researching new country",
-          "Grok is researching a relevant law and rewriting the report."
+          "DeepSeek is researching a relevant law and rewriting the report."
         )
       ],
       components: []
@@ -993,7 +993,7 @@ export class InteractionHandler {
         embeds: [
           infoEmbed(
             "Rewriting report",
-            "Grok is rerunning country research and starting a fresh writing conversation."
+            "DeepSeek is rerunning country research and starting a fresh writing conversation."
           )
         ],
         components: []

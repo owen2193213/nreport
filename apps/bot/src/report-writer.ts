@@ -14,7 +14,6 @@ import type {
 const MAX_REPORT_LENGTH = 512;
 const WORKFLOW_TIMEOUT_MS = 90_000;
 const REQUEST_TIMEOUT_MS = 45_000;
-const MAX_RESEARCH_SUMMARY_LENGTH = 6_000;
 const WRITER_SYSTEM_PROMPT = [
   "Task: Write or revise a concise, factual EU Digital Services Act report for Discord.",
   "Use the supplied conversation, evidence, and research.",
@@ -260,7 +259,7 @@ function researchPrompt(draft: ReportDraft, countries: readonly string[]): strin
     "Base an Auto country on legal evidence, not anyone's presumed location.",
     "Identify a relevant law and provision, but do not claim that a violation definitely occurred.",
     "The lawReference must name the country, the law's clear full title, and the relevant article or section; put an abbreviation in parentheses when useful. Never return an unexplained abbreviation or section number.",
-    "Return the selected country as its exact two-letter code from the supported-country list, that exact reader-friendly lawReference, and a concise research summary."
+    "Return the selected country as its exact two-letter code from the supported-country list, that exact reader-friendly lawReference, and a concise research summary containing only the essential legal relevance."
   ].join("\n");
 }
 
@@ -340,17 +339,17 @@ function parsedResearch(
     typeof value.researchSummary === "string" ? value.researchSummary.trim() : "";
   if (!country || !supportedCountries.includes(country)) {
     throw new ReportWriterError(
-      "Grok could not produce usable legal research for a supported country. Retry or choose a country override."
+      "DeepSeek could not produce usable legal research for a supported country. Retry or choose a country override."
     );
   }
   if (!lawReference) {
-    throw new ReportWriterError("Grok returned legal research without a law reference.");
+    throw new ReportWriterError("DeepSeek returned legal research without a law reference.");
   }
   if (!researchSummary) {
-    throw new ReportWriterError("Grok returned legal research without a research summary.");
+    throw new ReportWriterError("DeepSeek returned legal research without a research summary.");
   }
   if (draft.countrySelection !== "auto" && draft.country !== country) {
-    throw new ReportWriterError("Grok changed a fixed country. Retry the research.");
+    throw new ReportWriterError("DeepSeek changed a fixed country. Retry the research.");
   }
   return { country, lawReference, researchSummary };
 }
@@ -452,7 +451,7 @@ export class ReportWriter {
     private readonly supportedCountries: readonly string[],
     options: ReportWriterOptions = {}
   ) {
-    this.reasoningEffort = options.reasoningEffort ?? "medium";
+    this.reasoningEffort = options.reasoningEffort ?? "high";
     this.recordUsage = options.recordUsage ?? (() => Promise.resolve());
     this.request = options.request ?? globalThis.fetch;
   }
@@ -466,7 +465,8 @@ export class ReportWriter {
       researchUserPrompt,
       images,
       deadline,
-      actor
+      actor,
+      draft.countrySelection === "auto"
     );
     const research = parsedResearch(
       researchResult.message.content,
@@ -477,7 +477,7 @@ export class ReportWriter {
     const legalResearch: LegalResearch = {
       country: research.country,
       lawReference: research.lawReference,
-      summary: research.researchSummary.slice(0, MAX_RESEARCH_SUMMARY_LENGTH),
+      summary: research.researchSummary,
       sources,
       researchedAt: new Date().toISOString(),
       searchRequests: researchResult.usage.searchRequests
@@ -619,7 +619,8 @@ export class ReportWriter {
     prompt: string,
     images: SelectedImage[],
     deadline: number,
-    actor: AiRequestContext
+    actor: AiRequestContext,
+    autoCountry: boolean
   ): Promise<OpenRouterResult> {
     return this.openRouter(
       {
@@ -635,10 +636,19 @@ export class ReportWriter {
           ],
           images
         ),
-        max_tokens: 800,
-        max_tool_calls: 3,
-        tools: [{ type: "openrouter:web_search" }],
-        reasoning: { effort: "low", exclude: true },
+        max_tool_calls: autoCountry ? 2 : 1,
+        tools: [
+          {
+            type: "openrouter:web_search",
+            parameters: {
+              engine: "exa",
+              max_results: 3,
+              max_total_results: autoCountry ? 5 : 3,
+              max_characters: 2_500
+            }
+          }
+        ],
+        reasoning: { effort: "high", exclude: true },
         response_format: responseSchema(
           "discord_dsa_country_research",
           {

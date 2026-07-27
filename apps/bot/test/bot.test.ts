@@ -413,7 +413,7 @@ describe("report UI", () => {
       { name: "🇩🇪 Germany", value: "DE" }
     ]);
     expect(matchingCountries(["DE", "FR"], "auto")).toEqual([
-      { name: "✨ Auto — Grok chooses", value: "AUTO" }
+      { name: "✨ Auto — DeepSeek chooses", value: "AUTO" }
     ]);
     expect(matchingCountries(Array.from({ length: 27 }, () => "DE"), "")).toHaveLength(25);
   });
@@ -598,7 +598,7 @@ describe("report UI", () => {
     expect(JSON.stringify(buttons)).toContain("Edit manually");
     const reviewJson = JSON.stringify(review.embeds[0]?.toJSON());
     expect(reviewJson).toContain("512/512 characters");
-    expect(reviewJson).toContain("Auto-selected by Grok");
+    expect(reviewJson).toContain("Auto-selected by DeepSeek");
     expect(reviewJson).not.toContain("https://www.gesetze-im-internet.de/gg/");
     expect(JSON.stringify(review.components[1]?.toJSON())).toContain("Change country");
   });

@@ -51,7 +51,7 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
    confirmation before collecting the report details; unresolved IDs can be retried or cancelled.
 4. Encrypt the draft and its OpenRouter conversation at rest with a 30-minute expiry.
 5. In one structured OpenRouter request, resolve Auto when needed and research a supporting law.
-   Then ask `x-ai/grok-4.5` to write a factual report of at most 512 characters that naturally
+   Then ask `deepseek/deepseek-v4-pro` to write a factual report of at most 512 characters that naturally
    names the researched law or provision. Show an ephemeral review with submit, refine, regenerate,
    country-change, manual-edit, and cancel controls.
 6. Atomically reserve one credit and create the API report with the interaction ID.
@@ -78,7 +78,7 @@ attempts for that tracked report; `/reports` remains available.
 
 The bot calls OpenRouter directly; the API and low-level Discord client never receive the
 reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KEY` is required and
-`OPENROUTER_MODEL` defaults to `x-ai/grok-4.5`. Provider routing requires zero data retention,
+`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-pro`. Provider routing requires zero data retention,
 denies provider data collection, and requires structured-output support. The complete generation
 workflow is capped at 90 seconds.
 
@@ -89,10 +89,12 @@ The response schema requires a supported two-letter country code. The bot also d
 normalizes an exact supported English country name to its code before validation.
 The internal law reference has no length limit; validation distinguishes an invalid country,
 missing reference, and missing research summary.
-The prompt prefers one search but allows up to three when results conflict or another supported
-country may have a stronger basis. Search uses OpenRouter's standard result settings with no
-domain or result-list filter. OpenRouter search counts and URL annotations are retained when
-available but are not required for a usable result.
+The prompt asks for only the essential legal relevance in a concise research summary without
+hard-capping research output tokens. Search uses OpenRouter's Exa engine with at most three results
+per call and 2,500 characters per result. Fixed/default country research gets one call and three
+total results; Auto gets up to two calls and five total results when comparison or follow-up is
+needed. No domain filter is imposed. OpenRouter search counts and URL annotations are retained
+when available but are not required for a usable result.
 
 The prompt contains the selected semantic reason, the reporter's brief, and only the useful
 resolved target data. Message reports include the accessible message content, author, timestamp,
@@ -113,7 +115,7 @@ for compatible models.
 Each `/report` subcommand has an optional `dont-use-ai` boolean that defaults to `false`. When it
 is `true`, the modal asks for final report text with a 512-character limit, performs no OpenRouter
 request, and shows the normal review with Submit, Edit manually, Change country, and Cancel.
-Refine and Regenerate are omitted. Because Auto country selection requires Grok, a manual report
+Refine and Regenerate are omitted. Because Auto country selection requires DeepSeek, a manual report
 with no saved or explicit country must select a country before review. The message context-menu
 command has no command options and continues to use the default AI flow.
 
@@ -133,7 +135,7 @@ continues from that text. Repair also
 continues the same conversation, performs no search, and is attempted only once.
 
 Writing, refinement, and repair use OpenRouter reasoning with
-`OPENROUTER_WRITER_REASONING_EFFORT` (default `medium`) and exclude reasoning text from responses.
+`OPENROUTER_WRITER_REASONING_EFFORT` (default `high`) and exclude reasoning text from responses.
 Reasoning, input/output tokens, search requests, request counts, and OpenRouter-reported cost are
 accumulated per user in `bot_users` and displayed by `/access status`. Safe logs use a keyed
 pseudonymous actor value plus stage, model, latency, usage, cost, and failure category.
@@ -145,7 +147,7 @@ provides a separate required 512-character input. Drafts already within the limi
 input; overlength drafts leave it blank for the user to shorten and paste. Insufficient
 OpenRouter balance, rate limits, timeouts, malformed output, unsupported Auto countries, and
 unusable legal research use the safe AI failure screen. Retry, country override, detail editing,
-manual editing when candidate text is available, and cancel remain available. The bot asks Grok
+manual editing when candidate text is available, and cancel remain available. The bot asks DeepSeek
 to include the researched law but does not reject reviewed text for omitting it or attempt to
 verify that the law exists.
 No report is created and no credit is reserved until valid reviewed text is submitted. Drafts hold

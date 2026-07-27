@@ -104,8 +104,8 @@ function fixedWriter(
   request: ReturnType<typeof vi.fn>,
   recordUsage: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined)
 ): ReportWriter {
-  return new ReportWriter("secret", "x-ai/grok-4.5", COUNTRIES, {
-    reasoningEffort: "medium",
+  return new ReportWriter("secret", "deepseek/deepseek-v4-pro", COUNTRIES, {
+    reasoningEffort: "high",
     recordUsage: recordUsage as unknown as (userId: string, usage: AiUsage) => Promise<void>,
     request: request as unknown as typeof globalThis.fetch
   });
@@ -132,11 +132,23 @@ describe("OpenRouter report writer", () => {
     expect(request).toHaveBeenCalledTimes(2);
     const research = requestBody<{
       max_tool_calls: number;
+      max_tokens?: number;
       messages: unknown[];
       tools: unknown[];
     }>(request, 0);
-    expect(research.max_tool_calls).toBe(3);
-    expect(research.tools).toEqual([{ type: "openrouter:web_search" }]);
+    expect(research.max_tool_calls).toBe(2);
+    expect(research.max_tokens).toBeUndefined();
+    expect(research.tools).toEqual([
+      {
+        type: "openrouter:web_search",
+        parameters: {
+          engine: "exa",
+          max_results: 3,
+          max_total_results: 5,
+          max_characters: 2_500
+        }
+      }
+    ]);
     const text = JSON.stringify(research.messages);
     expect(text).toContain("Germany (DE)");
     expect(text).toContain("123456789012345678");
@@ -249,16 +261,31 @@ describe("OpenRouter report writer", () => {
     expect(text).toContain("video/mp4");
   });
 
-  it("uses standard search settings without domain or result restrictions", async () => {
+  it("uses tighter bounded search for a fixed country without bounding research output", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion())
       .mockResolvedValueOnce(reportCompletion());
     await fixedWriter(request).generate(profileDraft(), ACTOR);
-    const body = requestBody<Record<string, unknown>>(request, 0);
+    const body = requestBody<{
+      max_tool_calls: number;
+      max_tokens?: number;
+      tools: unknown[];
+    }>(request, 0);
+    expect(body.max_tool_calls).toBe(1);
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.tools).toEqual([
+      {
+        type: "openrouter:web_search",
+        parameters: {
+          engine: "exa",
+          max_results: 3,
+          max_total_results: 3,
+          max_characters: 2_500
+        }
+      }
+    ]);
     expect(JSON.stringify(body)).not.toContain("allowed_domains");
-    expect(JSON.stringify(body)).not.toContain("max_results");
-    expect(JSON.stringify(body)).not.toContain("max_total_results");
   });
 
   it("keeps a fixed override and rejects an unsupported Auto country", async () => {
@@ -317,7 +344,7 @@ describe("OpenRouter report writer", () => {
     expect(result.report).toBe("Concise reviewed report.");
   });
 
-  it("writes with configured medium reasoning and a natural inline law reference", async () => {
+  it("writes with configured high reasoning and a natural inline law reference", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion())
@@ -328,7 +355,7 @@ describe("OpenRouter report writer", () => {
       reasoning: { effort: string; exclude: boolean };
       response_format: unknown;
     }>(request, 1);
-    expect(writing.reasoning).toEqual({ effort: "medium", exclude: true });
+    expect(writing.reasoning).toEqual({ effort: "high", exclude: true });
     expect(JSON.stringify(writing.response_format)).not.toContain("lawCitation");
     const messages = JSON.stringify(
       requestBody<{ messages: unknown[] }>(request, 1).messages

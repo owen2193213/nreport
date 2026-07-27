@@ -43,7 +43,7 @@ const report = userInstalled()
         .addBooleanOption((option) =>
           option
             .setName("dont-use-ai")
-            .setDescription("Write the final report manually instead of using Grok")
+            .setDescription("Write the final report manually instead of using DeepSeek")
         )
     )
     .addSubcommand((command) =>
@@ -75,7 +75,7 @@ const report = userInstalled()
         .addBooleanOption((option) =>
           option
             .setName("dont-use-ai")
-            .setDescription("Write the final report manually instead of using Grok")
+            .setDescription("Write the final report manually instead of using DeepSeek")
         )
     )
     .addSubcommand((command) =>
@@ -98,7 +98,7 @@ const report = userInstalled()
         .addBooleanOption((option) =>
           option
             .setName("dont-use-ai")
-            .setDescription("Write the final report manually instead of using Grok")
+            .setDescription("Write the final report manually instead of using DeepSeek")
         )
     );
 

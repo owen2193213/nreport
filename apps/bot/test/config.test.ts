@@ -19,10 +19,10 @@ function environment(): NodeJS.ProcessEnv {
 }
 
 describe("bot configuration", () => {
-  it("requires an OpenRouter key and defaults to Grok 4.5", () => {
+  it("requires an OpenRouter key and defaults to DeepSeek V4 Pro", () => {
     const config = loadBotConfig(environment());
-    expect(config.openRouterModel).toBe("x-ai/grok-4.5");
-    expect(config.openRouterWriterReasoningEffort).toBe("medium");
+    expect(config.openRouterModel).toBe("deepseek/deepseek-v4-pro");
+    expect(config.openRouterWriterReasoningEffort).toBe("high");
     const missing = environment();
     delete missing.OPENROUTER_API_KEY;
     expect(() => loadBotConfig(missing)).toThrow(/OPENROUTER_API_KEY is required/);
@@ -30,8 +30,8 @@ describe("bot configuration", () => {
 
   it("allows the OpenRouter model to be configured", () => {
     expect(
-      loadBotConfig({ ...environment(), OPENROUTER_MODEL: "x-ai/grok-custom" }).openRouterModel
-    ).toBe("x-ai/grok-custom");
+      loadBotConfig({ ...environment(), OPENROUTER_MODEL: "deepseek/deepseek-custom" }).openRouterModel
+    ).toBe("deepseek/deepseek-custom");
   });
 
   it("validates the configurable writer reasoning effort", () => {

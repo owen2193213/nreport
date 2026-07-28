@@ -252,6 +252,278 @@
       color: var(--text);
     }
 
+    .journey-stack {
+      display: grid;
+      gap: 24px;
+    }
+
+    .journey {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+
+    .journey-header {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 22px;
+    }
+
+    .journey-header p {
+      max-width: 720px;
+      margin: 5px 0 0;
+      color: var(--muted);
+    }
+
+    .journey-track {
+      display: grid;
+      gap: 34px;
+    }
+
+    .journey-stage {
+      position: relative;
+      display: grid;
+      grid-template-columns: 145px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .journey-stage:not(:last-child)::after {
+      position: absolute;
+      bottom: -29px;
+      left: 67px;
+      color: #8b92a1;
+      font-size: 20px;
+      content: "↓";
+    }
+
+    .stage-label {
+      padding-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .stage-label strong {
+      display: block;
+      margin-top: 3px;
+      color: var(--text);
+      font-size: 14px;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .surface-label {
+      display: inline-flex;
+      margin-bottom: 8px;
+      padding: 3px 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--page);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .discord-window {
+      overflow: hidden;
+      border: 1px solid #444954;
+      border-radius: 8px;
+      background: #313338;
+      box-shadow: 0 10px 28px rgb(0 0 0 / 20%);
+    }
+
+    .window-bar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 13px;
+      border-bottom: 1px solid #444954;
+      background: #2b2d31;
+      color: #dbdee1;
+      font-size: 12px;
+    }
+
+    .window-bar strong {
+      color: #f2f3f5;
+    }
+
+    .command-line {
+      padding: 14px;
+      overflow-wrap: anywhere;
+      color: #dbdee1;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 13px;
+    }
+
+    .command-token {
+      color: #c9cdfb;
+    }
+
+    .modal-body {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+    }
+
+    .modal-field label {
+      display: block;
+      margin-bottom: 5px;
+      color: #f2f3f5;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .modal-help {
+      display: block;
+      margin-top: 3px;
+      color: #b5bac1;
+      font-size: 11px;
+    }
+
+    .mock-control {
+      min-height: 38px;
+      padding: 9px 10px;
+      border: 1px solid #1e1f22;
+      border-radius: 4px;
+      background: #1e1f22;
+      color: #dbdee1;
+      font-size: 12px;
+    }
+
+    .mock-control.textarea {
+      min-height: 76px;
+    }
+
+    .mock-control.select {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .mock-control.select::after {
+      color: #b5bac1;
+      content: "Select";
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .mock-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 6px;
+    }
+
+    .mock-option {
+      padding: 3px 6px;
+      border-radius: 3px;
+      background: #41434a;
+      color: #dbdee1;
+      font-size: 10px;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      padding: 12px 16px;
+      border-top: 1px solid #444954;
+      background: #2b2d31;
+    }
+
+    .response-body {
+      padding: 14px;
+    }
+
+    .response-body .embed {
+      background: #2b2d31;
+    }
+
+    .dm-thread {
+      display: grid;
+      gap: 10px;
+      padding: 14px;
+    }
+
+    .dm-message {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    .avatar-placeholder {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--blurple);
+      color: white;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .dm-author {
+      margin-bottom: 6px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .dm-author span {
+      margin-left: 6px;
+      color: #949ba4;
+      font-weight: 400;
+    }
+
+    .dm-reply {
+      margin-left: 44px;
+      padding: 9px 11px;
+      border-left: 2px solid #4e5058;
+      color: #dbdee1;
+      background: #2b2d31;
+      font-size: 12px;
+    }
+
+    .outcome-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .outcome {
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel-2);
+    }
+
+    .outcome strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .outcome p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .modal-gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr));
+      gap: 16px;
+    }
+
     .command {
       margin-bottom: 16px;
     }
@@ -339,6 +611,28 @@
         background: var(--panel);
         content: "↓";
         transform: none;
+      }
+
+      .journey {
+        padding: 15px;
+      }
+
+      .journey-stage {
+        grid-template-columns: 1fr;
+      }
+
+      .journey-stage:not(:last-child)::after {
+        bottom: -29px;
+        left: 50%;
+        transform: translateX(-50%);
+      }
+
+      .stage-label {
+        padding-top: 0;
+      }
+
+      .outcome-grid {
+        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -434,8 +728,547 @@
     </div>
   </section>
 
+  <section aria-labelledby="journeys-heading">
+    <h2 id="journeys-heading">Report-type modal-to-DM diagrams</h2>
+    <p class="lede">
+      Each diagram follows the actual Discord surface: command input, modal, ephemeral interaction
+      responses, final review, immediate report status, and the private DM that is edited through
+      the Discord lifecycle. Example values are synthetic; field names and controls match the code.
+    </p>
+
+    <div class="journey-stack">
+      <article class="journey" aria-labelledby="message-journey-heading">
+        <div class="journey-header">
+          <div>
+            <h3 id="message-journey-heading">Message report journey</h3>
+            <p>
+              Used by <code>/report message</code> and <code>Apps → Report Message</code>. The context
+              command captures the selected message URL and evidence snapshot before opening the modal.
+            </p>
+          </div>
+          <span class="chip">message_urf</span>
+        </div>
+
+        <div class="journey-track">
+          <div class="journey-stage">
+            <div class="stage-label">Step 1<strong>Command</strong></div>
+            <div>
+              <span class="surface-label">Discord command input</span>
+              <div class="discord-window" role="img" aria-label="Message report slash command mockup">
+                <div class="window-bar"><strong>/report message</strong><span>User-installed command</span></div>
+                <div class="command-line">
+                  <span class="command-token">message-link:</span> https://discord.com/channels/…/…/…
+                  &nbsp; <span class="command-token">country:</span> Auto
+                  &nbsp; <span class="command-token">dont-use-ai:</span> false
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 2<strong>Initial modal</strong></div>
+            <div>
+              <span class="surface-label">Modal shown to reporter</span>
+              <div class="discord-window" role="img" aria-label="Report Message modal mockup">
+                <div class="window-bar"><strong>Report Message</strong><span>Encrypted draft • 30 minutes</span></div>
+                <div class="modal-body">
+                  <div class="modal-field">
+                    <label>Why are you reporting this?</label>
+                    <div class="mock-control select">Choose a semantic report reason</div>
+                  </div>
+                  <div class="modal-field">
+                    <label>Briefly explain the report</label>
+                    <div class="mock-control textarea">Describe what the message says and why it should be reported.</div>
+                    <span class="modal-help">A short or vague reason is okay. DeepSeek will draft the final report for review. Maximum 512 characters.</span>
+                  </div>
+                  <span class="modal-help">The message link is already supplied by the slash command or selected message, so it is not shown in this modal.</span>
+                </div>
+                <div class="modal-actions">
+                  <span class="button">Cancel</span>
+                  <span class="button primary">Submit</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 3<strong>Processing response</strong></div>
+            <div>
+              <span class="surface-label">Ephemeral response</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Only the reporter can see this</strong><span>Ephemeral</span></div>
+                <div class="response-body">
+                  <article class="embed color-blurple">
+                    <div class="embed-title">Researching and writing report</div>
+                    <div class="embed-description">DeepSeek is choosing the applicable country when needed, researching the law, and preparing a concise report.</div>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 4<strong>Review response</strong></div>
+            <div>
+              <span class="surface-label">Ephemeral response</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Only the reporter can see this</strong><span>Ephemeral</span></div>
+                <div class="response-body">
+                  <article class="embed color-orange">
+                    <div class="embed-title">Review message report</div>
+                    <div class="embed-description">Submitting creates a real DSA report. Confirm that the information is truthful and authorized.</div>
+                    <div class="embed-fields">
+                      <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Full Discord message URL.</div></div>
+                      <div class="field"><div class="field-name">Report category</div><div class="field-value">Message</div></div>
+                      <div class="field"><div class="field-name">Country</div><div class="field-value">Selected country + Auto/default/override origin.</div></div>
+                      <div class="field wide"><div class="field-name">Reason</div><div class="field-value">Resolved semantic report reason.</div></div>
+                      <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Final AI-written or manually entered report text.</div></div>
+                    </div>
+                    <div class="embed-footer">000/512 characters • Review carefully before submitting</div>
+                    <div class="chips" style="margin-top: 12px">
+                      <span class="button danger">Submit DSA Report</span>
+                      <span class="button primary">Refine</span>
+                      <span class="button">Regenerate</span>
+                      <span class="button">Edit manually</span>
+                      <span class="button">Cancel</span>
+                      <span class="button">Change country</span>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 5<strong>Immediate status</strong></div>
+            <div>
+              <span class="surface-label">Ephemeral response after confirmation</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Only the reporter can see this</strong><span>Ephemeral</span></div>
+                <div class="response-body">
+                  <article class="embed color-yellow">
+                    <div class="embed-title">Message report</div>
+                    <div class="embed-description"><strong>Requesting verification</strong></div>
+                    <div class="embed-fields">
+                      <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Message URL</div></div>
+                      <div class="field"><div class="field-name">References</div><div class="field-value">Internal report ID; Discord ID not assigned yet.</div></div>
+                      <div class="field"><div class="field-name">Dates</div><div class="field-value">Created now • Updated now</div></div>
+                      <div class="field wide"><div class="field-name">History</div><div class="field-value">Report created • Preparing and submitting report.</div></div>
+                    </div>
+                    <div class="embed-footer">Full ID: example-name-unique-suffix</div>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 6<strong>Lifecycle DM</strong></div>
+            <div>
+              <span class="surface-label">Private DM • saved and edited in place</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Direct Message with Discord DSA</strong><span>Private</span></div>
+                <div class="dm-thread">
+                  <div class="dm-message">
+                    <div class="avatar-placeholder">DSA</div>
+                    <div>
+                      <div class="dm-author">Discord DSA <span>Today</span></div>
+                      <article class="embed color-blurple">
+                        <div class="embed-title">Report submitted to Discord</div>
+                        <div class="embed-fields">
+                          <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Message URL</div></div>
+                          <div class="field"><div class="field-name">Report category</div><div class="field-value">Message</div></div>
+                          <div class="field"><div class="field-name">Country</div><div class="field-value">Selected EU country</div></div>
+                          <div class="field wide"><div class="field-name">Reason / Reported details</div><div class="field-value">Submitted reason and final report text.</div></div>
+                          <div class="field"><div class="field-name">References</div><div class="field-value">Internal ID + Discord report ID</div></div>
+                          <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated timestamps</div></div>
+                          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created → Submitted to Discord</div></div>
+                        </div>
+                        <div class="embed-footer">Full internal report ID • lifecycle timestamp</div>
+                      </article>
+                    </div>
+                  </div>
+                  <div class="outcome-grid" aria-label="Possible message report DM outcomes">
+                    <div class="outcome"><strong>Received</strong><p>The same DM is edited to “Report received by Discord”; history adds the received stage.</p></div>
+                    <div class="outcome"><strong>Actioned</strong><p>The same DM turns green and is titled “Discord took action.” A reply says Discord accepted it and took action.</p></div>
+                    <div class="outcome"><strong>Denied or timeout</strong><p>The same DM turns grey/red. A reply explains denial or the two-minute receipt timeout; retry appears only when safe.</p></div>
+                  </div>
+                  <div class="dm-reply">Example final reply: Your DSA report was accepted and Discord took action.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="journey" aria-labelledby="profile-journey-heading">
+        <div class="journey-header">
+          <div>
+            <h3 id="profile-journey-heading">Profile report journey</h3>
+            <p>
+              Profile reports add an account-resolution confirmation before the modal and preserve
+              the resolved username, display names, avatar, bot flag, and optional observed server.
+            </p>
+          </div>
+          <span class="chip">user_urf</span>
+        </div>
+
+        <div class="journey-track">
+          <div class="journey-stage">
+            <div class="stage-label">Step 1<strong>Command</strong></div>
+            <div>
+              <span class="surface-label">Discord command input</span>
+              <div class="discord-window" role="img" aria-label="Profile report slash command mockup">
+                <div class="window-bar"><strong>/report profile</strong><span>User-installed command</span></div>
+                <div class="command-line">
+                  <span class="command-token">target:</span> 123456789012345678
+                  &nbsp; <span class="command-token">server-id:</span> optional
+                  &nbsp; <span class="command-token">country:</span> Auto
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 2<strong>Lookup response</strong></div>
+            <div>
+              <span class="surface-label">Ephemeral response</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Only the reporter can see this</strong><span>Ephemeral</span></div>
+                <div class="response-body">
+                  <article class="embed color-blurple">
+                    <div class="embed-title">Discord account found</div>
+                    <div class="embed-description">Review the resolved account before continuing.</div>
+                    <div class="embed-fields">
+                      <div class="field wide"><div class="field-name">Resolved account</div><div class="field-value"><strong>Global display name</strong><br>@username<br>User ID: 123456789012345678<br>Server display name when available<br>Discord bot account when applicable</div></div>
+                    </div>
+                    <div class="chips" style="margin-top: 12px">
+                      <span class="button danger">Continue</span>
+                      <span class="button">Cancel</span>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 3<strong>Initial modal</strong></div>
+            <div>
+              <span class="surface-label">Modal shown after Continue</span>
+              <div class="discord-window" role="img" aria-label="Report Profile modal mockup">
+                <div class="window-bar"><strong>Report Profile</strong><span>Resolved target locked to draft</span></div>
+                <div class="modal-body">
+                  <div class="modal-field">
+                    <label>Why are you reporting this?</label>
+                    <div class="mock-control select">Choose a semantic report reason</div>
+                  </div>
+                  <div class="modal-field">
+                    <label>Which profile elements are unlawful?</label>
+                    <div class="mock-control select">Choose one or more profile elements</div>
+                    <div class="mock-options">
+                      <span class="mock-option">Photos</span>
+                      <span class="mock-option">Name</span>
+                      <span class="mock-option">Descriptors</span>
+                    </div>
+                  </div>
+                  <div class="modal-field">
+                    <label>Briefly explain the report</label>
+                    <div class="mock-control textarea">Explain which profile element is unlawful and why.</div>
+                    <span class="modal-help">AI-enabled: brief for drafting. AI-disabled: final report text. Maximum 512 characters.</span>
+                  </div>
+                </div>
+                <div class="modal-actions">
+                  <span class="button">Cancel</span>
+                  <span class="button primary">Submit</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 4<strong>Review response</strong></div>
+            <div>
+              <span class="surface-label">Ephemeral response after AI/manual preparation</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Only the reporter can see this</strong><span>Ephemeral</span></div>
+                <div class="response-body">
+                  <article class="embed color-orange">
+                    <div class="embed-title">Review profile report</div>
+                    <div class="embed-description">Submitting creates a real DSA report. Confirm that the information is truthful and authorized.</div>
+                    <div class="embed-fields">
+                      <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Global display name, @username, user ID, server display name, bot marker.</div></div>
+                      <div class="field"><div class="field-name">Report category</div><div class="field-value">Profile</div></div>
+                      <div class="field"><div class="field-name">Country</div><div class="field-value">Country + selection origin</div></div>
+                      <div class="field wide"><div class="field-name">Reason</div><div class="field-value">Semantic reason + selected profile elements.</div></div>
+                      <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Optional observed server + final report text.</div></div>
+                    </div>
+                    <div class="embed-footer">000/512 characters • Profile avatar appears as thumbnail</div>
+                    <div class="chips" style="margin-top: 12px">
+                      <span class="button danger">Submit DSA Report</span>
+                      <span class="button primary">Refine</span>
+                      <span class="button">Regenerate</span>
+                      <span class="button">Edit manually</span>
+                      <span class="button">Cancel</span>
+                      <span class="button">Change country</span>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 5<strong>Immediate status</strong></div>
+            <div>
+              <span class="surface-label">Ephemeral response after confirmation</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Only the reporter can see this</strong><span>Ephemeral</span></div>
+                <div class="response-body">
+                  <article class="embed color-yellow">
+                    <div class="embed-title">Profile report</div>
+                    <div class="embed-description"><strong>Awaiting verification</strong></div>
+                    <div class="embed-fields">
+                      <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Resolved profile summary and avatar thumbnail.</div></div>
+                      <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Name submitted to Discord, capture time, observed server, and final report text.</div></div>
+                      <div class="field"><div class="field-name">References</div><div class="field-value">Internal ID; Discord ID when assigned.</div></div>
+                      <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated.</div></div>
+                      <div class="field wide"><div class="field-name">History</div><div class="field-value">Created • Preparing and submitting report.</div></div>
+                    </div>
+                    <div class="embed-footer">Full internal report ID</div>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 6<strong>Lifecycle DM</strong></div>
+            <div>
+              <span class="surface-label">Private DM • saved and edited in place</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Direct Message with Discord DSA</strong><span>Private</span></div>
+                <div class="dm-thread">
+                  <div class="dm-message">
+                    <div class="avatar-placeholder">DSA</div>
+                    <div>
+                      <div class="dm-author">Discord DSA <span>Today</span></div>
+                      <article class="embed color-blurple">
+                        <div class="embed-title">Report submitted to Discord</div>
+                        <div class="embed-fields">
+                          <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Resolved display name, @username, user ID, server display name, bot marker.</div></div>
+                          <div class="field"><div class="field-name">Report category</div><div class="field-value">Profile</div></div>
+                          <div class="field"><div class="field-name">Country</div><div class="field-value">Selected EU country</div></div>
+                          <div class="field wide"><div class="field-name">Reason / Reported details</div><div class="field-value">Selected profile elements, submitted account name, capture time, and report text.</div></div>
+                          <div class="field"><div class="field-name">References</div><div class="field-value">Internal + Discord report IDs</div></div>
+                          <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated</div></div>
+                          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created → Submitted to Discord</div></div>
+                        </div>
+                        <div class="embed-footer">Full internal report ID • lifecycle timestamp</div>
+                      </article>
+                    </div>
+                  </div>
+                  <div class="outcome-grid" aria-label="Possible profile report DM outcomes">
+                    <div class="outcome"><strong>Received</strong><p>Title becomes “Report received by Discord”; the same profile thumbnail and details remain.</p></div>
+                    <div class="outcome"><strong>Actioned</strong><p>Title becomes “Discord took action,” color becomes green, and the bot replies with the accepted outcome.</p></div>
+                    <div class="outcome"><strong>Closed or rejected</strong><p>Title and color change to the exact Discord outcome, and the bot replies with denial text.</p></div>
+                  </div>
+                  <div class="dm-reply">Example final reply: Your DSA report was reviewed and denied; Discord closed it without taking action.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="journey" aria-labelledby="server-journey-heading">
+        <div class="journey-header">
+          <div>
+            <h3 id="server-journey-heading">Server report journey</h3>
+            <p>
+              Server reports resolve an explicit server ID/invite or default to the current server.
+              Resolved names, descriptions, member counts, online counts, and icons appear in review
+              and status surfaces.
+            </p>
+          </div>
+          <span class="chip">guild_urf</span>
+        </div>
+
+        <div class="journey-track">
+          <div class="journey-stage">
+            <div class="stage-label">Step 1<strong>Command</strong></div>
+            <div>
+              <span class="surface-label">Discord command input</span>
+              <div class="discord-window" role="img" aria-label="Server report slash command mockup">
+                <div class="window-bar"><strong>/report server</strong><span>User-installed command</span></div>
+                <div class="command-line">
+                  <span class="command-token">server-or-invite:</span> current server or optional ID/invite
+                  &nbsp; <span class="command-token">country:</span> Auto
+                  &nbsp; <span class="command-token">dont-use-ai:</span> false
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 2<strong>Initial modal</strong></div>
+            <div>
+              <span class="surface-label">Modal shown to reporter</span>
+              <div class="discord-window" role="img" aria-label="Report Server modal mockup">
+                <div class="window-bar"><strong>Report Server</strong><span>Server snapshot resolved when possible</span></div>
+                <div class="modal-body">
+                  <div class="modal-field">
+                    <label>Why are you reporting this?</label>
+                    <div class="mock-control select">Choose a semantic report reason</div>
+                  </div>
+                  <div class="modal-field">
+                    <label>Server ID or invite code</label>
+                    <div class="mock-control">Only shown when neither an option nor current server supplied the target.</div>
+                  </div>
+                  <div class="modal-field">
+                    <label>Where does the unlawful content appear?</label>
+                    <div class="mock-control select">Choose one or more server elements</div>
+                    <div class="mock-options">
+                      <span class="mock-option">Server name</span>
+                      <span class="mock-option">Icon</span>
+                      <span class="mock-option">Banner</span>
+                      <span class="mock-option">Invite splash</span>
+                      <span class="mock-option">Discovery splash</span>
+                      <span class="mock-option">Welcome screen description</span>
+                      <span class="mock-option">Channel names</span>
+                      <span class="mock-option">Other</span>
+                    </div>
+                  </div>
+                  <div class="modal-field">
+                    <label>Briefly explain the report</label>
+                    <div class="mock-control textarea">Explain where the unlawful server content appears and why.</div>
+                    <span class="modal-help">AI-enabled: brief for drafting. AI-disabled: final report text. Maximum 512 characters.</span>
+                  </div>
+                </div>
+                <div class="modal-actions">
+                  <span class="button">Cancel</span>
+                  <span class="button primary">Submit</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 3<strong>Processing response</strong></div>
+            <div>
+              <span class="surface-label">Ephemeral response</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Only the reporter can see this</strong><span>Ephemeral</span></div>
+                <div class="response-body">
+                  <article class="embed color-blurple">
+                    <div class="embed-title">Researching and writing report</div>
+                    <div class="embed-description">DeepSeek is choosing the applicable country when needed, researching the law, and preparing a concise report.</div>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 4<strong>Review response</strong></div>
+            <div>
+              <span class="surface-label">Ephemeral response</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Only the reporter can see this</strong><span>Ephemeral</span></div>
+                <div class="response-body">
+                  <article class="embed color-orange">
+                    <div class="embed-title">Review server report</div>
+                    <div class="embed-description">Submitting creates a real DSA report. Confirm that the information is truthful and authorized.</div>
+                    <div class="embed-fields">
+                      <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Server ID or invite code.</div></div>
+                      <div class="field"><div class="field-name">Report category</div><div class="field-value">Server</div></div>
+                      <div class="field"><div class="field-name">Country</div><div class="field-value">Country + selection origin</div></div>
+                      <div class="field wide"><div class="field-name">Reason</div><div class="field-value">Semantic reason + selected server elements.</div></div>
+                      <div class="field wide"><div class="field-name">Reported details</div><div class="field-value"><strong>Resolved server name</strong> (ID)<br>Description<br>Member and online counts<br><br>Final report text</div></div>
+                    </div>
+                    <div class="embed-footer">000/512 characters • Server icon appears as thumbnail</div>
+                    <div class="chips" style="margin-top: 12px">
+                      <span class="button danger">Submit DSA Report</span>
+                      <span class="button primary">Refine</span>
+                      <span class="button">Regenerate</span>
+                      <span class="button">Edit manually</span>
+                      <span class="button">Cancel</span>
+                      <span class="button">Change country</span>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 5<strong>Immediate status</strong></div>
+            <div>
+              <span class="surface-label">Ephemeral response after confirmation</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Only the reporter can see this</strong><span>Ephemeral</span></div>
+                <div class="response-body">
+                  <article class="embed color-yellow">
+                    <div class="embed-title">Server report</div>
+                    <div class="embed-description"><strong>Submitting to Discord</strong></div>
+                    <div class="embed-fields">
+                      <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Resolved server name, ID, description, counts, and icon thumbnail.</div></div>
+                      <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Resolved server snapshot + final report text.</div></div>
+                      <div class="field"><div class="field-name">References</div><div class="field-value">Internal ID; Discord ID when assigned.</div></div>
+                      <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated.</div></div>
+                      <div class="field wide"><div class="field-name">History</div><div class="field-value">Created • Preparing and submitting report.</div></div>
+                    </div>
+                    <div class="embed-footer">Full internal report ID</div>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-stage">
+            <div class="stage-label">Step 6<strong>Lifecycle DM</strong></div>
+            <div>
+              <span class="surface-label">Private DM • saved and edited in place</span>
+              <div class="discord-window">
+                <div class="window-bar"><strong>Direct Message with Discord DSA</strong><span>Private</span></div>
+                <div class="dm-thread">
+                  <div class="dm-message">
+                    <div class="avatar-placeholder">DSA</div>
+                    <div>
+                      <div class="dm-author">Discord DSA <span>Today</span></div>
+                      <article class="embed color-blurple">
+                        <div class="embed-title">Report submitted to Discord</div>
+                        <div class="embed-fields">
+                          <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value"><strong>Resolved server name</strong> (server ID)<br>Description<br>Members and online count</div></div>
+                          <div class="field"><div class="field-name">Report category</div><div class="field-value">Server</div></div>
+                          <div class="field"><div class="field-name">Country</div><div class="field-value">Selected EU country</div></div>
+                          <div class="field wide"><div class="field-name">Reason / Reported details</div><div class="field-value">Selected server elements, resolved snapshot, and final report text.</div></div>
+                          <div class="field"><div class="field-name">References</div><div class="field-value">Internal + Discord report IDs</div></div>
+                          <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated</div></div>
+                          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created → Submitted to Discord</div></div>
+                        </div>
+                        <div class="embed-footer">Full internal report ID • server icon thumbnail • lifecycle timestamp</div>
+                      </article>
+                    </div>
+                  </div>
+                  <div class="outcome-grid" aria-label="Possible server report DM outcomes">
+                    <div class="outcome"><strong>Received</strong><p>The same DM is edited to “Report received by Discord”; server snapshot and icon remain.</p></div>
+                    <div class="outcome"><strong>Actioned</strong><p>The same DM turns green, is titled “Discord took action,” and receives the accepted reply.</p></div>
+                    <div class="outcome"><strong>Closed or rejected</strong><p>The same DM turns grey/red and receives the matching denial reply.</p></div>
+                  </div>
+                  <div class="dm-reply">Example final reply: Your DSA report review request was denied by Discord.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+
   <section aria-labelledby="report-management-heading">
     <h2 id="report-management-heading">Report management commands</h2>
+    <p class="lede">These commands do not open modals; each returns or updates an ephemeral report embed directly.</p>
     <div class="grid">
       <article class="card command">
         <code class="command-name">/reports list</code>
@@ -470,6 +1303,7 @@
 
   <section aria-labelledby="access-heading">
     <h2 id="access-heading">Access, settings, and administrator commands</h2>
+    <p class="lede">These commands do not open modals. Discord collects their slash-command options inline, then the bot returns an ephemeral embed.</p>
     <div class="grid">
       <article class="card command">
         <code class="command-name">/access redeem</code>
@@ -728,37 +1562,94 @@
   </section>
 
   <section aria-labelledby="components-heading">
-    <h2 id="components-heading">Modal and component inventory</h2>
-    <div class="grid">
-      <article class="card">
-        <h3>Report Message/Profile/Server modal</h3>
-        <p class="small">Always includes report reason and a 1–512 character brief/final report.</p>
-        <ul>
-          <li>Message link appears only when it was not already supplied.</li>
-          <li>Profile reports add a required multi-select of unlawful profile elements.</li>
-          <li>Server reports add the target when missing and a required multi-select of server elements.</li>
-          <li>AI copy says a vague reason is acceptable; manual copy says this is the final report.</li>
-        </ul>
+    <h2 id="components-heading">Shared follow-up modal mockups</h2>
+    <p class="lede">
+      These modals are launched from the orange review response and are identical for message,
+      profile, and server reports. Report-specific initial modals appear inside the three journeys above.
+    </p>
+    <div class="modal-gallery">
+      <article>
+        <span class="surface-label">Refine button</span>
+        <div class="discord-window" role="img" aria-label="Refine AI report modal mockup">
+          <div class="window-bar"><strong>Refine AI report</strong><span>Same AI conversation</span></div>
+          <div class="modal-body">
+            <div class="modal-field">
+              <label>What should DeepSeek change?</label>
+              <div class="mock-control textarea">Make the explanation clearer and focus on the selected unlawful element.</div>
+              <span class="modal-help">This continues the existing AI conversation. Required, 1–512 characters.</span>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <span class="button">Cancel</span>
+            <span class="button primary">Submit</span>
+          </div>
+        </div>
       </article>
-      <article class="card">
-        <h3>Refine AI report modal</h3>
-        <p class="small">One 1–512 character paragraph: “What should DeepSeek change?” It continues the existing conversation.</p>
+
+      <article>
+        <span class="surface-label">Edit manually button</span>
+        <div class="discord-window" role="img" aria-label="Edit report manually modal mockup">
+          <div class="window-bar"><strong>Edit report manually</strong><span>Final text editor</span></div>
+          <div class="modal-body">
+            <div class="modal-field">
+              <label>AI draft to repair — copy from below</label>
+              <div class="mock-control textarea">The current AI draft is displayed here. If it is too long, the display is truncated with a notice.</div>
+            </div>
+            <div class="modal-field">
+              <label>Final report</label>
+              <div class="mock-control textarea">Review or replace the draft with the exact report to submit.</div>
+              <span class="modal-help">Required, 1–512 characters. A candidate at or below the limit is pre-filled.</span>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <span class="button">Cancel</span>
+            <span class="button primary">Submit</span>
+          </div>
+        </div>
       </article>
-      <article class="card">
-        <h3>Edit report manually modal</h3>
-        <p class="small">Displays the current AI candidate for copying, including a truncation notice when necessary, then accepts a final 1–512 character report.</p>
+
+      <article>
+        <span class="surface-label">Change country button</span>
+        <div class="discord-window" role="img" aria-label="Country picker response mockup">
+          <div class="window-bar"><strong>Only the reporter can see this</strong><span>Ephemeral response</span></div>
+          <div class="response-body">
+            <article class="embed color-blurple">
+              <div class="embed-title">Choose the applicable country</div>
+              <div class="embed-description">Choose Auto to let DeepSeek select a supported country based on legal relevance, or choose an explicit override.</div>
+              <div class="embed-fields">
+                <div class="field wide"><div class="field-name">Country select</div><div class="field-value">One required value • 24 choices per page • Auto omitted for manual reports.</div></div>
+              </div>
+              <div class="embed-footer">Page 1 of 2</div>
+              <div class="chips" style="margin-top: 12px">
+                <span class="button">Previous</span>
+                <span class="button primary">Next</span>
+              </div>
+            </article>
+          </div>
+        </div>
       </article>
-      <article class="card">
-        <h3>Country picker</h3>
-        <p class="small">A required single-select with 24 entries per page. Auto is present only for AI-enabled reports. Previous and Next appear when needed.</p>
-      </article>
-      <article class="card">
-        <h3>Review controls</h3>
-        <p class="small">Submit DSA Report, Refine, Regenerate, Edit manually, Cancel, and Change country. Manual reports omit Refine and Regenerate.</p>
-      </article>
-      <article class="card">
-        <h3>Report browser controls</h3>
-        <p class="small">Previous and Next appear for multi-report lists. Retry as new report appears only for safe, eligible failures below the retry limit.</p>
+
+      <article>
+        <span class="surface-label">Report browser and retry</span>
+        <div class="discord-window" role="img" aria-label="Report browser controls mockup">
+          <div class="window-bar"><strong>/reports list</strong><span>Ephemeral response</span></div>
+          <div class="response-body">
+            <article class="embed color-red">
+              <div class="embed-title">Profile report</div>
+              <div class="embed-description"><strong>Failed</strong></div>
+              <div class="embed-fields">
+                <div class="field wide"><div class="field-name">Latest error</div><div class="field-value">Failure description<br>Retry available: <strong>Yes</strong></div></div>
+                <div class="field wide"><div class="field-name">History</div><div class="field-value">Report created → Processing failed.</div></div>
+              </div>
+              <div class="embed-footer">Report 2 of 4 • Full internal report ID</div>
+              <div class="chips" style="margin-top: 12px">
+                <span class="button">Previous</span>
+                <span class="button primary">Next</span>
+                <span class="button primary">Retry as new report</span>
+              </div>
+            </article>
+          </div>
+        </div>
       </article>
     </div>
   </section>

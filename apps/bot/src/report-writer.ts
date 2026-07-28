@@ -721,7 +721,7 @@ export class ReportWriter {
         ],
         reasoning: { effort: "high", exclude: true },
         response_format: jsonObjectResponseFormat(),
-        provider: this.provider()
+        provider: this.researchProvider()
       },
       deadline,
       actor,
@@ -855,6 +855,12 @@ export class ReportWriter {
       zdr: true,
       data_collection: "deny",
       require_parameters: true
+    };
+  }
+
+  private researchProvider() {
+    return {
+      data_collection: "deny"
     };
   }
 

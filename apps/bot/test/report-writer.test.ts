@@ -211,6 +211,7 @@ describe("OpenRouter report writer", () => {
     ]);
     const research = requestBody<{
       messages: unknown[];
+      provider: Record<string, unknown>;
       response_format: { type: string };
     }>(request, 0);
     const prompt = JSON.stringify(research.messages);
@@ -218,6 +219,7 @@ describe("OpenRouter report writer", () => {
     expect(prompt).toContain("Reporter explanation: Auto");
     expect(prompt).toContain("sub_other_hate_speech");
     expect(research.response_format).toEqual({ type: "json_object" });
+    expect(research.provider).toEqual({ data_collection: "deny" });
     expect(prompt).toContain("reportReason");
     expect(prompt).toContain("reportType");
   });
@@ -415,10 +417,16 @@ describe("OpenRouter report writer", () => {
     const result = await fixedWriter(request).generate(profileDraft(), ACTOR);
     expect(result.report).toContain(LAW_REFERENCE);
     const writing = requestBody<{
+      provider: Record<string, unknown>;
       reasoning: { effort: string; exclude: boolean };
       response_format: unknown;
     }>(request, 1);
     expect(writing.reasoning).toEqual({ effort: "high", exclude: true });
+    expect(writing.provider).toEqual({
+      zdr: true,
+      data_collection: "deny",
+      require_parameters: true
+    });
     expect(JSON.stringify(writing.response_format)).not.toContain("lawCitation");
     const messages = JSON.stringify(
       requestBody<{ messages: unknown[] }>(request, 1).messages

@@ -104,6 +104,10 @@ per call and 2,500 characters per result. Fixed/default country research gets on
 total results; Auto gets up to two calls and five total results when comparison or follow-up is
 needed. No domain filter is imposed. OpenRouter search counts and URL annotations are retained
 when available but are not required for a usable result.
+Research denies provider data collection but omits ZDR and required-parameter routing because
+those provider filters prevent DeepSeek V4 Flash server-tool searches from reaching a compatible
+route. Writing, refinement, and repair retain ZDR, denied data collection, and
+required-parameter routing because they do not use the web-search server tool.
 
 The prompt contains the selected semantic reason, the reporter's brief, and only the useful
 resolved target data. Message reports include the accessible message content, author, timestamp,

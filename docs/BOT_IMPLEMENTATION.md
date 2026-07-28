@@ -85,8 +85,9 @@ attempts for that tracked report; `/reports` remains available.
 The bot calls OpenRouter directly; the API and low-level Discord client never receive the
 reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KEY` is required and
 `OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-flash`. Provider routing requires zero data retention,
-denies provider data collection, and requires structured-output support. The complete generation
-workflow is capped at 90 seconds.
+denies provider data collection, and requires JSON-mode output support. The bot instructs the model
+to return the required object shape and validates it locally. The complete generation workflow is
+capped at 90 seconds.
 
 Every generation begins with one combined country/category/reason selection and legal-research request using the
 `openrouter:web_search` server tool. It receives the complete report category, selected elements,

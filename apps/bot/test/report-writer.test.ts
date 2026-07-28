@@ -211,28 +211,18 @@ describe("OpenRouter report writer", () => {
     ]);
     const research = requestBody<{
       messages: unknown[];
-      response_format: {
-        json_schema: {
-          schema: {
-            properties: { reportType: { enum: string[] } };
-            required: string[];
-          };
-        };
-      };
+      response_format: { type: string };
     }>(request, 0);
     const prompt = JSON.stringify(research.messages);
     expect(prompt).toContain("Report category: Auto");
     expect(prompt).toContain("Reporter explanation: Auto");
     expect(prompt).toContain("sub_other_hate_speech");
-    expect(research.response_format.json_schema.schema.required).toEqual(
-      expect.arrayContaining(["reportReason", "reportType"])
-    );
-    expect(research.response_format.json_schema.schema.properties.reportType.enum).toContain(
-      "sub_other_hate_speech"
-    );
+    expect(research.response_format).toEqual({ type: "json_object" });
+    expect(prompt).toContain("reportReason");
+    expect(prompt).toContain("reportType");
   });
 
-  it("normalizes a supported country display name and constrains structured output to ISO codes", async () => {
+  it("normalizes a supported country display name and requests JSON mode", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion("Germany"))
@@ -244,17 +234,8 @@ describe("OpenRouter report writer", () => {
     const result = await fixedWriter(request).generate(draft, ACTOR);
 
     expect(result.country).toBe("DE");
-    const research = requestBody<{
-      response_format: {
-        json_schema: {
-          schema: { properties: { country: { enum: string[]; type: string } } };
-        };
-      };
-    }>(request, 0);
-    expect(research.response_format.json_schema.schema.properties.country).toEqual({
-      type: "string",
-      enum: ["DE", "FR", "IE"]
-    });
+    const research = requestBody<{ response_format: { type: string } }>(request, 0);
+    expect(research.response_format).toEqual({ type: "json_object" });
   });
 
   it("does not send media or media URLs for any report category", async () => {
@@ -470,8 +451,7 @@ describe("OpenRouter report writer", () => {
     const refined = await writer.refine(draft, "Make it clearer.", ACTOR);
     expect(refined.report).toContain("Refined report");
     const body = requestBody<{ messages: unknown[]; response_format: unknown }>(request, 2);
-    expect(JSON.stringify(body.response_format)).toContain('"required":["report"]');
-    expect(JSON.stringify(body.response_format)).not.toContain("researchSummary");
+    expect(body.response_format).toEqual({ type: "json_object" });
     expect(JSON.stringify(body.messages)).toContain("Make it clearer.");
     expect(JSON.stringify(body.messages)).toContain(initial.report);
   });

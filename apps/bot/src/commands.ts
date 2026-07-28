@@ -105,13 +105,27 @@ const report = userInstalled()
 const reports = userInstalled()
     .setName("reports")
     .setDescription("View and manage your DSA reports")
-    .addSubcommand((command) => command.setName("list").setDescription("List your recent reports"))
+    .addSubcommand((command) =>
+      command
+        .setName("list")
+        .setDescription("List your recent reports")
+        .addBooleanOption((option) =>
+          option
+            .setName("send-to-dms")
+            .setDescription("Also send the report embed to your DMs")
+        )
+    )
     .addSubcommand((command) =>
       command
         .setName("status")
         .setDescription("View one report's current status")
         .addStringOption((option) =>
           option.setName("report-id").setDescription("Internal report ID").setRequired(true)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName("send-to-dms")
+            .setDescription("Also send the report embed to your DMs")
         )
     )
     .addSubcommand((command) =>
@@ -120,6 +134,11 @@ const reports = userInstalled()
         .setDescription("Retry a failed report as a new report")
         .addStringOption((option) =>
           option.setName("report-id").setDescription("Internal report ID").setRequired(true)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName("send-to-dms")
+            .setDescription("Also send the report embed to your DMs")
         )
     );
 

@@ -24,6 +24,7 @@ const GUILD_ELEMENTS = new Set<GuildElement>([
 interface BaseCreateReportInput {
   country: string;
   flow: ReportFlow;
+  reportReason: string;
   reportType: string;
   submitterDiscordUserId?: string;
   context?: string;
@@ -171,6 +172,7 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
   const flow = flowValue as ReportFlow;
   const reportType = requiredString(input, "reportType", 100);
   if (!/^[a-z0-9_]+$/.test(reportType)) throw new Error("reportType is invalid.");
+  const reportReason = requiredString(input, "reportReason", 512);
   const submitterDiscordUserId = optionalString(input, "submitterDiscordUserId", 22);
   if (
     submitterDiscordUserId !== undefined &&
@@ -183,6 +185,7 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
   const base = {
     country,
     flow,
+    reportReason,
     reportType,
     ...(submitterDiscordUserId === undefined ? {} : { submitterDiscordUserId }),
     ...(context === undefined ? {} : { context }),

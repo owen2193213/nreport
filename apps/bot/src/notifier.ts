@@ -25,32 +25,10 @@ export function renderNotification(
   snapshot?: ServerSnapshot | null,
   eventType?: string
 ) {
-  const titles: Record<string, string> = {
-    report_submitted: "Report submitted to Discord",
-    report_failed: "Report processing failed",
-    "discord:received": "Report received by Discord",
-    "discord:actioned": "Discord took action",
-    "discord:closed_no_action": "Discord closed the report without action",
-    "discord:review_not_approved": "Discord did not approve the report"
-  };
-  const currentEventType =
-    report.discordStatus !== null
-      ? `discord:${report.discordStatus}`
-      : report.status === "failed"
-        ? "report_failed"
-        : eventType;
-  const timeoutTitle =
-    report.error?.code === "discord_receipt_timeout"
-      ? "Discord receipt confirmation timed out"
-      : undefined;
-  return reportEmbed(report, snapshot, {
-    title:
-      timeoutTitle ??
-      (currentEventType && titles[currentEventType]) ??
-      "Discord DSA report update",
-    hideStatusDescription: true
-  })
-    .setTimestamp(new Date(report.discordStatusUpdatedAt ?? report.updatedAt));
+  void eventType;
+  return reportEmbed(report, snapshot, { history: "full" }).setTimestamp(
+    new Date(report.discordStatusUpdatedAt ?? report.updatedAt)
+  );
 }
 
 export function lifecycleReplyText(eventType: string, report: ReportDetail): string | null {
@@ -68,11 +46,6 @@ export function lifecycleReplyText(eventType: string, report: ReportDetail): str
     default:
       return null;
   }
-}
-
-function failureNotificationText(report: ReportDetail): string {
-  const detail = report.error?.message ?? "The report could not be submitted to Discord.";
-  return `Your DSA report failed before Discord confirmed submission.\n\n${detail}\n\nReport ID: \`${report.internalReportId}\``;
 }
 
 function isUnknownMessage(error: unknown): boolean {
@@ -260,41 +233,33 @@ export class NotificationWorker {
         const report = await this.api.report(job.payload.internalReportId);
         const user = await this.client.users.fetch(job.discord_user_id);
         const components = reportRetryComponents(report);
-        if (report.discordReportId === null) {
-          await user.send({
-            content: failureNotificationText(report),
+        const embed = renderNotification(
+          report,
+          await this.snapshotFor(report, job.discord_user_id),
+          job.payload.eventType
+        );
+        let statusMessage = await this.storedStatusMessage(user, job.tracking_id);
+        if (statusMessage === null) {
+          statusMessage = await user.send({
+            embeds: [embed],
             components,
             allowedMentions: { parse: [] }
           });
+          await this.database.saveStatusDmMessageId(job.tracking_id, statusMessage.id);
         } else {
-          const embed = renderNotification(
-            report,
-            await this.snapshotFor(report, job.discord_user_id),
-            job.payload.eventType
-          );
-          let statusMessage = await this.storedStatusMessage(user, job.tracking_id);
-          if (statusMessage === null) {
-            statusMessage = await user.send({
-              embeds: [embed],
-              components,
-              allowedMentions: { parse: [] }
-            });
-            await this.database.saveStatusDmMessageId(job.tracking_id, statusMessage.id);
-          } else {
-            await statusMessage.edit({
-              embeds: [embed],
-              components,
-              allowedMentions: { parse: [] }
-            });
-          }
-          const replyText = lifecycleReplyText(job.payload.eventType, report);
-          if (replyText !== null) {
-            await statusMessage.reply({
-              content: replyText,
-              components: job.payload.eventType === "report_failed" ? components : [],
-              allowedMentions: { parse: [] }
-            });
-          }
+          await statusMessage.edit({
+            embeds: [embed],
+            components,
+            allowedMentions: { parse: [] }
+          });
+        }
+        const replyText = lifecycleReplyText(job.payload.eventType, report);
+        if (replyText !== null) {
+          await statusMessage.reply({
+            content: replyText,
+            components: job.payload.eventType === "report_failed" ? components : [],
+            allowedMentions: { parse: [] }
+          });
         }
         await this.database.completeNotification(job.id);
         botLog("notification_send_completed", {

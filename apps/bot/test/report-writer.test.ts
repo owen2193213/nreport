@@ -70,11 +70,17 @@ function citationAnnotation(url = "https://example.gov/law"): unknown {
   };
 }
 
-function researchCompletion(country = "DE"): Response {
+function researchCompletion(
+  country = "DE",
+  reportReason = "The profile imagery contains unlawful hate speech.",
+  reportType = "sub_other_hate_speech"
+): Response {
   return completion(
     {
       country,
       lawReference: LAW_REFERENCE,
+      reportReason,
+      reportType,
       researchSummary: `${LAW_REFERENCE} protects human dignity.`
     },
     { annotations: [citationAnnotation()], searchRequests: 1 }
@@ -162,6 +168,70 @@ describe("OpenRouter report writer", () => {
     expect(text).not.toContain("https://cdn.discordapp.com/banner.png");
   });
 
+  it("infers an Auto category and reason while reporting ordered progress", async () => {
+    const inferredReason = "The profile imagery targets a protected group with hateful content.";
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        researchCompletion("DE", inferredReason, "sub_other_hate_speech")
+      )
+      .mockResolvedValueOnce(reportCompletion());
+    const draft = profileDraft();
+    delete draft.country;
+    delete draft.reportType;
+    delete draft.reportBrief;
+    draft.countrySelection = "auto";
+    const progress: unknown[] = [];
+
+    const result = await fixedWriter(request).generate(draft, ACTOR, (update) => {
+      progress.push(update);
+    });
+
+    expect(result).toMatchObject({
+      country: "DE",
+      reportReason: inferredReason,
+      reportType: "sub_other_hate_speech"
+    });
+    expect(progress).toEqual([
+      {
+        stage: "research",
+        country: "Auto",
+        reportReason: "Auto",
+        reportType: "Auto"
+      },
+      {
+        stage: "research_complete",
+        country: "DE",
+        lawReference: LAW_REFERENCE,
+        reportReason: inferredReason,
+        reportType: "Other: hate speech",
+        searchRequests: 1
+      },
+      { stage: "write", reportReason: inferredReason }
+    ]);
+    const research = requestBody<{
+      messages: unknown[];
+      response_format: {
+        json_schema: {
+          schema: {
+            properties: { reportType: { enum: string[] } };
+            required: string[];
+          };
+        };
+      };
+    }>(request, 0);
+    const prompt = JSON.stringify(research.messages);
+    expect(prompt).toContain("Report category: Auto");
+    expect(prompt).toContain("Reporter explanation: Auto");
+    expect(prompt).toContain("sub_other_hate_speech");
+    expect(research.response_format.json_schema.schema.required).toEqual(
+      expect.arrayContaining(["reportReason", "reportType"])
+    );
+    expect(research.response_format.json_schema.schema.properties.reportType.enum).toContain(
+      "sub_other_hate_speech"
+    );
+  });
+
   it("normalizes a supported country display name and constrains structured output to ISO codes", async () => {
     const request = vi
       .fn()
@@ -190,7 +260,13 @@ describe("OpenRouter report writer", () => {
   it("does not send media or media URLs for any report category", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(researchCompletion())
+      .mockResolvedValueOnce(
+        researchCompletion(
+          "DE",
+          "The profile imagery contains unlawful hate speech.",
+          "sub_csam"
+        )
+      )
       .mockResolvedValueOnce(reportCompletion());
     const draft = profileDraft();
     draft.reportType = "sub_csam";
@@ -209,7 +285,9 @@ describe("OpenRouter report writer", () => {
   it("keeps GIF and video names as metadata without sending their media URLs", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(researchCompletion())
+      .mockResolvedValueOnce(
+        researchCompletion("DE", "The attached media contains hateful imagery.")
+      )
       .mockResolvedValueOnce(reportCompletion());
     const draft: ReportDraft = {
       flow: "message_urf",
@@ -313,6 +391,8 @@ describe("OpenRouter report writer", () => {
           {
             country: "DE",
             lawReference: LAW_REFERENCE,
+            reportReason: "The profile imagery contains unlawful hate speech.",
+            reportType: "sub_other_hate_speech",
             researchSummary: `${LAW_REFERENCE} applies.`
           },
           { annotations: [], searchRequests: 0 }
@@ -333,6 +413,8 @@ describe("OpenRouter report writer", () => {
         completion({
           country: "DE",
           lawReference: detailedLawReference,
+          reportReason: "The profile imagery contains unlawful hate speech.",
+          reportType: "sub_other_hate_speech",
           researchSummary: "The provision may be relevant to the reported conduct."
         })
       )
@@ -380,6 +462,8 @@ describe("OpenRouter report writer", () => {
       country: initial.country,
       legalResearch: initial.legalResearch,
       context: initial.report,
+      reportReason: initial.reportReason,
+      reportType: initial.reportType,
       writerConversation: initial.conversation
     });
 
@@ -406,6 +490,8 @@ describe("OpenRouter report writer", () => {
       country: initial.country,
       legalResearch: initial.legalResearch,
       context: initial.report,
+      reportReason: initial.reportReason,
+      reportType: initial.reportType,
       writerConversation: initial.conversation
     });
     const refined = await writer.refine(draft, "Make it clearer.", ACTOR);
@@ -430,6 +516,8 @@ describe("OpenRouter report writer", () => {
       country: initial.country,
       legalResearch: initial.legalResearch,
       context: initial.report,
+      reportReason: initial.reportReason,
+      reportType: initial.reportType,
       writerConversation: initial.conversation
     });
     const refined = await writer.refine(draft, "Make it shorter.", ACTOR);
@@ -477,6 +565,8 @@ describe("OpenRouter report writer", () => {
     expect(failure.candidateReport).toBe(repaired);
     expect(failure.country).toBe("DE");
     expect(failure.legalResearch?.country).toBe("DE");
+    expect(failure.reportReason).toBe("The profile imagery contains unlawful hate speech.");
+    expect(failure.reportType).toBe("sub_other_hate_speech");
     expect(failure.conversation?.length).toBeGreaterThan(0);
   });
 

@@ -190,7 +190,7 @@ interface ReportedUserSnapshot {
 
 interface ReportDetail extends ReportSummary {
   reportedDetails:
-    | { kind: "message"; messageUrl: string; context?: string }
+    | { kind: "message"; messageUrl: string; reportReason?: string; context?: string }
     | {
         kind: "profile";
         reportedUsername: string;
@@ -198,9 +198,16 @@ interface ReportDetail extends ReportSummary {
         reportedUserSnapshot?: ReportedUserSnapshot;
         reportedUserServerId?: string;
         profileElements: string[];
+        reportReason?: string;
         context?: string;
       }
-    | { kind: "server"; guildIdOrInviteCode: string; guildElements: string[]; context?: string };
+    | {
+        kind: "server";
+        guildIdOrInviteCode: string;
+        guildElements: string[];
+        reportReason?: string;
+        context?: string;
+      };
   timeline: Array<{
     eventId: string;
     type: string;
@@ -288,6 +295,7 @@ Common request fields:
 |---|---:|---|
 | `country` | yes | Two-letter value returned by `/v1/countries` |
 | `flow` | yes | `user_urf`, `message_urf`, or `guild_urf` |
+| `reportReason` | yes | User-supplied or AI-inferred factual explanation; maximum 512 characters |
 | `reportType` | yes | Current semantic type listed in section 7 |
 | `submitterDiscordUserId` | bot: yes | Interaction user's 15-22 digit snowflake |
 | `context` | no | Final reviewed report text; non-empty when present; maximum 512 characters |
@@ -309,6 +317,7 @@ Content-Type: application/json
 {
   "country": "DE",
   "flow": "message_urf",
+  "reportReason": "The message contains hateful content targeting a protected group.",
   "reportType": "sub_other_hate_speech",
   "submitterDiscordUserId": "1197857362942378017",
   "messageUrl": "https://discord.com/channels/427067963137589258/427069953078853633/1414818522701369355",
@@ -325,6 +334,7 @@ or `@me`, channel IDs, and message IDs are accepted in the appropriate positions
 {
   "country": "DE",
   "flow": "user_urf",
+  "reportReason": "The profile name contains content associated with account theft.",
   "reportType": "sub_other_cybercrime",
   "submitterDiscordUserId": "1197857362942378017",
   "reportedUsername": "reported-user",
@@ -366,6 +376,7 @@ because reports created under the former name-only contract remain readable.
 {
   "country": "DE",
   "flow": "guild_urf",
+  "reportReason": "The server channels coordinate stolen-account sales.",
   "reportType": "sub_other_cybercrime",
   "submitterDiscordUserId": "1197857362942378017",
   "guildIdOrInviteCode": "1273300509318578227",
@@ -500,10 +511,9 @@ Content-Type: application/json
 The backend verifies ownership, leaves ordinary failed report attempts immutable, and returns a new report with
 a new `internalReportId`, pseudonym, catch-all email alias, sticky proxy session, database row, and
 timeline. `retryOfReportId` links the successor to the failed report and `retriedAsReportId` links
-the failed report forward to its successor, while `retrySequence` enforces
-the original report plus at most two successors. Replaying the same idempotency key returns the
-same successor rather than creating another branch.
-There are at most three reports in one retry chain.
+the failed report forward to its successor. `retrySequence` records the attempt number but does not
+impose a numeric ceiling. Replaying the same idempotency key returns the same successor rather than
+creating another branch.
 
 New retry: HTTP `202`. Idempotent replay: HTTP `200`.
 
@@ -513,7 +523,6 @@ Never offer a retry button unless all are true:
 report.status === "failed"
 report.retryable === true
 report.submitterDiscordUserId === interaction.user.id
-report.retrySequence < 2
 ```
 
 Ambiguous final-submission outcomes are deliberately non-retryable. The explicit
@@ -577,7 +586,6 @@ permanent copy of Discord's node graph.
 | 409 | `idempotency_conflict` | Bot reused an interaction key with different input; log as a bug |
 | 409 | `report_not_failed` | Refresh status; it is no longer failed |
 | 409 | `report_not_retryable` | Explain that it cannot be retried safely |
-| 409 | `retry_limit_reached` | Explain that all three reports in the retry chain were used |
 | 429 | `rate_limited` | Back off; do not create a replacement key |
 | 500+ | `internal_error` | Preserve the key and retry cautiously or ask the user to check later |
 
@@ -618,9 +626,9 @@ Implemented user-installed app commands:
 /report message message-link [country] [dont-use-ai]
 /report profile target [server-id] [country] [dont-use-ai]
 /report server [server-or-invite] [country] [dont-use-ai]
-/reports status report-id
-/reports list
-/reports retry report-id
+/reports status report-id [send-to-dms]
+/reports list [send-to-dms]
+/reports retry report-id [send-to-dms]
 /access redeem key
 /access status
 /settings country country
@@ -636,8 +644,9 @@ opening the report form.
 default means Auto. Auto uses DeepSeek to select one supported code based on conduct and legal
 relevance, never guessed location.
 
-The bot asks for a short explanation and sends the report category, selected elements, supported
-country names/codes, reporter text, resolved evidence, and applicable images to one combined
+The AI modal allows category and explanation to be omitted as `Auto`. The bot sends fixed values
+when supplied, the active flow's exact category catalog, selected elements, supported country
+names/codes, reporter text, and resolved evidence to one combined
 Auto-country/legal-research request using OpenRouter's `openrouter:web_search` server tool. It
 prefers one search but allows up to three and uses standard result settings without a domain list.
 The writing prompt asks the final maximum-512-character text to naturally name the structured
@@ -664,8 +673,8 @@ maximum-512-character text, the bot makes no OpenRouter call, and AI-only review
 omitted. Auto cannot resolve a country without AI, so the bot requires a saved or explicit country
 before showing the manual review. The bot-to-API request shape remains unchanged.
 
-Only the resolved ISO country and final reviewed text cross the bot-to-API boundary, so the public
-create-report request remains unchanged. Message content, author details, embed summaries,
+Only the resolved ISO country, exact semantic category, concise report reason, and final reviewed
+text cross the bot-to-API boundary. Message content, author details, embed summaries,
 attachments, country-selection reasoning, sources, research, and conversation remain in the
 encrypted, expiring bot draft. OpenRouter usage is accumulated per bot user; logs include operational
 diagnostics but exclude credentials, verification codes, and raw email.
@@ -806,7 +815,8 @@ await interaction.deferEphemeral();
 const report = await dsaApi.createReport(interaction.id, {
   country: options.country,
   flow: "message_urf",
-  reportType: options.reason,
+  reportReason: options.reportReason,
+  reportType: options.reportType,
   submitterDiscordUserId: interaction.user.id,
   messageUrl: options.messageUrl,
   context: options.context
@@ -896,7 +906,7 @@ These rules are mandatory because all bot instances share one backend API key:
 - The bot polls briefly during submission, then uses durable 15-minute fallback polling alongside
   webhook delivery and event-feed reconciliation until Discord returns a terminal outcome.
 - Numeric breadcrumbs remain entirely backend-owned and runtime-resolved.
-- Manual retry remains explicit, owner-checked, attempt-limited, and unavailable after unsafe
+- Manual retry remains explicit, owner-checked, unlimited for safely retryable failures, and unavailable after unsafe
   submission failures.
 
 ## 15. Related internal documentation

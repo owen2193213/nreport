@@ -61,9 +61,11 @@ function publicReportSummary(report: ReportRow): ReportSummary {
 function reportedDetails(report: ReportRow): ReportedDetails {
   const input = report.input;
   const context = input.context === undefined ? {} : { context: input.context };
+  const reportReason =
+    input.reportReason === undefined ? {} : { reportReason: input.reportReason };
   switch (input.flow) {
     case "message_urf":
-      return { kind: "message", messageUrl: input.messageUrl, ...context };
+      return { kind: "message", messageUrl: input.messageUrl, ...reportReason, ...context };
     case "user_urf":
       return {
         kind: "profile",
@@ -73,6 +75,7 @@ function reportedDetails(report: ReportRow): ReportedDetails {
           ? {}
           : { reportedUserSnapshot: input.reportedUserSnapshot }),
         profileElements: input.profileElements,
+        ...reportReason,
         ...(input.reportedUserServerId === undefined
           ? {}
           : { reportedUserServerId: input.reportedUserServerId }),
@@ -83,6 +86,7 @@ function reportedDetails(report: ReportRow): ReportedDetails {
         kind: "server",
         guildIdOrInviteCode: input.guildIdOrInviteCode,
         guildElements: input.guildElements,
+        ...reportReason,
         ...context
       };
   }

@@ -15,7 +15,6 @@ export type ReportStatus =
   | "submitted"
   | "failed";
 
-export const MAX_LIFECYCLE_ATTEMPTS = 3;
 export const VERIFICATION_EMAIL_TIMEOUT_SECONDS = 60;
 export const VERIFICATION_EMAIL_RESEND_DELAYS_SECONDS = [20, 40] as const;
 export const DISCORD_RECEIPT_TIMEOUT_SECONDS = 120;
@@ -164,19 +163,18 @@ export type ReportRetryErrorCode =
   | "report_not_found"
   | "report_owner_mismatch"
   | "report_not_failed"
-  | "report_not_retryable"
-  | "retry_limit_reached";
+  | "report_not_retryable";
 
 export function isRetryableFailure(
   stage: ReportStatus,
   errorCode: string,
   retrySequence: number
 ): boolean {
+  void retrySequence;
   return (
     stage !== "submitting" &&
     stage !== "submitted" &&
-    errorCode !== "ambiguous_submission_state" &&
-    retrySequence < MAX_LIFECYCLE_ATTEMPTS - 1
+    errorCode !== "ambiguous_submission_state"
   );
 }
 
@@ -313,16 +311,11 @@ UPDATE reports
 SET receipt_deadline = NULL
 WHERE discord_status IS NOT NULL AND receipt_deadline IS NOT NULL;
 
-UPDATE reports
-SET retryable = false
-WHERE retry_sequence >= 2 AND retryable = true;
-
 UPDATE reports AS report
 SET retryable = true,
     failure_stage = COALESCE(failure_stage, 'pre_submission')
 WHERE report.status = 'failed'
   AND report.discord_report_id IS NULL
-  AND report.retry_sequence < 2
   AND report.error_code IS DISTINCT FROM 'ambiguous_submission_state'
   AND NOT EXISTS (
     SELECT 1 FROM report_events AS event
@@ -469,6 +462,7 @@ export class Database {
          VALUES ($1, 'request_code', $2, 2)`,
         [record.id, `${record.id}:request-code:1`]
       );
+      await this.event(client, record.id, "report_api_request_sent");
       await this.event(client, record.id, "report_created");
       await client.query("COMMIT");
       const report = inserted.rows[0];
@@ -726,7 +720,7 @@ export class Database {
          FOR UPDATE SKIP LOCKED`
       );
       for (const report of expired.rows) {
-        const retryable = report.retry_sequence < MAX_LIFECYCLE_ATTEMPTS - 1;
+        const retryable = true;
         await client.query(
           `UPDATE reports
            SET status = 'failed', error_code = 'verification_email_timeout',
@@ -767,7 +761,7 @@ export class Database {
          FOR UPDATE SKIP LOCKED`
       );
       for (const report of expired.rows) {
-        const retryable = report.retry_sequence < MAX_LIFECYCLE_ATTEMPTS - 1;
+        const retryable = true;
         await client.query(
           `UPDATE reports
            SET status = 'failed', error_code = 'discord_receipt_timeout',
@@ -1055,10 +1049,6 @@ export class Database {
       }
       if (report.status !== "failed") throw new ReportRetryError("report_not_failed");
       if (!report.retryable) throw new ReportRetryError("report_not_retryable");
-      if (report.retry_sequence >= MAX_LIFECYCLE_ATTEMPTS - 1) {
-        throw new ReportRetryError("retry_limit_reached");
-      }
-
       const nextSequence = report.retry_sequence + 1;
       const inserted = await client.query<ReportRow>(
         `INSERT INTO reports (
@@ -1101,6 +1091,10 @@ export class Database {
          WHERE id = $1`,
         [report.id, successor.id]
       );
+      await this.event(client, successor.id, "report_api_request_sent", {
+        retryOfReportId: report.id,
+        retrySequence: nextSequence
+      });
       await this.event(client, successor.id, "report_created", {
         retryOfReportId: report.id,
         retrySequence: nextSequence
@@ -1184,8 +1178,7 @@ const RETRY_ERROR_MESSAGES: Record<ReportRetryErrorCode, string> = {
   report_not_found: "Report was not found.",
   report_owner_mismatch: "The Discord user does not own this report.",
   report_not_failed: "Only failed reports can be retried.",
-  report_not_retryable: "This report cannot be retried safely.",
-  retry_limit_reached: `Reports are limited to ${MAX_LIFECYCLE_ATTEMPTS} lifecycle attempts.`
+  report_not_retryable: "This report cannot be retried safely."
 };
 
 export class ReportRetryError extends Error {

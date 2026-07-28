@@ -49,6 +49,7 @@ export type GuildElement = (typeof GUILD_ELEMENTS)[number];
 
 interface BaseCreateReportInput {
   country: string;
+  reportReason: string;
   reportType: string;
   submitterDiscordUserId: string;
   context?: string;
@@ -109,6 +110,7 @@ export type ReportedDetails =
   | {
       kind: "message";
       messageUrl: string;
+      reportReason?: string;
       context?: string;
     }
   | {
@@ -118,12 +120,14 @@ export type ReportedDetails =
       reportedUserSnapshot?: ReportedUserSnapshot;
       reportedUserServerId?: string;
       profileElements: UserProfileElement[];
+      reportReason?: string;
       context?: string;
     }
   | {
       kind: "server";
       guildIdOrInviteCode: string;
       guildElements: GuildElement[];
+      reportReason?: string;
       context?: string;
     };
 

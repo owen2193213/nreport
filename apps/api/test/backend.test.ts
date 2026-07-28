@@ -124,6 +124,7 @@ describe("backend identity and validation", () => {
       parseCreateReportInput({
         country: "DE",
         flow: "message_urf",
+        reportReason: "The message contains cybercrime content.",
         reportType: "sub_other_cybercrime",
         messageUrl: "https://discord.com/channels/1/2/3",
         legalName: "Caller supplied"
@@ -135,6 +136,7 @@ describe("backend identity and validation", () => {
     const input = parseCreateReportInput({
       country: "DE",
       flow: "message_urf",
+      reportReason: "The message contains hateful content.",
       reportType: "sub_other_hate_speech",
       messageUrl: "https://discord.com/channels/427067963137589258/427069953078853633/1414818522701369355",
       submitterDiscordUserId: "1057381507204915281"
@@ -144,6 +146,7 @@ describe("backend identity and validation", () => {
       parseCreateReportInput({
         country: "DE",
         flow: "message_urf",
+        reportReason: "The message contains hateful content.",
         reportType: "sub_other_hate_speech",
         messageUrl: "https://discord.com/channels/1/2/3",
         submitterDiscordUserId: "not-a-user"
@@ -155,6 +158,7 @@ describe("backend identity and validation", () => {
     const input = parseCreateReportInput({
       country: "DE",
       flow: "user_urf",
+      reportReason: "The profile contains hateful content.",
       reportType: "sub_other_hate_speech",
       reportedUsername: "example",
       reportedUserId: "123456789012345678",
@@ -198,12 +202,31 @@ describe("backend identity and validation", () => {
       parseCreateReportInput({
         country: "DE",
         flow: "message_urf",
+        reportReason: "The message contains hateful content.",
         reportType: "sub_other_hate_speech",
         messageUrl:
           "https://discord.com/channels/427067963137589258/427069953078853633/1414818522701369355",
         context: "x".repeat(513)
       })
     ).toThrow(/context/);
+  });
+
+  it("requires and bounds the user-facing report reason", () => {
+    const base = {
+      country: "DE",
+      flow: "message_urf",
+      reportType: "sub_other_hate_speech",
+      messageUrl:
+        "https://discord.com/channels/427067963137589258/427069953078853633/1414818522701369355"
+    };
+    expect(() => parseCreateReportInput(base)).toThrow(/reportReason/);
+    expect(() =>
+      parseCreateReportInput({ ...base, reportReason: "x".repeat(513) })
+    ).toThrow(/reportReason/);
+    expect(
+      parseCreateReportInput({ ...base, reportReason: "  Evidence-based reason.  " })
+        .reportReason
+    ).toBe("Evidence-based reason.");
   });
 
   it("rotates the email alias without changing the pseudonym", () => {
@@ -236,7 +259,8 @@ describe("backend identity and validation", () => {
     );
     expect(isRetryableFailure("submitting", "report_processing_failed", 1)).toBe(false);
     expect(isRetryableFailure("verifying", "ambiguous_submission_state", 1)).toBe(false);
-    expect(isRetryableFailure("verifying", "report_processing_failed", 2)).toBe(false);
+    expect(isRetryableFailure("verifying", "report_processing_failed", 2)).toBe(true);
+    expect(isRetryableFailure("verifying", "report_processing_failed", 50)).toBe(true);
   });
 
   it("expires only submitted reports still waiting for Discord receipt", () => {

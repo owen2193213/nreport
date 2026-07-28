@@ -25,6 +25,7 @@ import {
 import type { AccessKeyView } from "./database.js";
 import { countryDisplay } from "./countries.js";
 import type { AccessView, ReportDraft, ServerSnapshot } from "./types.js";
+import type { WriterProgress } from "./report-writer.js";
 
 const FLOW_LABELS: Record<ReportFlow, string> = {
   message_urf: "Message",
@@ -33,12 +34,12 @@ const FLOW_LABELS: Record<ReportFlow, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  queued: "Queued",
-  requesting_verification: "Requesting verification",
-  awaiting_verification: "Awaiting verification",
-  verification_received: "Verification received",
-  verifying: "Verifying",
-  submitting: "Submitting to Discord",
+  queued: "Preparing report",
+  requesting_verification: "Preparing report",
+  awaiting_verification: "Preparing report",
+  verification_received: "Preparing report",
+  verifying: "Preparing report",
+  submitting: "Preparing report",
   submitted: "Submitted to Discord",
   failed: "Failed",
   received: "Received by Discord",
@@ -133,6 +134,34 @@ export function errorEmbed(description: string): EmbedBuilder {
     .setDescription(description.slice(0, 4_000));
 }
 
+function codeBlock(value: string): string {
+  return `\`\`\`\n${value.replaceAll("```", "`\u200b``")}\n\`\`\``;
+}
+
+export function buildWriterProgress(progress: WriterProgress): EmbedBuilder {
+  const lines =
+    progress.stage === "research"
+      ? [
+          "Stage: Research",
+          `Country: ${progress.country === "Auto" ? "Auto" : countryDisplay(progress.country)}`,
+          `Category: ${progress.reportType}`,
+          `Reason: ${progress.reportReason}`
+        ]
+      : progress.stage === "research_complete"
+        ? [
+            "Stage: Research complete",
+            `Country: ${countryDisplay(progress.country)}`,
+            `Category: ${progress.reportType}`,
+            `Law: ${progress.lawReference}`,
+            `Sources checked: ${progress.searchRequests}`
+          ]
+        : ["Stage: Writing report", `Reason: ${progress.reportReason}`];
+  return new EmbedBuilder()
+    .setColor(Colors.Yellow)
+    .setTitle("Researching and writing report")
+    .setDescription(codeBlock(lines.join("\n")));
+}
+
 function textLabel(input: {
   customId: string;
   label: string;
@@ -141,6 +170,7 @@ function textLabel(input: {
   style?: TextInputStyle;
   minLength?: number;
   maxLength: number;
+  placeholder?: string;
   value?: string;
 }): LabelBuilder {
   const field = new TextInputBuilder()
@@ -149,6 +179,7 @@ function textLabel(input: {
     .setRequired(input.required ?? true)
     .setMaxLength(input.maxLength);
   if (input.minLength !== undefined) field.setMinLength(input.minLength);
+  if (input.placeholder !== undefined) field.setPlaceholder(input.placeholder);
   if (input.value !== undefined && input.value.length > 0) field.setValue(input.value);
   const label = new LabelBuilder().setLabel(input.label).setTextInputComponent(field);
   if (input.description !== undefined) label.setDescription(input.description);
@@ -161,11 +192,14 @@ function selectLabel(input: {
   description?: string;
   options: Array<{ label: string; value: string; default?: boolean }>;
   maxValues?: number;
+  placeholder?: string;
+  required?: boolean;
 }): LabelBuilder {
+  const required = input.required ?? true;
   const select = new StringSelectMenuBuilder()
     .setCustomId(input.customId)
-    .setRequired(true)
-    .setMinValues(1)
+    .setRequired(required)
+    .setMinValues(required ? 1 : 0)
     .setMaxValues(input.maxValues ?? 1)
     .addOptions(
       input.options.map((option) => {
@@ -176,6 +210,7 @@ function selectLabel(input: {
         return builder;
       })
     );
+  if (input.placeholder !== undefined) select.setPlaceholder(input.placeholder);
   const label = new LabelBuilder().setLabel(input.label).setStringSelectMenuComponent(select);
   if (input.description !== undefined) label.setDescription(input.description);
   return label;
@@ -189,6 +224,8 @@ export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuil
     selectLabel({
       customId: "report_type",
       label: "Why are you reporting this?",
+      placeholder: "Auto",
+      required: draft.aiDisabled === true,
       options: reportReasons(draft.flow).map((reason) => ({
         label: reason.label,
         value: reason.value,
@@ -248,12 +285,11 @@ export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuil
     textLabel({
       customId: "brief",
       label: draft.aiDisabled ? "Final report text" : "Briefly explain the report",
-      description: draft.aiDisabled
-        ? "AI is disabled. Write the final report in 512 characters or fewer."
-        : "A short or vague reason is okay. DeepSeek will draft the final report for review.",
-      required: true,
+      description: "512 characters max.",
+      ...(draft.aiDisabled ? {} : { placeholder: "Auto" }),
+      required: draft.aiDisabled === true,
       style: TextInputStyle.Paragraph,
-      minLength: 1,
+      ...(draft.aiDisabled ? { minLength: 1 } : {}),
       maxLength: 512,
       ...(draft.reportBrief === undefined ? {} : { value: draft.reportBrief })
     })
@@ -443,7 +479,7 @@ function truncate(value: string, maximum: number): string {
 function countryOrigin(draft: ReportDraft): string {
   switch (draft.countrySelection) {
     case "auto":
-      return "Auto-selected by DeepSeek";
+      return "Auto-selected";
     case "default":
       return "Saved default";
     case "override":
@@ -459,7 +495,9 @@ export function buildReview(draftId: string, draft: ReportDraft): {
 } {
   if (
     !draft.country ||
+    !draft.reportReason ||
     !draft.reportType ||
+    !draft.reportReason ||
     !draft.context ||
     (!draft.aiDisabled && !draft.legalResearch)
   ) {
@@ -483,19 +521,22 @@ export function buildReview(draftId: string, draft: ReportDraft): {
   const embed = new EmbedBuilder()
     .setColor(Colors.Orange)
     .setTitle(`Review ${FLOW_LABELS[draft.flow].toLowerCase()} report`)
-    .setDescription("Submitting creates a real DSA report. Confirm that the information is truthful and authorized.")
     .addFields(
-      { name: "Reported thing", value: truncate(targetSummary(draft), 1_000) },
-      { name: "Report category", value: FLOW_LABELS[draft.flow], inline: true },
+      { name: "Item", value: truncate(targetSummary(draft), 1_000) },
+      {
+        name: "Category",
+        value: reasonText(draft.flow, draft.reportType, elements),
+        inline: true
+      },
       {
         name: "Country",
         value: `${countryDisplay(draft.country)}\n${countryOrigin(draft)}`,
         inline: true
       },
-      { name: "Reason", value: reasonText(draft.flow, draft.reportType, elements) },
-      ...splitField(details).map((value, index) => ({
-        name: index === 0 ? "Reported details" : `Reported details (${index + 1})`,
-        value
+      { name: "Reason", value: draft.reportReason },
+      ...splitField(details, 1_016).map((value, index) => ({
+        name: index === 0 ? "Details" : `Details (${index + 1})`,
+        value: codeBlock(value)
       }))
     );
   embed.setFooter({ text: `${draft.context.length}/512 characters • Review carefully before submitting` });
@@ -582,8 +623,10 @@ export function buildWriterFailure(
 }
 
 export function draftToCreateInput(draft: ReportDraft, userId: string): CreateReportInput {
+  const reportReason = draft.reportReason;
   if (
     !draft.country ||
+    !reportReason ||
     !draft.reportType ||
     !draft.context ||
     draft.context.length > 512
@@ -592,6 +635,7 @@ export function draftToCreateInput(draft: ReportDraft, userId: string): CreateRe
   }
   const common = {
     country: draft.country,
+    reportReason,
     reportType: draft.reportType,
     submitterDiscordUserId: userId,
     context: draft.context
@@ -703,39 +747,60 @@ function reportDetails(report: ReportView, snapshot?: ServerSnapshot | null): st
   );
 }
 
-type HistoryStage = "created" | "retry" | "submitted" | "received" | "outcome" | "failed";
+function discordTime(value: string): string {
+  const seconds = Math.floor(new Date(value).getTime() / 1_000);
+  return Number.isFinite(seconds) ? `<t:${seconds}:T>` : value;
+}
 
-function historyStage(event: ReportView["timeline"][number]): {
-  key: HistoryStage;
-  label: string;
-  icon: string;
-} | null {
-  if (event.type === "report_created") {
-    return { key: "created", label: "Report created", icon: "✅" };
-  }
-  if (event.type === "report_retry_requested") {
-    return { key: "retry", label: "Retry started", icon: "🔄" };
-  }
-  if (event.type === "report_submitted") {
-    return { key: "submitted", label: "Submitted to Discord", icon: "✅" };
-  }
-  if (event.type === "report_failed") {
-    return { key: "failed", label: "Processing failed", icon: "❌" };
-  }
-  if (event.type !== "discord_status_updated" || !event.discordStatus) return null;
-  switch (event.discordStatus) {
-    case "received":
-      return { key: "received", label: "Received by Discord", icon: "✅" };
-    case "actioned":
-      return { key: "outcome", label: "Discord took action", icon: "✅" };
-    case "closed_no_action":
-      return { key: "outcome", label: "Closed without action", icon: "⚪" };
-    case "review_not_approved":
-      return { key: "outcome", label: "Report not approved", icon: "⚠️" };
+function historyLabels(event: ReportView["timeline"][number]): string[] {
+  switch (event.type) {
+    case "report_api_request_sent":
+      return ["Report API request sent"];
+    case "report_created":
+      return ["Report created"];
+    case "report_retry_requested":
+    case "report_retry_created":
+      return ["Retry started"];
+    case "requesting_verification":
+      return ["Verification workflow started"];
+    case "verification_requested":
+      return ["Verification email requested", "Verification email pending"];
+    case "verification_email_resent":
+      return ["Verification email requested again", "Verification email pending"];
+    case "verification_email_received":
+      return ["Verification email received · code processed"];
+    case "verification_started":
+      return ["Verification submitted"];
+    case "submission_started":
+      return ["Discord report submission started"];
+    case "report_submitted":
+      return [
+        "Discord report submitted · reference assigned",
+        "Report confirmation email pending"
+      ];
+    case "report_receipt_recovered":
+      return ["Late report confirmation received", "Discord receipt confirmed"];
+    case "report_failed":
+      return [`Processing failed${event.errorCode ? ` · ${event.errorCode}` : ""}`];
+    case "discord_status_updated":
+      switch (event.discordStatus) {
+        case "received":
+          return ["Report confirmation email received", "Discord receipt confirmed"];
+        case "actioned":
+          return ["Result received · Discord took action"];
+        case "closed_no_action":
+          return ["Result received · Discord closed the report without action"];
+        case "review_not_approved":
+          return ["Result received · Discord did not approve the report"];
+        default:
+          return [];
+      }
+    default:
+      return [];
   }
 }
 
-function pendingHistoryStage(report: ReportView): string | null {
+function pendingHistoryLabel(report: ReportView): string | null {
   if (
     report.status === "failed" ||
     report.discordStatus === "actioned" ||
@@ -744,50 +809,47 @@ function pendingHistoryStage(report: ReportView): string | null {
   ) {
     return null;
   }
-  if (report.status !== "submitted") return "⏳ Preparing and submitting report";
-  if (report.discordStatus === null) return "⏳ Waiting for Discord to receive the report";
-  return "⏳ Awaiting Discord's decision";
+  switch (report.status) {
+    case "queued":
+      return "Report API request pending";
+    case "requesting_verification":
+    case "awaiting_verification":
+      return "Verification email pending";
+    case "verification_received":
+      return "Verification received · submission pending";
+    case "verifying":
+      return "Verification submission pending";
+    case "submitting":
+      return "Discord report submission pending";
+    case "submitted":
+      return report.discordStatus === null
+        ? "Report confirmation email pending"
+        : "Report result pending";
+  }
 }
 
 export function reportHistory(report: ReportView): string {
-  const attempts = new Map<number, Map<HistoryStage, { label: string; icon: string; at: string }>>();
-  for (const event of report.timeline) {
-    const stage = historyStage(event);
-    if (!stage) continue;
-    const attempt = event.lifecycleAttempt ?? 1;
-    const stages =
-      attempts.get(attempt) ??
-      new Map<HistoryStage, { label: string; icon: string; at: string }>();
-    if (!stages.has(stage.key)) {
-      stages.set(stage.key, { label: stage.label, icon: stage.icon, at: event.occurredAt });
-    }
-    attempts.set(attempt, stages);
-  }
-  const attemptNumbers = [...attempts.keys()].sort((left, right) => left - right);
-  if (!attemptNumbers.includes(report.lifecycleAttempt)) {
-    attemptNumbers.push(report.lifecycleAttempt);
-    attemptNumbers.sort((left, right) => left - right);
-  }
-  const showAttemptHeadings = Math.max(report.lifecycleAttempt, ...attemptNumbers) > 1;
-  const order: HistoryStage[] = ["created", "retry", "submitted", "received", "outcome", "failed"];
   const lines: string[] = [];
-  for (const attempt of attemptNumbers) {
-    const stages = attempts.get(attempt);
-    if (showAttemptHeadings) lines.push(`**Attempt ${attempt}**`);
-    for (const key of order) {
-      const stage = stages?.get(key);
-      if (stage) lines.push(`${stage.icon} ${stage.label} — ${discordTimestamp(stage.at)}`);
+  let previousAttempt: number | null = null;
+  for (const event of report.timeline) {
+    const labels = historyLabels(event);
+    if (labels.length === 0) continue;
+    const attempt = event.lifecycleAttempt ?? report.lifecycleAttempt;
+    if (attempt !== previousAttempt && report.lifecycleAttempt > 1) {
+      lines.push(`Attempt ${attempt}`);
+      previousAttempt = attempt;
     }
+    for (const label of labels) lines.push(`[${discordTime(event.occurredAt)}] ${label}`);
   }
-  const pending = pendingHistoryStage(report);
-  if (pending) lines.push(pending);
-  return lines.join("\n") || "No report history is available yet.";
+  const pending = pendingHistoryLabel(report);
+  if (pending) lines.push(`[${discordTime(report.updatedAt)}] ${pending}`);
+  return lines.join("\n") || `[${discordTime(report.updatedAt)}] Status unavailable`;
 }
 
 export interface ReportEmbedOptions {
+  history?: "dm_notice" | "full";
   page?: { current: number; total: number };
   title?: string;
-  hideStatusDescription?: boolean;
 }
 
 export function reportEmbed(
@@ -796,17 +858,20 @@ export function reportEmbed(
   options: ReportEmbedOptions = {}
 ): EmbedBuilder {
   const currentStatus = report.discordStatus ?? report.status;
+  const category = reasonText(report.flow, report.reportType, reportElements(report));
+  const reportReason = report.reportedDetails.reportReason ?? category;
   const embed = new EmbedBuilder()
     .setColor(statusColor(report))
     .setTitle(options.title ?? `${FLOW_LABELS[report.flow]} report`)
     .addFields(
-      { name: "Reported thing", value: truncate(reportTarget(report, snapshot), 1_024) },
-      { name: "Report category", value: FLOW_LABELS[report.flow], inline: true },
+      { name: "Item", value: truncate(reportTarget(report, snapshot), 1_024) },
+      { name: "Status", value: statusLabel(currentStatus), inline: true },
+      { name: "Category", value: category, inline: true },
       { name: "Country", value: countryDisplay(report.country), inline: true },
-      { name: "Reason", value: reasonText(report.flow, report.reportType, reportElements(report)) },
-      ...splitField(reportDetails(report, snapshot)).map((value, index) => ({
-        name: index === 0 ? "Reported details" : `Reported details (${index + 1})`,
-        value
+      { name: "Reason", value: reportReason },
+      ...splitField(reportDetails(report, snapshot), 1_016).map((value, index) => ({
+        name: index === 0 ? "Details" : `Details (${index + 1})`,
+        value: codeBlock(value)
       })),
       {
         name: "References",
@@ -829,17 +894,23 @@ export function reportEmbed(
         inline: true
       }
     );
-  if (!options.hideStatusDescription) embed.setDescription(`**${statusLabel(currentStatus)}**`);
   if (report.retrySequence > 0 || report.retryable) {
     embed.addFields({
       name: "Retry",
-      value: `Report **${report.retrySequence + 1} of 3**${
-        report.retryable ? " • Another retry is available" : ""
+      value: `Attempt **${report.retrySequence + 1}**${
+        report.retryable ? " · Another safe retry is available" : ""
       }`
     });
   }
-  for (const [index, value] of splitField(reportHistory(report)).entries()) {
-    embed.addFields({ name: index === 0 ? "History" : `History (${index + 1})`, value });
+  if (options.history === "dm_notice") {
+    embed.addFields({ name: "History", value: "Check your DMs for the full status log." });
+  } else {
+    for (const [index, value] of splitField(reportHistory(report), 1_016).entries()) {
+      embed.addFields({
+        name: index === 0 ? "History" : `History (${index + 1})`,
+        value: codeBlock(value)
+      });
+    }
   }
   const profileAvatar =
     report.reportedDetails.kind === "profile"
@@ -863,7 +934,7 @@ export function reportEmbed(
 export function reportRetryComponents(
   report: ReportView
 ): ActionRowBuilder<ButtonBuilder>[] {
-  if (!(report.status === "failed" && report.retryable && report.retrySequence < 2)) return [];
+  if (!(report.status === "failed" && report.retryable)) return [];
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
@@ -887,7 +958,12 @@ export function reportBrowser(
   );
   const retryControls = reportRetryComponents(report);
   return {
-    embeds: [reportEmbed(report, snapshot, { page: { current: safePage + 1, total } })],
+    embeds: [
+      reportEmbed(report, snapshot, {
+        history: "dm_notice",
+        page: { current: safePage + 1, total }
+      })
+    ],
     components: [...(total > 1 ? [controls] : []), ...retryControls]
   };
 }

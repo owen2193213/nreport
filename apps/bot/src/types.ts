@@ -15,6 +15,7 @@ export interface ReportDraft {
   context?: string;
   legalResearch?: LegalResearch;
   reportBrief?: string;
+  reportReason?: string;
   writerConversation?: WriterConversationMessage[];
   flow: ReportFlow;
   guildElements?: GuildElement[];

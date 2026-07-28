@@ -24,6 +24,7 @@ describe("report contracts", () => {
     await api.createReport("123456789012345678", {
       country: "DE",
       flow: "message_urf",
+      reportReason: "The message contains hateful content.",
       reportType: "sub_other_hate_speech",
       submitterDiscordUserId: "1197857362942378017",
       messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679",
@@ -34,5 +35,8 @@ describe("report contracts", () => {
     expect(new Headers(init?.headers).get("idempotency-key")).toBe(
       "create:123456789012345678"
     );
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      reportReason: "The message contains hateful content."
+    });
   });
 });

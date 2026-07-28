@@ -62,6 +62,7 @@ import {
   buildRefinementModal,
   buildReportModal,
   buildReview,
+  buildWriterProgress,
   accessKeyEmbed,
   accessKeysEmbed,
   draftToCreateInput,
@@ -98,6 +99,7 @@ function reportFixture(): ReportDetail {
     reportedDetails: {
       kind: "message" as const,
       messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+      reportReason: "The message contains hateful content.",
       context: "sensitive context"
     },
     timeline: [
@@ -287,6 +289,17 @@ describe("access key administration views", () => {
     }
   });
 
+  it("offers optional DM delivery on every reports subcommand", () => {
+    const command = COMMANDS.find((candidate) => candidate.name === "reports");
+    expect(command?.options).toHaveLength(3);
+    for (const subcommand of command?.options ?? []) {
+      if (!("options" in subcommand)) throw new Error("Expected a reports subcommand.");
+      expect(subcommand.options?.find((option) => option.name === "send-to-dms")).toMatchObject({
+        required: false
+      });
+    }
+  });
+
   it("charges normal users only when credit enforcement is enabled", () => {
     expect(shouldBypassReportCredits(false, true)).toBe(false);
     expect(shouldBypassReportCredits(true, true)).toBe(true);
@@ -455,8 +468,16 @@ describe("report UI", () => {
       country: "DE",
       aiDisabled: true
     }).toJSON();
-    expect(JSON.stringify(manual)).toContain("AI is disabled");
-    expect(JSON.stringify(manual)).toContain('"max_length":512');
+    const automaticJson = JSON.stringify(message);
+    const manualJson = JSON.stringify(manual);
+    expect(automaticJson).toContain('"custom_id":"report_type","required":false');
+    expect(automaticJson).toContain('"min_values":0');
+    expect(automaticJson).toContain('"placeholder":"Auto"');
+    expect(automaticJson).toContain('"description":"512 characters max."');
+    expect(manualJson).toContain('"custom_id":"report_type","required":true');
+    expect(manualJson).toContain('"custom_id":"brief","style":2,"required":true');
+    expect(manualJson).toContain('"min_length":1');
+    expect(manualJson).toContain('"max_length":512');
   });
 
   it("converts a reviewed message draft into the canonical API request", () => {
@@ -465,6 +486,7 @@ describe("report UI", () => {
         {
           flow: "message_urf",
           country: "DE",
+          reportReason: "The message contains hateful content.",
           reportType: "sub_other_hate_speech",
           messageUrl:
             "https://discord.com/channels/@me/123456789012345678/123456789012345679",
@@ -482,6 +504,7 @@ describe("report UI", () => {
     ).toEqual({
       flow: "message_urf",
       country: "DE",
+      reportReason: "The message contains hateful content.",
       reportType: "sub_other_hate_speech",
       submitterDiscordUserId: "1197857362942378017",
       messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679",
@@ -495,6 +518,7 @@ describe("report UI", () => {
       flow: "message_urf" as const,
       country: "DE",
       countrySelection: "override" as const,
+      reportReason: "I am reporting this message because it contains abusive language.",
       reportType: "sub_other_hate_speech",
       messageUrl:
         "https://discord.com/channels/@me/123456789012345678/123456789012345679",
@@ -528,6 +552,7 @@ describe("report UI", () => {
         {
           flow: "user_urf",
           country: "DE",
+          reportReason: "The profile contains hateful content.",
           reportType: "sub_other_hate_speech",
           reportedUsername: "example",
           reportedUserId: snapshot.userId,
@@ -556,6 +581,7 @@ describe("report UI", () => {
       {
         flow: "message_urf",
         country: "DE",
+        reportReason: "The message contains hateful content.",
         reportType: "sub_other_hate_speech",
         messageUrl:
           "https://discord.com/channels/@me/123456789012345678/123456789012345679",
@@ -578,6 +604,7 @@ describe("report UI", () => {
     const review = buildReview("draft", {
       flow: "message_urf",
       country: "DE",
+      reportReason: "The message contains hateful content.",
       reportType: "sub_other_hate_speech",
       messageUrl: `https://discord.com/channels/@me/${"1".repeat(18)}/${"2".repeat(18)}`,
       context: `[Basic Law]${"x".repeat(501)}`,
@@ -598,7 +625,18 @@ describe("report UI", () => {
     expect(JSON.stringify(buttons)).toContain("Edit manually");
     const reviewJson = JSON.stringify(review.embeds[0]?.toJSON());
     expect(reviewJson).toContain("512/512 characters");
-    expect(reviewJson).toContain("Auto-selected by DeepSeek");
+    expect(reviewJson).toContain("Auto-selected");
+    expect(reviewJson).not.toContain("DeepSeek");
+    expect(review.embeds[0]?.toJSON().description).toBeUndefined();
+    expect(review.embeds[0]?.toJSON().fields?.map((field) => field.name)).toEqual([
+      "Item",
+      "Category",
+      "Country",
+      "Reason",
+      "Details"
+    ]);
+    expect(review.embeds[0]?.toJSON().fields?.find((field) => field.name === "Details")?.value)
+      .toMatch(/^```\n[\s\S]*\n```$/);
     expect(reviewJson).not.toContain("https://www.gesetze-im-internet.de/gg/");
     expect(JSON.stringify(review.components[1]?.toJSON())).toContain("Change country");
   });
@@ -632,7 +670,12 @@ describe("report UI", () => {
     const browser = reportBrowser(report, null, 0, 2);
     const embed = browser.embeds[0]?.toJSON();
     expect(embed?.title).toBe("Message report");
-    expect(embed?.description).toContain("Action taken");
+    expect(embed?.fields?.find((field) => field.name === "Status")?.value).toBe(
+      "Action taken"
+    );
+    expect(embed?.fields?.find((field) => field.name === "History")?.value).toBe(
+      "Check your DMs for the full status log."
+    );
     expect(browser.components[0]?.toJSON().components).toHaveLength(2);
   });
 
@@ -665,23 +708,111 @@ describe("report UI", () => {
   });
 
   it("renders lifecycle DMs with full details and the current timeline", () => {
-    const rendered = renderNotification(reportFixture());
+    const report = reportFixture();
+    report.timeline = [
+      {
+        eventId: "1",
+        type: "report_api_request_sent",
+        occurredAt: "2026-07-19T00:00:00.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: null,
+        errorCode: null
+      },
+      {
+        eventId: "2",
+        type: "verification_requested",
+        occurredAt: "2026-07-19T00:00:01.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: null,
+        errorCode: null
+      },
+      {
+        eventId: "3",
+        type: "verification_email_received",
+        occurredAt: "2026-07-19T00:00:02.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: null,
+        errorCode: null
+      },
+      {
+        eventId: "4",
+        type: "report_submitted",
+        occurredAt: "2026-07-19T00:00:03.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: null,
+        errorCode: null
+      },
+      {
+        eventId: "5",
+        type: "discord_status_updated",
+        occurredAt: "2026-07-20T00:00:00.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: "actioned",
+        errorCode: null
+      }
+    ];
+    const rendered = renderNotification(report);
     const json = JSON.stringify(rendered.toJSON());
     expect(json).toContain("Discord took action");
     expect(json).toContain("discord.com/channels");
     expect(json).toContain("sensitive context");
     expect(json).toContain("History");
+    expect(json).toContain("Report API request sent");
+    expect(json).toContain("Verification email pending");
+    expect(json).toContain("Verification email received");
+    expect(json).toContain("code processed");
+    expect(json).toContain("Report confirmation email pending");
+    expect(json).toContain("Result received");
+    expect(json).not.toContain("ABCD12");
+    expect(
+      rendered
+        .toJSON()
+        .fields?.find((field) => field.name === "History")
+        ?.value
+    ).toMatch(/^```\n[\s\S]*\n```$/);
   });
 
-  it("shows a lifecycle status only in the notification title and simplified history", () => {
+  it("uses the shared report structure with the full history in lifecycle DMs", () => {
     const report = reportFixture();
     report.discordStatus = "received";
     report.timeline[1]!.discordStatus = "received";
     const json = renderNotification(report, null, "discord:received").toJSON();
-    expect(json.title).toBe("Report received by Discord");
+    expect(json.title).toBe("Message report");
     expect(json.description).toBeUndefined();
-    expect(json.fields?.some((field) => field.name === "Discord review")).toBe(false);
-    expect(json.fields?.some((field) => field.name === "Progress")).toBe(false);
+    expect(json.fields?.find((field) => field.name === "Status")?.value).toBe(
+      "Received by Discord"
+    );
+    expect(json.fields?.find((field) => field.name === "History")?.value).toContain("```");
+    expect(json.fields?.find((field) => field.name === "History")?.value).not.toContain(
+      "Check your DMs"
+    );
+  });
+
+  it("renders each writer stage as a code-block progress embed", () => {
+    const research = buildWriterProgress({
+      stage: "research",
+      country: "Auto",
+      reportReason: "Auto",
+      reportType: "Auto"
+    }).toJSON();
+    const researched = buildWriterProgress({
+      stage: "research_complete",
+      country: "DE",
+      lawReference: "Germany, Basic Law, Article 1",
+      reportReason: "The message contains hateful content.",
+      reportType: "Other: hate speech",
+      searchRequests: 1
+    }).toJSON();
+    const writing = buildWriterProgress({
+      stage: "write",
+      reportReason: "The message contains hateful content."
+    }).toJSON();
+    expect(research.title).toBe("Researching and writing report");
+    expect(research.description).toMatch(/^```\n[\s\S]*\n```$/);
+    expect(researched.description).toContain("Country: 🇩🇪 Germany");
+    expect(researched.description).toContain("Category: Other: hate speech");
+    expect(writing.title).toBe("Researching and writing report");
+    expect(writing.description).toContain("Reason: The message contains hateful content.");
   });
 
   it("uses plain reply notifications for final Discord decisions", () => {
@@ -807,15 +938,16 @@ describe("lifecycle notification deduplication", () => {
     expect(completeNotification).toHaveBeenCalledWith("1");
   });
 
-  it("sends pre-submission failures as plain text without an embed", async () => {
+  it("uses the same full report embed for pre-submission failure DMs", async () => {
     const report = reportFixture();
     report.status = "failed";
     report.discordReportId = null;
     report.discordStatus = null;
     report.retryable = true;
     report.error = { code: "verification_email_timeout", message: "Verification timed out." };
-    const send = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue({ id: "failure-status-message" });
     const completeNotification = vi.fn().mockResolvedValue(undefined);
+    const saveStatusDmMessageId = vi.fn().mockResolvedValue(undefined);
     const database = {
       claimDueTrackings: vi.fn().mockResolvedValue([]),
       reconciliationCursor: vi.fn().mockResolvedValue("0"),
@@ -834,6 +966,8 @@ describe("lifecycle notification deduplication", () => {
           attempts: 0
         }
       ]),
+      statusDmMessageId: vi.fn().mockResolvedValue(null),
+      saveStatusDmMessageId,
       completeNotification
     } as unknown as BotDatabase;
     const worker = new NotificationWorker(
@@ -853,10 +987,16 @@ describe("lifecycle notification deduplication", () => {
 
     expect(send).toHaveBeenCalledOnce();
     const payload = send.mock.calls[0]?.[0] as
-      | { content: string; embeds?: unknown[] }
+      | { content?: string; embeds?: unknown[] }
       | undefined;
-    expect(payload?.content).toContain("failed before Discord confirmed submission");
-    expect(payload?.embeds).toBeUndefined();
+    expect(payload?.content).toBeUndefined();
+    expect(payload?.embeds).toHaveLength(1);
+    expect(JSON.stringify(payload?.embeds)).toContain("Verification timed out.");
+    expect(JSON.stringify(payload?.embeds)).toContain("History");
+    expect(saveStatusDmMessageId).toHaveBeenCalledWith(
+      "tracking-2",
+      "failure-status-message"
+    );
     expect(completeNotification).toHaveBeenCalledWith("2");
   });
 
@@ -871,7 +1011,13 @@ describe("lifecycle notification deduplication", () => {
     });
 
     failed.retrySequence = 2;
-    expect(reportRetryComponents(failed)).toEqual([]);
+    expect(reportRetryComponents(failed)[0]?.components[0]?.data).toMatchObject({
+      custom_id: `reports:retry:${failed.internalReportId}`,
+      label: "Retry as new report"
+    });
+
+    failed.retrySequence = 50;
+    expect(reportRetryComponents(failed)).not.toEqual([]);
   });
 
   it("retries unlinked events but acknowledges accepted and expired events", () => {
@@ -922,6 +1068,58 @@ describe("lifecycle notification deduplication", () => {
 });
 
 describe("report component responsiveness", () => {
+  it("keeps status ephemeral while sending the full report log to DMs on request", async () => {
+    const report = reportFixture();
+    const send = vi.fn().mockResolvedValue({ id: "dm-message" });
+    const deferReply = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const handler = new InteractionHandler({
+      api: { report: vi.fn().mockResolvedValue(report) } as unknown as DsaApi,
+      config: {
+        adminUserIds: new Set<string>(),
+        whitelistEnabled: false
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database: {} as BotDatabase,
+      messageResolver: {} as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: {} as ReportWriter,
+      serverResolver: {} as ServerResolver
+    });
+    const interaction = {
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => true,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => false,
+      isRepliable: () => true,
+      commandName: "reports",
+      user: { id: "1197857362942378017", send },
+      options: {
+        getSubcommand: () => "status",
+        getBoolean: (name: string) => (name === "send-to-dms" ? true : null),
+        getString: (name: string) =>
+          name === "report-id" ? report.internalReportId : null
+      },
+      deferReply,
+      editReply,
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(send).toHaveBeenCalledOnce();
+    const dmJson = JSON.stringify(send.mock.calls[0]?.[0]);
+    expect(dmJson).toContain("History");
+    expect(dmJson).not.toContain("Check your DMs for the full status log.");
+    const replyJson = JSON.stringify(editReply.mock.calls[0]?.[0]);
+    expect(replyJson).toContain("Check your DMs for the full status log.");
+    expect(replyJson).toContain("The full status log was sent to your DMs.");
+  });
+
   it("contains a secondary response failure after the original interaction error", async () => {
     const reply = vi.fn().mockRejectedValue(Object.assign(new Error("Unknown interaction"), {
       code: 10_062,

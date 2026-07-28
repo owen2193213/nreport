@@ -76,7 +76,7 @@ The bot needs only these reporting-service variables:
 DSA_API_BASE_URL=https://discord-dsa-production.up.railway.app
 DSA_API_KEY=<same API_KEY configured on the Railway API service>
 OPENROUTER_API_KEY=<bot-only OpenRouter key>
-OPENROUTER_MODEL=deepseek/deepseek-v4-pro
+OPENROUTER_MODEL=deepseek/deepseek-v4-flash
 OPENROUTER_WRITER_REASONING_EFFORT=high
 ```
 
@@ -666,9 +666,9 @@ before showing the manual review. The bot-to-API request shape remains unchanged
 
 Only the resolved ISO country and final reviewed text cross the bot-to-API boundary, so the public
 create-report request remains unchanged. Message content, author details, embed summaries,
-attachments, country-selection reasoning, sources, research, and conversation remain only in the
-encrypted, expiring bot draft. OpenRouter usage is accumulated per bot user without storing or
-logging any AI content.
+attachments, country-selection reasoning, sources, research, and conversation remain in the
+encrypted, expiring bot draft. OpenRouter usage is accumulated per bot user; logs include operational
+diagnostics but exclude credentials, verification codes, and raw email.
 
 The app is registered globally with `USER_INSTALL` only. Admin key/user commands are
 documented in [`BOT_IMPLEMENTATION.md`](BOT_IMPLEMENTATION.md). The bot stores access,
@@ -876,7 +876,7 @@ These rules are mandatory because all bot instances share one backend API key:
 - [ ] Use only the semantic report types in section 7.
 - [ ] Poll briefly, then rely on `/dsa-status` and `/dsa-reports`.
 - [ ] Show retry only when the API says `retryable: true`.
-- [ ] Redact API keys, generated email addresses, and sensitive context from logs.
+- [ ] Keep API keys, verification codes, and raw email out of logs.
 - [ ] Handle `429`, transport timeouts, and idempotency replay.
 - [ ] Test against a mock API before running an authorized live report.
 - [ ] Confirm one controlled end-to-end report returns both `discordReportId` and
@@ -892,8 +892,7 @@ These rules are mandatory because all bot instances share one backend API key:
   cross-database drift.
 - Discord interaction IDs are idempotency keys; random keys were rejected because they make
   interaction delivery retries capable of creating duplicate reports.
-- Replies are ephemeral by default because report targets, context, IDs, and decisions may be
-  sensitive.
+- Replies are ephemeral by default so report interactions remain scoped to the initiating user.
 - The bot polls briefly during submission, then uses durable 15-minute fallback polling alongside
   webhook delivery and event-feed reconciliation until Discord returns a terminal outcome.
 - Numeric breadcrumbs remain entirely backend-owned and runtime-resolved.

@@ -1,0 +1,842 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Discord DSA Command Flow Atlas</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #0f172a;
+      --canvas: #131d33;
+      --panel: #1e293b;
+      --discord: #313338;
+      --discord-head: #2b2d31;
+      --text: #f1f5f9;
+      --muted: #b8c2d2;
+      --line: #43506a;
+      --connector: #7c89a8;
+      --blue: #5865f2;
+      --green: #3ba55d;
+      --yellow: #f0b232;
+      --orange: #e67e22;
+      --red: #ed4245;
+      --grey: #747f8d;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(rgb(255 255 255 / 2%) 1px, transparent 1px),
+        linear-gradient(90deg, rgb(255 255 255 / 2%) 1px, transparent 1px),
+        var(--page);
+      background-size: 24px 24px;
+      color: var(--text);
+      font: 16px/1.55 "IBM Plex Sans", Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+
+    main {
+      display: flex;
+      flex-direction: column;
+      width: min(1540px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 44px 0 90px;
+    }
+
+    header { order: 0; }
+    #canvas-proposed-report-redesign { order: 1; }
+    #canvas-report-creation { order: 2; }
+    #canvas-report-management { order: 3; }
+    #canvas-access-settings { order: 4; }
+    #canvas-admin-keys { order: 5; }
+    #canvas-admin-users { order: 6; }
+    footer { order: 7; }
+
+    h1, h2, h3, h4, p { margin-top: 0; }
+    h1 { margin-bottom: 12px; font-size: clamp(32px, 5vw, 58px); line-height: 1.05; }
+    h2 { margin-bottom: 8px; font-size: clamp(25px, 3vw, 36px); }
+    h3 { margin-bottom: 0; font-size: 20px; }
+    h4 { margin-bottom: 8px; font-size: 15px; }
+
+    code,
+    .node-id,
+    .command-text {
+      font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+    }
+
+    a {
+      color: #c5ccff;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    a:focus-visible {
+      outline: 3px solid #9da6ff;
+      outline-offset: 4px;
+      border-radius: 5px;
+    }
+
+    .lede {
+      max-width: 850px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .meta,
+    .nav,
+    .legend,
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .meta { margin-top: 22px; }
+    .nav { margin: 24px 0 0; }
+
+    .chip,
+    .nav a,
+    .node-id,
+    .surface-type {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .chip,
+    .nav a { min-height: 36px; padding: 7px 11px; }
+    .nav a { cursor: pointer; text-decoration: none; transition: border-color 180ms, color 180ms; }
+    .nav a:hover { border-color: #8f99ff; color: var(--text); }
+
+    .notice,
+    .decision-card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgb(30 41 59 / 92%);
+    }
+
+    .notice {
+      margin-top: 28px;
+      padding: 18px 20px;
+      border-left: 4px solid var(--blue);
+    }
+
+    .decision-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+      gap: 12px;
+      margin-top: 20px;
+    }
+
+    .decision-card { padding: 16px; }
+    .decision-card p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
+
+    .group-canvas {
+      margin-top: 54px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgb(19 29 51 / 94%);
+      box-shadow: 0 18px 50px rgb(0 0 0 / 18%);
+    }
+
+    .group-heading {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 22px;
+    }
+
+    .group-heading p {
+      max-width: 760px;
+      margin: 5px 0 0;
+      color: var(--muted);
+    }
+
+    .command-tree {
+      margin-top: 22px;
+      padding: 20px;
+      border: 1px solid #394762;
+      border-radius: 14px;
+      background: rgb(15 23 42 / 76%);
+    }
+
+    .command-tree:first-of-type { margin-top: 0; }
+
+    .tree-title {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    .node-id {
+      min-height: 27px;
+      padding: 4px 8px;
+      border-color: #7783ff;
+      background: #252d56;
+      color: #e1e5ff;
+    }
+
+    .tree-flow {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      overflow-x: auto;
+      padding: 4px 4px 14px;
+      scrollbar-color: #53617e transparent;
+    }
+
+    .branch-stack {
+      display: grid;
+      gap: 14px;
+      min-width: 340px;
+    }
+
+    .branch-label {
+      margin-bottom: 5px;
+      color: #c8d0df;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .connector {
+      flex: 0 0 auto;
+      color: var(--connector);
+      font: 700 24px/1 "JetBrains Mono", monospace;
+    }
+
+    .surface-node {
+      flex: 0 0 360px;
+      min-width: 0;
+    }
+
+    .surface-node.wide { flex-basis: 430px; }
+
+    .surface-node > .node-id { margin-bottom: 7px; }
+
+    .surface-type {
+      min-height: 25px;
+      margin: 0 0 7px 7px;
+      padding: 3px 7px;
+      border-color: #51596a;
+      background: #202225;
+      color: #c7cbd2;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .discord-window {
+      overflow: hidden;
+      border: 1px solid #4a4f59;
+      border-radius: 9px;
+      background: var(--discord);
+      box-shadow: 0 10px 24px rgb(0 0 0 / 22%);
+    }
+
+    .window-bar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-bottom: 1px solid #454a54;
+      background: var(--discord-head);
+      color: #dbdee1;
+      font-size: 12px;
+    }
+
+    .command-text {
+      padding: 14px;
+      overflow-wrap: anywhere;
+      color: #dbdee1;
+      font-size: 13px;
+    }
+
+    .command-text strong { color: #c9cdfb; }
+
+    .options {
+      display: grid;
+      gap: 7px;
+      margin-top: 10px;
+    }
+
+    .option {
+      padding: 7px 9px;
+      border-radius: 4px;
+      background: #383a40;
+      color: #b5bac1;
+      font-family: "IBM Plex Sans", sans-serif;
+    }
+
+    .modal-body {
+      display: grid;
+      gap: 13px;
+      padding: 15px;
+    }
+
+    .modal-field label {
+      display: block;
+      margin-bottom: 5px;
+      color: #f2f3f5;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .input,
+    .select {
+      min-height: 40px;
+      padding: 10px;
+      border: 1px solid #1e1f22;
+      border-radius: 4px;
+      background: #1e1f22;
+      color: #b5bac1;
+      font-size: 13px;
+    }
+
+    .input.multiline { min-height: 74px; }
+
+    .hint {
+      margin-top: 4px;
+      color: #9ca2aa;
+      font-size: 11px;
+    }
+
+    .embed {
+      position: relative;
+      margin: 12px;
+      padding: 14px 14px 13px 18px;
+      border-radius: 4px;
+      background: #2b2d31;
+    }
+
+    .embed::before {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 4px;
+      border-radius: 4px 0 0 4px;
+      background: var(--embed-color, var(--blue));
+      content: "";
+    }
+
+    .embed.blue { --embed-color: var(--blue); }
+    .embed.green { --embed-color: var(--green); }
+    .embed.yellow { --embed-color: var(--yellow); }
+    .embed.orange { --embed-color: var(--orange); }
+    .embed.red { --embed-color: var(--red); }
+    .embed.grey { --embed-color: var(--grey); }
+
+    .embed-title { margin-bottom: 7px; color: #f2f3f5; font-weight: 700; }
+    .embed-description,
+    .field-value,
+    .footer { color: #b5bac1; font-size: 12px; }
+
+    .fields {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px 13px;
+      margin-top: 12px;
+    }
+
+    .field.wide { grid-column: 1 / -1; }
+    .field-name { margin-bottom: 2px; color: #f2f3f5; font-size: 12px; font-weight: 700; }
+    .field-value { overflow-wrap: anywhere; }
+    .footer { margin-top: 12px; }
+
+    .buttons {
+      padding: 0 12px 12px;
+    }
+
+    .button {
+      min-height: 34px;
+      padding: 8px 10px;
+      border-radius: 4px;
+      background: #4e5058;
+      color: #f2f3f5;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .button.primary { background: var(--blue); }
+    .button.danger { background: var(--red); }
+
+    .privacy {
+      padding: 7px 12px 11px;
+      color: #9ea5b0;
+      font-size: 11px;
+    }
+
+    .legend { margin-top: 14px; color: var(--muted); font-size: 13px; }
+    .legend i { width: 11px; height: 11px; border-radius: 3px; }
+
+    .comparison-stack {
+      display: grid;
+      gap: 20px;
+    }
+
+    .comparison-row {
+      padding: 18px;
+      border: 1px solid #394762;
+      border-radius: 14px;
+      background: rgb(15 23 42 / 76%);
+    }
+
+    .comparison-title {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .comparison-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .comparison-column {
+      min-width: 0;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #111a2c;
+    }
+
+    .comparison-column.current { border-top: 4px solid var(--grey); }
+    .comparison-column.planned { border-top: 4px solid var(--green); }
+
+    .comparison-label {
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .code-block {
+      margin-top: 9px;
+      padding: 9px 10px;
+      border: 1px solid #1a1b1f;
+      border-radius: 4px;
+      background: #1e1f22;
+      color: #d9dce1;
+      font: 12px/1.5 "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+      white-space: pre-wrap;
+    }
+
+    .plan-note,
+    .security-note {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 7px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .plan-note {
+      border: 1px solid #40567d;
+      background: #18253d;
+    }
+
+    .security-note {
+      border: 1px solid #805f24;
+      background: #322814;
+      color: #ffe1a3;
+    }
+
+    .plan-table {
+      width: 100%;
+      margin-top: 18px;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font-size: 13px;
+    }
+
+    .plan-table th,
+    .plan-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .plan-table th { background: #1e293b; color: var(--text); }
+    .plan-table td { color: var(--muted); }
+    .plan-table tr:last-child td { border-bottom: 0; }
+
+    .plan-checklist {
+      display: grid;
+      gap: 8px;
+      margin: 18px 0 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: plan;
+    }
+
+    .plan-checklist li {
+      position: relative;
+      padding: 10px 12px 10px 46px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--muted);
+      counter-increment: plan;
+    }
+
+    .plan-checklist li::before {
+      position: absolute;
+      top: 9px;
+      left: 11px;
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      background: #27315f;
+      color: #e4e7ff;
+      content: counter(plan);
+      font: 700 12px/24px "JetBrains Mono", monospace;
+      text-align: center;
+    }
+
+    @media (max-width: 760px) {
+      body { font-size: 16px; }
+      main { width: min(100% - 20px, 1540px); padding-top: 26px; }
+      .group-canvas { margin-top: 32px; padding: 14px; }
+      .command-tree { padding: 13px; }
+      .tree-flow { display: grid; overflow: visible; }
+      .surface-node,
+      .surface-node.wide,
+      .branch-stack { width: 100%; min-width: 0; }
+      .connector { justify-self: center; transform: rotate(90deg); }
+      .fields { grid-template-columns: 1fr; }
+      .field.wide { grid-column: auto; }
+      .comparison-grid { grid-template-columns: 1fr; }
+      .plan-table { display: block; overflow-x: auto; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      * { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Discord DSA command flow atlas</h1>
+    <p class="lede">
+      A source-derived visual map where every flowchart node is an actual Discord surface:
+      command composer, modal, select, full embed, buttons, or lifecycle DM. Each command owns an
+      independent tree and every node has a stable ID for feedback.
+    </p>
+    <div class="meta">
+      <span class="chip">17 command entry points</span>
+      <span class="chip">All interaction replies ephemeral</span>
+      <span class="chip">Lifecycle updates are private DMs</span>
+      <span class="chip">Planning artifact — no bot behavior changes</span>
+      <span class="chip">Updated 28 July 2026</span>
+    </div>
+    <nav class="nav" aria-label="Command groups">
+      <a href="#canvas-proposed-report-redesign">Proposed report redesign</a>
+      <a href="#canvas-report-creation">Report creation</a>
+      <a href="#canvas-report-management">Report management</a>
+      <a href="#canvas-access-settings">Access &amp; settings</a>
+      <a href="#canvas-admin-keys">Admin keys</a>
+      <a href="#canvas-admin-users">Admin users</a>
+    </nav>
+    <div class="notice">
+      <strong>How to refer to a change:</strong> quote the node ID, such as <code>RP-02</code> for
+      the profile confirmation embed or <code>AKR-02</code> for the key-revocation result.
+      IDs are immutable; later insertions receive suffixes.
+    </div>
+    <div class="decision-grid" aria-label="Design decision log">
+      <article class="decision-card"><h4>Chosen: surface nodes</h4><p>Connectors link complete Discord mockups. Text-only process boxes are excluded.</p></article>
+      <article class="decision-card"><h4>Chosen: grouped canvases</h4><p>Creation, management, access/settings, admin keys, and admin users each get a separate canvas.</p></article>
+      <article class="decision-card"><h4>Chosen: independent trees</h4><p>Shared behavior is repeated inside each command tree so every command can be reviewed alone.</p></article>
+      <article class="decision-card"><h4>Rejected: one giant map</h4><p>A single graph would cross-link too heavily and make exact feedback harder.</p></article>
+      <article class="decision-card"><h4>Assumption: static artifact</h4><p>No JavaScript, backend calls, secrets, or live Discord data. Example values are synthetic.</p></article>
+      <article class="decision-card"><h4>Maintenance</h4><p>Update from commands.ts, ui.ts, interactions.ts, and notifier.ts whenever bot-visible behavior changes.</p></article>
+    </div>
+  </header>
+
+  <section class="group-canvas" id="canvas-report-creation" aria-labelledby="report-creation-heading">
+    <div class="group-heading">
+      <div><h2 id="report-creation-heading">Canvas 1 — Report creation</h2><p>Four entry points. Each tree contains its own command surface, initial modal, review embed, immediate status, and private lifecycle DM.</p></div>
+      <span class="chip">4 command trees</span>
+    </div>
+
+    <article class="command-tree" id="tree-report-message" data-command-id="RM">
+      <div class="tree-title"><span class="node-id">RM</span><h3>/report message</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-rm-01" data-node-id="RM-01">
+          <span class="node-id">RM-01</span><span class="surface-type">Slash command</span>
+          <div class="discord-window"><div class="window-bar"><strong>Use /report message</strong><span>Ephemeral flow</span></div><div class="command-text"><strong>/report message</strong><div class="options"><div class="option">message-link · https://discord.com/channels/…</div><div class="option">country · Auto</div><div class="option">dont-use-ai · No</div></div></div></div>
+        </div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node" id="node-rm-02" data-node-id="RM-02">
+          <span class="node-id">RM-02</span><span class="surface-type">Modal</span>
+          <div class="discord-window"><div class="window-bar"><strong>Report Message</strong><span>×</span></div><div class="modal-body"><div class="modal-field"><label>Why are you reporting this?</label><div class="select">Select a report reason</div></div><div class="modal-field"><label>Briefly explain the report</label><div class="input multiline">Describe what is unlawful in this message…</div><div class="hint">A short or vague reason is okay. DeepSeek drafts the final report for review. Maximum 512.</div></div></div></div>
+        </div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="branch-stack">
+          <div><div class="branch-label">AI enabled</div><div class="surface-node" id="node-rm-03a" data-node-id="RM-03A"><span class="node-id">RM-03A</span><span class="surface-type">Ephemeral embed</span><div class="discord-window"><div class="embed yellow"><div class="embed-title">Researching and writing report</div><div class="embed-description">DeepSeek is selecting the applicable country, researching legal relevance, and preparing a concise report. Nothing is submitted during drafting.</div></div></div></div></div>
+          <div><div class="branch-label">AI disabled</div><div class="surface-node" id="node-rm-03b" data-node-id="RM-03B"><span class="node-id">RM-03B</span><span class="surface-type">Modal variant</span><div class="discord-window"><div class="window-bar"><strong>Report Message</strong><span>×</span></div><div class="modal-body"><div class="modal-field"><label>Final report text</label><div class="input multiline">Exact text to submit to Discord…</div><div class="hint">AI is disabled. Write the final report in 512 characters or fewer.</div></div></div></div></div></div>
+        </div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rm-04" data-node-id="RM-04">
+          <span class="node-id">RM-04</span><span class="surface-type">Ephemeral review embed</span>
+          <div class="discord-window"><div class="embed orange"><div class="embed-title">Review message report</div><div class="embed-description">Submitting creates a real DSA report. Confirm that the information is truthful and authorized.</div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">https://discord.com/channels/123/456/789</div></div><div class="field"><div class="field-name">Report category</div><div class="field-value">Message</div></div><div class="field"><div class="field-name">Country</div><div class="field-value">Germany<br>Auto-selected by DeepSeek</div></div><div class="field wide"><div class="field-name">Reason</div><div class="field-value">Illegal hate speech</div></div><div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Synthetic example of the exact ≤512-character text Discord will receive.</div></div></div><div class="footer">118/512 characters · Review carefully before submitting</div></div><div class="buttons"><span class="button danger">Submit DSA Report</span><span class="button primary">Refine</span><span class="button">Regenerate</span><span class="button">Edit manually</span><span class="button">Cancel</span><span class="button">Change country</span></div></div>
+        </div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rm-05" data-node-id="RM-05">
+          <span class="node-id">RM-05</span><span class="surface-type">Ephemeral status embed</span>
+          <div class="discord-window"><div class="embed blue"><div class="embed-title">Message report</div><div class="embed-description"><strong>Preparing report</strong></div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">https://discord.com/channels/123/456/789</div></div><div class="field"><div class="field-name">Report category</div><div class="field-value">Message</div></div><div class="field"><div class="field-name">Country</div><div class="field-value">Germany</div></div><div class="field wide"><div class="field-name">Reason</div><div class="field-value">Illegal hate speech</div></div><div class="field"><div class="field-name">References</div><div class="field-value">Report: <code>7dd4…</code><br>Discord: Not assigned</div></div><div class="field"><div class="field-name">Dates</div><div class="field-value">Created just now<br>Updated just now</div></div><div class="field wide"><div class="field-name">History</div><div class="field-value">Report created — just now<br>Preparing and submitting report</div></div></div><div class="footer">Full ID: synthetic-report-id</div></div></div>
+        </div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rm-06" data-node-id="RM-06">
+          <span class="node-id">RM-06</span><span class="surface-type">Private DM · edited in place</span>
+          <div class="discord-window"><div class="window-bar"><strong>Direct Message</strong><span>Private</span></div><div class="embed blue"><div class="embed-title">Report submitted to Discord</div><div class="embed-description">Discord has not confirmed receipt yet. This same private message is edited when receipt or an outcome arrives.</div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">https://discord.com/channels/123/456/789</div></div><div class="field"><div class="field-name">Country</div><div class="field-value">Germany</div></div><div class="field"><div class="field-name">References</div><div class="field-value">Report: <code>7dd4…</code><br>Discord: <code>123456</code></div></div><div class="field wide"><div class="field-name">History</div><div class="field-value">Report created<br>Submitted to Discord<br>Waiting for Discord to receive the report</div></div></div></div><div class="privacy">Later edit: Received → Actioned / Closed without action / Review not approved. Final outcome may be replied beneath this DM.</div></div>
+        </div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-context-report-message" data-command-id="RMC">
+      <div class="tree-title"><span class="node-id">RMC</span><h3>Apps → Report Message</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-rmc-01" data-node-id="RMC-01"><span class="node-id">RMC-01</span><span class="surface-type">Context command</span><div class="discord-window"><div class="window-bar"><strong>Selected message</strong><span>Apps</span></div><div class="command-text"><strong>Report Message</strong><div class="options"><div class="option">Author · Example User</div><div class="option">Channel · #general</div><div class="option">Message URL and snapshot captured automatically</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node" id="node-rmc-02" data-node-id="RMC-02"><span class="node-id">RMC-02</span><span class="surface-type">Modal</span><div class="discord-window"><div class="window-bar"><strong>Report Message</strong><span>×</span></div><div class="modal-body"><div class="modal-field"><label>Why are you reporting this?</label><div class="select">Select a report reason</div></div><div class="modal-field"><label>Briefly explain the report</label><div class="input multiline">Explain the unlawful content in the selected message…</div><div class="hint">The message link and evidence snapshot are already attached.</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rmc-03" data-node-id="RMC-03"><span class="node-id">RMC-03</span><span class="surface-type">Ephemeral review embed</span><div class="discord-window"><div class="embed orange"><div class="embed-title">Review message report</div><div class="embed-description">Submitting creates a real DSA report. Confirm the selected message and final text.</div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Selected message URL</div></div><div class="field"><div class="field-name">Report category</div><div class="field-value">Message</div></div><div class="field"><div class="field-name">Country</div><div class="field-value">France · Report override</div></div><div class="field wide"><div class="field-name">Reason</div><div class="field-value">Selected message report reason</div></div><div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Exact final text and captured message context.</div></div></div><div class="footer">Review carefully before submitting</div></div><div class="buttons"><span class="button danger">Submit DSA Report</span><span class="button primary">Refine</span><span class="button">Regenerate</span><span class="button">Edit manually</span><span class="button">Cancel</span></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rmc-04" data-node-id="RMC-04"><span class="node-id">RMC-04</span><span class="surface-type">Ephemeral status embed</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Message report</div><div class="embed-description"><strong>Preparing report</strong></div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Selected message URL</div></div><div class="field"><div class="field-name">References</div><div class="field-value">Report: <code>a84b…</code><br>Discord: Not assigned</div></div><div class="field"><div class="field-name">Dates</div><div class="field-value">Created just now</div></div><div class="field wide"><div class="field-name">History</div><div class="field-value">Report created<br>Preparing and submitting report</div></div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rmc-05" data-node-id="RMC-05"><span class="node-id">RMC-05</span><span class="surface-type">Private lifecycle DM</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Report submitted to Discord</div><div class="embed-description">Saved private message. It is edited through receipt and final outcome.</div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Selected message URL</div></div><div class="field wide"><div class="field-name">History</div><div class="field-value">Created → Submitted → Waiting for receipt</div></div></div></div></div></div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-report-profile" data-command-id="RP">
+      <div class="tree-title"><span class="node-id">RP</span><h3>/report profile</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-rp-01" data-node-id="RP-01"><span class="node-id">RP-01</span><span class="surface-type">Slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /report profile</strong><span>Ephemeral flow</span></div><div class="command-text"><strong>/report profile</strong><div class="options"><div class="option">target · 123456789012345678</div><div class="option">server-id · optional</div><div class="option">country · Auto</div><div class="option">dont-use-ai · No</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="branch-stack">
+          <div><div class="branch-label">Resolved</div><div class="surface-node wide" id="node-rp-02a" data-node-id="RP-02A"><span class="node-id">RP-02A</span><span class="surface-type">Ephemeral confirmation embed</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Discord account found</div><div class="embed-description">Review the resolved account before continuing.</div><div class="fields"><div class="field wide"><div class="field-name">Resolved account</div><div class="field-value"><strong>Example Display</strong><br>@example_user<br>User ID: <code>123456789012345678</code><br>Server display name: <strong>Example</strong></div></div></div></div><div class="buttons"><span class="button danger">Continue</span><span class="button">Cancel</span></div></div></div></div>
+          <div><div class="branch-label">Unresolved terminal branch</div><div class="surface-node wide" id="node-rp-02b" data-node-id="RP-02B"><span class="node-id">RP-02B</span><span class="surface-type">Ephemeral warning embed</span><div class="discord-window"><div class="embed orange"><div class="embed-title">User ID lookup was unsuccessful</div><div class="embed-description">Discord could not resolve the supplied ID. The account may not exist or Discord may be temporarily unavailable.</div><div class="fields"><div class="field wide"><div class="field-name">Original value</div><div class="field-value"><code>123456789012345678</code></div></div></div></div><div class="buttons"><span class="button">Try Lookup Again</span><span class="button">Cancel</span></div></div></div></div>
+        </div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node" id="node-rp-03" data-node-id="RP-03"><span class="node-id">RP-03</span><span class="surface-type">Modal</span><div class="discord-window"><div class="window-bar"><strong>Report Profile</strong><span>×</span></div><div class="modal-body"><div class="modal-field"><label>Why are you reporting this?</label><div class="select">Select a report reason</div></div><div class="modal-field"><label>Which profile elements are unlawful?</label><div class="select">Photos · Name · Descriptors</div></div><div class="modal-field"><label>Briefly explain the report</label><div class="input multiline">Explain the unlawful profile content…</div><div class="hint">DeepSeek drafts the final report for review. Maximum 512.</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rp-04" data-node-id="RP-04"><span class="node-id">RP-04</span><span class="surface-type">Ephemeral review embed</span><div class="discord-window"><div class="embed orange"><div class="embed-title">Review profile report</div><div class="embed-description">Submitting creates a real DSA report. Confirm that the information is truthful and authorized.</div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value"><strong>Example Display</strong><br>@example_user<br>User ID: <code>123456789012345678</code></div></div><div class="field"><div class="field-name">Report category</div><div class="field-value">Profile</div></div><div class="field"><div class="field-name">Country</div><div class="field-value">Germany<br>Auto-selected by DeepSeek</div></div><div class="field wide"><div class="field-name">Reason</div><div class="field-value">Reason · Photos, Name</div></div><div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Observed in server: <code>987654321098765432</code><br><br>Exact final report text.</div></div></div><div class="footer">Review carefully before submitting</div></div><div class="buttons"><span class="button danger">Submit DSA Report</span><span class="button primary">Refine</span><span class="button">Regenerate</span><span class="button">Edit manually</span><span class="button">Cancel</span><span class="button">Change country</span></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rp-05" data-node-id="RP-05"><span class="node-id">RP-05</span><span class="surface-type">Ephemeral status embed</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Profile report</div><div class="embed-description"><strong>Preparing report</strong></div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Example Display · @example_user · user ID</div></div><div class="field"><div class="field-name">Country</div><div class="field-value">Germany</div></div><div class="field"><div class="field-name">References</div><div class="field-value">Report: <code>c37f…</code><br>Discord: Not assigned</div></div><div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Name submitted to Discord: <code>@example_user</code><br>Account information captured just now</div></div><div class="field wide"><div class="field-name">History</div><div class="field-value">Report created<br>Preparing and submitting report</div></div></div><div class="footer">Full ID: synthetic-profile-report</div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rp-06" data-node-id="RP-06"><span class="node-id">RP-06</span><span class="surface-type">Private lifecycle DM</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Report submitted to Discord</div><div class="embed-description">Saved private message with the profile snapshot. Edited through receipt and final outcome.</div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Example Display · @example_user · user ID</div></div><div class="field wide"><div class="field-name">History</div><div class="field-value">Created → Submitted → Waiting for receipt</div></div></div></div></div></div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-report-server" data-command-id="RS">
+      <div class="tree-title"><span class="node-id">RS</span><h3>/report server</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-rs-01" data-node-id="RS-01"><span class="node-id">RS-01</span><span class="surface-type">Slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /report server</strong><span>Ephemeral flow</span></div><div class="command-text"><strong>/report server</strong><div class="options"><div class="option">server-or-invite · optional</div><div class="option">country · Auto</div><div class="option">dont-use-ai · No</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node" id="node-rs-02" data-node-id="RS-02"><span class="node-id">RS-02</span><span class="surface-type">Modal</span><div class="discord-window"><div class="window-bar"><strong>Report Server</strong><span>×</span></div><div class="modal-body"><div class="modal-field"><label>Server ID or invite code</label><div class="input">Only shown when no target was supplied or inferred</div></div><div class="modal-field"><label>Why are you reporting this?</label><div class="select">Select a report reason</div></div><div class="modal-field"><label>Where does the unlawful content appear?</label><div class="select">Server name · Icon · Banner · Invite splash · Discovery splash · Welcome screen description · Channel names · Other</div></div><div class="modal-field"><label>Briefly explain the report</label><div class="input multiline">Explain the unlawful server surface…</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rs-03" data-node-id="RS-03"><span class="node-id">RS-03</span><span class="surface-type">Ephemeral review embed</span><div class="discord-window"><div class="embed orange"><div class="embed-title">Review server report</div><div class="embed-description">Submitting creates a real DSA report. Confirm that the information is truthful and authorized.</div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value"><strong>Example Server</strong><br>Server ID: <code>987654321098765432</code><br>Members: 1,240</div></div><div class="field"><div class="field-name">Report category</div><div class="field-value">Server</div></div><div class="field"><div class="field-name">Country</div><div class="field-value">France · Saved default</div></div><div class="field wide"><div class="field-name">Reason</div><div class="field-value">Reason · Server name, Banner, Channel names</div></div><div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Resolved server snapshot followed by exact final report text.</div></div></div><div class="footer">Review carefully before submitting</div></div><div class="buttons"><span class="button danger">Submit DSA Report</span><span class="button primary">Refine</span><span class="button">Regenerate</span><span class="button">Edit manually</span><span class="button">Cancel</span><span class="button">Change country</span></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rs-04" data-node-id="RS-04"><span class="node-id">RS-04</span><span class="surface-type">Ephemeral status embed</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Server report</div><div class="embed-description"><strong>Preparing report</strong></div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Example Server · server ID · member count</div></div><div class="field"><div class="field-name">Country</div><div class="field-value">France</div></div><div class="field"><div class="field-name">References</div><div class="field-value">Report: <code>f902…</code><br>Discord: Not assigned</div></div><div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Resolved server snapshot and submitted context.</div></div><div class="field wide"><div class="field-name">History</div><div class="field-value">Report created<br>Preparing and submitting report</div></div></div><div class="footer">Full ID: synthetic-server-report</div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rs-05" data-node-id="RS-05"><span class="node-id">RS-05</span><span class="surface-type">Private lifecycle DM</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Report submitted to Discord</div><div class="embed-description">Saved private message with the resolved server snapshot. Edited through receipt and final outcome.</div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Example Server · server ID</div></div><div class="field wide"><div class="field-name">History</div><div class="field-value">Created → Submitted → Waiting for receipt</div></div></div></div></div></div>
+      </div>
+    </article>
+  </section>
+
+  <section class="group-canvas" id="canvas-admin-keys" aria-labelledby="admin-keys-heading">
+    <div class="group-heading">
+      <div><h2 id="admin-keys-heading">Canvas 4 — Administrator keys</h2><p>Administrator-only, inline-option commands. Plaintext key material appears only in the create result; list and inspect use safe prefixes and IDs.</p></div>
+      <span class="chip">4 command trees</span>
+    </div>
+
+    <article class="command-tree" id="tree-admin-key-create" data-command-id="AKC">
+      <div class="tree-title"><span class="node-id">AKC</span><h3>/admin key create</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-akc-01" data-node-id="AKC-01"><span class="node-id">AKC-01</span><span class="surface-type">Admin slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /admin key create</strong><span>Ephemeral</span></div><div class="command-text"><strong>/admin key create</strong><div class="options"><div class="option">credits · 5</div><div class="option">count · 2</div><div class="option">expires-at · optional ISO timestamp</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-akc-02" data-node-id="AKC-02"><span class="node-id">AKC-02</span><span class="surface-type">Ephemeral success embed</span><div class="discord-window"><div class="embed green"><div class="embed-title">Access keys created</div><div class="embed-description">These plaintext values are shown once. Store them securely.<br><br><code>DSA-SYNTHETIC-KEY-ONE</code><br><code>DSA-SYNTHETIC-KEY-TWO</code></div></div><div class="privacy">Synthetic examples only. Real plaintext must never appear in documentation, logs, or later inspection surfaces.</div></div></div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-admin-key-list" data-command-id="AKL">
+      <div class="tree-title"><span class="node-id">AKL</span><h3>/admin key list</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-akl-01" data-node-id="AKL-01"><span class="node-id">AKL-01</span><span class="surface-type">Admin slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /admin key list</strong><span>Ephemeral</span></div><div class="command-text"><strong>/admin key list</strong><div class="options"><div class="option">No options</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="branch-stack">
+          <div><div class="branch-label">Keys exist</div><div class="surface-node wide" id="node-akl-02a" data-node-id="AKL-02A"><span class="node-id">AKL-02A</span><span class="surface-type">Ephemeral list embed</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Access keys</div><div class="embed-description">Showing the 2 most recent keys.</div><div class="fields"><div class="field"><div class="field-name">DSA-ABCD • Active</div><div class="field-value">ID: <code>key_01</code><br>Credits granted: <strong>5</strong> · Expires: Never<br>Redeemed by: Nobody</div></div><div class="field"><div class="field-name">DSA-EFGH • Redeemed</div><div class="field-value">ID: <code>key_02</code><br>Credits granted: <strong>3</strong> · Expires: next month<br>Redeemed by: <code>123456789012345678</code> · yesterday</div></div></div></div></div></div></div>
+          <div><div class="branch-label">No keys</div><div class="surface-node" id="node-akl-02b" data-node-id="AKL-02B"><span class="node-id">AKL-02B</span><span class="surface-type">Ephemeral empty embed</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Access keys</div><div class="embed-description">No access keys exist.</div></div></div></div></div>
+        </div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-admin-key-inspect" data-command-id="AKI">
+      <div class="tree-title"><span class="node-id">AKI</span><h3>/admin key inspect</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-aki-01" data-node-id="AKI-01"><span class="node-id">AKI-01</span><span class="surface-type">Admin slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /admin key inspect</strong><span>Ephemeral</span></div><div class="command-text"><strong>/admin key inspect</strong><div class="options"><div class="option">key-id · key_02</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="branch-stack">
+          <div><div class="branch-label">Found</div><div class="surface-node wide" id="node-aki-02a" data-node-id="AKI-02A"><span class="node-id">AKI-02A</span><span class="surface-type">Ephemeral detail embed</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Access key details</div><div class="embed-description"><code>key_02</code></div><div class="fields"><div class="field"><div class="field-name">Prefix</div><div class="field-value">DSA-EFGH</div></div><div class="field"><div class="field-name">Credits granted</div><div class="field-value">3</div></div><div class="field"><div class="field-name">Status</div><div class="field-value">Redeemed</div></div><div class="field"><div class="field-name">Expires</div><div class="field-value">Next month</div></div><div class="field"><div class="field-name">Redeemed by</div><div class="field-value"><code>123456789012345678</code></div></div><div class="field"><div class="field-name">Revoked</div><div class="field-value">No</div></div></div></div></div></div></div>
+          <div><div class="branch-label">Not found</div><div class="surface-node" id="node-aki-02b" data-node-id="AKI-02B"><span class="node-id">AKI-02B</span><span class="surface-type">Ephemeral error embed</span><div class="discord-window"><div class="embed red"><div class="embed-title">Unable to complete that action</div><div class="embed-description">Access key was not found.</div></div></div></div></div>
+        </div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-admin-key-revoke" data-command-id="AKR">
+      <div class="tree-title"><span class="node-id">AKR</span><h3>/admin key revoke</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-akr-01" data-node-id="AKR-01"><span class="node-id">AKR-01</span><span class="surface-type">Admin slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /admin key revoke</strong><span>Ephemeral</span></div><div class="command-text"><strong>/admin key revoke</strong><div class="options"><div class="option">key-id · key_02</div><div class="option">reason · Audit reason (optional)</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node" id="node-akr-02" data-node-id="AKR-02"><span class="node-id">AKR-02</span><span class="surface-type">Ephemeral success embed</span><div class="discord-window"><div class="embed green"><div class="embed-title">Access key revoked</div><div class="embed-description">Key <code>key_02</code> has been revoked.</div></div><div class="privacy">Current command semantics also suspend the key's redeemer. No confirmation modal exists in the current implementation.</div></div></div>
+      </div>
+    </article>
+  </section>
+
+  <section class="group-canvas" id="canvas-admin-users" aria-labelledby="admin-users-heading">
+    <div class="group-heading">
+      <div><h2 id="admin-users-heading">Canvas 5 — Administrator users</h2><p>Administrator-only user access inspection and mutation commands. Suspension clears remaining credits; reinstatement returns the user active with zero credits.</p></div>
+      <span class="chip">3 command trees</span>
+    </div>
+
+    <article class="command-tree" id="tree-admin-user-inspect" data-command-id="AUI">
+      <div class="tree-title"><span class="node-id">AUI</span><h3>/admin user inspect</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-aui-01" data-node-id="AUI-01"><span class="node-id">AUI-01</span><span class="surface-type">Admin slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /admin user inspect</strong><span>Ephemeral</span></div><div class="command-text"><strong>/admin user inspect</strong><div class="options"><div class="option">user-id · 123456789012345678</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-aui-02" data-node-id="AUI-02"><span class="node-id">AUI-02</span><span class="surface-type">Ephemeral access embed</span><div class="discord-window"><div class="embed red"><div class="embed-title">User access</div><div class="embed-description">Discord user: <code>123456789012345678</code></div><div class="fields"><div class="field"><div class="field-name">Access level</div><div class="field-value">Credit-based access</div></div><div class="field"><div class="field-name">Credits</div><div class="field-value">0</div></div><div class="field"><div class="field-name">Default country</div><div class="field-value">Germany</div></div><div class="field"><div class="field-name">Account status</div><div class="field-value">Suspended</div></div><div class="field wide"><div class="field-name">AI usage</div><div class="field-value">Requests: <strong>4</strong><br>Input tokens: <strong>2,400</strong><br>Output tokens: <strong>650</strong><br>Reasoning tokens: <strong>180</strong><br>Web searches: <strong>3</strong><br>OpenRouter cost: <strong>0.010400 credits</strong></div></div><div class="field wide"><div class="field-name">Suspension reason</div><div class="field-value">Synthetic audit reason.</div></div></div></div></div></div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-admin-user-suspend" data-command-id="AUS">
+      <div class="tree-title"><span class="node-id">AUS</span><h3>/admin user suspend</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-aus-01" data-node-id="AUS-01"><span class="node-id">AUS-01</span><span class="surface-type">Admin slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /admin user suspend</strong><span>Ephemeral</span></div><div class="command-text"><strong>/admin user suspend</strong><div class="options"><div class="option">user-id · 123456789012345678</div><div class="option">reason · Audit reason (optional)</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node" id="node-aus-02" data-node-id="AUS-02"><span class="node-id">AUS-02</span><span class="surface-type">Ephemeral success embed</span><div class="discord-window"><div class="embed green"><div class="embed-title">User suspended</div><div class="embed-description">User <code>123456789012345678</code> is suspended and their remaining credits were cleared.</div></div><div class="privacy">Current implementation mutates immediately; no confirmation modal exists.</div></div></div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-admin-user-reinstate" data-command-id="AUR">
+      <div class="tree-title"><span class="node-id">AUR</span><h3>/admin user reinstate</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-aur-01" data-node-id="AUR-01"><span class="node-id">AUR-01</span><span class="surface-type">Admin slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /admin user reinstate</strong><span>Ephemeral</span></div><div class="command-text"><strong>/admin user reinstate</strong><div class="options"><div class="option">user-id · 123456789012345678</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node" id="node-aur-02" data-node-id="AUR-02"><span class="node-id">AUR-02</span><span class="surface-type">Ephemeral success embed</span><div class="discord-window"><div class="embed green"><div class="embed-title">User reinstated</div><div class="embed-description">User <code>123456789012345678</code> is active with <strong>0 credits</strong>.</div></div><div class="privacy">Credits are not restored. A new key is required unless access is bypassed.</div></div></div>
+      </div>
+    </article>
+  </section>
+
+  <footer class="notice">
+    <strong>Source of truth:</strong> <code>apps/bot/src/commands.ts</code>,
+    <code>apps/bot/src/ui.ts</code>, <code>apps/bot/src/interactions.ts</code>, and
+    <code>apps/bot/src/notifier.ts</code>. This atlas uses synthetic values and contains no secrets.
+  </footer>
+
+  <section class="group-canvas" id="canvas-report-management" aria-labelledby="report-management-heading">
+    <div class="group-heading">
+      <div><h2 id="report-management-heading">Canvas 2 — Report management</h2><p>These commands do not open modals. Their trees are command → full ephemeral report surface, with pagination or retry controls where the source provides them.</p></div>
+      <span class="chip">3 command trees</span>
+    </div>
+
+    <article class="command-tree" id="tree-reports-list" data-command-id="RL">
+      <div class="tree-title"><span class="node-id">RL</span><h3>/reports list</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-rl-01" data-node-id="RL-01"><span class="node-id">RL-01</span><span class="surface-type">Slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /reports list</strong><span>Ephemeral</span></div><div class="command-text"><strong>/reports list</strong><div class="options"><div class="option">No options</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="branch-stack">
+          <div><div class="branch-label">No reports</div><div class="surface-node" id="node-rl-02a" data-node-id="RL-02A"><span class="node-id">RL-02A</span><span class="surface-type">Ephemeral embed</span><div class="discord-window"><div class="embed blue"><div class="embed-title">No reports yet</div><div class="embed-description">Your submitted DSA reports will appear here. Use <code>/report</code> or <strong>Apps → Report Message</strong> to begin.</div></div></div></div></div>
+          <div><div class="branch-label">Reports found</div><div class="surface-node wide" id="node-rl-02b" data-node-id="RL-02B"><span class="node-id">RL-02B</span><span class="surface-type">Ephemeral paginated embed</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Profile report</div><div class="embed-description"><strong>Received by Discord</strong></div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Example Display · @example_user · user ID</div></div><div class="field"><div class="field-name">Report category</div><div class="field-value">Profile</div></div><div class="field"><div class="field-name">Country</div><div class="field-value">Germany</div></div><div class="field wide"><div class="field-name">Reason</div><div class="field-value">Report reason · Photos, Name</div></div><div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Name submitted to Discord and captured account information, followed by submitted context.</div></div><div class="field"><div class="field-name">References</div><div class="field-value">Report: <code>c37f…</code><br>Discord: <code>123456</code></div></div><div class="field"><div class="field-name">Dates</div><div class="field-value">Created yesterday<br>Updated today</div></div><div class="field wide"><div class="field-name">History</div><div class="field-value">Report created<br>Submitted to Discord<br>Received by Discord<br>Awaiting Discord's decision</div></div></div><div class="footer">Report 1 of 4 · Full ID: synthetic-report-id</div></div><div class="buttons"><span class="button">Previous</span><span class="button primary">Next</span><span class="button primary">Retry as new report</span></div></div></div></div>
+        </div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-reports-status" data-command-id="RST">
+      <div class="tree-title"><span class="node-id">RST</span><h3>/reports status</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-rst-01" data-node-id="RST-01"><span class="node-id">RST-01</span><span class="surface-type">Slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /reports status</strong><span>Ephemeral</span></div><div class="command-text"><strong>/reports status</strong><div class="options"><div class="option">report-id · full internal report ID</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-rst-02" data-node-id="RST-02"><span class="node-id">RST-02</span><span class="surface-type">Ephemeral full report embed</span><div class="discord-window"><div class="embed green"><div class="embed-title">Message report</div><div class="embed-description"><strong>Discord took action</strong></div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">https://discord.com/channels/123/456/789</div></div><div class="field"><div class="field-name">Report category</div><div class="field-value">Message</div></div><div class="field"><div class="field-name">Country</div><div class="field-value">Germany</div></div><div class="field wide"><div class="field-name">Reason</div><div class="field-value">Illegal hate speech</div></div><div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Submitted report context.</div></div><div class="field"><div class="field-name">References</div><div class="field-value">Report: <code>7dd4…</code><br>Discord: <code>123456</code></div></div><div class="field"><div class="field-name">Dates</div><div class="field-value">Created Monday<br>Updated Tuesday</div></div><div class="field wide"><div class="field-name">History</div><div class="field-value">Report created<br>Submitted to Discord<br>Received by Discord<br>Discord took action</div></div></div><div class="footer">Full ID: synthetic-report-id</div></div></div></div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-reports-retry" data-command-id="RR">
+      <div class="tree-title"><span class="node-id">RR</span><h3>/reports retry</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-rr-01" data-node-id="RR-01"><span class="node-id">RR-01</span><span class="surface-type">Slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /reports retry</strong><span>Ephemeral</span></div><div class="command-text"><strong>/reports retry</strong><div class="options"><div class="option">report-id · failed report ID</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="branch-stack">
+          <div><div class="branch-label">Eligible</div><div class="surface-node wide" id="node-rr-02a" data-node-id="RR-02A"><span class="node-id">RR-02A</span><span class="surface-type">Ephemeral new-report embed</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Server report</div><div class="embed-description"><strong>Preparing report</strong></div><div class="fields"><div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Example Server · server ID</div></div><div class="field"><div class="field-name">References</div><div class="field-value">Report: <code>new8…</code><br>Discord: Not assigned<br>Previous report: <code>old2…</code></div></div><div class="field"><div class="field-name">Retry</div><div class="field-value">Report <strong>2 of 3</strong></div></div><div class="field wide"><div class="field-name">History</div><div class="field-value"><strong>Attempt 2</strong><br>Retry started<br>Preparing and submitting report</div></div></div><div class="footer">Full ID: synthetic-new-report-id</div></div></div></div></div>
+          <div><div class="branch-label">Not eligible / access error</div><div class="surface-node" id="node-rr-02b" data-node-id="RR-02B"><span class="node-id">RR-02B</span><span class="surface-type">Ephemeral error embed</span><div class="discord-window"><div class="embed red"><div class="embed-title">Unable to complete that action</div><div class="embed-description">That report cannot be retried, does not belong to you, or has reached the retry limit.</div></div></div></div></div>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <section class="group-canvas" id="canvas-access-settings" aria-labelledby="access-settings-heading">
+    <div class="group-heading">
+      <div><h2 id="access-settings-heading">Canvas 3 — Access &amp; settings</h2><p>Inline slash options followed by ordinary ephemeral embeds. Access keys remain private and are never echoed after redemption.</p></div>
+      <span class="chip">3 command trees</span>
+    </div>
+
+    <article class="command-tree" id="tree-access-redeem" data-command-id="AR">
+      <div class="tree-title"><span class="node-id">AR</span><h3>/access redeem</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-ar-01" data-node-id="AR-01"><span class="node-id">AR-01</span><span class="surface-type">Slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /access redeem</strong><span>Ephemeral</span></div><div class="command-text"><strong>/access redeem</strong><div class="options"><div class="option">key · ••••••••••••••••</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="branch-stack">
+          <div><div class="branch-label">Valid key</div><div class="surface-node" id="node-ar-02a" data-node-id="AR-02A"><span class="node-id">AR-02A</span><span class="surface-type">Ephemeral success embed</span><div class="discord-window"><div class="embed green"><div class="embed-title">Access key redeemed</div><div class="embed-description">Your new balance is <strong>5 report credits</strong>.</div></div></div></div></div>
+          <div><div class="branch-label">Invalid / used / expired</div><div class="surface-node" id="node-ar-02b" data-node-id="AR-02B"><span class="node-id">AR-02B</span><span class="surface-type">Ephemeral error embed</span><div class="discord-window"><div class="embed red"><div class="embed-title">Unable to complete that action</div><div class="embed-description">The access key is invalid, already redeemed, revoked, or expired.</div></div></div></div></div>
+        </div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-access-status" data-command-id="AS">
+      <div class="tree-title"><span class="node-id">AS</span><h3>/access status</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-as-01" data-node-id="AS-01"><span class="node-id">AS-01</span><span class="surface-type">Slash command</span><div class="discord-window"><div class="window-bar"><strong>Use /access status</strong><span>Ephemeral</span></div><div class="command-text"><strong>/access status</strong><div class="options"><div class="option">No options</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="surface-node wide" id="node-as-02" data-node-id="AS-02"><span class="node-id">AS-02</span><span class="surface-type">Ephemeral access embed</span><div class="discord-window"><div class="embed blue"><div class="embed-title">Your reporting access</div><div class="fields"><div class="field"><div class="field-name">Access level</div><div class="field-value">Credit-based access</div></div><div class="field"><div class="field-name">Credits</div><div class="field-value">5</div></div><div class="field"><div class="field-name">Default country</div><div class="field-value">Auto — selected by DeepSeek</div></div><div class="field"><div class="field-name">Account status</div><div class="field-value">Active</div></div><div class="field wide"><div class="field-name">AI usage</div><div class="field-value">Requests: <strong>12</strong><br>Input tokens: <strong>7,540</strong><br>Output tokens: <strong>1,220</strong><br>Reasoning tokens: <strong>410</strong><br>Web searches: <strong>8</strong><br>OpenRouter cost: <strong>0.031200 credits</strong></div></div></div></div></div></div>
+      </div>
+    </article>
+
+    <article class="command-tree" id="tree-settings-country" data-command-id="SC">
+      <div class="tree-title"><span class="node-id">SC</span><h3>/settings country</h3></div>
+      <div class="tree-flow">
+        <div class="surface-node" id="node-sc-01" data-node-id="SC-01"><span class="node-id">SC-01</span><span class="surface-type">Slash command + autocomplete</span><div class="discord-window"><div class="window-bar"><strong>Use /settings country</strong><span>Ephemeral</span></div><div class="command-text"><strong>/settings country</strong><div class="options"><div class="option">country · Auto / supported EU country</div></div></div></div></div>
+        <div class="connector" aria-hidden="true">→</div>
+        <div class="branch-stack">
+          <div><div class="branch-label">Auto</div><div class="surface-node" id="node-sc-02a" data-node-id="SC-02A"><span class="node-id">SC-02A</span><span class="surface-type">Ephemeral success embed</span><div class="discord-window"><div class="embed green"><div class="embed-title">Default country updated</div><div class="embed-description">New reports will use <strong>Auto</strong>, so DeepSeek will select a supported country based on legal relevance. You can still override it per report.</div></div></div></div></div>
+          <div><div class="branch-label">Explicit country</div><div class="surface-node" id="node-sc-02b" data-node-id="SC-02B"><span class="node-id">SC-02B</span><span class="surface-type">Ephemeral success embed</span><div class="discord-window"><div class="embed green"><div class="embed-title">Default country updated</div><div class="embed-description">New reports will default to <strong>Germany</strong>. You can still override it per report.</div></div></div></div></div>
+        </div>
+      </div>
+    </article>
+  </section>
+</main>
+</body>
+</html>

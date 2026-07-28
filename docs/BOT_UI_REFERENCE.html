@@ -252,6 +252,159 @@
       color: var(--text);
     }
 
+    .node-id {
+      display: inline-flex;
+      align-items: center;
+      min-width: 54px;
+      margin: 0 7px 5px 0;
+      padding: 3px 7px;
+      border: 1px solid #6f79ff;
+      border-radius: 999px;
+      background: #252a4b;
+      color: #d8dcff;
+      font: 700 11px/1.2 "Cascadia Code", Consolas, monospace;
+      letter-spacing: .03em;
+    }
+
+    .tree-guide {
+      margin-top: 18px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+
+    .flow-tree,
+    .flow-tree ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .flow-tree ul {
+      position: relative;
+      display: grid;
+      gap: 10px;
+      margin: 10px 0 0 24px;
+      padding-left: 22px;
+      border-left: 2px solid #454b59;
+    }
+
+    .flow-tree ul > li {
+      position: relative;
+    }
+
+    .flow-tree ul > li::before {
+      position: absolute;
+      top: 19px;
+      left: -22px;
+      width: 18px;
+      border-top: 2px solid #454b59;
+      content: "";
+    }
+
+    .tree-node {
+      padding: 11px 13px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .tree-node strong {
+      color: var(--text);
+    }
+
+    .tree-note {
+      display: block;
+      margin-top: 3px;
+    }
+
+    .decision-log {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .command-diff-list {
+      display: grid;
+      gap: 18px;
+      margin-top: 22px;
+    }
+
+    .command-diff {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+
+    .command-diff h3 {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
+    }
+
+    .diff-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .diff-panel {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+    }
+
+    .diff-panel h4 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .diff-panel p,
+    .diff-panel ul {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .diff-panel ul {
+      padding-left: 18px;
+    }
+
+    .diff-current {
+      border-top: 3px solid #788296;
+    }
+
+    .diff-planned {
+      border-top: 3px solid var(--green);
+      background: #1d2924;
+    }
+
+    .diff-why {
+      border-top: 3px solid var(--blurple);
+    }
+
+    .behavior-change {
+      display: inline-block;
+      margin: 7px 0 0;
+      padding: 4px 8px;
+      border: 1px solid #8a6421;
+      border-radius: 5px;
+      background: #352a17;
+      color: #ffd98a;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
     .journey-stack {
       display: grid;
       gap: 24px;
@@ -634,6 +787,15 @@
       .outcome-grid {
         grid-template-columns: 1fr;
       }
+
+      .diff-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-tree ul {
+        margin-left: 10px;
+        padding-left: 18px;
+      }
     }
   </style>
 </head>
@@ -643,8 +805,9 @@
     <h1>Discord DSA bot UI reference</h1>
     <p class="lede">
       Source-derived inventory of every current command, modal, select, button, embed family, and
-      lifecycle DM. Command responses are ephemeral. Lifecycle notifications are ordinary private
-      DMs because Discord does not support ephemeral DMs.
+      lifecycle DM, plus a planning-only proposal for a more explanatory UI. Command responses stay
+      ephemeral. Lifecycle notifications stay ordinary private DMs because Discord does not support
+      ephemeral DMs.
     </p>
     <div class="meta">
       <span class="chip">Source: apps/bot/src/commands.ts</span>
@@ -662,21 +825,135 @@
   </header>
 
   <section aria-labelledby="overview-heading">
-    <h2 id="overview-heading">Shared report flow</h2>
-    <ol class="flow">
-      <li><strong>Access check</strong>Admin/whitelist bypass or at least one credit.</li>
-      <li><strong>Resolve target</strong>Message snapshot, profile account, or server metadata.</li>
-      <li><strong>Report modal</strong>Reason, affected elements, and brief/final text.</li>
-      <li><strong>Country</strong>Saved override, explicit override, or DeepSeek Auto.</li>
-      <li><strong>Draft</strong>Research/write, manual path, refine, regenerate, or edit.</li>
-      <li><strong>Orange review</strong>Truthfulness warning and final 512-character content.</li>
-      <li><strong>Submit</strong>Reserve credit, create API report, then observe status.</li>
-      <li><strong>Status + DM</strong>History embed, durable updates, outcome reply, optional retry.</li>
-    </ol>
+    <h2 id="overview-heading">Planning rules and stable references</h2>
+    <p class="lede">
+      This revision is a UI plan, not a runtime change. The proposed style is contextually verbose:
+      explain meaning, consequence, and the next step at decision points without turning every
+      Discord embed into a wall of text.
+    </p>
+    <div class="decision-log">
+      <article class="card"><h3>Surfaces stay private</h3><p>All command, review, status, error, access, and administration responses remain ephemeral. Lifecycle updates remain ordinary private DMs.</p></article>
+      <article class="card"><h3>One durable lifecycle DM</h3><p>The saved DM is edited as the report moves from submitted to received to a final outcome. A final acceptance or denial is a reply to that message.</p></article>
+      <article class="card"><h3>IDs never get renumbered</h3><p>Every tree node has a visible immutable ID such as <code>RM-03A</code>. New nodes receive a new suffix so feedback can refer to an exact element.</p></article>
+      <article class="card"><h3>Privacy boundary remains</h3><p>Verbose copy must never expose generated identity, email alias, proxy/session details, cookies, verification codes, raw mail, or signing secrets.</p></article>
+    </div>
   </section>
 
   <section aria-labelledby="report-commands-heading">
-    <h2 id="report-commands-heading">Report creation commands</h2>
+    <h2 id="report-commands-heading">Report creation trees</h2>
+    <p class="lede">
+      Proposed verbose interaction trees. Every element has a visible immutable ID. The four entry
+      points below open report modals; the other bot commands use inline slash options.
+    </p>
+
+    <article class="tree-guide" aria-labelledby="tree-message-heading">
+      <h3 id="tree-message-heading"><span class="node-id">RM</span> /report message</h3>
+      <ul class="flow-tree">
+        <li>
+          <div class="tree-node" id="node-report-message-command" data-node-id="RM-01"><span class="node-id">RM-01</span><strong>Ephemeral command summary</strong><span class="tree-note">Message link, country source, and AI/manual mode. Nothing has been submitted.</span></div>
+          <ul>
+            <li>
+              <div class="tree-node" id="node-report-message-modal" data-node-id="RM-02"><span class="node-id">RM-02</span><strong>Modal: Report Message</strong><span class="tree-note">Why are you reporting? plus Briefly explain or Final report text. Helper copy explains the category and 512-character final limit.</span></div>
+              <ul>
+                <li>
+                  <div class="tree-node" id="node-report-message-ai" data-node-id="RM-03A"><span class="node-id">RM-03A</span><strong>AI drafting branch</strong><span class="tree-note">Country selection, legal research, and concise drafting. Nothing is sent during preparation.</span></div>
+                  <ul>
+                    <li><div class="tree-node" id="node-report-message-ai-failure" data-node-id="RM-03A-ERR"><span class="node-id">RM-03A-ERR</span><strong>Writer failure</strong><span class="tree-note">No report was sent. Each recovery action explains its effect.</span></div></li>
+                    <li><div class="tree-node" id="node-report-message-review-ai" data-node-id="RM-04A"><span class="node-id">RM-04A</span><strong>Orange review</strong><span class="tree-note">Not submitted yet. Target, Evidence, Country, Exact text, Credit effect, and What happens next.</span></div></li>
+                  </ul>
+                </li>
+                <li>
+                  <div class="tree-node" id="node-report-message-manual" data-node-id="RM-03B"><span class="node-id">RM-03B</span><strong>Manual branch</strong><span class="tree-note">The entered text is the exact proposed submission and moves directly to review.</span></div>
+                  <ul><li><div class="tree-node" id="node-report-message-review-manual" data-node-id="RM-04B"><span class="node-id">RM-04B</span><strong>Orange review</strong><span class="tree-note">Same review composition and controls as the AI path.</span></div></li></ul>
+                </li>
+                <li><div class="tree-node" id="node-report-message-cancel" data-node-id="RM-05B"><span class="node-id">RM-05B</span><strong>Cancel</strong><span class="tree-note">Draft deleted; no report submitted and no credit used.</span></div></li>
+                <li>
+                  <div class="tree-node" id="node-report-message-submit" data-node-id="RM-05A"><span class="node-id">RM-05A</span><strong>Submit</strong><span class="tree-note">Reserve a normal-user credit, create the API report, consume the credit only after creation succeeds, then show status.</span></div>
+                  <ul>
+                    <li><div class="tree-node" id="node-report-message-status" data-node-id="RM-06"><span class="node-id">RM-06</span><strong>Ephemeral Message report status</strong><span class="tree-note">Current phase, receipt-versus-decision explanation, /reports status, and private-DM next step.</span></div></li>
+                    <li><div class="tree-node" id="node-report-message-lifecycle-link" data-node-id="RM-07"><span class="node-id">RM-07</span><strong>Continue at lifecycle tree</strong><span class="tree-note">See LC-01 onward.</span></div></li>
+                  </ul>
+                </li>
+              </ul>
+            </li>
+          </ul>
+        </li>
+      </ul>
+    </article>
+
+    <article class="tree-guide" aria-labelledby="tree-context-heading">
+      <h3 id="tree-context-heading"><span class="node-id">RMC</span> Apps → Report Message</h3>
+      <ul class="flow-tree">
+        <li>
+          <div class="tree-node" id="node-context-message-selected" data-node-id="RMC-01"><span class="node-id">RMC-01</span><strong>Selected message</strong><span class="tree-note">Preview author, channel, timestamp, URL, and identify the snapshot as auto-captured evidence.</span></div>
+          <ul>
+            <li><div class="tree-node" id="node-context-message-privacy" data-node-id="RMC-02"><span class="node-id">RMC-02</span><strong>Private capture notice</strong><span class="tree-note">Explains what was captured and that nothing has been submitted.</span></div></li>
+            <li><div class="tree-node" id="node-context-message-shared-flow" data-node-id="RMC-03"><span class="node-id">RMC-03</span><strong>Shared downstream flow</strong><span class="tree-note">Opens Report Message, then follows RM-02 through RM-07.</span></div></li>
+          </ul>
+        </li>
+      </ul>
+    </article>
+
+    <article class="tree-guide" aria-labelledby="tree-profile-heading">
+      <h3 id="tree-profile-heading"><span class="node-id">RP</span> /report profile</h3>
+      <ul class="flow-tree">
+        <li>
+          <div class="tree-node" id="node-report-profile-lookup" data-node-id="RP-01"><span class="node-id">RP-01</span><strong>Resolve exact Discord account</strong><span class="tree-note">Fetch username, display name, bot flag, and avatar from the supplied user ID.</span></div>
+          <ul>
+            <li><div class="tree-node" id="node-report-profile-lookup-failed" data-node-id="RP-02B"><span class="node-id">RP-02B</span><strong>Lookup unsuccessful</strong><span class="tree-note">Cannot continue; verify the raw user ID and retry. No report or draft was created.</span></div></li>
+            <li>
+              <div class="tree-node" id="node-report-profile-confirm" data-node-id="RP-02A"><span class="node-id">RP-02A</span><strong>Confirm this exact account</strong><span class="tree-note">Resolved identity plus a short explanation of why confirmation prevents a wrong-target report.</span></div>
+              <ul>
+                <li><div class="tree-node" id="node-report-profile-modal" data-node-id="RP-03"><span class="node-id">RP-03</span><strong>Modal: Report Profile</strong><span class="tree-note">Reason, Photos/Name/Descriptors, and brief/final text, with examples for each element.</span></div></li>
+                <li><div class="tree-node" id="node-report-profile-draft" data-node-id="RP-04"><span class="node-id">RP-04</span><strong>AI or manual preparation</strong><span class="tree-note">Same preparation semantics as RM-03A/RM-03B.</span></div></li>
+                <li><div class="tree-node" id="node-report-profile-review" data-node-id="RP-05"><span class="node-id">RP-05</span><strong>Orange profile review</strong><span class="tree-note">Identity, selected surfaces, snapshot time, country, exact text, credit, and next step.</span></div></li>
+                <li><div class="tree-node" id="node-report-profile-status" data-node-id="RP-06"><span class="node-id">RP-06</span><strong>Submit, status, and lifecycle</strong><span class="tree-note">Profile report embed, then LC-01.</span></div></li>
+              </ul>
+            </li>
+          </ul>
+        </li>
+      </ul>
+    </article>
+
+    <article class="tree-guide" aria-labelledby="tree-server-heading">
+      <h3 id="tree-server-heading"><span class="node-id">RS</span> /report server</h3>
+      <ul class="flow-tree">
+        <li>
+          <div class="tree-node" id="node-report-server-source" data-node-id="RS-01"><span class="node-id">RS-01</span><strong>Choose target source</strong><span class="tree-note">Supplied server ID/invite, current server, or modal fallback.</span></div>
+          <ul>
+            <li><div class="tree-node" id="node-report-server-resolve" data-node-id="RS-02"><span class="node-id">RS-02</span><strong>Resolution preview</strong><span class="tree-note">Best-effort name, description, counts, and icon; unresolved targets get a clear warning.</span></div></li>
+            <li><div class="tree-node" id="node-report-server-modal" data-node-id="RS-03"><span class="node-id">RS-03</span><strong>Modal: Report Server</strong><span class="tree-note">Target if missing, reason, server elements, and brief/final text, with examples for every surface.</span></div></li>
+            <li><div class="tree-node" id="node-report-server-draft" data-node-id="RS-04"><span class="node-id">RS-04</span><strong>AI or manual preparation</strong><span class="tree-note">Same preparation semantics as RM-03A/RM-03B.</span></div></li>
+            <li><div class="tree-node" id="node-report-server-review" data-node-id="RS-05"><span class="node-id">RS-05</span><strong>Orange server review</strong><span class="tree-note">Target source, identity/snapshot, selected surfaces, country, exact text, credit, and next step.</span></div></li>
+            <li><div class="tree-node" id="node-report-server-status" data-node-id="RS-06"><span class="node-id">RS-06</span><strong>Submit, status, and lifecycle</strong><span class="tree-note">Server report embed, then LC-01.</span></div></li>
+          </ul>
+        </li>
+      </ul>
+    </article>
+
+    <article class="tree-guide" aria-labelledby="tree-lifecycle-heading">
+      <h3 id="tree-lifecycle-heading"><span class="node-id">LC</span> Shared private lifecycle DM</h3>
+      <ul class="flow-tree">
+        <li>
+          <div class="tree-node" id="node-lifecycle-submitted" data-node-id="LC-01"><span class="node-id">LC-01</span><strong>Report submitted to Discord</strong><span class="tree-note">Sent, but receipt is not confirmed. This message updates automatically; do not create a duplicate.</span></div>
+          <ul>
+            <li>
+              <div class="tree-node" id="node-lifecycle-received" data-node-id="LC-02"><span class="node-id">LC-02</span><strong>Report received by Discord</strong><span class="tree-note">Receipt confirmed. This is not a decision and does not imply action.</span></div>
+              <ul>
+                <li><div class="tree-node" id="node-lifecycle-actioned" data-node-id="LC-03A"><span class="node-id">LC-03A</span><strong>Final: Discord took action</strong><span class="tree-note">Same DM turns green and receives an acceptance reply without inventing the action.</span></div></li>
+                <li><div class="tree-node" id="node-lifecycle-closed" data-node-id="LC-03B"><span class="node-id">LC-03B</span><strong>Final: closed without action</strong><span class="tree-note">Same DM turns grey and receives the matching final reply.</span></div></li>
+                <li><div class="tree-node" id="node-lifecycle-not-approved" data-node-id="LC-03C"><span class="node-id">LC-03C</span><strong>Final: review not approved</strong><span class="tree-note">Same DM turns red and receives the matching denial reply.</span></div></li>
+              </ul>
+            </li>
+            <li><div class="tree-node" id="node-lifecycle-timeout" data-node-id="LC-04"><span class="node-id">LC-04</span><strong>Receipt timeout</strong><span class="tree-note">Receipt is unconfirmed, not definitely absent. No automatic resubmission; Retry creates a separate lifecycle.</span></div></li>
+            <li><div class="tree-node" id="node-lifecycle-pre-id-failure" data-node-id="LC-05"><span class="node-id">LC-05</span><strong>Pre-ID failure proposal</strong><span class="tree-note">Structured red embed: confirmed Discord submission was not established; inspect /reports status before retrying.</span><span class="behavior-change">Planned presentation change</span></div></li>
+          </ul>
+        </li>
+      </ul>
+    </article>
+
+    <h3 style="margin-top: 28px;">Current compact implementation summaries</h3>
+    <p class="small">Retained below for quick comparison. The ID-labelled trees above are the proposed reference flowcharts.</p>
     <div class="grid">
       <article class="card command">
         <code class="command-name">/report message</code>
@@ -1388,6 +1665,169 @@
           <li><strong>Reinstate user</strong>Return active with zero credits.</li>
           <li><strong>User reinstated</strong>Green confirmation embed.</li>
         </ol>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="command-diff-heading">
+    <h2 id="command-diff-heading">Every command: current UI → planned verbose UI</h2>
+    <p class="lede">
+      Complete inventory: 16 slash subcommands plus the <strong>Report Message</strong> context
+      command. “Planned” describes documentation and proposed presentation only. Amber labels mark
+      proposals that would require an explicit runtime interaction change before implementation.
+    </p>
+    <div class="command-diff-list">
+      <article class="command-diff" id="diff-cmd-report-message" data-command-id="RM">
+        <h3><span class="node-id">RM</span> /report message</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-report-message-current"><h4>Current</h4><p>Inline link/country/AI options → Report Message modal → AI/manual branch → orange review → status embed → private lifecycle DM.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-report-message-planned"><h4>Planned</h4><ul><li>Summarize accepted link, privacy, country source, and drafting mode.</li><li>Explain brief versus exact final text.</li><li>Review by Target, Evidence, Country, Exact text, Credit, and Next step.</li><li>Explain submitted versus received versus decided.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-report-message-why"><h4>Why</h4><p>Users should know precisely when a real report begins and what Discord will receive before they spend a credit.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-context-report-message" data-command-id="RMC">
+        <h3><span class="node-id">RMC</span> Apps → Report Message</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-context-report-message-current"><h4>Current</h4><p>Captures the selected message URL and snapshot, then enters the shared message-report modal and downstream flow.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-context-report-message-planned"><h4>Planned</h4><ul><li>Preview author, channel, timestamp, and URL.</li><li>Label the snapshot as automatically captured evidence.</li><li>Say that only reason/details remain and nothing has been submitted.</li><li>Cross-reference RMC-03 → RM-02.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-context-report-message-why"><h4>Why</h4><p>The entry surface differs from the slash command even though it shares the later flow.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-report-profile" data-command-id="RP">
+        <h3><span class="node-id">RP</span> /report profile</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-report-profile-current"><h4>Current</h4><p>Resolves the raw user ID, shows found/failed confirmation, opens Report Profile, then review/status/DM.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-report-profile-planned"><h4>Planned</h4><ul><li>Emphasize “this exact account” with resolved identity and snapshot time.</li><li>Explain Photos, Name, and Descriptors with examples.</li><li>Give safe next actions after lookup failure.</li><li>Separate identity, surfaces, country, text, credit, and next step.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-report-profile-why"><h4>Why</h4><p>Wrong-target reporting is the largest profile-flow comprehension risk.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-report-server" data-command-id="RS">
+        <h3><span class="node-id">RS</span> /report server</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-report-server-current"><h4>Current</h4><p>Resolves a supplied ID/invite or current server, falls back to modal target input, then review/status/DM.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-report-server-planned"><h4>Planned</h4><ul><li>Show which target source won and whether resolution was complete.</li><li>Explain Name/Icon/Banner/Invite splash/Discovery splash/Welcome screen/Channels/Other.</li><li>Split review into identity, snapshot, surfaces, text, country, credit, and next step.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-report-server-why"><h4>Why</h4><p>Server targeting has multiple sources and the broadest affected-element vocabulary.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-reports-list" data-command-id="RL">
+        <h3><span class="node-id">RL</span> /reports list</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-reports-list-current"><h4>Current</h4><p>Owner-scoped empty state or one full report embed per page, with Previous/Next and eligible Retry controls.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-reports-list-planned"><h4>Planned</h4><ul><li>Show total results, page, newest-first order, privacy scope, and status legend.</li><li>Explain navigation and retry eligibility.</li><li>Add predecessor/successor lineage badges and a richer empty state.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-reports-list-why"><h4>Why</h4><p>A browser needs orientation as well as report detail, especially after retries create linked lifecycles.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-reports-status" data-command-id="RST">
+        <h3><span class="node-id">RST</span> /reports status</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-reports-status-current"><h4>Current</h4><p>Fetches an owned/admin-visible report and returns the complete type-specific status/history embed plus eligible Retry.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-reports-status-planned"><h4>Planned</h4><ul><li>Add Current phase, What this means, What happens next, Notification method, and Final/non-final.</li><li>Group Target, Content, Processing, and References.</li><li>Distinguish the internal report ID from Discord’s reference.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-reports-status-why"><h4>Why</h4><p>A status label alone does not explain whether the user is waiting for receipt or a decision.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-reports-retry" data-command-id="RR">
+        <h3><span class="node-id">RR</span> /reports retry</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-reports-retry-current"><h4>Current</h4><p>Checks ownership/access/stage/limit, then immediately creates a fresh lifecycle and returns its status embed.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-reports-retry-planned"><h4>Planned</h4><ul><li>Add a confirmation card before mutation.</li><li>Explain new report ID, identity, alias, session, attempt N/3, linked predecessor, and no additional credit.</li><li>Offer Cancel and Retry as new report.</li></ul><span class="behavior-change">Behavior change: adds confirmation</span></div>
+          <div class="diff-panel diff-why" id="diff-cmd-reports-retry-why"><h4>Why</h4><p>Retry is a separate report lifecycle, not an automatic resend of the same submission.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-access-redeem" data-command-id="AR">
+        <h3><span class="node-id">AR</span> /access redeem</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-access-redeem-current"><h4>Current</h4><p>Transactionally redeems the supplied key and returns a green embed with the new credit balance.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-access-redeem-planned"><h4>Planned</h4><ul><li>Show credits added, previous/new balance when available, and remaining submissions.</li><li>Show only a safe key prefix and state that the key cannot be redeemed again.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-access-redeem-why"><h4>Why</h4><p>The success state should explain both the balance change and the consumed-key consequence without echoing the secret.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-access-status" data-command-id="AS">
+        <h3><span class="node-id">AS</span> /access status</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-access-status-current"><h4>Current</h4><p>Shows credits, suspension, default country, AI usage, and cost in a blurple or red access embed.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-access-status-planned"><h4>Planned</h4><ul><li>Lead with Can submit now: Yes/No and the reason.</li><li>Explain bypass/default/suspension states and how to obtain credits.</li><li>Separate reporting credits from AI usage/cost analytics.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-access-status-why"><h4>Why</h4><p>Operational eligibility and analytics are different concepts currently presented together.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-settings-country" data-command-id="SC">
+        <h3><span class="node-id">SC</span> /settings country</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-settings-country-current"><h4>Current</h4><p>Autocompletes Auto or a supported EU country, saves null/ISO code, and returns a green confirmation.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-settings-country-planned"><h4>Planned</h4><ul><li>Show previous and new defaults where available.</li><li>Explain Auto and that the default affects future reports only.</li><li>Explain that a per-report country overrides it for that report.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-settings-country-why"><h4>Why</h4><p>A saved default should not be mistaken for a retroactive change to existing reports.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-admin-key-create" data-command-id="AKC">
+        <h3><span class="node-id">AKC</span> /admin key create</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-admin-key-create-current"><h4>Current</h4><p>Creates 1–20 hashed keys and displays plaintext once in a green embed.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-admin-key-create-planned"><h4>Planned</h4><ul><li>Summarize count, credits per key, total credits, expiry, creator, and creation time.</li><li>Prominently warn that plaintext is visible once and must be stored securely.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-admin-key-create-why"><h4>Why</h4><p>The one-time secret display is the command’s most important operational consequence.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-admin-key-list" data-command-id="AKL">
+        <h3><span class="node-id">AKL</span> /admin key list</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-admin-key-list-current"><h4>Current</h4><p>Shows recent keys with status, credits, expiry, and redeemer in a blurple list embed.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-admin-key-list-planned"><h4>Planned</h4><ul><li>Show totals by status, recency/limit, newest-first order, and a status legend.</li><li>Use stable row IDs and vertically grouped metadata.</li><li>Explain inspect/revoke next actions and why plaintext is unavailable.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-admin-key-list-why"><h4>Why</h4><p>Administrative scanning improves when scope, status, and follow-up actions are explicit.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-admin-key-inspect" data-command-id="AKI">
+        <h3><span class="node-id">AKI</span> /admin key inspect</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-admin-key-inspect-current"><h4>Current</h4><p>Fetches an exact key ID and returns a status-colored detail embed.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-admin-key-inspect-planned"><h4>Planned</h4><ul><li>Add created-by/at, redeemed-at, revoked-by, and reason when available.</li><li>Translate key status into its practical consequence.</li><li>Mark unavailable audit fields as future data requirements instead of fabricating them.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-admin-key-inspect-why"><h4>Why</h4><p>An inspection view should answer who, when, current state, and impact.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-admin-key-revoke" data-command-id="AKR">
+        <h3><span class="node-id">AKR</span> /admin key revoke</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-admin-key-revoke-current"><h4>Current</h4><p>Immediately revokes the key and suspends its redeemer, then returns a green confirmation.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-admin-key-revoke-planned"><h4>Planned</h4><ul><li>Confirm safe key prefix, status, redeemer, reason, and suspension consequence before mutation.</li><li>Result shows exactly what changed and whether a user was suspended.</li></ul><span class="behavior-change">Behavior change: adds confirmation</span></div>
+          <div class="diff-panel diff-why" id="diff-cmd-admin-key-revoke-why"><h4>Why</h4><p>The current command has a second destructive effect that its result underexplains.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-admin-user-inspect" data-command-id="AUI">
+        <h3><span class="node-id">AUI</span> /admin user inspect</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-admin-user-inspect-current"><h4>Current</h4><p>Validates a Discord snowflake and returns access state plus suspension reason.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-admin-user-inspect-planned"><h4>Planned</h4><ul><li>Lead with Can submit now and why.</li><li>Group Identity, Access, Usage, and Audit.</li><li>Explain bypass/provenance when available, zero credits, default country, suspension, and available admin actions.</li></ul></div>
+          <div class="diff-panel diff-why" id="diff-cmd-admin-user-inspect-why"><h4>Why</h4><p>Admins need an actionable eligibility answer, not only stored values.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-admin-user-suspend" data-command-id="AUS">
+        <h3><span class="node-id">AUS</span> /admin user suspend</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-admin-user-suspend-current"><h4>Current</h4><p>Immediately suspends the user, clears remaining credits, and returns a green confirmation.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-admin-user-suspend-planned"><h4>Planned</h4><ul><li>Confirm user, current credits, reason, submission block, and credit-clearing effect.</li><li>Result shows before/after state, actor/time, and that reinstatement returns with zero credits.</li></ul><span class="behavior-change">Behavior change: adds confirmation</span></div>
+          <div class="diff-panel diff-why" id="diff-cmd-admin-user-suspend-why"><h4>Why</h4><p>Clearing credits is destructive and should be explicit before and after the operation.</p></div>
+        </div>
+      </article>
+
+      <article class="command-diff" id="diff-cmd-admin-user-reinstate" data-command-id="AUR">
+        <h3><span class="node-id">AUR</span> /admin user reinstate</h3>
+        <div class="diff-grid">
+          <div class="diff-panel diff-current" id="diff-cmd-admin-user-reinstate-current"><h4>Current</h4><p>Immediately returns the user to active status with zero credits and shows a green confirmation.</p></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-admin-user-reinstate-planned"><h4>Planned</h4><ul><li>Confirm current state and previous reason before the change.</li><li>Explain that credits are not restored and the user needs a new key unless bypassed.</li><li>Offer the next administrative action.</li></ul><span class="behavior-change">Behavior change: confirmation recommended</span></div>
+          <div class="diff-panel diff-why" id="diff-cmd-admin-user-reinstate-why"><h4>Why</h4><p>Reinstated does not mean immediately able to submit; the zero-credit consequence needs prominence.</p></div>
+        </div>
       </article>
     </div>
   </section>

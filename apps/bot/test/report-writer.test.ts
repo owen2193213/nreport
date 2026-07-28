@@ -104,7 +104,7 @@ function fixedWriter(
   request: ReturnType<typeof vi.fn>,
   recordUsage: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined)
 ): ReportWriter {
-  return new ReportWriter("secret", "deepseek/deepseek-v4-pro", COUNTRIES, {
+  return new ReportWriter("secret", "deepseek/deepseek-v4-flash", COUNTRIES, {
     reasoningEffort: "high",
     recordUsage: recordUsage as unknown as (userId: string, usage: AiUsage) => Promise<void>,
     request: request as unknown as typeof globalThis.fetch

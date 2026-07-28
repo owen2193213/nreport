@@ -94,15 +94,16 @@ Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. 
 uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
 the global commands automatically. Set `OPENROUTER_API_KEY` for the bot-side report writer;
-`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-pro`.
+`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-flash`.
 `OPENROUTER_WRITER_REASONING_EFFORT` defaults to `high`. Combined Auto-country/legal research
 uses `openrouter:web_search` with the complete text report context, standard result settings, and
 at most three searches. Search-count metadata and HTTPS source annotations are
 optional; a report is accepted from usable structured legal research without requiring either.
-The bot records per-user request/token/reasoning/search/cost totals and logs safe workflow metadata
+The bot records per-user request/token/reasoning/search/cost totals and operational workflow metadata
 such as flow, category, country mode, selected elements, counts, lengths, latency, and validation
-failures. AI prompts, responses, search queries, sources, conversations, research, evidence, and
-selected Discord image URLs must never be logged. To synchronize commands manually, set only the
+failures. Logs are intended to support development diagnostics and may include report and lifecycle
+identifiers, state transitions, and error codes. Do not log credentials, verification codes, or raw
+email. To synchronize commands manually, set only the
 Discord token and application ID and run:
 
 AI media processing is temporarily disabled for every report category. The bot never attaches
@@ -171,6 +172,6 @@ credentials, fingerprints, verification tokens, or API keys in source control or
 - Use a stable `Idempotency-Key` for every create or retry request.
 - Resolve semantic report types through the live Discord menu; never persist breadcrumbs.
 - Do not automatically retry an ambiguous final submission.
-- Treat generated email addresses, tokens, raw mail, and report context as sensitive.
+- Keep credentials, verification codes, and raw mail out of logs and source control.
 - Discord lifecycle email updates change `discordStatus`; they do not replace the successful
   API status `submitted`.

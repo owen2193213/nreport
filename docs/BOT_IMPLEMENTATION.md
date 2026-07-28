@@ -51,7 +51,7 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
    confirmation before collecting the report details; unresolved IDs can be retried or cancelled.
 4. Encrypt the draft and its OpenRouter conversation at rest with a 30-minute expiry.
 5. In one structured OpenRouter request, resolve Auto when needed and research a supporting law.
-   Then ask `deepseek/deepseek-v4-pro` to write a factual report of at most 512 characters that naturally
+   Then ask `deepseek/deepseek-v4-flash` to write a factual report of at most 512 characters that naturally
    names the researched law or provision. Show an ephemeral review with submit, refine, regenerate,
    country-change, manual-edit, and cancel controls.
 6. Atomically reserve one credit and create the API report with the interaction ID.
@@ -78,7 +78,7 @@ attempts for that tracked report; `/reports` remains available.
 
 The bot calls OpenRouter directly; the API and low-level Discord client never receive the
 reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KEY` is required and
-`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-pro`. Provider routing requires zero data retention,
+`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-flash`. Provider routing requires zero data retention,
 denies provider data collection, and requires structured-output support. The complete generation
 workflow is capped at 90 seconds.
 
@@ -299,7 +299,7 @@ uses the same operation. Both surfaces update to the successor's new report card
 
 ### Understanding and assumptions
 
-- Plaintext access keys are sensitive and remain visible only in the one-time creation response.
+- Plaintext access keys remain visible only in the one-time creation response.
 - The database UUID is an administrative implementation detail and is omitted from that creation
   response; administrators can obtain it from the key list when inspection or revocation is needed.
 - Key list and inspection views identify the redeeming Discord user ID and redemption time, or say
@@ -348,10 +348,10 @@ uses the same operation. Both surfaces update to the successor's new report card
 - Expected production volume is modest, but repeated status polling can be noisy; state-changing
   boundaries are logged at `info`, recoverable anomalies at `warn`, and terminal failures at
   `error`.
-- Logs may contain internal report, job, event, notification, and tracking IDs. They must never
-  contain raw email addresses or messages, verification codes, access-key plaintext/hashes,
-  report context, OpenRouter prompts/responses/image URLs/conversation history, proxy credentials,
-  encryption material, Discord interaction tokens, or request bodies.
+- Logs may contain internal report, job, event, notification, and tracking IDs, report state,
+  country, flow, category, selected elements, counts, lengths, timings, and diagnostic error
+  classifications. They must not contain credentials, verification codes, access-key plaintext,
+  encryption material, Discord interaction tokens, or raw email.
 - Logging failures must not affect report processing. A failure while replying to an expired
   Discord interaction is contained and logged rather than escaping the event handler.
 
@@ -388,8 +388,9 @@ uses the same operation. Both surfaces update to the successor's new report card
 - Chosen: validate only the Cloudflare envelope domain (`discord.com` or a true subdomain) and the
   generated recipient shape in the email worker. The API remains the sole MIME parser and exact
   visible-sender validator, avoiding duplicated checks for Discord's changing bounce formats.
-- Chosen: explicit lifecycle boundary events over logging response bodies. Bodies contain private
-  reporting data and are not needed for correlation.
+- Chosen: lifecycle boundary events plus structured operational metadata over logging response
+  bodies. The structured fields are sufficient for correlation without making logs unwieldy or
+  risking accidental credential disclosure.
 - Chosen: a short SHA-256 message-ID digest over raw IDs or recipient addresses for duplicate-mail
   investigation without exposing mailbox identifiers.
 - Chosen: exact localized verification-template phrases over a language-agnostic six-character

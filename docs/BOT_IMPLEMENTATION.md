@@ -159,9 +159,10 @@ continues the same conversation, performs no search, and is attempted only once.
 MiniMax M2.7 requires reasoning but does not advertise effort-level or reasoning-budget controls,
 so every stage enables reasoning without an effort override and excludes reasoning text from
 responses. Report-producing calls have a 4,096-token completion budget; the reviewed report itself
-remains limited to 512 characters. Provider routing sorts by price while preferring endpoints with
-median throughput of at least 100 tokens/second, balancing cost and speed without removing slower
-fallbacks.
+remains limited to 512 characters. Provider routing explicitly prefers SambaNova Dedicated,
+Fireworks, Groq, MARA, then SambaNova; other endpoints remain availability fallbacks. The model is told
+to return raw JSON without Markdown. The parser also accepts one whole-response `json` code fence
+defensively before applying the normal schema and 512-character validation.
 Reasoning, input/output tokens, search requests, request counts, and OpenRouter-reported cost are
 accumulated per user in `bot_users` and displayed by `/access status`. Safe logs use a keyed
 pseudonymous actor value plus stage, model, latency, usage, cost, and failure category.

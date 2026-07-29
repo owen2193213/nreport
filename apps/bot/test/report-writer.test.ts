@@ -34,6 +34,7 @@ function completion(
   value: Record<string, string>,
   options: {
     annotations?: unknown[];
+    content?: string;
     searchRequests?: number;
     usage?: Partial<AiUsage>;
   } = {}
@@ -44,7 +45,7 @@ function completion(
       choices: [
         {
           message: {
-            content: JSON.stringify(value),
+            content: options.content ?? JSON.stringify(value),
             annotations: options.annotations ?? []
           }
         }
@@ -214,8 +215,13 @@ describe("OpenRouter report writer", () => {
     expect(research.response_format).toEqual({ type: "json_object" });
     expect(research.provider).toEqual({
       data_collection: "deny",
-      sort: "price",
-      preferred_min_throughput: { p50: 100 }
+      order: [
+        "sambanova/minimax-m2.7-dedicated",
+        "fireworks",
+        "groq",
+        "mara",
+        "sambanova"
+      ]
     });
     expect(prompt).toContain("reportReason");
     expect(prompt).toContain("reportType");
@@ -418,9 +424,13 @@ describe("OpenRouter report writer", () => {
     expect(writing.provider).toEqual({
       zdr: true,
       data_collection: "deny",
-      require_parameters: true,
-      sort: "price",
-      preferred_min_throughput: { p50: 100 }
+      order: [
+        "sambanova/minimax-m2.7-dedicated",
+        "fireworks",
+        "groq",
+        "mara",
+        "sambanova"
+      ]
     });
     expect(JSON.stringify(writing.response_format)).not.toContain("lawCitation");
     const messages = JSON.stringify(
@@ -431,6 +441,24 @@ describe("OpenRouter report writer", () => {
     expect(messages).not.toContain("Hungarian Act");
     expect(messages).not.toContain("§130 StGB");
     expect(messages).toContain("country-qualified lawReference");
+    expect(messages).toContain("Never wrap the JSON in Markdown or a code fence");
+  });
+
+  it("accepts one whole-response Markdown JSON fence from a provider", async () => {
+    const report = `${LAW_REFERENCE} may apply. Review requested.`;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(researchCompletion())
+      .mockResolvedValueOnce(
+        completion(
+          { report },
+          { content: `\`\`\`json\n${JSON.stringify({ report })}\n\`\`\`` }
+        )
+      );
+
+    await expect(fixedWriter(request).generate(profileDraft(), ACTOR)).resolves.toMatchObject({
+      report
+    });
   });
 
   it("refines in the same conversation using the existing research", async () => {

@@ -53,8 +53,10 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
    confirmation before collecting the report details; unresolved IDs can be retried or cancelled.
 4. Encrypt the draft and its OpenRouter conversation at rest with a 30-minute expiry.
 5. In one structured OpenRouter request, resolve Auto country, category, and explanation when
-   needed and research a supporting law. During this work the ephemeral response is edited through
-   Researching, Research complete, and Writing stages with the current selections in code blocks.
+   needed and research a supporting law. The ephemeral response is edited only at the two meaningful
+   network boundaries: Researching before research starts, then Writing before report drafting
+   starts. There is no separate initial or research-complete edit, which avoids back-to-back Discord
+   edits while preserving visible progress. Each stage shows the current selections in a code block.
    Then ask `minimax/minimax-m2.7` to write a factual report of at most 512 characters that naturally
    names the researched law or provision. Show an ephemeral review with submit, refine, regenerate,
    country-change, manual-edit, and cancel controls.
@@ -72,10 +74,15 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
 
 Report cards use the same Item, Status, Category, Country, Reason, code-blocked Details,
 References, Dates, Retry, and History structure in interactions and DMs. Interaction embeds replace
-the timeline with `Check your DMs for the full status log.` The DM card contains the timestamped
-API-request, verification-email pending/received, submission, confirmation-email pending/received,
-and result milestones. A received verification code is recorded only as `code processed`; the
-code itself is never displayed. The API retains the complete technical timeline. Server metadata and ID-backed profile metadata are
+the timeline with `Check your DMs for the full status log.` The DM card uses native Discord
+timestamps and compresses the API timeline into at most these key milestones: report requested,
+verification email requested, verification completed, submitted to Discord, confirmation received,
+and final result or failure. Up to the three latest retry attempts are grouped separately; the API
+remains the source of truth for older attempts. A single `Current` line describes a nonterminal report. History is not
+wrapped in a code block, so Discord renders each timestamp. Verification codes are never displayed.
+Only submission, failure, receipt, and final-result notifications edit the saved DM card; internal
+transitions remain available from the API without causing an embed edit for every event. The API
+retains the complete technical timeline. Server metadata and ID-backed profile metadata are
 resolved best-effort and captured at submission time. DMs include full report details but omit the
 generated reporter identity and email. A Discord 50007 response permanently disables DM
 attempts for that tracked report; `/reports` remains available.

@@ -194,14 +194,11 @@ describe("OpenRouter report writer", () => {
         reportType: "Auto"
       },
       {
-        stage: "research_complete",
+        stage: "write",
         country: "DE",
-        lawReference: LAW_REFERENCE,
         reportReason: inferredReason,
-        reportType: "Other: hate speech",
-        searchRequests: 1
-      },
-      { stage: "write", reportReason: inferredReason }
+        reportType: "Other: hate speech"
+      }
     ]);
     const research = requestBody<{
       messages: unknown[];

@@ -99,16 +99,10 @@ export type WriterProgress =
       reportType: string;
     }
   | {
-      stage: "research_complete";
+      stage: "write";
       country: string;
-      lawReference: string;
       reportReason: string;
       reportType: string;
-      searchRequests: number;
-    }
-  | {
-      stage: "write";
-      reportReason: string;
     };
 
 export type WriterProgressHandler = (progress: WriterProgress) => Promise<void> | void;
@@ -544,14 +538,6 @@ export class ReportWriter {
       researchedAt: new Date().toISOString(),
       searchRequests: researchResult.usage.searchRequests
     };
-    await onProgress?.({
-      stage: "research_complete",
-      country: research.country,
-      lawReference: research.lawReference,
-      reportReason: research.reportReason,
-      reportType: reportReasonLabel(draft.flow, research.reportType),
-      searchRequests: researchResult.usage.searchRequests
-    });
     const conversation: WriterConversationMessage[] = [
       { role: "user", content: researchUserPrompt },
       {
@@ -562,7 +548,12 @@ export class ReportWriter {
     ];
     let completed: Awaited<ReturnType<ReportWriter["completeReport"]>>;
     try {
-      await onProgress?.({ stage: "write", reportReason: research.reportReason });
+      await onProgress?.({
+        stage: "write",
+        country: research.country,
+        reportReason: research.reportReason,
+        reportType: reportReasonLabel(draft.flow, research.reportType)
+      });
       completed = await this.completeReport(conversation, images, deadline, actor, "write");
     } catch (error) {
       if (error instanceof ReportWriterError && error.candidateReport) {

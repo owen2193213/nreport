@@ -757,19 +757,20 @@ describe("report UI", () => {
     expect(json).toContain("discord.com/channels");
     expect(json).toContain("sensitive context");
     expect(json).toContain("History");
-    expect(json).toContain("Report API request sent");
-    expect(json).toContain("Verification email pending");
-    expect(json).toContain("Verification email received");
-    expect(json).toContain("code processed");
-    expect(json).toContain("Report confirmation email pending");
-    expect(json).toContain("Result received");
+    expect(json).toContain("Report requested");
+    expect(json).toContain("Verification email requested");
+    expect(json).toContain("Verification completed");
+    expect(json).toContain("Submitted to Discord");
+    expect(json).toContain("Result: Discord took action");
+    expect(json).not.toContain("pending");
+    expect(json).not.toContain("code processed");
     expect(json).not.toContain("ABCD12");
     expect(
       rendered
         .toJSON()
         .fields?.find((field) => field.name === "History")
         ?.value
-    ).toMatch(/^```\n[\s\S]*\n```$/);
+    ).toMatch(/^• <t:\d+:T> /);
   });
 
   it("uses the shared report structure with the full history in lifecycle DMs", () => {
@@ -782,7 +783,8 @@ describe("report UI", () => {
     expect(json.fields?.find((field) => field.name === "Status")?.value).toBe(
       "Received by Discord"
     );
-    expect(json.fields?.find((field) => field.name === "History")?.value).toContain("```");
+    expect(json.fields?.find((field) => field.name === "History")?.value).toContain("<t:");
+    expect(json.fields?.find((field) => field.name === "History")?.value).not.toContain("```");
     expect(json.fields?.find((field) => field.name === "History")?.value).not.toContain(
       "Check your DMs"
     );
@@ -795,23 +797,17 @@ describe("report UI", () => {
       reportReason: "Auto",
       reportType: "Auto"
     }).toJSON();
-    const researched = buildWriterProgress({
-      stage: "research_complete",
-      country: "DE",
-      lawReference: "Germany, Basic Law, Article 1",
-      reportReason: "The message contains hateful content.",
-      reportType: "Other: hate speech",
-      searchRequests: 1
-    }).toJSON();
     const writing = buildWriterProgress({
       stage: "write",
-      reportReason: "The message contains hateful content."
+      country: "DE",
+      reportReason: "The message contains hateful content.",
+      reportType: "Other: hate speech"
     }).toJSON();
-    expect(research.title).toBe("Researching and writing report");
+    expect(research.title).toBe("Researching report");
     expect(research.description).toMatch(/^```\n[\s\S]*\n```$/);
-    expect(researched.description).toContain("Country: 🇩🇪 Germany");
-    expect(researched.description).toContain("Category: Other: hate speech");
-    expect(writing.title).toBe("Researching and writing report");
+    expect(writing.description).toContain("Germany");
+    expect(writing.description).toContain("Category: Other: hate speech");
+    expect(writing.title).toBe("Writing report");
     expect(writing.description).toContain("Reason: The message contains hateful content.");
   });
 

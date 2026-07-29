@@ -139,26 +139,14 @@ function codeBlock(value: string): string {
 }
 
 export function buildWriterProgress(progress: WriterProgress): EmbedBuilder {
-  const lines =
-    progress.stage === "research"
-      ? [
-          "Stage: Research",
-          `Country: ${progress.country === "Auto" ? "Auto" : countryDisplay(progress.country)}`,
-          `Category: ${progress.reportType}`,
-          `Reason: ${progress.reportReason}`
-        ]
-      : progress.stage === "research_complete"
-        ? [
-            "Stage: Research complete",
-            `Country: ${countryDisplay(progress.country)}`,
-            `Category: ${progress.reportType}`,
-            `Law: ${progress.lawReference}`,
-            `Sources checked: ${progress.searchRequests}`
-          ]
-        : ["Stage: Writing report", `Reason: ${progress.reportReason}`];
+  const lines = [
+    `Country: ${progress.country === "Auto" ? "Auto" : countryDisplay(progress.country)}`,
+    `Category: ${progress.reportType}`,
+    `Reason: ${progress.reportReason}`
+  ];
   return new EmbedBuilder()
     .setColor(Colors.Yellow)
-    .setTitle("Researching and writing report")
+    .setTitle(progress.stage === "research" ? "Researching report" : "Writing report")
     .setDescription(codeBlock(lines.join("\n")));
 }
 
@@ -752,55 +740,49 @@ function discordTime(value: string): string {
   return Number.isFinite(seconds) ? `<t:${seconds}:T>` : value;
 }
 
-function historyLabels(event: ReportView["timeline"][number]): string[] {
+function historyMilestone(
+  event: ReportView["timeline"][number]
+): { key: string; label: string } | null {
   switch (event.type) {
     case "report_api_request_sent":
-      return ["Report API request sent"];
     case "report_created":
-      return ["Report created"];
     case "report_retry_requested":
     case "report_retry_created":
-      return ["Retry started"];
-    case "requesting_verification":
-      return ["Verification workflow started"];
+      return { key: "requested", label: "Report requested" };
     case "verification_requested":
-      return ["Verification email requested", "Verification email pending"];
     case "verification_email_resent":
-      return ["Verification email requested again", "Verification email pending"];
+      return { key: "verification_requested", label: "Verification email requested" };
     case "verification_email_received":
-      return ["Verification email received · code processed"];
     case "verification_started":
-      return ["Verification submitted"];
-    case "submission_started":
-      return ["Discord report submission started"];
+      return { key: "verification_complete", label: "Verification completed" };
     case "report_submitted":
-      return [
-        "Discord report submitted · reference assigned",
-        "Report confirmation email pending"
-      ];
+      return { key: "submitted", label: "Submitted to Discord" };
     case "report_receipt_recovered":
-      return ["Late report confirmation received", "Discord receipt confirmed"];
+      return { key: "confirmation", label: "Confirmation received" };
     case "report_failed":
-      return [`Processing failed${event.errorCode ? ` · ${event.errorCode}` : ""}`];
+      return {
+        key: "failed",
+        label: `Failed${event.errorCode ? ` · ${event.errorCode}` : ""}`
+      };
     case "discord_status_updated":
       switch (event.discordStatus) {
         case "received":
-          return ["Report confirmation email received", "Discord receipt confirmed"];
+          return { key: "confirmation", label: "Confirmation received" };
         case "actioned":
-          return ["Result received · Discord took action"];
+          return { key: "result", label: "Result: Discord took action" };
         case "closed_no_action":
-          return ["Result received · Discord closed the report without action"];
+          return { key: "result", label: "Result: Closed without action" };
         case "review_not_approved":
-          return ["Result received · Discord did not approve the report"];
+          return { key: "result", label: "Result: Review not approved" };
         default:
-          return [];
+          return null;
       }
     default:
-      return [];
+      return null;
   }
 }
 
-function pendingHistoryLabel(report: ReportView): string | null {
+function currentHistoryLabel(report: ReportView): string | null {
   if (
     report.status === "failed" ||
     report.discordStatus === "actioned" ||
@@ -811,39 +793,48 @@ function pendingHistoryLabel(report: ReportView): string | null {
   }
   switch (report.status) {
     case "queued":
-      return "Report API request pending";
+      return "Current: Preparing report";
     case "requesting_verification":
     case "awaiting_verification":
-      return "Verification email pending";
+      return "Current: Waiting for verification email";
     case "verification_received":
-      return "Verification received · submission pending";
     case "verifying":
-      return "Verification submission pending";
     case "submitting":
-      return "Discord report submission pending";
+      return "Current: Preparing submission";
     case "submitted":
       return report.discordStatus === null
-        ? "Report confirmation email pending"
-        : "Report result pending";
+        ? "Current: Waiting for confirmation"
+        : "Current: Waiting for result";
   }
 }
 
 export function reportHistory(report: ReportView): string {
   const lines: string[] = [];
-  let previousAttempt: number | null = null;
-  for (const event of report.timeline) {
-    const labels = historyLabels(event);
-    if (labels.length === 0) continue;
-    const attempt = event.lifecycleAttempt ?? report.lifecycleAttempt;
-    if (attempt !== previousAttempt && report.lifecycleAttempt > 1) {
-      lines.push(`Attempt ${attempt}`);
-      previousAttempt = attempt;
+  const seen = new Set<string>();
+  const attempts = [
+    ...new Set(report.timeline.map((event) => event.lifecycleAttempt ?? 1))
+  ]
+    .sort((left, right) => left - right)
+    .slice(-3);
+  const showAttempts = attempts.length > 1;
+  let activeAttempt: number | null = null;
+  for (const event of report.timeline.filter((entry) =>
+    attempts.includes(entry.lifecycleAttempt ?? 1)
+  )) {
+    const attempt = event.lifecycleAttempt ?? 1;
+    const milestone = historyMilestone(event);
+    const milestoneKey = `${attempt}:${milestone?.key}`;
+    if (!milestone || seen.has(milestoneKey)) continue;
+    if (showAttempts && activeAttempt !== attempt) {
+      lines.push(`**Attempt ${attempt}**`);
+      activeAttempt = attempt;
     }
-    for (const label of labels) lines.push(`[${discordTime(event.occurredAt)}] ${label}`);
+    seen.add(milestoneKey);
+    lines.push(`• ${discordTime(event.occurredAt)} ${milestone.label}`);
   }
-  const pending = pendingHistoryLabel(report);
-  if (pending) lines.push(`[${discordTime(report.updatedAt)}] ${pending}`);
-  return lines.join("\n") || `[${discordTime(report.updatedAt)}] Status unavailable`;
+  const current = currentHistoryLabel(report);
+  if (current) lines.push(`• ${discordTime(report.updatedAt)} ${current}`);
+  return lines.join("\n") || `• ${discordTime(report.updatedAt)} Status unavailable`;
 }
 
 export interface ReportEmbedOptions {
@@ -905,10 +896,10 @@ export function reportEmbed(
   if (options.history === "dm_notice") {
     embed.addFields({ name: "History", value: "Check your DMs for the full status log." });
   } else {
-    for (const [index, value] of splitField(reportHistory(report), 1_016).entries()) {
+    for (const [index, value] of splitField(reportHistory(report), 1_024).entries()) {
       embed.addFields({
         name: index === 0 ? "History" : `History (${index + 1})`,
-        value: codeBlock(value)
+        value
       });
     }
   }

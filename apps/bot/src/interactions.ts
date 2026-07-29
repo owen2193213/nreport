@@ -861,17 +861,6 @@ export class InteractionHandler {
       });
       return;
     }
-    await interaction.editReply({
-      embeds: [
-        buildWriterProgress({
-          stage: "research",
-          country: draft.country ?? "Auto",
-          reportReason: draft.reportBrief ?? "Auto",
-          reportType: draft.reportType ?? "Auto"
-        })
-      ],
-      components: []
-    });
     if (draft.flow === "message_urf" && draft.messageUrl && !draft.messageSnapshot) {
       const snapshot = await this.messageResolver.resolve(draft.messageUrl);
       if (snapshot) draft.messageSnapshot = snapshot;
@@ -969,17 +958,6 @@ export class InteractionHandler {
       });
       return;
     }
-    await interaction.editReply({
-      embeds: [
-        buildWriterProgress({
-          stage: "research",
-          country: draft.country ?? "Auto",
-          reportReason: draft.reportBrief ?? "Auto",
-          reportType: draft.reportType ?? "Auto"
-        })
-      ],
-      components: []
-    });
     try {
       const result = await this.reportWriter.generate(
         draft,
@@ -1136,17 +1114,6 @@ export class InteractionHandler {
         throw new AccessError("ai_disabled", "AI is disabled for this report. Edit it manually.");
       }
       await interaction.deferUpdate();
-      await interaction.editReply({
-        embeds: [
-          buildWriterProgress({
-            stage: "research",
-            country: draft.country ?? "Auto",
-            reportReason: draft.reportBrief ?? draft.reportReason ?? "Auto",
-            reportType: draft.reportType ?? "Auto"
-          })
-        ],
-        components: []
-      });
       try {
         const result = await this.reportWriter.generate(
           draft,

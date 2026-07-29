@@ -647,8 +647,9 @@ relevance, never guessed location.
 The AI modal allows category and explanation to be omitted as `Auto`. The bot sends fixed values
 when supplied, the active flow's exact category catalog, selected elements, supported country
 names/codes, reporter text, and resolved evidence to one combined
-Auto-country/legal-research request using OpenRouter's `openrouter:web_search` server tool. It
-prefers one search but allows up to three and uses standard result settings without a domain list.
+Auto-country/legal-research request using OpenRouter's deprecated `web` plugin with Exa. It makes
+one research completion per generation, using up to five results for Auto or three for a fixed
+country, without a domain list.
 The writing prompt asks the final maximum-512-character text to naturally name the structured
 research result's specific law or provision. Brackets, URLs, footnotes, OpenRouter URL annotations,
 and a separate sources section are not required. Bot validation requires only non-empty text of at

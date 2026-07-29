@@ -90,8 +90,8 @@ denies provider data collection, and requires JSON-mode output support. The bot 
 to return the required object shape and validates it locally. The complete generation workflow is
 capped at 90 seconds.
 
-Every generation begins with one combined country/category/reason selection and legal-research request using the
-`openrouter:web_search` server tool. It receives the complete report category, selected elements,
+Every generation begins with one combined country/category/reason selection and legal-research request using
+OpenRouter's deprecated `web` plugin with Exa. It receives the complete report category, selected elements,
 supported country names/codes, reporter explanation, and resolved text evidence.
 The response schema requires a supported two-letter country code, an exact semantic category from
 the active flow's catalog, and a concise evidence-grounded report reason. A user-supplied category
@@ -100,16 +100,13 @@ normalizes an exact supported English country name to its code before validation
 The internal law reference has no length limit; validation distinguishes an invalid country,
 missing reference, and missing research summary.
 The prompt asks for only the essential legal relevance in a concise research summary without
-hard-capping research output tokens. Search uses OpenRouter's Exa engine with at most three results
-per call and 2,500 characters per result. Fixed/default country research gets one call and three
-total results; Auto gets up to two calls and five total results when comparison or follow-up is
-needed. No domain filter is imposed. OpenRouter search counts and URL annotations are retained
+hard-capping research output tokens. Fixed/default country research gets one plugin-backed
+completion with up to three Exa results; Auto gets one with up to five results. No domain filter is
+imposed. OpenRouter search counts and URL annotations are retained
 when available but are not required for a usable result.
-Research denies provider data collection but omits ZDR and required-parameter routing so
-OpenRouter's beta server-tool search can reach a compatible endpoint. If OpenRouter returns the
-intermediate `finish_reason: "tool_calls"` instead of completing its server-tool loop, the bot
-retries the complete research request once inside the same 90-second workflow deadline. A second
-incomplete loop fails with a specific retryable research error; no fallback model is used.
+Research denies provider data collection but omits ZDR and required-parameter routing so a
+plugin-compatible endpoint can be selected. The plugin runs inside the single OpenRouter request;
+the bot does not implement a tool loop or retry an intermediate tool call. No fallback model is used.
 Writing, refinement, and repair retain ZDR, denied data collection, and
 required-parameter routing because they do not use the web-search server tool.
 
@@ -414,10 +411,8 @@ uses the same operation. Both surfaces update to the successor's new report card
 - Chosen: use `qwen/qwen3.5-35b-a3b` for research, writing, refinement, and repair. A single
   configurable model keeps prompts, usage accounting, deployment configuration, and failure
   behavior consistent.
-- Chosen: treat an exposed OpenRouter server-tool `finish_reason: "tool_calls"` as an incomplete
-  beta server-tool loop and retry the complete research request once. OpenRouter owns
-  `openrouter:web_search`; unlike a user-defined `type: "function"` tool, the bot has no local
-  function to execute or tool result to return.
+- Chosen: temporarily use OpenRouter's deprecated `web` plugin for one-shot Exa research because it
+  returns a normal completion without requiring the bot to execute a tool loop.
 - Rejected: a Perplexity fallback, client-side Exa implementation, provider pinning, and an
   unbounded tool loop. They add cost and operational state without being required for this report
   workflow.

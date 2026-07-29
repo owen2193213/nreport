@@ -96,9 +96,9 @@ report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup 
 the global commands automatically. Set `OPENROUTER_API_KEY` for the bot-side report writer;
 `OPENROUTER_MODEL` defaults to `qwen/qwen3.5-35b-a3b`.
 `OPENROUTER_WRITER_REASONING_EFFORT` defaults to `high`. Combined Auto-country/legal research
-uses `openrouter:web_search` with the complete text report context, standard result settings, and
-at most two searches. An incomplete server-tool loop is retried once within the existing workflow
-deadline. Search-count metadata and HTTPS source annotations are
+uses OpenRouter's deprecated `web` plugin with Exa and the complete text report context. Each
+generation makes one research completion, with up to five results for Auto country selection or
+three for a fixed country. Search-count metadata and HTTPS source annotations are
 optional; a report is accepted from usable structured legal research without requiring either.
 The bot records per-user request/token/reasoning/search/cost totals and operational workflow metadata
 such as flow, category, country mode, selected elements, counts, lengths, latency, and validation

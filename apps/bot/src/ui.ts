@@ -304,7 +304,7 @@ export function buildRefinementModal(draftId: string): ModalBuilder {
     .addLabelComponents(
       textLabel({
         customId: "instruction",
-        label: "What should DeepSeek change?",
+        label: "What should AI change?",
         description: "This continues the existing AI conversation.",
         style: TextInputStyle.Paragraph,
         minLength: 1,
@@ -387,7 +387,7 @@ export function buildCountryPicker(
         "Choose the applicable country",
         `${
           allowAuto
-            ? "Choose **Auto** to let DeepSeek select a supported country based on legal relevance, or select a country override."
+            ? "Choose **Auto** to let AI select a supported country based on legal relevance, or select a country override."
             : "AI is disabled for this report, so select a country manually."
         }\n\nPage **${safePage + 1} of ${pageCount}**`
       )

@@ -76,7 +76,7 @@ The bot needs only these reporting-service variables:
 DSA_API_BASE_URL=https://discord-dsa-production.up.railway.app
 DSA_API_KEY=<same API_KEY configured on the Railway API service>
 OPENROUTER_API_KEY=<bot-only OpenRouter key>
-OPENROUTER_MODEL=deepseek/deepseek-v4-flash
+OPENROUTER_MODEL=qwen/qwen3.5-35b-a3b
 OPENROUTER_WRITER_REASONING_EFFORT=high
 ```
 
@@ -641,7 +641,7 @@ opening the report form.
 
 `/settings country` and each report country option accept `AUTO` or a code returned by
 `/v1/countries`. An explicit report option wins over the saved default; a missing or `NULL` saved
-default means Auto. Auto uses DeepSeek to select one supported code based on conduct and legal
+default means Auto. Auto uses AI to select one supported code based on conduct and legal
 relevance, never guessed location.
 
 The AI modal allows category and explanation to be omitted as `Auto`. The bot sends fixed values

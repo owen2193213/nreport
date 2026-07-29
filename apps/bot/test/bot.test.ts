@@ -426,7 +426,7 @@ describe("report UI", () => {
       { name: "🇩🇪 Germany", value: "DE" }
     ]);
     expect(matchingCountries(["DE", "FR"], "auto")).toEqual([
-      { name: "✨ Auto — DeepSeek chooses", value: "AUTO" }
+      { name: "✨ Auto — AI chooses", value: "AUTO" }
     ]);
     expect(matchingCountries(Array.from({ length: 27 }, () => "DE"), "")).toHaveLength(25);
   });

@@ -94,10 +94,11 @@ Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. 
 uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
 the global commands automatically. Set `OPENROUTER_API_KEY` for the bot-side report writer;
-`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-flash`.
+`OPENROUTER_MODEL` defaults to `qwen/qwen3.5-35b-a3b`.
 `OPENROUTER_WRITER_REASONING_EFFORT` defaults to `high`. Combined Auto-country/legal research
 uses `openrouter:web_search` with the complete text report context, standard result settings, and
-at most three searches. Search-count metadata and HTTPS source annotations are
+at most two searches. An incomplete server-tool loop is retried once within the existing workflow
+deadline. Search-count metadata and HTTPS source annotations are
 optional; a report is accepted from usable structured legal research without requiring either.
 The bot records per-user request/token/reasoning/search/cost totals and operational workflow metadata
 such as flow, category, country mode, selected elements, counts, lengths, latency, and validation
@@ -112,7 +113,7 @@ Attachment names and content types may remain as text metadata.
 
 Every `/report` subcommand also accepts optional `dont-use-ai:true`. It defaults to AI when
 omitted. Manual mode sends nothing to OpenRouter, limits the reporter's final text to 512
-characters, and requires a saved or explicit country because Auto normally depends on DeepSeek.
+characters, and requires a saved or explicit country because Auto normally depends on AI.
 
 ```powershell
 npm.cmd run register -w @discord-dsa/bot

@@ -19,9 +19,9 @@ function environment(): NodeJS.ProcessEnv {
 }
 
 describe("bot configuration", () => {
-  it("requires an OpenRouter key and defaults to DeepSeek V4 Flash", () => {
+  it("requires an OpenRouter key and defaults to Qwen 3.5 35B", () => {
     const config = loadBotConfig(environment());
-    expect(config.openRouterModel).toBe("deepseek/deepseek-v4-flash");
+    expect(config.openRouterModel).toBe("qwen/qwen3.5-35b-a3b");
     expect(config.openRouterWriterReasoningEffort).toBe("high");
     const missing = environment();
     delete missing.OPENROUTER_API_KEY;
@@ -30,8 +30,8 @@ describe("bot configuration", () => {
 
   it("allows the OpenRouter model to be configured", () => {
     expect(
-      loadBotConfig({ ...environment(), OPENROUTER_MODEL: "deepseek/deepseek-custom" }).openRouterModel
-    ).toBe("deepseek/deepseek-custom");
+      loadBotConfig({ ...environment(), OPENROUTER_MODEL: "qwen/qwen-custom" }).openRouterModel
+    ).toBe("qwen/qwen-custom");
   });
 
   it("validates the configurable writer reasoning effort", () => {

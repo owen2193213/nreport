@@ -96,7 +96,7 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     environment: env.NODE_ENV?.trim() || "development",
     keyPepper: secret(env, "ACCESS_KEY_PEPPER"),
     openRouterApiKey: required(env, "OPENROUTER_API_KEY"),
-    openRouterModel: env.OPENROUTER_MODEL?.trim() || "deepseek/deepseek-v4-flash",
+    openRouterModel: env.OPENROUTER_MODEL?.trim() || "qwen/qwen3.5-35b-a3b",
     openRouterWriterReasoningEffort: reasoningEffort(
       env.OPENROUTER_WRITER_REASONING_EFFORT
     ),

@@ -93,6 +93,35 @@ function reportCompletion(
   return completion({ report });
 }
 
+function incompleteToolCallCompletion(): Response {
+  return new Response(
+    JSON.stringify({
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [
+              {
+                id: "search-1",
+                type: "function",
+                function: { name: "web_search", arguments: '{"query":"EU law"}' }
+              }
+            ]
+          }
+        }
+      ],
+      usage: {
+        prompt_tokens: 50,
+        completion_tokens: 10,
+        cost: 0.0005,
+        server_tool_use: { web_search_requests: 0 }
+      }
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } }
+  );
+}
+
 function refinementCompletion(
   report = `${LAW_REFERENCE} may apply. Refined report.`,
   searchRequests = 0
@@ -110,7 +139,7 @@ function fixedWriter(
   request: ReturnType<typeof vi.fn>,
   recordUsage: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined)
 ): ReportWriter {
-  return new ReportWriter("secret", "deepseek/deepseek-v4-flash", COUNTRIES, {
+  return new ReportWriter("secret", "qwen/qwen3.5-35b-a3b", COUNTRIES, {
     reasoningEffort: "high",
     recordUsage: recordUsage as unknown as (userId: string, usage: AiUsage) => Promise<void>,
     request: request as unknown as typeof globalThis.fetch
@@ -124,6 +153,40 @@ function requestBody<T>(request: ReturnType<typeof vi.fn>, index: number): T {
 }
 
 describe("OpenRouter report writer", () => {
+  it("retries research once when OpenRouter leaves the server-tool loop incomplete", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(incompleteToolCallCompletion())
+      .mockResolvedValueOnce(researchCompletion())
+      .mockResolvedValueOnce(reportCompletion());
+
+    const result = await fixedWriter(request).generate(profileDraft(), ACTOR);
+
+    expect(result.country).toBe("DE");
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(requestBody<{ model: string }>(request, 0).model).toBe(
+      "qwen/qwen3.5-35b-a3b"
+    );
+    expect(requestBody<{ model: string }>(request, 1).model).toBe(
+      "qwen/qwen3.5-35b-a3b"
+    );
+    expect(requestBody<{ model: string }>(request, 2).model).toBe(
+      "qwen/qwen3.5-35b-a3b"
+    );
+  });
+
+  it("fails research clearly when two server-tool loops remain incomplete", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(incompleteToolCallCompletion())
+      .mockResolvedValueOnce(incompleteToolCallCompletion());
+
+    await expect(fixedWriter(request).generate(profileDraft(), ACTOR)).rejects.toThrow(
+      "OpenRouter did not finish the legal-research tool loop"
+    );
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
   it("merges Auto country selection and research with full text context", async () => {
     const request = vi
       .fn()

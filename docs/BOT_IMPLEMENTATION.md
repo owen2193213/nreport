@@ -55,7 +55,7 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
 5. In one structured OpenRouter request, resolve Auto country, category, and explanation when
    needed and research a supporting law. During this work the ephemeral response is edited through
    Researching, Research complete, and Writing stages with the current selections in code blocks.
-   Then ask `deepseek/deepseek-v4-flash` to write a factual report of at most 512 characters that naturally
+   Then ask `qwen/qwen3.5-35b-a3b` to write a factual report of at most 512 characters that naturally
    names the researched law or provision. Show an ephemeral review with submit, refine, regenerate,
    country-change, manual-edit, and cancel controls.
 6. Atomically reserve one credit and create the API report with the interaction ID.
@@ -84,7 +84,8 @@ attempts for that tracked report; `/reports` remains available.
 
 The bot calls OpenRouter directly; the API and low-level Discord client never receive the
 reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KEY` is required and
-`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-flash`. Provider routing requires zero data retention,
+`OPENROUTER_MODEL` defaults to `qwen/qwen3.5-35b-a3b`. The same configured model handles research,
+writing, refinement, and repair. Provider routing requires zero data retention,
 denies provider data collection, and requires JSON-mode output support. The bot instructs the model
 to return the required object shape and validates it locally. The complete generation workflow is
 capped at 90 seconds.
@@ -104,10 +105,18 @@ per call and 2,500 characters per result. Fixed/default country research gets on
 total results; Auto gets up to two calls and five total results when comparison or follow-up is
 needed. No domain filter is imposed. OpenRouter search counts and URL annotations are retained
 when available but are not required for a usable result.
-Research denies provider data collection but omits ZDR and required-parameter routing because
-those provider filters prevent DeepSeek V4 Flash server-tool searches from reaching a compatible
-route. Writing, refinement, and repair retain ZDR, denied data collection, and
+Research denies provider data collection but omits ZDR and required-parameter routing so
+OpenRouter's beta server-tool search can reach a compatible endpoint. If OpenRouter returns the
+intermediate `finish_reason: "tool_calls"` instead of completing its server-tool loop, the bot
+retries the complete research request once inside the same 90-second workflow deadline. A second
+incomplete loop fails with a specific retryable research error; no fallback model is used.
+Writing, refinement, and repair retain ZDR, denied data collection, and
 required-parameter routing because they do not use the web-search server tool.
+
+The AI integration intentionally remains bot-local and single-model. It assumes normal interactive
+bot traffic, keeps the existing 90-second workflow budget, records the cost of every attempted
+OpenRouter request, and adds no fallback model, local search executor, queue, database table, or
+background worker. Media processing remains disabled.
 
 The prompt contains the selected semantic reason, the reporter's brief, and only the useful
 resolved target data. Message reports include the accessible message content, author, timestamp,
@@ -130,7 +139,7 @@ modal makes Category and Reason optional, uses the placeholder `Auto`, and label
 only as `512 characters max.` When `dont-use-ai`
 is `true`, the modal requires both category and final report text, performs no OpenRouter
 request, and shows the normal review with Submit, Edit manually, Change country, and Cancel.
-Refine and Regenerate are omitted. Because Auto country selection requires DeepSeek, a manual report
+Refine and Regenerate are omitted. Because Auto country selection requires AI, a manual report
 with no saved or explicit country must select a country before review. The message context-menu
 command has no command options and continues to use the default AI flow.
 
@@ -163,7 +172,7 @@ provides a separate required 512-character input. Drafts already within the limi
 input; overlength drafts leave it blank for the user to shorten and paste. Insufficient
 OpenRouter balance, rate limits, timeouts, malformed output, unsupported Auto countries, and
 unusable legal research use the safe AI failure screen. Retry, country override, detail editing,
-manual editing when candidate text is available, and cancel remain available. The bot asks DeepSeek
+manual editing when candidate text is available, and cancel remain available. The bot asks AI
 to include the researched law but does not reject reviewed text for omitting it or attempt to
 verify that the law exists.
 No report is created and no credit is reserved until valid reviewed text is submitted. Drafts hold
@@ -402,6 +411,16 @@ uses the same operation. Both surfaces update to the successor's new report card
 
 ### Decision log
 
+- Chosen: use `qwen/qwen3.5-35b-a3b` for research, writing, refinement, and repair. A single
+  configurable model keeps prompts, usage accounting, deployment configuration, and failure
+  behavior consistent.
+- Chosen: treat an exposed OpenRouter server-tool `finish_reason: "tool_calls"` as an incomplete
+  beta server-tool loop and retry the complete research request once. OpenRouter owns
+  `openrouter:web_search`; unlike a user-defined `type: "function"` tool, the bot has no local
+  function to execute or tool result to return.
+- Rejected: a Perplexity fallback, client-side Exa implementation, provider pinning, and an
+  unbounded tool loop. They add cost and operational state without being required for this report
+  workflow.
 - Chosen: validate only the Cloudflare envelope domain (`discord.com` or a true subdomain) and the
   generated recipient shape in the email worker. The API remains the sole MIME parser and exact
   visible-sender validator, avoiding duplicated checks for Discord's changing bounce formats.

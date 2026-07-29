@@ -21,7 +21,7 @@ export function countryChoice(code: string): CountryChoice {
 }
 
 export function countryDisplay(code: string): string {
-  if (code.toUpperCase() === "AUTO") return "✨ Auto — DeepSeek chooses";
+  if (code.toUpperCase() === "AUTO") return "✨ Auto — AI chooses";
   return countryChoice(code).display;
 }
 
@@ -44,6 +44,6 @@ export function matchingCountries(
   const includeAuto =
     normalizedQuery.length === 0 ||
     "auto".includes(normalizedQuery) ||
-    "deepseek chooses".includes(normalizedQuery);
+    "ai chooses".includes(normalizedQuery);
   return [...(includeAuto ? [auto] : []), ...choices].slice(0, 25);
 }

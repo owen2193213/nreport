@@ -243,7 +243,7 @@
       top: 50%;
       right: 9px;
       color: #8b92a1;
-      content: "→";
+      content: "â†’";
       transform: translateY(-50%);
     }
 
@@ -451,7 +451,7 @@
       left: 67px;
       color: #8b92a1;
       font-size: 20px;
-      content: "↓";
+      content: "â†“";
     }
 
     .stage-label {
@@ -762,7 +762,7 @@
         z-index: 1;
         padding: 0 3px;
         background: var(--panel);
-        content: "↓";
+        content: "â†“";
         transform: none;
       }
 
@@ -882,7 +882,7 @@
     </article>
 
     <article class="tree-guide" aria-labelledby="tree-context-heading">
-      <h3 id="tree-context-heading"><span class="node-id">RMC</span> Apps → Report Message</h3>
+      <h3 id="tree-context-heading"><span class="node-id">RMC</span> Apps â†’ Report Message</h3>
       <ul class="flow-tree">
         <li>
           <div class="tree-node" id="node-context-message-selected" data-node-id="RMC-01"><span class="node-id">RMC-01</span><strong>Selected message</strong><span class="tree-note">Preview author, channel, timestamp, URL, and identify the snapshot as auto-captured evidence.</span></div>
@@ -968,7 +968,7 @@
       </article>
 
       <article class="card command">
-        <code class="command-name">Apps → Report Message</code>
+        <code class="command-name">Apps â†’ Report Message</code>
         <p>The message context command pre-fills the message URL and message snapshot.</p>
         <ol class="flow">
           <li><strong>Selected Discord message</strong>URL and snapshot captured.</li>
@@ -1019,7 +1019,7 @@
           <div>
             <h3 id="message-journey-heading">Message report journey</h3>
             <p>
-              Used by <code>/report message</code> and <code>Apps → Report Message</code>. The context
+              Used by <code>/report message</code> and <code>Apps â†’ Report Message</code>. The context
               command captures the selected message URL and evidence snapshot before opening the modal.
             </p>
           </div>
@@ -1034,7 +1034,7 @@
               <div class="discord-window" role="img" aria-label="Message report slash command mockup">
                 <div class="window-bar"><strong>/report message</strong><span>User-installed command</span></div>
                 <div class="command-line">
-                  <span class="command-token">message-link:</span> https://discord.com/channels/…/…/…
+                  <span class="command-token">message-link:</span> https://discord.com/channels/â€¦/â€¦/â€¦
                   &nbsp; <span class="command-token">country:</span> Auto
                   &nbsp; <span class="command-token">dont-use-ai:</span> false
                 </div>
@@ -1047,7 +1047,7 @@
             <div>
               <span class="surface-label">Modal shown to reporter</span>
               <div class="discord-window" role="img" aria-label="Report Message modal mockup">
-                <div class="window-bar"><strong>Report Message</strong><span>Encrypted draft • 30 minutes</span></div>
+                <div class="window-bar"><strong>Report Message</strong><span>Encrypted draft â€¢ 30 minutes</span></div>
                 <div class="modal-body">
                   <div class="modal-field">
                     <label>Why are you reporting this?</label>
@@ -1056,7 +1056,7 @@
                   <div class="modal-field">
                     <label>Briefly explain the report</label>
                     <div class="mock-control textarea">Describe what the message says and why it should be reported.</div>
-                    <span class="modal-help">A short or vague reason is okay. DeepSeek will draft the final report for review. Maximum 512 characters.</span>
+                    <span class="modal-help">A short or vague reason is okay. AI will draft the final report for review. Maximum 512 characters.</span>
                   </div>
                   <span class="modal-help">The message link is already supplied by the slash command or selected message, so it is not shown in this modal.</span>
                 </div>
@@ -1077,7 +1077,7 @@
                 <div class="response-body">
                   <article class="embed color-blurple">
                     <div class="embed-title">Researching and writing report</div>
-                    <div class="embed-description">DeepSeek is choosing the applicable country when needed, researching the law, and preparing a concise report.</div>
+                    <div class="embed-description">AI is choosing the applicable country when needed, researching the law, and preparing a concise report.</div>
                   </article>
                 </div>
               </div>
@@ -1101,7 +1101,7 @@
                       <div class="field wide"><div class="field-name">Reason</div><div class="field-value">Resolved semantic report reason.</div></div>
                       <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Final AI-written or manually entered report text.</div></div>
                     </div>
-                    <div class="embed-footer">000/512 characters • Review carefully before submitting</div>
+                    <div class="embed-footer">000/512 characters â€¢ Review carefully before submitting</div>
                     <div class="chips" style="margin-top: 12px">
                       <span class="button danger">Submit DSA Report</span>
                       <span class="button primary">Refine</span>
@@ -1129,8 +1129,8 @@
                     <div class="embed-fields">
                       <div class="field wide"><div class="field-name">Reported thing</div><div class="field-value">Message URL</div></div>
                       <div class="field"><div class="field-name">References</div><div class="field-value">Internal report ID; Discord ID not assigned yet.</div></div>
-                      <div class="field"><div class="field-name">Dates</div><div class="field-value">Created now • Updated now</div></div>
-                      <div class="field wide"><div class="field-name">History</div><div class="field-value">Report created • Preparing and submitting report.</div></div>
+                      <div class="field"><div class="field-name">Dates</div><div class="field-value">Created now â€¢ Updated now</div></div>
+                      <div class="field wide"><div class="field-name">History</div><div class="field-value">Report created â€¢ Preparing and submitting report.</div></div>
                     </div>
                     <div class="embed-footer">Full ID: example-name-unique-suffix</div>
                   </article>
@@ -1142,7 +1142,7 @@
           <div class="journey-stage">
             <div class="stage-label">Step 6<strong>Lifecycle DM</strong></div>
             <div>
-              <span class="surface-label">Private DM • saved and edited in place</span>
+              <span class="surface-label">Private DM â€¢ saved and edited in place</span>
               <div class="discord-window">
                 <div class="window-bar"><strong>Direct Message with Discord DSA</strong><span>Private</span></div>
                 <div class="dm-thread">
@@ -1159,15 +1159,15 @@
                           <div class="field wide"><div class="field-name">Reason / Reported details</div><div class="field-value">Submitted reason and final report text.</div></div>
                           <div class="field"><div class="field-name">References</div><div class="field-value">Internal ID + Discord report ID</div></div>
                           <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated timestamps</div></div>
-                          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created → Submitted to Discord</div></div>
+                          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created â†’ Submitted to Discord</div></div>
                         </div>
-                        <div class="embed-footer">Full internal report ID • lifecycle timestamp</div>
+                        <div class="embed-footer">Full internal report ID â€¢ lifecycle timestamp</div>
                       </article>
                     </div>
                   </div>
                   <div class="outcome-grid" aria-label="Possible message report DM outcomes">
-                    <div class="outcome"><strong>Received</strong><p>The same DM is edited to “Report received by Discord”; history adds the received stage.</p></div>
-                    <div class="outcome"><strong>Actioned</strong><p>The same DM turns green and is titled “Discord took action.” A reply says Discord accepted it and took action.</p></div>
+                    <div class="outcome"><strong>Received</strong><p>The same DM is edited to â€œReport received by Discordâ€; history adds the received stage.</p></div>
+                    <div class="outcome"><strong>Actioned</strong><p>The same DM turns green and is titled â€œDiscord took action.â€ A reply says Discord accepted it and took action.</p></div>
                     <div class="outcome"><strong>Denied or timeout</strong><p>The same DM turns grey/red. A reply explains denial or the two-minute receipt timeout; retry appears only when safe.</p></div>
                   </div>
                   <div class="dm-reply">Example final reply: Your DSA report was accepted and Discord took action.</div>
@@ -1280,7 +1280,7 @@
                       <div class="field wide"><div class="field-name">Reason</div><div class="field-value">Semantic reason + selected profile elements.</div></div>
                       <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Optional observed server + final report text.</div></div>
                     </div>
-                    <div class="embed-footer">000/512 characters • Profile avatar appears as thumbnail</div>
+                    <div class="embed-footer">000/512 characters â€¢ Profile avatar appears as thumbnail</div>
                     <div class="chips" style="margin-top: 12px">
                       <span class="button danger">Submit DSA Report</span>
                       <span class="button primary">Refine</span>
@@ -1310,7 +1310,7 @@
                       <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Name submitted to Discord, capture time, observed server, and final report text.</div></div>
                       <div class="field"><div class="field-name">References</div><div class="field-value">Internal ID; Discord ID when assigned.</div></div>
                       <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated.</div></div>
-                      <div class="field wide"><div class="field-name">History</div><div class="field-value">Created • Preparing and submitting report.</div></div>
+                      <div class="field wide"><div class="field-name">History</div><div class="field-value">Created â€¢ Preparing and submitting report.</div></div>
                     </div>
                     <div class="embed-footer">Full internal report ID</div>
                   </article>
@@ -1322,7 +1322,7 @@
           <div class="journey-stage">
             <div class="stage-label">Step 6<strong>Lifecycle DM</strong></div>
             <div>
-              <span class="surface-label">Private DM • saved and edited in place</span>
+              <span class="surface-label">Private DM â€¢ saved and edited in place</span>
               <div class="discord-window">
                 <div class="window-bar"><strong>Direct Message with Discord DSA</strong><span>Private</span></div>
                 <div class="dm-thread">
@@ -1339,15 +1339,15 @@
                           <div class="field wide"><div class="field-name">Reason / Reported details</div><div class="field-value">Selected profile elements, submitted account name, capture time, and report text.</div></div>
                           <div class="field"><div class="field-name">References</div><div class="field-value">Internal + Discord report IDs</div></div>
                           <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated</div></div>
-                          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created → Submitted to Discord</div></div>
+                          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created â†’ Submitted to Discord</div></div>
                         </div>
-                        <div class="embed-footer">Full internal report ID • lifecycle timestamp</div>
+                        <div class="embed-footer">Full internal report ID â€¢ lifecycle timestamp</div>
                       </article>
                     </div>
                   </div>
                   <div class="outcome-grid" aria-label="Possible profile report DM outcomes">
-                    <div class="outcome"><strong>Received</strong><p>Title becomes “Report received by Discord”; the same profile thumbnail and details remain.</p></div>
-                    <div class="outcome"><strong>Actioned</strong><p>Title becomes “Discord took action,” color becomes green, and the bot replies with the accepted outcome.</p></div>
+                    <div class="outcome"><strong>Received</strong><p>Title becomes â€œReport received by Discordâ€; the same profile thumbnail and details remain.</p></div>
+                    <div class="outcome"><strong>Actioned</strong><p>Title becomes â€œDiscord took action,â€ color becomes green, and the bot replies with the accepted outcome.</p></div>
                     <div class="outcome"><strong>Closed or rejected</strong><p>Title and color change to the exact Discord outcome, and the bot replies with denial text.</p></div>
                   </div>
                   <div class="dm-reply">Example final reply: Your DSA report was reviewed and denied; Discord closed it without taking action.</div>
@@ -1439,7 +1439,7 @@
                 <div class="response-body">
                   <article class="embed color-blurple">
                     <div class="embed-title">Researching and writing report</div>
-                    <div class="embed-description">DeepSeek is choosing the applicable country when needed, researching the law, and preparing a concise report.</div>
+                    <div class="embed-description">AI is choosing the applicable country when needed, researching the law, and preparing a concise report.</div>
                   </article>
                 </div>
               </div>
@@ -1463,7 +1463,7 @@
                       <div class="field wide"><div class="field-name">Reason</div><div class="field-value">Semantic reason + selected server elements.</div></div>
                       <div class="field wide"><div class="field-name">Reported details</div><div class="field-value"><strong>Resolved server name</strong> (ID)<br>Description<br>Member and online counts<br><br>Final report text</div></div>
                     </div>
-                    <div class="embed-footer">000/512 characters • Server icon appears as thumbnail</div>
+                    <div class="embed-footer">000/512 characters â€¢ Server icon appears as thumbnail</div>
                     <div class="chips" style="margin-top: 12px">
                       <span class="button danger">Submit DSA Report</span>
                       <span class="button primary">Refine</span>
@@ -1493,7 +1493,7 @@
                       <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Resolved server snapshot + final report text.</div></div>
                       <div class="field"><div class="field-name">References</div><div class="field-value">Internal ID; Discord ID when assigned.</div></div>
                       <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated.</div></div>
-                      <div class="field wide"><div class="field-name">History</div><div class="field-value">Created • Preparing and submitting report.</div></div>
+                      <div class="field wide"><div class="field-name">History</div><div class="field-value">Created â€¢ Preparing and submitting report.</div></div>
                     </div>
                     <div class="embed-footer">Full internal report ID</div>
                   </article>
@@ -1505,7 +1505,7 @@
           <div class="journey-stage">
             <div class="stage-label">Step 6<strong>Lifecycle DM</strong></div>
             <div>
-              <span class="surface-label">Private DM • saved and edited in place</span>
+              <span class="surface-label">Private DM â€¢ saved and edited in place</span>
               <div class="discord-window">
                 <div class="window-bar"><strong>Direct Message with Discord DSA</strong><span>Private</span></div>
                 <div class="dm-thread">
@@ -1522,15 +1522,15 @@
                           <div class="field wide"><div class="field-name">Reason / Reported details</div><div class="field-value">Selected server elements, resolved snapshot, and final report text.</div></div>
                           <div class="field"><div class="field-name">References</div><div class="field-value">Internal + Discord report IDs</div></div>
                           <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated</div></div>
-                          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created → Submitted to Discord</div></div>
+                          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created â†’ Submitted to Discord</div></div>
                         </div>
-                        <div class="embed-footer">Full internal report ID • server icon thumbnail • lifecycle timestamp</div>
+                        <div class="embed-footer">Full internal report ID â€¢ server icon thumbnail â€¢ lifecycle timestamp</div>
                       </article>
                     </div>
                   </div>
                   <div class="outcome-grid" aria-label="Possible server report DM outcomes">
-                    <div class="outcome"><strong>Received</strong><p>The same DM is edited to “Report received by Discord”; server snapshot and icon remain.</p></div>
-                    <div class="outcome"><strong>Actioned</strong><p>The same DM turns green, is titled “Discord took action,” and receives the accepted reply.</p></div>
+                    <div class="outcome"><strong>Received</strong><p>The same DM is edited to â€œReport received by Discordâ€; server snapshot and icon remain.</p></div>
+                    <div class="outcome"><strong>Actioned</strong><p>The same DM turns green, is titled â€œDiscord took action,â€ and receives the accepted reply.</p></div>
                     <div class="outcome"><strong>Closed or rejected</strong><p>The same DM turns grey/red and receives the matching denial reply.</p></div>
                   </div>
                   <div class="dm-reply">Example final reply: Your DSA report review request was denied by Discord.</div>
@@ -1611,7 +1611,7 @@
         <code class="command-name">/admin key create</code>
         <ol class="flow">
           <li><strong>Admin check</strong>Credits, count, optional expiry.</li>
-          <li><strong>Create 1–20 keys</strong>Store hashes; plaintext shown once.</li>
+          <li><strong>Create 1â€“20 keys</strong>Store hashes; plaintext shown once.</li>
           <li><strong>Access keys created</strong>Green embed containing plaintext keys.</li>
         </ol>
       </article>
@@ -1670,27 +1670,27 @@
   </section>
 
   <section aria-labelledby="command-diff-heading">
-    <h2 id="command-diff-heading">Every command: current UI → planned verbose UI</h2>
+    <h2 id="command-diff-heading">Every command: current UI â†’ planned verbose UI</h2>
     <p class="lede">
       Complete inventory: 16 slash subcommands plus the <strong>Report Message</strong> context
-      command. “Planned” describes documentation and proposed presentation only. Amber labels mark
+      command. â€œPlannedâ€ describes documentation and proposed presentation only. Amber labels mark
       proposals that would require an explicit runtime interaction change before implementation.
     </p>
     <div class="command-diff-list">
       <article class="command-diff" id="diff-cmd-report-message" data-command-id="RM">
         <h3><span class="node-id">RM</span> /report message</h3>
         <div class="diff-grid">
-          <div class="diff-panel diff-current" id="diff-cmd-report-message-current"><h4>Current</h4><p>Inline link/country/AI options → Report Message modal → AI/manual branch → orange review → status embed → private lifecycle DM.</p></div>
+          <div class="diff-panel diff-current" id="diff-cmd-report-message-current"><h4>Current</h4><p>Inline link/country/AI options â†’ Report Message modal â†’ AI/manual branch â†’ orange review â†’ status embed â†’ private lifecycle DM.</p></div>
           <div class="diff-panel diff-planned" id="diff-cmd-report-message-planned"><h4>Planned</h4><ul><li>Summarize accepted link, privacy, country source, and drafting mode.</li><li>Explain brief versus exact final text.</li><li>Review by Target, Evidence, Country, Exact text, Credit, and Next step.</li><li>Explain submitted versus received versus decided.</li></ul></div>
           <div class="diff-panel diff-why" id="diff-cmd-report-message-why"><h4>Why</h4><p>Users should know precisely when a real report begins and what Discord will receive before they spend a credit.</p></div>
         </div>
       </article>
 
       <article class="command-diff" id="diff-cmd-context-report-message" data-command-id="RMC">
-        <h3><span class="node-id">RMC</span> Apps → Report Message</h3>
+        <h3><span class="node-id">RMC</span> Apps â†’ Report Message</h3>
         <div class="diff-grid">
           <div class="diff-panel diff-current" id="diff-cmd-context-report-message-current"><h4>Current</h4><p>Captures the selected message URL and snapshot, then enters the shared message-report modal and downstream flow.</p></div>
-          <div class="diff-panel diff-planned" id="diff-cmd-context-report-message-planned"><h4>Planned</h4><ul><li>Preview author, channel, timestamp, and URL.</li><li>Label the snapshot as automatically captured evidence.</li><li>Say that only reason/details remain and nothing has been submitted.</li><li>Cross-reference RMC-03 → RM-02.</li></ul></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-context-report-message-planned"><h4>Planned</h4><ul><li>Preview author, channel, timestamp, and URL.</li><li>Label the snapshot as automatically captured evidence.</li><li>Say that only reason/details remain and nothing has been submitted.</li><li>Cross-reference RMC-03 â†’ RM-02.</li></ul></div>
           <div class="diff-panel diff-why" id="diff-cmd-context-report-message-why"><h4>Why</h4><p>The entry surface differs from the slash command even though it shares the later flow.</p></div>
         </div>
       </article>
@@ -1699,7 +1699,7 @@
         <h3><span class="node-id">RP</span> /report profile</h3>
         <div class="diff-grid">
           <div class="diff-panel diff-current" id="diff-cmd-report-profile-current"><h4>Current</h4><p>Resolves the raw user ID, shows found/failed confirmation, opens Report Profile, then review/status/DM.</p></div>
-          <div class="diff-panel diff-planned" id="diff-cmd-report-profile-planned"><h4>Planned</h4><ul><li>Emphasize “this exact account” with resolved identity and snapshot time.</li><li>Explain Photos, Name, and Descriptors with examples.</li><li>Give safe next actions after lookup failure.</li><li>Separate identity, surfaces, country, text, credit, and next step.</li></ul></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-report-profile-planned"><h4>Planned</h4><ul><li>Emphasize â€œthis exact accountâ€ with resolved identity and snapshot time.</li><li>Explain Photos, Name, and Descriptors with examples.</li><li>Give safe next actions after lookup failure.</li><li>Separate identity, surfaces, country, text, credit, and next step.</li></ul></div>
           <div class="diff-panel diff-why" id="diff-cmd-report-profile-why"><h4>Why</h4><p>Wrong-target reporting is the largest profile-flow comprehension risk.</p></div>
         </div>
       </article>
@@ -1726,7 +1726,7 @@
         <h3><span class="node-id">RST</span> /reports status</h3>
         <div class="diff-grid">
           <div class="diff-panel diff-current" id="diff-cmd-reports-status-current"><h4>Current</h4><p>Fetches an owned/admin-visible report and returns the complete type-specific status/history embed plus eligible Retry.</p></div>
-          <div class="diff-panel diff-planned" id="diff-cmd-reports-status-planned"><h4>Planned</h4><ul><li>Add Current phase, What this means, What happens next, Notification method, and Final/non-final.</li><li>Group Target, Content, Processing, and References.</li><li>Distinguish the internal report ID from Discord’s reference.</li></ul></div>
+          <div class="diff-panel diff-planned" id="diff-cmd-reports-status-planned"><h4>Planned</h4><ul><li>Add Current phase, What this means, What happens next, Notification method, and Final/non-final.</li><li>Group Target, Content, Processing, and References.</li><li>Distinguish the internal report ID from Discordâ€™s reference.</li></ul></div>
           <div class="diff-panel diff-why" id="diff-cmd-reports-status-why"><h4>Why</h4><p>A status label alone does not explain whether the user is waiting for receipt or a decision.</p></div>
         </div>
       </article>
@@ -1770,9 +1770,9 @@
       <article class="command-diff" id="diff-cmd-admin-key-create" data-command-id="AKC">
         <h3><span class="node-id">AKC</span> /admin key create</h3>
         <div class="diff-grid">
-          <div class="diff-panel diff-current" id="diff-cmd-admin-key-create-current"><h4>Current</h4><p>Creates 1–20 hashed keys and displays plaintext once in a green embed.</p></div>
+          <div class="diff-panel diff-current" id="diff-cmd-admin-key-create-current"><h4>Current</h4><p>Creates 1â€“20 hashed keys and displays plaintext once in a green embed.</p></div>
           <div class="diff-panel diff-planned" id="diff-cmd-admin-key-create-planned"><h4>Planned</h4><ul><li>Summarize count, credits per key, total credits, expiry, creator, and creation time.</li><li>Prominently warn that plaintext is visible once and must be stored securely.</li></ul></div>
-          <div class="diff-panel diff-why" id="diff-cmd-admin-key-create-why"><h4>Why</h4><p>The one-time secret display is the command’s most important operational consequence.</p></div>
+          <div class="diff-panel diff-why" id="diff-cmd-admin-key-create-why"><h4>Why</h4><p>The one-time secret display is the commandâ€™s most important operational consequence.</p></div>
         </div>
       </article>
 
@@ -1854,7 +1854,7 @@
           <div class="field wide"><div class="field-name">Reason</div><div class="field-value">Semantic reason + selected profile elements.</div></div>
           <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Observed server and final report text, split across fields if needed.</div></div>
         </div>
-        <div class="embed-footer">000/512 characters • Review carefully before submitting</div>
+        <div class="embed-footer">000/512 characters â€¢ Review carefully before submitting</div>
         <div class="chips" style="margin-top: 12px">
           <span class="button danger">Submit DSA Report</span>
           <span class="button primary">Refine</span>
@@ -1876,7 +1876,7 @@
           <div class="field wide"><div class="field-name">Reported details</div><div class="field-value">Submitted account name, capture time, and final context.</div></div>
           <div class="field"><div class="field-name">References</div><div class="field-value">Internal ID, Discord ID, predecessor/successor.</div></div>
           <div class="field"><div class="field-name">Dates</div><div class="field-value">Created and updated relative timestamps.</div></div>
-          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created → submitted → received → outcome, grouped by retry attempt.</div></div>
+          <div class="field wide"><div class="field-name">History</div><div class="field-value">Created â†’ submitted â†’ received â†’ outcome, grouped by retry attempt.</div></div>
         </div>
         <div class="embed-footer">Full ID: generated-name-and-unique-suffix</div>
       </article>
@@ -1907,7 +1907,7 @@
 
       <article class="embed color-blurple">
         <div class="embed-title">Choose the applicable country</div>
-        <div class="embed-description">Choose Auto for DeepSeek selection or select a supported country override. Manual reports require an explicit country.</div>
+        <div class="embed-description">Choose Auto for AI selection or select a supported country override. Manual reports require an explicit country.</div>
         <div class="embed-fields">
           <div class="field wide"><div class="field-name">Select menu</div><div class="field-value">24 choices per page, including Auto when AI is enabled.</div></div>
         </div>
@@ -2014,9 +2014,9 @@
           <div class="window-bar"><strong>Refine AI report</strong><span>Same AI conversation</span></div>
           <div class="modal-body">
             <div class="modal-field">
-              <label>What should DeepSeek change?</label>
+              <label>What should AI change?</label>
               <div class="mock-control textarea">Make the explanation clearer and focus on the selected unlawful element.</div>
-              <span class="modal-help">This continues the existing AI conversation. Required, 1–512 characters.</span>
+              <span class="modal-help">This continues the existing AI conversation. Required, 1â€“512 characters.</span>
             </div>
           </div>
           <div class="modal-actions">
@@ -2032,13 +2032,13 @@
           <div class="window-bar"><strong>Edit report manually</strong><span>Final text editor</span></div>
           <div class="modal-body">
             <div class="modal-field">
-              <label>AI draft to repair — copy from below</label>
+              <label>AI draft to repair â€” copy from below</label>
               <div class="mock-control textarea">The current AI draft is displayed here. If it is too long, the display is truncated with a notice.</div>
             </div>
             <div class="modal-field">
               <label>Final report</label>
               <div class="mock-control textarea">Review or replace the draft with the exact report to submit.</div>
-              <span class="modal-help">Required, 1–512 characters. A candidate at or below the limit is pre-filled.</span>
+              <span class="modal-help">Required, 1â€“512 characters. A candidate at or below the limit is pre-filled.</span>
             </div>
           </div>
           <div class="modal-actions">
@@ -2055,9 +2055,9 @@
           <div class="response-body">
             <article class="embed color-blurple">
               <div class="embed-title">Choose the applicable country</div>
-              <div class="embed-description">Choose Auto to let DeepSeek select a supported country based on legal relevance, or choose an explicit override.</div>
+              <div class="embed-description">Choose Auto to let AI select a supported country based on legal relevance, or choose an explicit override.</div>
               <div class="embed-fields">
-                <div class="field wide"><div class="field-name">Country select</div><div class="field-value">One required value • 24 choices per page • Auto omitted for manual reports.</div></div>
+                <div class="field wide"><div class="field-name">Country select</div><div class="field-value">One required value â€¢ 24 choices per page â€¢ Auto omitted for manual reports.</div></div>
               </div>
               <div class="embed-footer">Page 1 of 2</div>
               <div class="chips" style="margin-top: 12px">
@@ -2079,9 +2079,9 @@
               <div class="embed-description"><strong>Failed</strong></div>
               <div class="embed-fields">
                 <div class="field wide"><div class="field-name">Latest error</div><div class="field-value">Failure description<br>Retry available: <strong>Yes</strong></div></div>
-                <div class="field wide"><div class="field-name">History</div><div class="field-value">Report created → Processing failed.</div></div>
+                <div class="field wide"><div class="field-name">History</div><div class="field-value">Report created â†’ Processing failed.</div></div>
               </div>
-              <div class="embed-footer">Report 2 of 4 • Full internal report ID</div>
+              <div class="embed-footer">Report 2 of 4 â€¢ Full internal report ID</div>
               <div class="chips" style="margin-top: 12px">
                 <span class="button">Previous</span>
                 <span class="button primary">Next</span>

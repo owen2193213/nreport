@@ -22,7 +22,6 @@ describe("bot configuration", () => {
   it("requires an OpenRouter key and defaults to Qwen 3.5 35B", () => {
     const config = loadBotConfig(environment());
     expect(config.openRouterModel).toBe("qwen/qwen3.5-35b-a3b");
-    expect(config.openRouterWriterReasoningEffort).toBe("high");
     const missing = environment();
     delete missing.OPENROUTER_API_KEY;
     expect(() => loadBotConfig(missing)).toThrow(/OPENROUTER_API_KEY is required/);
@@ -32,20 +31,5 @@ describe("bot configuration", () => {
     expect(
       loadBotConfig({ ...environment(), OPENROUTER_MODEL: "qwen/qwen-custom" }).openRouterModel
     ).toBe("qwen/qwen-custom");
-  });
-
-  it("validates the configurable writer reasoning effort", () => {
-    expect(
-      loadBotConfig({
-        ...environment(),
-        OPENROUTER_WRITER_REASONING_EFFORT: "high"
-      }).openRouterWriterReasoningEffort
-    ).toBe("high");
-    expect(() =>
-      loadBotConfig({
-        ...environment(),
-        OPENROUTER_WRITER_REASONING_EFFORT: "extreme"
-      })
-    ).toThrow(/OPENROUTER_WRITER_REASONING_EFFORT/);
   });
 });

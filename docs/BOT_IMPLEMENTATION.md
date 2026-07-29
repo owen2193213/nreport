@@ -156,8 +156,10 @@ different country. Manual edits become the current assistant answer so a later r
 continues from that text. Repair also
 continues the same conversation, performs no search, and is attempted only once.
 
-Writing, refinement, and repair use OpenRouter reasoning with
-`OPENROUTER_WRITER_REASONING_EFFORT` (default `high`) and exclude reasoning text from responses.
+Research uses high OpenRouter reasoning without an explicit completion-token cap. Initial writing
+uses low reasoning, while refinement and repair use minimal reasoning. Report-producing calls have
+a 2,048-token completion budget and exclude reasoning text from responses; the reviewed report
+itself remains limited to 512 characters.
 Reasoning, input/output tokens, search requests, request counts, and OpenRouter-reported cost are
 accumulated per user in `bot_users` and displayed by `/access status`. Safe logs use a keyed
 pseudonymous actor value plus stage, model, latency, usage, cost, and failure category.

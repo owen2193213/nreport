@@ -43,7 +43,6 @@ async function main(): Promise<void> {
     config.openRouterModel,
     countries,
     {
-      reasoningEffort: config.openRouterWriterReasoningEffort,
       recordUsage: (userId, usage) => database.recordAiUsage(userId, usage)
     }
   );

@@ -111,7 +111,6 @@ function fixedWriter(
   recordUsage: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined)
 ): ReportWriter {
   return new ReportWriter("secret", "qwen/qwen3.5-35b-a3b", COUNTRIES, {
-    reasoningEffort: "high",
     recordUsage: recordUsage as unknown as (userId: string, usage: AiUsage) => Promise<void>,
     request: request as unknown as typeof globalThis.fetch
   });
@@ -397,7 +396,7 @@ describe("OpenRouter report writer", () => {
     expect(result.report).toBe("Concise reviewed report.");
   });
 
-  it("writes with configured high reasoning and a natural inline law reference", async () => {
+  it("writes with bounded low reasoning and a natural inline law reference", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion())
@@ -405,11 +404,13 @@ describe("OpenRouter report writer", () => {
     const result = await fixedWriter(request).generate(profileDraft(), ACTOR);
     expect(result.report).toContain(LAW_REFERENCE);
     const writing = requestBody<{
+      max_tokens: number;
       provider: Record<string, unknown>;
       reasoning: { effort: string; exclude: boolean };
       response_format: unknown;
     }>(request, 1);
-    expect(writing.reasoning).toEqual({ effort: "high", exclude: true });
+    expect(writing.max_tokens).toBe(2_048);
+    expect(writing.reasoning).toEqual({ effort: "low", exclude: true });
     expect(writing.provider).toEqual({
       zdr: true,
       data_collection: "deny",
@@ -446,7 +447,14 @@ describe("OpenRouter report writer", () => {
 
     const refined = await writer.refine(draft, "Make it clearer.", ACTOR);
     expect(refined.report).toContain("Refined report");
-    const body = requestBody<{ messages: unknown[]; response_format: unknown }>(request, 2);
+    const body = requestBody<{
+      max_tokens: number;
+      messages: unknown[];
+      reasoning: { effort: string; exclude: boolean };
+      response_format: unknown;
+    }>(request, 2);
+    expect(body.max_tokens).toBe(2_048);
+    expect(body.reasoning).toEqual({ effort: "minimal", exclude: true });
     expect(body.response_format).toEqual({ type: "json_object" });
     expect(JSON.stringify(body.messages)).toContain("Make it clearer.");
     expect(JSON.stringify(body.messages)).toContain(initial.report);
@@ -498,7 +506,13 @@ describe("OpenRouter report writer", () => {
     });
     const refined = await writer.refine(draft, "Make it shorter.", ACTOR);
     expect(refined.report).toContain("Repaired refinement");
-    const repair = requestBody<{ messages: unknown[] }>(request, 3);
+    const repair = requestBody<{
+      max_tokens: number;
+      messages: unknown[];
+      reasoning: { effort: string; exclude: boolean };
+    }>(request, 3);
+    expect(repair.max_tokens).toBe(2_048);
+    expect(repair.reasoning).toEqual({ effort: "minimal", exclude: true });
     const messages = JSON.stringify(repair.messages);
     expect(messages).toContain("Make it shorter.");
     expect(messages).toContain(overlength);

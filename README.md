@@ -95,8 +95,8 @@ uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypt
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
 the global commands automatically. Set `OPENROUTER_API_KEY` for the bot-side report writer;
 `OPENROUTER_MODEL` defaults to `qwen/qwen3.5-35b-a3b`.
-`OPENROUTER_WRITER_REASONING_EFFORT` defaults to `high`. Combined Auto-country/legal research
-uses OpenRouter's deprecated `web` plugin with Exa and the complete text report context. Each
+Combined Auto-country/legal research uses OpenRouter's deprecated `web` plugin with Exa and the
+complete text report context. Each
 generation makes one research completion, with up to five results for Auto country selection or
 three for a fixed country. Search-count metadata and HTTPS source annotations are
 optional; a report is accepted from usable structured legal research without requiring either.

@@ -76,7 +76,7 @@ The bot needs only these reporting-service variables:
 DSA_API_BASE_URL=https://discord-dsa-production.up.railway.app
 DSA_API_KEY=<same API_KEY configured on the Railway API service>
 OPENROUTER_API_KEY=<bot-only OpenRouter key>
-OPENROUTER_MODEL=qwen/qwen3.5-35b-a3b
+OPENROUTER_MODEL=minimax/minimax-m2.7
 ```
 
 Keep both API keys in the bot host's secret manager. Never place them in slash-command
@@ -664,10 +664,9 @@ may remain as text metadata.
 
 Refine continues the encrypted conversation and reuses the existing research without searching.
 Repair continues the same conversation without search and receives one attempt. Regenerate reruns
-combined research, and changing country clears the conversation. Research uses high reasoning;
-initial writing uses low reasoning; refinement and repair use minimal reasoning. Report-producing
-calls have a 2,048-token completion budget while final report text remains limited to 512
-characters.
+combined research, and changing country clears the conversation. MiniMax M2.7 uses mandatory
+reasoning without an effort-level override. Report-producing calls have a 4,096-token completion
+budget while final report text remains limited to 512 characters.
 
 The optional `dont-use-ai` boolean defaults to `false`. When true, the reporter supplies the final
 maximum-512-character text, the bot makes no OpenRouter call, and AI-only review controls are

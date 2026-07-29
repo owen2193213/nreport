@@ -11,11 +11,9 @@ import type {
 } from "./types.js";
 
 const MAX_REPORT_LENGTH = 512;
-const REPORT_COMPLETION_TOKEN_LIMIT = 2_048;
+const REPORT_COMPLETION_TOKEN_LIMIT = 4_096;
 const WORKFLOW_TIMEOUT_MS = 90_000;
 const REQUEST_TIMEOUT_MS = 45_000;
-const WRITE_REASONING_EFFORT = "low";
-const FOLLOWUP_REASONING_EFFORT = "minimal";
 const WRITER_SYSTEM_PROMPT = [
   "Task: Write or revise a concise, factual EU Digital Services Act report for Discord.",
   "Use the supplied conversation, evidence, and research.",
@@ -607,7 +605,7 @@ export class ReportWriter {
           images
         ),
         max_tokens: REPORT_COMPLETION_TOKEN_LIMIT,
-        reasoning: { effort: FOLLOWUP_REASONING_EFFORT, exclude: true },
+        reasoning: { enabled: true, exclude: true },
         response_format: jsonObjectResponseFormat(),
         provider: this.provider()
       },
@@ -715,7 +713,7 @@ export class ReportWriter {
             max_results: autoCountry ? 5 : 3
           }
         ],
-        reasoning: { effort: "high", exclude: true },
+        reasoning: { enabled: true, exclude: true },
         response_format: jsonObjectResponseFormat(),
         provider: this.researchProvider(),
         stream: false
@@ -808,10 +806,7 @@ export class ReportWriter {
           images
         ),
         max_tokens: REPORT_COMPLETION_TOKEN_LIMIT,
-        reasoning: {
-          effort: stage === "write" ? WRITE_REASONING_EFFORT : FOLLOWUP_REASONING_EFFORT,
-          exclude: true
-        },
+        reasoning: { enabled: true, exclude: true },
         response_format: jsonObjectResponseFormat(),
         provider: this.provider()
       },
@@ -854,13 +849,17 @@ export class ReportWriter {
     return {
       zdr: true,
       data_collection: "deny",
-      require_parameters: true
+      require_parameters: true,
+      sort: "price",
+      preferred_min_throughput: { p50: 100 }
     };
   }
 
   private researchProvider() {
     return {
-      data_collection: "deny"
+      data_collection: "deny",
+      sort: "price",
+      preferred_min_throughput: { p50: 100 }
     };
   }
 

@@ -55,7 +55,7 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
 5. In one structured OpenRouter request, resolve Auto country, category, and explanation when
    needed and research a supporting law. During this work the ephemeral response is edited through
    Researching, Research complete, and Writing stages with the current selections in code blocks.
-   Then ask `qwen/qwen3.5-35b-a3b` to write a factual report of at most 512 characters that naturally
+   Then ask `minimax/minimax-m2.7` to write a factual report of at most 512 characters that naturally
    names the researched law or provision. Show an ephemeral review with submit, refine, regenerate,
    country-change, manual-edit, and cancel controls.
 6. Atomically reserve one credit and create the API report with the interaction ID.
@@ -84,7 +84,7 @@ attempts for that tracked report; `/reports` remains available.
 
 The bot calls OpenRouter directly; the API and low-level Discord client never receive the
 reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KEY` is required and
-`OPENROUTER_MODEL` defaults to `qwen/qwen3.5-35b-a3b`. The same configured model handles research,
+`OPENROUTER_MODEL` defaults to `minimax/minimax-m2.7`. The same configured model handles research,
 writing, refinement, and repair. Provider routing requires zero data retention,
 denies provider data collection, and requires JSON-mode output support. The bot instructs the model
 to return the required object shape and validates it locally. The complete generation workflow is
@@ -156,10 +156,12 @@ different country. Manual edits become the current assistant answer so a later r
 continues from that text. Repair also
 continues the same conversation, performs no search, and is attempted only once.
 
-Research uses high OpenRouter reasoning without an explicit completion-token cap. Initial writing
-uses low reasoning, while refinement and repair use minimal reasoning. Report-producing calls have
-a 2,048-token completion budget and exclude reasoning text from responses; the reviewed report
-itself remains limited to 512 characters.
+MiniMax M2.7 requires reasoning but does not advertise effort-level or reasoning-budget controls,
+so every stage enables reasoning without an effort override and excludes reasoning text from
+responses. Report-producing calls have a 4,096-token completion budget; the reviewed report itself
+remains limited to 512 characters. Provider routing sorts by price while preferring endpoints with
+median throughput of at least 100 tokens/second, balancing cost and speed without removing slower
+fallbacks.
 Reasoning, input/output tokens, search requests, request counts, and OpenRouter-reported cost are
 accumulated per user in `bot_users` and displayed by `/access status`. Safe logs use a keyed
 pseudonymous actor value plus stage, model, latency, usage, cost, and failure category.
@@ -410,7 +412,7 @@ uses the same operation. Both surfaces update to the successor's new report card
 
 ### Decision log
 
-- Chosen: use `qwen/qwen3.5-35b-a3b` for research, writing, refinement, and repair. A single
+- Chosen: use `minimax/minimax-m2.7` for research, writing, refinement, and repair. A single
   configurable model keeps prompts, usage accounting, deployment configuration, and failure
   behavior consistent.
 - Chosen: temporarily use OpenRouter's deprecated `web` plugin for one-shot Exa research because it

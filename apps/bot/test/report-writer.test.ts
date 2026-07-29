@@ -110,7 +110,7 @@ function fixedWriter(
   request: ReturnType<typeof vi.fn>,
   recordUsage: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined)
 ): ReportWriter {
-  return new ReportWriter("secret", "qwen/qwen3.5-35b-a3b", COUNTRIES, {
+  return new ReportWriter("secret", "minimax/minimax-m2.7", COUNTRIES, {
     recordUsage: recordUsage as unknown as (userId: string, usage: AiUsage) => Promise<void>,
     request: request as unknown as typeof globalThis.fetch
   });
@@ -212,7 +212,11 @@ describe("OpenRouter report writer", () => {
     expect(prompt).toContain("Reporter explanation: Auto");
     expect(prompt).toContain("sub_other_hate_speech");
     expect(research.response_format).toEqual({ type: "json_object" });
-    expect(research.provider).toEqual({ data_collection: "deny" });
+    expect(research.provider).toEqual({
+      data_collection: "deny",
+      sort: "price",
+      preferred_min_throughput: { p50: 100 }
+    });
     expect(prompt).toContain("reportReason");
     expect(prompt).toContain("reportType");
   });
@@ -396,7 +400,7 @@ describe("OpenRouter report writer", () => {
     expect(result.report).toBe("Concise reviewed report.");
   });
 
-  it("writes with bounded low reasoning and a natural inline law reference", async () => {
+  it("writes with mandatory reasoning headroom and a natural inline law reference", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion())
@@ -406,15 +410,17 @@ describe("OpenRouter report writer", () => {
     const writing = requestBody<{
       max_tokens: number;
       provider: Record<string, unknown>;
-      reasoning: { effort: string; exclude: boolean };
+      reasoning: { enabled: boolean; exclude: boolean };
       response_format: unknown;
     }>(request, 1);
-    expect(writing.max_tokens).toBe(2_048);
-    expect(writing.reasoning).toEqual({ effort: "low", exclude: true });
+    expect(writing.max_tokens).toBe(4_096);
+    expect(writing.reasoning).toEqual({ enabled: true, exclude: true });
     expect(writing.provider).toEqual({
       zdr: true,
       data_collection: "deny",
-      require_parameters: true
+      require_parameters: true,
+      sort: "price",
+      preferred_min_throughput: { p50: 100 }
     });
     expect(JSON.stringify(writing.response_format)).not.toContain("lawCitation");
     const messages = JSON.stringify(
@@ -450,11 +456,11 @@ describe("OpenRouter report writer", () => {
     const body = requestBody<{
       max_tokens: number;
       messages: unknown[];
-      reasoning: { effort: string; exclude: boolean };
+      reasoning: { enabled: boolean; exclude: boolean };
       response_format: unknown;
     }>(request, 2);
-    expect(body.max_tokens).toBe(2_048);
-    expect(body.reasoning).toEqual({ effort: "minimal", exclude: true });
+    expect(body.max_tokens).toBe(4_096);
+    expect(body.reasoning).toEqual({ enabled: true, exclude: true });
     expect(body.response_format).toEqual({ type: "json_object" });
     expect(JSON.stringify(body.messages)).toContain("Make it clearer.");
     expect(JSON.stringify(body.messages)).toContain(initial.report);
@@ -509,10 +515,10 @@ describe("OpenRouter report writer", () => {
     const repair = requestBody<{
       max_tokens: number;
       messages: unknown[];
-      reasoning: { effort: string; exclude: boolean };
+      reasoning: { enabled: boolean; exclude: boolean };
     }>(request, 3);
-    expect(repair.max_tokens).toBe(2_048);
-    expect(repair.reasoning).toEqual({ effort: "minimal", exclude: true });
+    expect(repair.max_tokens).toBe(4_096);
+    expect(repair.reasoning).toEqual({ enabled: true, exclude: true });
     const messages = JSON.stringify(repair.messages);
     expect(messages).toContain("Make it shorter.");
     expect(messages).toContain(overlength);

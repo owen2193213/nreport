@@ -19,9 +19,9 @@ function environment(): NodeJS.ProcessEnv {
 }
 
 describe("bot configuration", () => {
-  it("requires an OpenRouter key and defaults to Qwen 3.5 35B", () => {
+  it("requires an OpenRouter key and defaults to MiniMax M2.7", () => {
     const config = loadBotConfig(environment());
-    expect(config.openRouterModel).toBe("qwen/qwen3.5-35b-a3b");
+    expect(config.openRouterModel).toBe("minimax/minimax-m2.7");
     const missing = environment();
     delete missing.OPENROUTER_API_KEY;
     expect(() => loadBotConfig(missing)).toThrow(/OPENROUTER_API_KEY is required/);

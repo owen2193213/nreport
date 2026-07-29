@@ -94,7 +94,7 @@ Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. 
 uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
 the global commands automatically. Set `OPENROUTER_API_KEY` for the bot-side report writer;
-`OPENROUTER_MODEL` defaults to `qwen/qwen3.5-35b-a3b`.
+`OPENROUTER_MODEL` defaults to `minimax/minimax-m2.7`.
 Combined Auto-country/legal research uses OpenRouter's deprecated `web` plugin with Exa and the
 complete text report context. Each
 generation makes one research completion, with up to five results for Auto country selection or

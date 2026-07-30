@@ -137,6 +137,41 @@ export class UndiciJsonTransport implements JsonTransport {
     return JSON.stringify(this.cookieJar.serializeSync());
   }
 
+  public async resolveRedirect(urlString: string): Promise<string> {
+    const url = new URL(urlString);
+    const headers = { ...this.defaultHeaders };
+    const cookie = await this.cookieJar.getCookieString(url.toString());
+    if (cookie.length > 0) headers.cookie = cookie;
+
+    let response: Awaited<ReturnType<typeof request>>;
+    try {
+      response = await request(url, {
+        method: "GET",
+        headers,
+        ...(this.dispatcher === undefined ? {} : { dispatcher: this.dispatcher }),
+        headersTimeout: this.timeoutMs,
+        bodyTimeout: this.timeoutMs
+      });
+    } catch (error) {
+      throw new DiscordDsaNetworkError(`Network request failed for GET ${url.pathname}.`, {
+        cause: error
+      });
+    }
+
+    await response.body.text();
+    if (response.statusCode < 300 || response.statusCode >= 400) {
+      throw new DiscordDsaHttpError(
+        `Discord returned HTTP ${response.statusCode} for GET ${url.pathname}.`,
+        response.statusCode
+      );
+    }
+    const location = headerValues(response.headers.location)[0];
+    if (!location) {
+      throw new DiscordDsaError("Discord review link redirect did not include a location.");
+    }
+    return new URL(location, url).toString();
+  }
+
   public async requestJson<T>(requestOptions: JsonRequest): Promise<T> {
     const url = new URL(requestOptions.path.replace(/^\//, ""), this.baseUrl);
     const headers = {

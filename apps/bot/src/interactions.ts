@@ -54,6 +54,9 @@ import {
   buildManualReportModal,
   buildRefinementModal,
   buildReportModal,
+  buildReportSetupConfirmation,
+  buildReportSetupModal,
+  buildResubmissionRewriteModal,
   buildReview,
   buildWriterProgress,
   buildWriterFailure,
@@ -69,12 +72,6 @@ import {
 
 const EPHEMERAL = MessageFlags.Ephemeral;
 const SNOWFLAKE = /^\d{15,22}$/;
-
-export function reportCountryFields(country: string | undefined): Partial<ReportDraft> {
-  if (country === "AUTO") return { countrySelection: "auto" };
-  if (country) return { country, countrySelection: "override" };
-  return {};
-}
 
 export interface InteractionHandlerOptions {
   api: DsaApi;
@@ -233,7 +230,10 @@ export class InteractionHandler {
     const report = await this.api.report(reportId);
     this.assertOwner(report, actorUserId);
     await this.requireRetryAccess(actorUserId);
-    if (!(report.status === "failed" && report.retryable)) {
+    if (
+      !(report.status === "failed" && report.retryable) &&
+      !report.resubmittable
+    ) {
       throw new AccessError("not_retryable", "This report is not currently safe to retry.");
     }
     const ownerUserId = report.submitterDiscordUserId;
@@ -329,7 +329,7 @@ export class InteractionHandler {
     draft: ReportDraft
   ): Promise<void> {
     const draftId = await this.prepareDraft(interaction, draft);
-    if (draftId) await interaction.showModal(buildReportModal(draftId, draft));
+    if (draftId) await interaction.showModal(buildReportSetupModal(draftId, draft));
   }
 
   private async prepareDraft(
@@ -338,6 +338,7 @@ export class InteractionHandler {
   ): Promise<string | null> {
     await this.requireReportAccess(interaction.user.id);
     const access = await this.database.getAccess(interaction.user.id);
+    draft.sendToDms ??= true;
     if (!draft.countrySelection) {
       if (draft.country) {
         draft.countrySelection = "override";
@@ -358,12 +359,22 @@ export class InteractionHandler {
     return this.saveDraft(interaction.user.id, draft);
   }
 
-  private countryOption(interaction: ChatInputCommandInteraction): string | undefined {
-    const country = interaction.options.getString("country")?.trim().toUpperCase();
-    if (country !== undefined && country !== "AUTO" && !this.countries.includes(country)) {
-      throw new AccessError("invalid_country", "Choose a country returned by autocomplete.");
+  private async reportSetupConfirmation(
+    userId: string,
+    draftId: string,
+    draft: ReportDraft
+  ): Promise<ReturnType<typeof buildReportSetupConfirmation>> {
+    if (draft.flow !== "user_urf" || !draft.profileTargetRaw) {
+      return buildReportSetupConfirmation(draftId, draft);
     }
-    return country;
+    const resolved = await this.profileResolver.resolve(draft.profileTargetRaw);
+    if (resolved) {
+      draft.reportedUsername = resolved.username;
+      draft.reportedUserId = resolved.userId;
+      draft.reportedUserSnapshot = resolved;
+      await this.replaceDraft(userId, draftId, draft);
+    }
+    return buildProfileTargetConfirmation(draftId, draft);
   }
 
   private async snapshotFor(report: ReportDetail, userId: string) {
@@ -431,15 +442,11 @@ export class InteractionHandler {
 
   private async handleReportCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     const subcommand = interaction.options.getSubcommand();
-    const country = this.countryOption(interaction);
-    const aiDisabled = interaction.options.getBoolean?.("dont-use-ai") ?? false;
     if (subcommand === "message") {
       const messageUrl = interaction.options.getString("message-link", true).trim();
       await this.startDraft(interaction, {
         flow: "message_urf",
-        messageUrl,
-        aiDisabled,
-        ...reportCountryFields(country)
+        messageUrl
       });
       return;
     }
@@ -457,73 +464,34 @@ export class InteractionHandler {
       }
       const draft: ReportDraft = {
         flow: "user_urf",
-        aiDisabled,
         profileTargetRaw: target,
-        ...reportCountryFields(country),
         ...(serverId ? { reportedUserServerId: serverId } : {})
       };
-      const draftId = await this.prepareDraft(interaction, draft);
-      if (!draftId) return;
-      await interaction.deferReply({ flags: EPHEMERAL });
-      const resolved = await this.profileResolver.resolve(target, serverId, interaction.guild);
-      if (resolved) {
-        draft.reportedUsername = resolved.username;
-        draft.reportedUserId = resolved.userId;
-        draft.reportedUserSnapshot = resolved;
-        await this.replaceDraft(interaction.user.id, draftId, draft);
-      }
-      await interaction.editReply({
-        ...buildProfileTargetConfirmation(draftId, draft),
-        allowedMentions: { parse: [] }
-      });
+      await this.startDraft(interaction, draft);
       return;
     }
     const suppliedTarget = interaction.options.getString("server-or-invite")?.trim();
     const guildTarget = interaction.guildId ?? undefined;
     const target = suppliedTarget || guildTarget;
+    if (!target) {
+      throw new AccessError(
+        "missing_server_target",
+        "Enter a server ID or invite when using `/report server` outside a server."
+      );
+    }
     await this.startDraft(interaction, {
       flow: "guild_urf",
-      aiDisabled,
-      ...reportCountryFields(country),
-      ...(target ? { guildIdOrInviteCode: target } : {})
+      guildIdOrInviteCode: target
     });
   }
 
   private async handleReportsCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     const subcommand = interaction.options.getSubcommand();
-    const sendToDms = interaction.options.getBoolean("send-to-dms") ?? false;
     await interaction.deferReply({ flags: EPHEMERAL });
     if (subcommand === "list") {
       const page = await this.reportPage(interaction.user.id, 0);
-      let dmStatus: string | null = null;
-      if (sendToDms) {
-        const { reports } = await this.api.reportsFor(interaction.user.id);
-        const summary = reports[0];
-        if (summary) {
-          const report = await this.api.report(summary.internalReportId);
-          const sent = await this.sendReportDm(
-            interaction.user,
-            report,
-            await this.snapshotFor(report, interaction.user.id)
-          );
-          dmStatus = sent
-            ? "The first report on this page was sent to your DMs."
-            : "I could not send the report to your DMs. Check your privacy settings.";
-        } else {
-          try {
-            await interaction.user.send({
-              embeds: page.embeds,
-              allowedMentions: { parse: [] }
-            });
-            dmStatus = "The empty report-list result was sent to your DMs.";
-          } catch {
-            dmStatus = "I could not send the report list to your DMs. Check your privacy settings.";
-          }
-        }
-      }
       await interaction.editReply({
         ...page,
-        content: dmStatus,
         allowedMentions: { parse: [] }
       });
       return;
@@ -533,17 +501,8 @@ export class InteractionHandler {
     this.assertOwner(report, interaction.user.id);
     if (subcommand === "status") {
       const snapshot = await this.snapshotFor(report, interaction.user.id);
-      const dmSent = sendToDms
-        ? await this.sendReportDm(interaction.user, report, snapshot)
-        : null;
       await interaction.editReply({
-        content:
-          dmSent === null
-            ? null
-            : dmSent
-              ? "The full status log was sent to your DMs."
-              : "I could not send the status log to your DMs. Check your privacy settings.",
-        embeds: [reportEmbed(report, snapshot, { history: "dm_notice" })],
+        embeds: [reportEmbed(report, snapshot, { history: "full" })],
         components: reportRetryComponents(report),
         allowedMentions: { parse: [] }
       });
@@ -559,12 +518,9 @@ export class InteractionHandler {
       retry.trackingId
     );
     await interaction.editReply({
-      content:
-        dmSent
-          ? sendToDms
-            ? "The full retry status log was sent to your DMs."
-            : null
-          : "I could not send the retry status log to your DMs. Check your privacy settings.",
+      content: dmSent
+        ? null
+        : "I could not send the retry status log to your DMs. Check your privacy settings.",
       embeds: [reportEmbed(retried, snapshot, { history: "dm_notice" })],
       components: reportRetryComponents(retried),
       allowedMentions: { parse: [] }
@@ -723,7 +679,7 @@ export class InteractionHandler {
   }
 
   private async handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
-    if (interaction.commandName !== "settings" && interaction.commandName !== "report") return;
+    if (interaction.commandName !== "settings") return;
     const focused = interaction.options.getFocused(true);
     if (focused.name !== "country") return;
     await interaction.respond(matchingCountries(this.countries, String(focused.value)));
@@ -732,6 +688,146 @@ export class InteractionHandler {
   private async handleModal(interaction: ModalSubmitInteraction): Promise<void> {
     const [scope, action, draftId] = customParts(interaction.customId);
     if (!draftId) return;
+    if (scope === "reports" && action === "rewrite") {
+      const report = await this.api.report(draftId);
+      this.assertOwner(report, interaction.user.id);
+      await this.requireRetryAccess(interaction.user.id);
+      if (!report.resubmittable) {
+        throw new AccessError(
+          "not_resubmittable",
+          "This denied report is no longer available for resubmission."
+        );
+      }
+      const instruction = interaction.fields.getTextInputValue("instruction").trim();
+      const details = report.reportedDetails;
+      const draft: ReportDraft = {
+        flow: report.flow,
+        country: report.country,
+        countrySelection: "override",
+        reportType: report.reportType,
+        rewriteRequest: {
+          ...(details.reportReason === undefined
+            ? {}
+            : { previousReportReason: details.reportReason }),
+          ...(details.context === undefined ? {} : { previousContext: details.context }),
+          instruction
+        },
+        resubmitOfReportId: report.internalReportId,
+        sendToDms: true,
+        ...(details.kind === "message"
+          ? { messageUrl: details.messageUrl }
+          : details.kind === "profile"
+            ? {
+                reportedUsername: details.reportedUsername,
+                ...(details.reportedUserId
+                  ? { reportedUserId: details.reportedUserId }
+                  : {}),
+                ...(details.reportedUserSnapshot
+                  ? { reportedUserSnapshot: details.reportedUserSnapshot }
+                  : {}),
+                ...(details.reportedUserServerId
+                  ? { reportedUserServerId: details.reportedUserServerId }
+                  : {}),
+                profileElements: details.profileElements
+              }
+            : {
+                guildIdOrInviteCode: details.guildIdOrInviteCode,
+                guildElements: details.guildElements
+              })
+      };
+      if (draft.flow === "message_urf" && draft.messageUrl) {
+        const snapshot = await this.messageResolver.resolve(draft.messageUrl);
+        if (snapshot) draft.messageSnapshot = snapshot;
+      }
+      if (draft.flow === "guild_urf" && draft.guildIdOrInviteCode) {
+        const stored = await this.database.serverSnapshot(
+          report.internalReportId,
+          interaction.user.id
+        );
+        const snapshot =
+          stored ?? (await this.serverResolver.resolve(draft.guildIdOrInviteCode));
+        if (snapshot) draft.serverSnapshot = snapshot;
+      }
+      const rewriteDraftId = await this.saveDraft(interaction.user.id, draft);
+      await interaction.deferReply({ flags: EPHEMERAL });
+      try {
+        const result = await this.reportWriter.generate(
+          draft,
+          this.aiActor(interaction.user.id),
+          async (progress) => {
+            await interaction.editReply({
+              embeds: [buildWriterProgress(progress)],
+              components: []
+            });
+          }
+        );
+        draft.country = result.country;
+        draft.legalResearch = result.legalResearch;
+        draft.context = result.report;
+        draft.reportReason = result.reportReason;
+        draft.reportType = result.reportType;
+        draft.writerConversation = result.conversation;
+        await this.replaceDraft(
+          interaction.user.id,
+          rewriteDraftId,
+          draft
+        );
+        await interaction.editReply({
+          ...buildReview(rewriteDraftId, draft),
+          allowedMentions: { parse: [] }
+        });
+      } catch (error) {
+        const canManualEdit = await this.preserveWriterCandidate(
+          interaction.user.id,
+          rewriteDraftId,
+          draft,
+          error
+        );
+        await interaction.editReply({
+          ...buildWriterFailure(
+            rewriteDraftId,
+            conciseError(error),
+            "regenerate",
+            canManualEdit
+          ),
+          allowedMentions: { parse: [] }
+        });
+      }
+      return;
+    }
+    if (scope === "report" && action === "setup") {
+      const draft = await this.loadDraft(interaction.user.id, draftId);
+      const preferences = interaction.fields.getCheckboxGroup("preferences");
+      draft.aiDisabled = !preferences.includes("USE_AI");
+      draft.sendToDms = preferences.includes("SEND_DM");
+      const countryMode = interaction.fields.getStringSelectValues("country_mode")[0];
+      if (countryMode === "AUTO") {
+        delete draft.country;
+        draft.countrySelection = "auto";
+      } else if (countryMode !== "DEFAULT" && countryMode !== "CHOOSE") {
+        throw new AccessError("invalid_country", "Choose a valid country option.");
+      }
+      await interaction.deferReply({ flags: EPHEMERAL });
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+      if (countryMode === "CHOOSE" || (draft.aiDisabled && !draft.country)) {
+        await interaction.editReply({
+          ...buildCountryPicker(
+            this.countries,
+            draftId,
+            0,
+            !draft.aiDisabled,
+            "setup-country"
+          ),
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+      await interaction.editReply({
+        ...(await this.reportSetupConfirmation(interaction.user.id, draftId, draft)),
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
     if (scope === "writer" && action === "refine") {
       const draft = await this.loadDraft(interaction.user.id, draftId);
       const instruction = interaction.fields.getTextInputValue("instruction").trim();
@@ -916,7 +1012,9 @@ export class InteractionHandler {
 
   private async handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
     const [scope, action, draftId] = customParts(interaction.customId);
-    if (scope !== "country" || action !== "select" || !draftId) return;
+    if ((scope !== "country" && scope !== "setup-country") || action !== "select" || !draftId) {
+      return;
+    }
     const country = interaction.values[0];
     if (!country || (country !== "AUTO" && !this.countries.includes(country))) {
       throw new AccessError("invalid_country", "Choose a supported country.");
@@ -936,6 +1034,15 @@ export class InteractionHandler {
     delete draft.context;
     delete draft.writerConversation;
     delete draft.legalResearch;
+    if (scope === "setup-country") {
+      await interaction.deferUpdate();
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+      await interaction.editReply({
+        ...(await this.reportSetupConfirmation(interaction.user.id, draftId, draft)),
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
     await this.replaceDraft(interaction.user.id, draftId, draft);
     if (draft.aiDisabled && (!draft.reportType || !draft.reportBrief)) {
       await interaction.showModal(buildReportModal(draftId, draft));
@@ -1017,6 +1124,19 @@ export class InteractionHandler {
       });
       return;
     }
+    if (parts[0] === "reports" && parts[1] === "rewrite" && parts[2]) {
+      const report = await this.api.report(parts[2]);
+      this.assertOwner(report, interaction.user.id);
+      await this.requireRetryAccess(interaction.user.id);
+      if (!report.resubmittable) {
+        throw new AccessError(
+          "not_resubmittable",
+          "This denied report is no longer available for resubmission."
+        );
+      }
+      await interaction.showModal(buildResubmissionRewriteModal(report.internalReportId));
+      return;
+    }
     if (parts[0] === "reports" && parts[1] === "page" && parts[2]) {
       const requestedPage = Number(parts[2]);
       if (!Number.isInteger(requestedPage)) return;
@@ -1034,15 +1154,13 @@ export class InteractionHandler {
       if (draft.flow !== "user_urf" || !draft.profileTargetRaw) return;
       if (action === "retry") {
         await interaction.deferUpdate();
-        const resolved = await this.profileResolver.resolve(
-          draft.profileTargetRaw,
-          draft.reportedUserServerId,
-          interaction.guild
-        );
+        const resolved = await this.profileResolver.resolve(draft.profileTargetRaw);
         if (resolved) {
           draft.reportedUsername = resolved.username;
           draft.reportedUserId = resolved.userId;
           draft.reportedUserSnapshot = resolved;
+        }
+        if (resolved) {
           await this.replaceDraft(interaction.user.id, draftId, draft);
         }
         await interaction.editReply({
@@ -1063,16 +1181,27 @@ export class InteractionHandler {
       await interaction.showModal(buildReportModal(draftId, draft));
       return;
     }
-    if (parts[0] === "country" && parts[1] === "page" && parts[2] && parts[3]) {
+    if (
+      (parts[0] === "country" || parts[0] === "setup-country") &&
+      parts[1] === "page" &&
+      parts[2] &&
+      parts[3]
+    ) {
       const countryDraft = await this.loadDraft(interaction.user.id, parts[2]);
       await interaction.update(
         buildCountryPicker(
           this.countries,
           parts[2],
           Number(parts[3]),
-          !countryDraft.aiDisabled
+          !countryDraft.aiDisabled,
+          parts[0]
         )
       );
+      return;
+    }
+    if (parts[0] === "setup" && parts[1] === "continue" && parts[2]) {
+      const setupDraft = await this.loadDraft(interaction.user.id, parts[2]);
+      await interaction.showModal(buildReportModal(parts[2], setupDraft));
       return;
     }
     if (parts[0] !== "draft" || !parts[1] || !parts[2]) return;
@@ -1165,6 +1294,10 @@ export class InteractionHandler {
     draftId: string,
     draft: ReportDraft
   ): Promise<void> {
+    if (draft.resubmitOfReportId) {
+      await this.submitResubmissionDraft(interaction, draftId, draft);
+      return;
+    }
     await interaction.deferUpdate();
     let tracking: Awaited<ReturnType<BotDatabase["reserveSubmission"]>> | undefined;
     try {
@@ -1185,6 +1318,7 @@ export class InteractionHandler {
         reportType: request.reportType,
         encryptedRequest: encryptJson(request, this.config.dataEncryptionKey),
         ...(draft.serverSnapshot ? { serverSnapshot: draft.serverSnapshot } : {}),
+        dmEnabled: draft.sendToDms !== false,
         adminBypass: shouldBypassReportCredits(
           isAdmin,
           this.config.whitelistEnabled
@@ -1222,12 +1356,15 @@ export class InteractionHandler {
         creditState: creditStateAfterCreation
       });
       await this.database.deleteDraft(interaction.user.id, draftId);
-      const dmSent = await this.sendReportDm(
-        interaction.user,
-        report,
-        draft.serverSnapshot,
-        tracking.id
-      );
+      const dmSent =
+        draft.sendToDms === false
+          ? null
+          : await this.sendReportDm(
+              interaction.user,
+              report,
+              draft.serverSnapshot,
+              tracking.id
+            );
       for (let attempt = 0; attempt < 5; attempt += 1) {
         if (report.status === "submitted" || report.status === "failed") break;
         await delay(2_000);
@@ -1241,10 +1378,15 @@ export class InteractionHandler {
         discordStatus: report.discordStatus
       });
       await interaction.editReply({
-        content: dmSent
-          ? null
-          : "I could not send the full status log to your DMs. Check your privacy settings or use `/reports status`.",
-        embeds: [reportEmbed(report, draft.serverSnapshot, { history: "dm_notice" })],
+        content:
+          dmSent === false
+            ? "I could not send the full status log to your DMs. Check your privacy settings or use `/reports status`."
+            : null,
+        embeds: [
+          reportEmbed(report, draft.serverSnapshot, {
+            history: dmSent === true ? "dm_notice" : "full"
+          })
+        ],
         components: reportRetryComponents(report),
         allowedMentions: { parse: [] }
       });
@@ -1267,6 +1409,82 @@ export class InteractionHandler {
             `${conciseError(error)}\n\nYour submission identity has been preserved and the bot will reconcile it safely.`
           )
         ],
+        components: [],
+        allowedMentions: { parse: [] }
+      });
+    }
+  }
+
+  private async submitResubmissionDraft(
+    interaction: ButtonInteraction,
+    draftId: string,
+    draft: ReportDraft
+  ): Promise<void> {
+    await interaction.deferUpdate();
+    try {
+      const previousReportId = draft.resubmitOfReportId;
+      if (!previousReportId) throw new Error("Resubmission draft has no predecessor.");
+      const previous = await this.api.report(previousReportId);
+      this.assertOwner(previous, interaction.user.id);
+      await this.requireRetryAccess(interaction.user.id);
+      if (!previous.resubmittable) {
+        throw new AccessError(
+          "not_resubmittable",
+          "This denied report is no longer available for resubmission."
+        );
+      }
+      const request = draftToCreateInput(draft, interaction.user.id);
+      await interaction.editReply({
+        content: null,
+        embeds: [
+          infoEmbed(
+            "Resubmitting report",
+            "The rewritten report is being sent as a fresh linked lifecycle."
+          )
+        ],
+        components: []
+      });
+      let report = await this.api.retryReport(
+        previousReportId,
+        interaction.id,
+        interaction.user.id,
+        {
+          reportReason: request.reportReason,
+          ...(request.context === undefined ? {} : { context: request.context })
+        }
+      );
+      const trackingId = await this.database.trackRetryReport(
+        previousReportId,
+        interaction.user.id,
+        interaction.id,
+        report,
+        encryptJson(request, this.config.dataEncryptionKey)
+      );
+      await this.database.deleteDraft(interaction.user.id, draftId);
+      const dmSent = await this.sendReportDm(
+        interaction.user,
+        report,
+        draft.serverSnapshot,
+        trackingId
+      );
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        if (report.status === "submitted" || report.status === "failed") break;
+        await delay(2_000);
+        report = await this.api.report(report.internalReportId);
+      }
+      await this.database.observeReport(trackingId, report);
+      await interaction.editReply({
+        content: dmSent
+          ? null
+          : "I could not send the full status log to your DMs. Check your privacy settings.",
+        embeds: [reportEmbed(report, draft.serverSnapshot, { history: "dm_notice" })],
+        components: reportRetryComponents(report),
+        allowedMentions: { parse: [] }
+      });
+    } catch (error) {
+      await interaction.editReply({
+        content: null,
+        embeds: [errorEmbed(conciseError(error))],
         components: [],
         allowedMentions: { parse: [] }
       });

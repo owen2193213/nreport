@@ -10,6 +10,7 @@ import type {
 
 export interface ReportDraft {
   aiDisabled?: boolean;
+  sendToDms?: boolean;
   country?: string;
   countrySelection?: CountrySelection;
   context?: string;
@@ -29,6 +30,12 @@ export interface ReportDraft {
   profileTargetRaw?: string;
   reportedUserServerId?: string;
   reportType?: string;
+  resubmitOfReportId?: string;
+  rewriteRequest?: {
+    previousReportReason?: string;
+    previousContext?: string;
+    instruction: string;
+  };
   serverSnapshot?: ServerSnapshot;
 }
 

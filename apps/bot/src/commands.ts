@@ -33,18 +33,6 @@ const report = userInstalled()
             .setRequired(true)
             .setMaxLength(300)
         )
-        .addStringOption((option) =>
-          option
-            .setName("country")
-            .setDescription("Auto or an EU country override")
-            .setAutocomplete(true)
-            .setMaxLength(100)
-        )
-        .addBooleanOption((option) =>
-          option
-            .setName("dont-use-ai")
-            .setDescription("Write the final report manually instead of using AI")
-        )
     )
     .addSubcommand((command) =>
       command
@@ -65,18 +53,6 @@ const report = userInstalled()
             .setMinLength(15)
             .setMaxLength(22)
         )
-        .addStringOption((option) =>
-          option
-            .setName("country")
-            .setDescription("Auto or an EU country override")
-            .setAutocomplete(true)
-            .setMaxLength(100)
-        )
-        .addBooleanOption((option) =>
-          option
-            .setName("dont-use-ai")
-            .setDescription("Write the final report manually instead of using AI")
-        )
     )
     .addSubcommand((command) =>
       command
@@ -88,18 +64,6 @@ const report = userInstalled()
             .setDescription("Server ID or invite code; defaults to the current server")
             .setMaxLength(100)
         )
-        .addStringOption((option) =>
-          option
-            .setName("country")
-            .setDescription("Auto or an EU country override")
-            .setAutocomplete(true)
-            .setMaxLength(100)
-        )
-        .addBooleanOption((option) =>
-          option
-            .setName("dont-use-ai")
-            .setDescription("Write the final report manually instead of using AI")
-        )
     );
 
 const reports = userInstalled()
@@ -109,11 +73,6 @@ const reports = userInstalled()
       command
         .setName("list")
         .setDescription("List your recent reports")
-        .addBooleanOption((option) =>
-          option
-            .setName("send-to-dms")
-            .setDescription("Also send the report embed to your DMs")
-        )
     )
     .addSubcommand((command) =>
       command
@@ -122,11 +81,6 @@ const reports = userInstalled()
         .addStringOption((option) =>
           option.setName("report-id").setDescription("Internal report ID").setRequired(true)
         )
-        .addBooleanOption((option) =>
-          option
-            .setName("send-to-dms")
-            .setDescription("Also send the report embed to your DMs")
-        )
     )
     .addSubcommand((command) =>
       command
@@ -134,11 +88,6 @@ const reports = userInstalled()
         .setDescription("Retry a failed report as a new report")
         .addStringOption((option) =>
           option.setName("report-id").setDescription("Internal report ID").setRequired(true)
-        )
-        .addBooleanOption((option) =>
-          option
-            .setName("send-to-dms")
-            .setDescription("Also send the report embed to your DMs")
         )
     );
 

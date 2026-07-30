@@ -36,9 +36,17 @@ export function lifecycleReplyText(eventType: string, report: ReportDetail): str
     case "discord:actioned":
       return "Your DSA report was accepted and Discord took action.";
     case "discord:closed_no_action":
-      return "Your DSA report was reviewed and denied; Discord closed it without taking action.";
+      return report.reviewStatus === null
+        ? "Discord denied your DSA report by closing it without action. No automatic appeal link was available."
+        : "Discord denied your DSA report by closing it without action; the automatic appeal process has started.";
     case "discord:review_not_approved":
-      return "Your DSA report review request was denied by Discord.";
+      return "Your DSA report appeal was denied by Discord. You can resend it as-is or rewrite it first.";
+    case "review_confirmation_timeout":
+      return "Discord accepted the appeal request, but its confirmation email did not arrive within 2 minutes. The appeal was not submitted again.";
+    case "review_request_failed":
+      return "Discord did not accept the automatic appeal request. Check the report status before taking further action.";
+    case "review_request_ambiguous":
+      return "The automatic appeal request could not be confirmed. It was not retried to avoid submitting a duplicate.";
     case "report_failed":
       return report.error?.code === "discord_receipt_timeout"
         ? "Discord did not confirm receipt within 2 minutes. You can retry this as a new report below."

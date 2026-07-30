@@ -29,6 +29,15 @@ class SessionNotReadyError extends Error {
   }
 }
 
+class ReviewSubmissionStartedError extends Error {
+  public constructor(cause: unknown) {
+    super("Discord review submission started but its local outcome could not be persisted.", {
+      cause
+    });
+    this.name = "ReviewSubmissionStartedError";
+  }
+}
+
 interface NetworkCauseDiagnostic {
   name: string;
   code?: string;
@@ -148,6 +157,8 @@ export class JobRunner {
         if (Date.now() >= this.nextTimeoutSweepAt) {
           const expiredReportIds = await this.database.expireVerificationWaits();
           const expiredReceiptReportIds = await this.database.expireDiscordReceiptWaits();
+          const expiredReviewReportIds =
+            await this.database.expireReviewConfirmationWaits();
           this.nextTimeoutSweepAt = Date.now() + 5_000;
           for (const reportId of expiredReportIds) {
             this.logger.info(
@@ -159,6 +170,12 @@ export class JobRunner {
             this.logger.info(
               { event: "discord_receipt_wait_expired", reportId },
               "Discord receipt confirmation wait expired"
+            );
+          }
+          for (const reportId of expiredReviewReportIds) {
+            this.logger.info(
+              { event: "review_confirmation_wait_expired", reportId },
+              "Discord review confirmation email wait expired"
             );
           }
         }
@@ -211,6 +228,8 @@ export class JobRunner {
     try {
       if (job.kind === "request_code") {
         await this.requestCode(job);
+      } else if (job.kind === "submit_review") {
+        await this.submitReview(job);
       } else {
         await this.verifyAndSubmit(job);
       }
@@ -242,6 +261,79 @@ export class JobRunner {
           },
           "Verification email resend failed; original deadline remains active"
         );
+        return;
+      }
+      if (error instanceof ReviewSubmissionStartedError) {
+        let outcomePersisted = false;
+        try {
+          await this.database.failReviewRequest(
+            job.report_id,
+            true,
+            "review_request_ambiguous",
+            "Discord review request submission could not be confirmed."
+          );
+          outcomePersisted = true;
+        } catch (persistenceError) {
+          this.logger.error(
+            {
+              event: "review_ambiguity_persistence_failed",
+              jobId: job.id,
+              reportId: job.report_id,
+              error: redactedError(persistenceError)
+            },
+            "Discord review request is ambiguous and its status could not be persisted"
+          );
+        }
+        if (outcomePersisted) await this.database.completeJob(job.id);
+        this.logger.error(
+          {
+            event: "review_request_ambiguous",
+            jobId: job.id,
+            reportId: job.report_id,
+            errorCode: redacted.code,
+            networkCause: redacted.networkCause,
+            durationMs: Date.now() - startedAt
+          },
+          "Discord review request result is ambiguous; automatic retry is disabled"
+        );
+        return;
+      }
+      if (job.kind === "submit_review") {
+        if (job.attempts < job.max_attempts) {
+          const delaySeconds = Math.min(60, 2 ** job.attempts * 5);
+          await this.database.retryJob(job, redacted.message, delaySeconds);
+          this.logger.info(
+            {
+              event: "review_link_resolution_retry_scheduled",
+              jobId: job.id,
+              reportId: job.report_id,
+              errorCode: redacted.code,
+              networkCause: redacted.networkCause,
+              delaySeconds,
+              durationMs: Date.now() - startedAt
+            },
+            "Discord review link resolution retry scheduled"
+          );
+        } else {
+          await this.database.failReviewRequest(
+            job.report_id,
+            false,
+            "review_link_resolution_failed",
+            "The Discord review link could not be resolved."
+          );
+          await this.database.completeJob(job.id);
+          this.logger.error(
+            {
+              event: "review_link_resolution_failed",
+              jobId: job.id,
+              reportId: job.report_id,
+              errorCode: redacted.code,
+              networkCause: redacted.networkCause,
+              durationMs: Date.now() - startedAt
+            },
+            "Discord review link resolution failed"
+          );
+        }
         return;
       }
       const canRetry =
@@ -445,6 +537,93 @@ export class JobRunner {
       await this.database.markSubmitted(report.id, result.report_id);
     } finally {
       await this.runStage(job, "close_discord_session", () => client.close());
+    }
+  }
+
+  private async submitReview(job: JobRow): Promise<void> {
+    const report = await this.requiredReport(job.report_id);
+    const encryptedReviewUrl = job.payload.encryptedReviewUrl;
+    if (typeof encryptedReviewUrl !== "string") {
+      throw new Error("Review job has no encrypted review link.");
+    }
+    if (!report.discord_report_id) {
+      throw new Error("Review job report has no Discord report ID.");
+    }
+    const { reviewUrl } = decryptJson<{ reviewUrl: string }>(
+      encryptedReviewUrl,
+      this.config.sessionEncryptionKey
+    );
+    const client = this.clientFor(report);
+    try {
+      const token = await this.runStage(job, "resolve_review_link", () =>
+        client.resolveReportReviewToken(reviewUrl)
+      );
+      let result;
+      try {
+        result = await this.runStage(job, "submit_report_review", () =>
+          client.submitReportReviewToken(token)
+        );
+      } catch (error) {
+        const redacted = redactedError(error);
+        const ambiguous = error instanceof DiscordDsaNetworkError;
+        try {
+          await this.database.failReviewRequest(
+            report.id,
+            ambiguous,
+            ambiguous ? "review_request_ambiguous" : "review_request_failed",
+            ambiguous
+              ? "Discord review request submission could not be confirmed."
+              : "Discord did not accept the automatic review request."
+          );
+        } catch (persistenceError) {
+          throw new ReviewSubmissionStartedError(persistenceError);
+        }
+        this.logger.error(
+          {
+            event: ambiguous ? "review_request_ambiguous" : "review_request_failed",
+            jobId: job.id,
+            reportId: report.id,
+            errorCode: redacted.code,
+            networkCause: redacted.networkCause
+          },
+          ambiguous
+            ? "Discord review request result is ambiguous"
+            : "Discord review request failed"
+        );
+        return;
+      }
+      if (result.report_id !== report.discord_report_id) {
+        try {
+          await this.database.failReviewRequest(
+            report.id,
+            false,
+            "review_report_id_mismatch",
+            "Discord returned a different report ID for the review request."
+          );
+        } catch (error) {
+          throw new ReviewSubmissionStartedError(error);
+        }
+        return;
+      }
+      try {
+        await this.database.markReviewRequested(report.id, result.report_id);
+      } catch (error) {
+        throw new ReviewSubmissionStartedError(error);
+      }
+    } finally {
+      try {
+        await client.close();
+      } catch (error) {
+        this.logger.error(
+          {
+            event: "review_session_close_failed",
+            jobId: job.id,
+            reportId: report.id,
+            error: redactedError(error)
+          },
+          "Discord review session close failed"
+        );
+      }
     }
   }
 }

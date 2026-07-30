@@ -1,8 +1,11 @@
 import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
 
-import type { ReportFlow } from "@discord-dsa/contracts";
-import type { DiscordReportStatus } from "./email.js";
+import type {
+  DiscordReportStatus,
+  DiscordReviewStatus,
+  ReportFlow
+} from "@discord-dsa/contracts";
 import type { CreateReportInput } from "./validation.js";
 
 export type ReportStatus =
@@ -18,6 +21,7 @@ export type ReportStatus =
 export const VERIFICATION_EMAIL_TIMEOUT_SECONDS = 60;
 export const VERIFICATION_EMAIL_RESEND_DELAYS_SECONDS = [20, 40] as const;
 export const DISCORD_RECEIPT_TIMEOUT_SECONDS = 120;
+export const DISCORD_REVIEW_CONFIRMATION_TIMEOUT_SECONDS = 120;
 
 export function statusAfterSessionPersistence(current: ReportStatus): ReportStatus {
   return current === "verification_received" ? current : "awaiting_verification";
@@ -47,19 +51,16 @@ export function shouldExpireDiscordReceipt(
   );
 }
 
-const TERMINAL_DISCORD_STATUSES = new Set<DiscordReportStatus>([
-  "actioned",
-  "closed_no_action",
-  "review_not_approved"
-]);
-
 export function shouldApplyDiscordStatus(
   current: DiscordReportStatus | null,
   incoming: DiscordReportStatus
 ): boolean {
   if (current === incoming) return false;
-  if (current !== null && TERMINAL_DISCORD_STATUSES.has(current)) return false;
-  return true;
+  if (current === null || current === "received") return true;
+  if (current === "closed_no_action") {
+    return incoming === "actioned" || incoming === "review_not_approved";
+  }
+  return false;
 }
 
 export interface ReportRow extends QueryResultRow {
@@ -82,6 +83,11 @@ export interface ReportRow extends QueryResultRow {
   discord_report_id: string | null;
   discord_status: DiscordReportStatus | null;
   discord_status_updated_at: Date | null;
+  review_status: DiscordReviewStatus | null;
+  review_status_updated_at: Date | null;
+  review_confirmation_deadline: Date | null;
+  review_error_code: string | null;
+  review_error_message: string | null;
   error_code: string | null;
   error_message: string | null;
   lifecycle_attempt: number;
@@ -99,7 +105,7 @@ export interface ReportRow extends QueryResultRow {
 export interface JobRow extends QueryResultRow {
   id: string;
   report_id: string;
-  kind: "request_code" | "verify_submit";
+  kind: "request_code" | "verify_submit" | "submit_review";
   payload: Record<string, unknown>;
   attempts: number;
   max_attempts: number;
@@ -152,6 +158,9 @@ export interface RetryReportRecord {
   locale: string;
   language: string;
   proxySessionId: string;
+  input: CreateReportInput;
+  requestHash: string;
+  hasOverrides: boolean;
 }
 
 export interface RetryReportResult {
@@ -199,6 +208,11 @@ CREATE TABLE IF NOT EXISTS reports (
   discord_report_id text,
   discord_status text,
   discord_status_updated_at timestamptz,
+  review_status text,
+  review_status_updated_at timestamptz,
+  review_confirmation_deadline timestamptz,
+  review_error_code text,
+  review_error_message text,
   error_code text,
   error_message text,
   lifecycle_attempt integer NOT NULL DEFAULT 1,
@@ -224,7 +238,7 @@ CREATE TABLE IF NOT EXISTS report_events (
 CREATE TABLE IF NOT EXISTS report_jobs (
   id bigserial PRIMARY KEY,
   report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
-  kind text NOT NULL CHECK (kind IN ('request_code', 'verify_submit')),
+  kind text NOT NULL CHECK (kind IN ('request_code', 'verify_submit', 'submit_review')),
   dedupe_key text NOT NULL UNIQUE,
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'running', 'completed', 'failed')),
@@ -271,6 +285,11 @@ CREATE INDEX IF NOT EXISTS report_delivery_outbox_claim_idx
 
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status text;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS discord_status_updated_at timestamptz;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_status text;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_status_updated_at timestamptz;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_confirmation_deadline timestamptz;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_error_code text;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_error_message text;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS locale text NOT NULL DEFAULT 'en-US';
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS language text NOT NULL DEFAULT 'en';
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS submitter_discord_user_id text;
@@ -284,6 +303,10 @@ ALTER TABLE reports ADD COLUMN IF NOT EXISTS verification_deadline timestamptz;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS receipt_deadline timestamptz;
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_report_id text;
 ALTER TABLE inbound_messages ADD COLUMN IF NOT EXISTS external_status text;
+ALTER TABLE report_jobs DROP CONSTRAINT IF EXISTS report_jobs_kind_check;
+ALTER TABLE report_jobs
+  ADD CONSTRAINT report_jobs_kind_check
+  CHECK (kind IN ('request_code', 'verify_submit', 'submit_review'));
 
 CREATE INDEX IF NOT EXISTS report_jobs_claim_idx ON report_jobs(state, run_at, id);
 CREATE INDEX IF NOT EXISTS report_events_report_idx ON report_events(report_id, created_at);
@@ -294,6 +317,8 @@ CREATE INDEX IF NOT EXISTS reports_verification_deadline_idx
   ON reports(verification_deadline) WHERE status = 'awaiting_verification';
 CREATE INDEX IF NOT EXISTS reports_receipt_deadline_idx
   ON reports(receipt_deadline) WHERE status = 'submitted' AND discord_status IS NULL;
+CREATE INDEX IF NOT EXISTS reports_review_confirmation_deadline_idx
+  ON reports(review_confirmation_deadline) WHERE review_status = 'requested';
 
 UPDATE reports
 SET retry_sequence = lifecycle_attempt - 1
@@ -368,6 +393,33 @@ export class Database {
           errorCode: "ambiguous_submission_state"
         });
       }
+      const ambiguousReviews = await client.query<{ report_id: string }>(
+        `UPDATE report_jobs
+         SET state = 'failed',
+             last_error = 'Worker restarted during review submission',
+             updated_at = now()
+         WHERE state = 'running' AND kind = 'submit_review'
+         RETURNING report_id`
+      );
+      for (const row of ambiguousReviews.rows) {
+        const updated = await client.query(
+          `UPDATE reports
+           SET review_status = 'request_ambiguous',
+               review_status_updated_at = now(),
+               review_confirmation_deadline = NULL,
+               review_error_code = 'review_request_ambiguous',
+               review_error_message =
+                 'The review request outcome is uncertain after a worker restart.',
+               updated_at = now()
+           WHERE id = $1 AND review_status = 'queued'`,
+          [row.report_id]
+        );
+        if (updated.rowCount === 1) {
+          await this.event(client, row.report_id, "review_request_ambiguous", {
+            errorCode: "review_request_ambiguous"
+          });
+        }
+      }
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -402,7 +454,12 @@ export class Database {
     if (
       eventType === "report_submitted" ||
       eventType === "report_failed" ||
-      eventType === "discord_status_updated"
+      eventType === "discord_status_updated" ||
+      eventType === "review_requested" ||
+      eventType === "review_received" ||
+      eventType === "review_confirmation_timeout" ||
+      eventType === "review_request_failed" ||
+      eventType === "review_request_ambiguous"
     ) {
       await client.query(
         `INSERT INTO report_delivery_outbox (event_id)
@@ -787,6 +844,45 @@ export class Database {
     }
   }
 
+  public async expireReviewConfirmationWaits(): Promise<string[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const expired = await client.query<ReportRow>(
+        `SELECT * FROM reports
+         WHERE review_status = 'requested'
+           AND review_confirmation_deadline IS NOT NULL
+           AND review_confirmation_deadline <= now()
+         ORDER BY review_confirmation_deadline
+         FOR UPDATE SKIP LOCKED`
+      );
+      for (const report of expired.rows) {
+        await client.query(
+          `UPDATE reports
+           SET review_status = 'confirmation_timeout',
+               review_status_updated_at = now(),
+               review_confirmation_deadline = NULL,
+               review_error_code = 'review_confirmation_timeout',
+               review_error_message =
+                 'Discord accepted the review request but no confirmation email arrived within 2 minutes.',
+               updated_at = now()
+           WHERE id = $1`,
+          [report.id]
+        );
+        await this.event(client, report.id, "review_confirmation_timeout", {
+          errorCode: "review_confirmation_timeout"
+        });
+      }
+      await client.query("COMMIT");
+      return expired.rows.map((report) => report.id);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   public async registerVerificationEmail(input: {
     messageId: string;
     recipient: string;
@@ -857,6 +953,7 @@ export class Database {
     recipient: string;
     discordReportId: string;
     discordStatus: DiscordReportStatus;
+    encryptedReviewUrl?: string;
   }): Promise<InboundEmailRegistration> {
     const client = await this.pool.connect();
     try {
@@ -891,6 +988,32 @@ export class Database {
         await client.query("COMMIT");
         return { status: "pending_report", reportId: null };
       }
+      if (
+        input.discordStatus === "closed_no_action" &&
+        input.encryptedReviewUrl !== undefined &&
+        report.review_status === null
+      ) {
+        await client.query(
+          `UPDATE reports
+           SET review_status = 'queued', review_status_updated_at = now(),
+               review_error_code = NULL, review_error_message = NULL,
+               updated_at = now()
+           WHERE id = $1 AND review_status IS NULL`,
+          [report.id]
+        );
+        await client.query(
+          `INSERT INTO report_jobs
+             (report_id, kind, dedupe_key, payload, max_attempts, run_at)
+           VALUES ($1, 'submit_review', $2, $3, 3, now())
+           ON CONFLICT (dedupe_key) DO NOTHING`,
+          [
+            report.id,
+            `${report.id}:submit-review`,
+            { encryptedReviewUrl: input.encryptedReviewUrl }
+          ]
+        );
+        await this.event(client, report.id, "review_queued");
+      }
       if (!shouldApplyDiscordStatus(report.discord_status, input.discordStatus)) {
         await client.query("COMMIT");
         return { status: "accepted", reportId: report.id };
@@ -911,7 +1034,34 @@ export class Database {
       await client.query(
         `UPDATE reports
          SET discord_status = $2,
-             discord_status_updated_at = now(), receipt_deadline = NULL, updated_at = now()
+              discord_status_updated_at = now(), receipt_deadline = NULL,
+              review_status = CASE
+                WHEN $2 = 'review_not_approved' THEN 'not_approved'
+                WHEN $2 = 'actioned'
+                  AND discord_status = 'closed_no_action'
+                  AND review_status IS NOT NULL THEN 'approved'
+                ELSE review_status
+              END,
+              review_status_updated_at = CASE
+                WHEN $2 = 'review_not_approved'
+                  OR ($2 = 'actioned'
+                    AND discord_status = 'closed_no_action'
+                    AND review_status IS NOT NULL) THEN now()
+                ELSE review_status_updated_at
+              END,
+              review_confirmation_deadline = CASE
+                WHEN $2 IN ('actioned', 'review_not_approved') THEN NULL
+                ELSE review_confirmation_deadline
+              END,
+              review_error_code = CASE
+                WHEN $2 IN ('actioned', 'review_not_approved') THEN NULL
+                ELSE review_error_code
+              END,
+              review_error_message = CASE
+                WHEN $2 IN ('actioned', 'review_not_approved') THEN NULL
+                ELSE review_error_message
+              END,
+             updated_at = now()
          WHERE id = $1`,
         [report.id, input.discordStatus]
       );
@@ -920,6 +1070,140 @@ export class Database {
       });
       await client.query("COMMIT");
       return { status: "accepted", reportId: report.id };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async registerReviewUpdateEmail(input: {
+    messageId: string;
+    recipient: string;
+    discordReportId: string;
+    reviewStatus: "received";
+  }): Promise<InboundEmailRegistration> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const reportResult = await client.query<ReportRow>(
+        `SELECT * FROM reports
+         WHERE discord_report_id = $1 AND reporter_email = $2
+         FOR UPDATE`,
+        [input.discordReportId, input.recipient.toLowerCase()]
+      );
+      const report = reportResult.rows[0];
+      const inserted = await client.query(
+        `INSERT INTO inbound_messages (
+           message_id, report_id, recipient, status, external_report_id, external_status
+         ) VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (message_id) DO NOTHING
+         RETURNING message_id`,
+        [
+          input.messageId,
+          report?.id ?? null,
+          input.recipient.toLowerCase(),
+          report ? "accepted" : "pending_report",
+          input.discordReportId,
+          `review_${input.reviewStatus}`
+        ]
+      );
+      if (inserted.rowCount === 0) {
+        await client.query("COMMIT");
+        return { status: "duplicate", reportId: report?.id ?? null };
+      }
+      if (!report) {
+        await client.query("COMMIT");
+        return { status: "pending_report", reportId: null };
+      }
+      if (
+        report.review_status !== "approved" &&
+        report.review_status !== "not_approved" &&
+        report.review_status !== "received"
+      ) {
+        await client.query(
+          `UPDATE reports
+           SET review_status = 'received', review_status_updated_at = now(),
+               review_confirmation_deadline = NULL,
+               review_error_code = NULL, review_error_message = NULL,
+               updated_at = now()
+           WHERE id = $1`,
+          [report.id]
+        );
+        await this.event(client, report.id, "review_received");
+      }
+      await client.query("COMMIT");
+      return { status: "accepted", reportId: report.id };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async markReviewRequested(
+    reportId: string,
+    discordReportId: string
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const updated = await client.query(
+        `UPDATE reports
+         SET review_status = 'requested', review_status_updated_at = now(),
+             review_confirmation_deadline =
+               now() + ($3 * interval '1 second'),
+             review_error_code = NULL, review_error_message = NULL,
+             updated_at = now()
+         WHERE id = $1 AND discord_report_id = $2 AND review_status = 'queued'
+         RETURNING id`,
+        [reportId, discordReportId, DISCORD_REVIEW_CONFIRMATION_TIMEOUT_SECONDS]
+      );
+      if (updated.rowCount !== 1) {
+        throw new Error("Report is no longer waiting for review submission.");
+      }
+      await this.event(client, reportId, "review_requested");
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async failReviewRequest(
+    reportId: string,
+    ambiguous: boolean,
+    errorCode: string,
+    errorMessage: string
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const reviewStatus: DiscordReviewStatus = ambiguous
+        ? "request_ambiguous"
+        : "request_failed";
+      const updated = await client.query(
+        `UPDATE reports
+         SET review_status = $2, review_status_updated_at = now(),
+             review_confirmation_deadline = NULL,
+             review_error_code = $3, review_error_message = $4,
+             updated_at = now()
+         WHERE id = $1 AND review_status = 'queued'`,
+        [reportId, reviewStatus, errorCode, errorMessage]
+      );
+      if (updated.rowCount === 1) {
+        await this.event(
+          client,
+          reportId,
+          ambiguous ? "review_request_ambiguous" : "review_request_failed",
+          { errorCode }
+        );
+      }
+      await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1043,12 +1327,28 @@ export class Database {
       );
       const replay = replayResult.rows[0];
       if (replay) {
-        if (replay.retry_of_report_id !== report.id) throw new IdempotencyConflictError();
+        if (
+          replay.retry_of_report_id !== report.id ||
+          replay.request_hash !== record.requestHash
+        ) {
+          throw new IdempotencyConflictError();
+        }
         await client.query("COMMIT");
         return { replayed: true, report: replay };
       }
-      if (report.status !== "failed") throw new ReportRetryError("report_not_failed");
-      if (!report.retryable) throw new ReportRetryError("report_not_retryable");
+      const failedRetry = report.status === "failed";
+      const deniedReviewResubmission =
+        report.discord_status === "review_not_approved" &&
+        report.retried_as_report_id === null;
+      if (!failedRetry && !deniedReviewResubmission) {
+        throw new ReportRetryError("report_not_failed");
+      }
+      if (failedRetry && !report.retryable) {
+        throw new ReportRetryError("report_not_retryable");
+      }
+      if (failedRetry && record.hasOverrides) {
+        throw new ReportRetryError("report_not_retryable");
+      }
       const nextSequence = report.retry_sequence + 1;
       const inserted = await client.query<ReportRow>(
         `INSERT INTO reports (
@@ -1063,7 +1363,7 @@ export class Database {
         [
           record.id,
           record.idempotencyKey,
-          report.request_hash,
+          record.requestHash,
           report.flow,
           report.country,
           report.report_type,
@@ -1074,7 +1374,7 @@ export class Database {
           record.locale,
           record.language,
           record.proxySessionId,
-          report.input,
+          record.input,
           report.id,
           nextSequence
         ]
@@ -1133,7 +1433,10 @@ export class Database {
          FROM inbound_messages
          WHERE external_report_id = $1 AND recipient = (
            SELECT reporter_email FROM reports WHERE id = $2
-         ) AND report_id IS NULL AND external_status IS NOT NULL
+         ) AND report_id IS NULL
+           AND external_status IN (
+             'received', 'actioned', 'closed_no_action', 'review_not_approved'
+           )
          ORDER BY received_at DESC
          LIMIT 1`,
         [discordReportId, reportId]
@@ -1177,7 +1480,8 @@ export class IdempotencyConflictError extends Error {
 const RETRY_ERROR_MESSAGES: Record<ReportRetryErrorCode, string> = {
   report_not_found: "Report was not found.",
   report_owner_mismatch: "The Discord user does not own this report.",
-  report_not_failed: "Only failed reports can be retried.",
+  report_not_failed:
+    "Only safely failed reports or reports with a denied review can be resent.",
   report_not_retryable: "This report cannot be retried safely."
 };
 

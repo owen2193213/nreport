@@ -42,7 +42,6 @@ import {
 import {
   conciseError,
   InteractionHandler,
-  reportCountryFields,
   shouldBypassReportCredits
 } from "../src/interactions.js";
 import { reportEventIngestionStatus } from "../src/health.js";
@@ -61,6 +60,7 @@ import {
   buildManualReportModal,
   buildRefinementModal,
   buildReportModal,
+  buildReportSetupModal,
   buildReview,
   buildWriterProgress,
   accessKeyEmbed,
@@ -93,6 +93,10 @@ function reportFixture(): ReportDetail {
     discordReportId: "1527695430949798110",
     discordStatus: "actioned" as const,
     discordStatusUpdatedAt: "2026-07-20T00:00:00.000Z",
+    reviewStatus: null,
+    reviewStatusUpdatedAt: null,
+    reviewError: null,
+    resubmittable: false,
     error: null,
     createdAt: "2026-07-19T00:00:00.000Z",
     updatedAt: "2026-07-20T00:00:00.000Z",
@@ -164,15 +168,13 @@ describe("Discord command registration", () => {
     expect(command?.type).toBe(ApplicationCommandType.Message);
   });
 
-  it("requires message links and autocompletes an optional country on every report flow", () => {
+  it("keeps targets in report commands and moves report preferences into modals", () => {
     const command = COMMANDS.find((candidate) => candidate.name === "report");
     const subcommands = command?.options ?? [];
     for (const subcommand of subcommands) {
       if (!("options" in subcommand)) continue;
-      const country = subcommand.options?.find((option) => option.name === "country");
-      expect(country).toMatchObject({ required: false, autocomplete: true });
-      const dontUseAi = subcommand.options?.find((option) => option.name === "dont-use-ai");
-      expect(dontUseAi).toMatchObject({ required: false });
+      expect(subcommand.options?.find((option) => option.name === "country")).toBeUndefined();
+      expect(subcommand.options?.find((option) => option.name === "dont-use-ai")).toBeUndefined();
     }
     const message = subcommands.find((subcommand) => subcommand.name === "message");
     const messageLink = message && "options" in message
@@ -189,6 +191,15 @@ describe("Discord command registration", () => {
       min_length: 15,
       max_length: 22
     });
+    const serverId = profile && "options" in profile
+      ? profile.options?.find((option) => option.name === "server-id")
+      : undefined;
+    expect(serverId).toMatchObject({ required: false });
+    const server = subcommands.find((subcommand) => subcommand.name === "server");
+    const serverOrInvite = server && "options" in server
+      ? server.options?.find((option) => option.name === "server-or-invite")
+      : undefined;
+    expect(serverOrInvite).toMatchObject({ required: false });
   });
 
   it("allows access keys to grant any positive integer number of credits", () => {
@@ -289,14 +300,12 @@ describe("access key administration views", () => {
     }
   });
 
-  it("offers optional DM delivery on every reports subcommand", () => {
+  it("does not add DM-delivery options to report-history commands", () => {
     const command = COMMANDS.find((candidate) => candidate.name === "reports");
     expect(command?.options).toHaveLength(3);
     for (const subcommand of command?.options ?? []) {
       if (!("options" in subcommand)) throw new Error("Expected a reports subcommand.");
-      expect(subcommand.options?.find((option) => option.name === "send-to-dms")).toMatchObject({
-        required: false
-      });
+      expect(subcommand.options?.find((option) => option.name === "send-to-dms")).toBeUndefined();
     }
   });
 
@@ -395,6 +404,7 @@ describe("profile resolution", () => {
     });
     expect(fetchUser).toHaveBeenCalledWith("123456789012345678", { force: true });
   });
+
 });
 
 describe("report UI", () => {
@@ -478,6 +488,35 @@ describe("report UI", () => {
     expect(manualJson).toContain('"custom_id":"brief","style":2,"required":true');
     expect(manualJson).toContain('"min_length":1');
     expect(manualJson).toContain('"max_length":512');
+  });
+
+  it("defaults report setup to AI and DM delivery while respecting saved country", () => {
+    const setup = buildReportSetupModal("draft", {
+      flow: "message_urf",
+      country: "DE",
+      countrySelection: "default"
+    }).toJSON();
+    const json = JSON.stringify(setup);
+    expect(setup.custom_id).toBe("report:setup:draft");
+    expect(setup.components).toHaveLength(2);
+    expect(json).toContain('"custom_id":"preferences"');
+    expect(json).toContain('"label":"Use AI","value":"USE_AI","default":true');
+    expect(json).toContain('"label":"Send report embed to DMs","value":"SEND_DM","default":true');
+    expect(json).toContain('"label":"Saved default:');
+    expect(json).toContain('"value":"DEFAULT","default":true');
+    expect(json).toContain('"value":"CHOOSE"');
+
+    const disabled = JSON.stringify(
+      buildReportSetupModal("draft", {
+        flow: "message_urf",
+        aiDisabled: true,
+        sendToDms: false,
+        countrySelection: "auto"
+      }).toJSON()
+    );
+    expect(disabled).toContain('"value":"USE_AI","default":false');
+    expect(disabled).toContain('"value":"SEND_DM","default":false');
+    expect(disabled).toContain('"value":"AUTO","default":true');
   });
 
   it("converts a reviewed message draft into the canonical API request", () => {
@@ -770,7 +809,7 @@ describe("report UI", () => {
         .toJSON()
         .fields?.find((field) => field.name === "History")
         ?.value
-    ).toMatch(/^• <t:\d+:T> /);
+    ).toMatch(/^• <t:\d+:R> /);
   });
 
   it("uses the shared report structure with the full history in lifecycle DMs", () => {
@@ -1016,6 +1055,27 @@ describe("lifecycle notification deduplication", () => {
     expect(reportRetryComponents(failed)).not.toEqual([]);
   });
 
+  it("shows resend and rewrite controls after a denied appeal", () => {
+    const denied = reportFixture();
+    denied.discordStatus = "review_not_approved";
+    denied.reviewStatus = "not_approved";
+    denied.resubmittable = true;
+
+    const controls = reportRetryComponents(denied)[0]?.components.map(
+      (component) => component.data
+    );
+    expect(controls).toEqual([
+      expect.objectContaining({
+        custom_id: `reports:retry:${denied.internalReportId}`,
+        label: "Resend same report"
+      }),
+      expect.objectContaining({
+        custom_id: `reports:rewrite:${denied.internalReportId}`,
+        label: "Rewrite & resend"
+      })
+    ]);
+  });
+
   it("retries unlinked events but acknowledges accepted and expired events", () => {
     expect(reportEventTrackingResult(undefined)).toBe("not_tracked_yet");
     expect(reportEventTrackingResult({ tracking_expired: false })).toBe("accepted");
@@ -1064,7 +1124,7 @@ describe("lifecycle notification deduplication", () => {
 });
 
 describe("report component responsiveness", () => {
-  it("keeps status ephemeral while sending the full report log to DMs on request", async () => {
+  it("keeps report status ephemeral without sending a duplicate DM", async () => {
     const report = reportFixture();
     const send = vi.fn().mockResolvedValue({ id: "dm-message" });
     const deferReply = vi.fn().mockResolvedValue(undefined);
@@ -1094,7 +1154,6 @@ describe("report component responsiveness", () => {
       user: { id: "1197857362942378017", send },
       options: {
         getSubcommand: () => "status",
-        getBoolean: (name: string) => (name === "send-to-dms" ? true : null),
         getString: (name: string) =>
           name === "report-id" ? report.internalReportId : null
       },
@@ -1107,13 +1166,10 @@ describe("report component responsiveness", () => {
     await handler.handle(interaction);
 
     expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
-    expect(send).toHaveBeenCalledOnce();
-    const dmJson = JSON.stringify(send.mock.calls[0]?.[0]);
-    expect(dmJson).toContain("History");
-    expect(dmJson).not.toContain("Check your DMs for the full status log.");
+    expect(send).not.toHaveBeenCalled();
     const replyJson = JSON.stringify(editReply.mock.calls[0]?.[0]);
-    expect(replyJson).toContain("Check your DMs for the full status log.");
-    expect(replyJson).toContain("The full status log was sent to your DMs.");
+    expect(replyJson).toContain("History");
+    expect(replyJson).not.toContain("Check your DMs for the full status log.");
   });
 
   it("contains a secondary response failure after the original interaction error", async () => {
@@ -1204,16 +1260,73 @@ describe("report component responsiveness", () => {
 });
 
 describe("report interaction country precedence", () => {
-  it("marks an explicit country or Auto as the report-level override", () => {
-    expect(reportCountryFields("FR")).toEqual({
-      country: "FR",
-      countrySelection: "override"
+  it("stores setup-modal preferences before opening report details", async () => {
+    const dataEncryptionKey = randomBytes(32);
+    const updateDraft = vi.fn();
+    const database = {
+      getDraft: vi.fn().mockResolvedValue(
+        encryptJson(
+          {
+            flow: "message_urf",
+            messageUrl:
+              "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+            countrySelection: "auto",
+            sendToDms: true
+          },
+          dataEncryptionKey
+        )
+      ),
+      updateDraft
+    } as unknown as BotDatabase;
+    const handler = new InteractionHandler({
+      api: {} as DsaApi,
+      config: {
+        whitelistEnabled: false,
+        adminUserIds: new Set<string>(),
+        dataEncryptionKey
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database,
+      messageResolver: {} as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: {} as ReportWriter,
+      serverResolver: {} as ServerResolver
     });
-    expect(reportCountryFields("AUTO")).toEqual({ countrySelection: "auto" });
-    expect(reportCountryFields(undefined)).toEqual({});
+    const deferReply = vi.fn();
+    const editReply = vi.fn();
+    const interaction = {
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => true,
+      isStringSelectMenu: () => false,
+      isButton: () => false,
+      isRepliable: () => true,
+      customId: "report:setup:draft-id",
+      user: { id: "1197857362942378017" },
+      fields: {
+        getCheckboxGroup: () => ["USE_AI"],
+        getStringSelectValues: () => ["AUTO"]
+      },
+      deferReply,
+      editReply,
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    const encrypted = String(updateDraft.mock.calls.at(-1)?.[2]);
+    expect(decryptJson(encrypted, dataEncryptionKey)).toMatchObject({
+      aiDisabled: false,
+      countrySelection: "auto",
+      sendToDms: false
+    });
+    expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(JSON.stringify(editReply.mock.calls[0]?.[0])).toContain("setup:continue:draft-id");
   });
 
-  it("resolves a raw user ID before opening the report modal", async () => {
+  it("opens profile setup before resolving the raw user ID", async () => {
     const deferReply = vi.fn();
     const editReply = vi.fn();
     const showModal = vi.fn();
@@ -1280,13 +1393,15 @@ describe("report interaction country precedence", () => {
 
     await handler.handle(interaction);
 
-    expect(resolveProfile).toHaveBeenCalled();
+    expect(resolveProfile).not.toHaveBeenCalled();
     expect(
       decryptJson(String(saveDraft.mock.calls[0]?.[1]), config.dataEncryptionKey)
-    ).toMatchObject({ country: "DE", countrySelection: "default" });
-    expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
-    expect(JSON.stringify(editReply.mock.calls[0]?.[0])).toContain("Continue");
-    expect(showModal).not.toHaveBeenCalled();
+    ).toMatchObject({ country: "DE", countrySelection: "default", sendToDms: true });
+    expect(deferReply).not.toHaveBeenCalled();
+    expect(editReply).not.toHaveBeenCalled();
+    expect(showModal).toHaveBeenCalledOnce();
+    const shownModal = showModal.mock.calls[0]?.[0] as { toJSON(): unknown };
+    expect(JSON.stringify(shownModal.toJSON())).toContain("report:setup:draft-id");
   });
 
   it("uses Auto when neither an explicit nor saved country exists", async () => {

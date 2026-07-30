@@ -1,15 +1,19 @@
 import { simpleParser } from "mailparser";
 import type { ParsedMail } from "mailparser";
 
-export type DiscordReportStatus =
-  | "received"
-  | "actioned"
-  | "closed_no_action"
-  | "review_not_approved";
+import type { DiscordReportStatus } from "@discord-dsa/contracts";
+
+export type { DiscordReportStatus } from "@discord-dsa/contracts";
 
 export type ParsedDiscordEmail =
   | { kind: "verification"; code: string }
-  | { kind: "report_update"; reportId: string; status: DiscordReportStatus };
+  | {
+      kind: "report_update";
+      reportId: string;
+      status: DiscordReportStatus;
+      reviewUrl?: string;
+    }
+  | { kind: "review_update"; reportId: string; status: "received" };
 
 export type IgnoredEmailClassification =
   | "non_discord_sender"
@@ -93,6 +97,29 @@ function ignoredDiagnostic(parsed: ParsedMail): IgnoredEmailDiagnostic {
   };
 }
 
+function reportReviewUrl(parsed: ParsedMail): string | undefined {
+  const candidate =
+    /request we review this decision by clicking here:\s*(https:\/\/[^\s<>"']+)/i.exec(
+      parsed.text ?? ""
+    )?.[1];
+  if (!candidate) return undefined;
+  const value = candidate.replace(/[),.;]+$/, "");
+  try {
+    const url = new URL(value);
+    const trustedDirect =
+      url.protocol === "https:" &&
+      url.hostname === "discord.com" &&
+      url.pathname === "/report-review";
+    const trustedTracker =
+      url.protocol === "https:" &&
+      url.hostname === "click.discord.com" &&
+      url.pathname === "/ls/click";
+    return trustedDirect || trustedTracker ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function extractVerificationCode(rawEmail: Buffer): Promise<string | undefined> {
   const parsed = await simpleParser(rawEmail, {
     skipHtmlToText: false,
@@ -115,6 +142,19 @@ export async function inspectDiscordEmail(rawEmail: Buffer): Promise<DiscordEmai
   });
   if (!isDiscordSender(parsed)) return { kind: "ignored", diagnostic: ignoredDiagnostic(parsed) };
 
+  const reviewConfirmation =
+    /^Report Review Request Received #(\d{15,22})$/i.exec(parsed.subject?.trim() ?? "");
+  if (reviewConfirmation?.[1]) {
+    return {
+      kind: "parsed",
+      email: {
+        kind: "review_update",
+        reportId: reviewConfirmation[1],
+        status: "received"
+      }
+    };
+  }
+
   const lifecycle = /^(Report Received|Report Actioned|Report Closed) #(\d{15,22})$/i.exec(
     parsed.subject?.trim() ?? ""
   );
@@ -128,7 +168,16 @@ export async function inspectDiscordEmail(rawEmail: Buffer): Promise<DiscordEmai
     else if (/report review request for report/i.test(parsed.text ?? "")) {
       status = "review_not_approved";
     } else status = "closed_no_action";
-    return { kind: "parsed", email: { kind: "report_update", reportId, status } };
+    const reviewUrl = status === "closed_no_action" ? reportReviewUrl(parsed) : undefined;
+    return {
+      kind: "parsed",
+      email: {
+        kind: "report_update",
+        reportId,
+        status,
+        ...(reviewUrl === undefined ? {} : { reviewUrl })
+      }
+    };
   }
 
   const code = verificationCode(parsed) ?? trustedSubjectEndingCode(parsed);

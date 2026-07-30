@@ -21,6 +21,18 @@ export const DISCORD_REPORT_STATUSES = [
 ] as const;
 export type DiscordReportStatus = (typeof DISCORD_REPORT_STATUSES)[number];
 
+export const DISCORD_REVIEW_STATUSES = [
+  "queued",
+  "requested",
+  "received",
+  "confirmation_timeout",
+  "request_failed",
+  "request_ambiguous",
+  "approved",
+  "not_approved"
+] as const;
+export type DiscordReviewStatus = (typeof DISCORD_REVIEW_STATUSES)[number];
+
 export const PROFILE_ELEMENTS = ["photos", "name", "descriptors"] as const;
 export type UserProfileElement = (typeof PROFILE_ELEMENTS)[number];
 
@@ -28,7 +40,6 @@ export interface ReportedUserSnapshot {
   userId: string;
   username: string;
   globalDisplayName: string | null;
-  serverDisplayName?: string;
   avatarUrl: string | null;
   bannerUrl?: string | null;
   bot: boolean;
@@ -101,6 +112,10 @@ export interface ReportSummary {
   discordReportId: string | null;
   discordStatus: DiscordReportStatus | null;
   discordStatusUpdatedAt: string | null;
+  reviewStatus: DiscordReviewStatus | null;
+  reviewStatusUpdatedAt: string | null;
+  reviewError: { code: string; message: string | null } | null;
+  resubmittable: boolean;
   error: { code: string; message: string | null } | null;
   createdAt: string;
   updatedAt: string;

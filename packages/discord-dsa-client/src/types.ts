@@ -99,6 +99,10 @@ export interface ReportSubmissionResult {
   report_id: string;
 }
 
+export interface ReportReviewSubmissionResult {
+  report_id: string;
+}
+
 export interface EmailTokenResponse {
   token: string;
 }
@@ -121,6 +125,7 @@ export interface JsonRequest {
 
 export interface JsonTransport {
   requestJson<T>(request: JsonRequest): Promise<T>;
+  resolveRedirect?(url: string): Promise<string>;
   exportCookies?(): string;
   close?(): Promise<void>;
 }

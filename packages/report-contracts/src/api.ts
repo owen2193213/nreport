@@ -88,7 +88,8 @@ export class DsaApi {
   public retryReport(
     internalReportId: string,
     interactionId: string,
-    discordUserId: string
+    discordUserId: string,
+    overrides: { reportReason?: string; context?: string } = {}
   ): Promise<ReportDetail> {
     return this.request(`/v1/reports/${encodeURIComponent(internalReportId)}/retry`, {
       method: "POST",
@@ -96,7 +97,7 @@ export class DsaApi {
         "content-type": "application/json",
         "idempotency-key": `retry:${interactionId}`
       },
-      body: JSON.stringify({ submitterDiscordUserId: discordUserId })
+      body: JSON.stringify({ submitterDiscordUserId: discordUserId, ...overrides })
     });
   }
 

@@ -49,6 +49,15 @@ function publicReportSummary(report: ReportRow): ReportSummary {
     discordReportId: report.discord_report_id,
     discordStatus: report.discord_status,
     discordStatusUpdatedAt: report.discord_status_updated_at?.toISOString() ?? null,
+    reviewStatus: report.review_status,
+    reviewStatusUpdatedAt: report.review_status_updated_at?.toISOString() ?? null,
+    reviewError:
+      report.review_error_code === null
+        ? null
+        : { code: report.review_error_code, message: report.review_error_message },
+    resubmittable:
+      report.discord_status === "review_not_approved" &&
+      report.retried_as_report_id === null,
     error:
       report.error_code === null
         ? null
@@ -275,6 +284,13 @@ export async function buildServer(config: AppConfig, database: Database) {
       try {
         const report = await database.getReport(request.params.id);
         if (!report) throw new ReportRetryError("report_not_found");
+        const retryInput = parseCreateReportInput({
+          ...report.input,
+          ...(input.reportReason === undefined
+            ? {}
+            : { reportReason: input.reportReason }),
+          ...(input.context === undefined ? {} : { context: input.context })
+        });
         const identity = generateIdentity(report.country, config.emailDomain);
         const result = await database.retryReport({
           reportId: report.id,
@@ -286,7 +302,11 @@ export async function buildServer(config: AppConfig, database: Database) {
           timezone: identity.timezone,
           locale: identity.locale,
           language: identity.language,
-          proxySessionId: createProxySessionId()
+          proxySessionId: createProxySessionId(),
+          input: retryInput,
+          requestHash: sha256Hex(JSON.stringify(retryInput)),
+          hasOverrides:
+            input.reportReason !== undefined || input.context !== undefined
         });
         request.log.info(
           {
@@ -437,12 +457,27 @@ export async function buildServer(config: AppConfig, database: Database) {
                 config.sessionEncryptionKey
               )
             })
-          : await database.registerReportUpdateEmail({
-              messageId,
-              recipient,
-              discordReportId: parsed.reportId,
-              discordStatus: parsed.status
-            });
+          : parsed.kind === "review_update"
+            ? await database.registerReviewUpdateEmail({
+                messageId,
+                recipient,
+                discordReportId: parsed.reportId,
+                reviewStatus: parsed.status
+              })
+            : await database.registerReportUpdateEmail({
+                messageId,
+                recipient,
+                discordReportId: parsed.reportId,
+                discordStatus: parsed.status,
+                ...(parsed.reviewUrl === undefined
+                  ? {}
+                  : {
+                      encryptedReviewUrl: encryptJson(
+                        { reviewUrl: parsed.reviewUrl },
+                        config.sessionEncryptionKey
+                      )
+                    })
+              });
       request.log.info(
         {
           event: "inbound_email_correlated",
@@ -450,7 +485,11 @@ export async function buildServer(config: AppConfig, database: Database) {
           emailKind: parsed.kind,
           correlationStatus: result.status,
           reportId: result.reportId,
-          ...(parsed.kind === "report_update" ? { discordStatus: parsed.status } : {})
+          ...(parsed.kind === "report_update"
+            ? { discordStatus: parsed.status, reviewEligible: parsed.reviewUrl !== undefined }
+            : parsed.kind === "review_update"
+              ? { reviewStatus: parsed.status }
+              : {})
         },
         "Inbound email processed"
       );

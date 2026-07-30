@@ -11,6 +11,8 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  CheckboxGroupBuilder,
+  CheckboxGroupOptionBuilder,
   Colors,
   EmbedBuilder,
   LabelBuilder,
@@ -45,7 +47,15 @@ const STATUS_LABELS: Record<string, string> = {
   received: "Received by Discord",
   actioned: "Action taken",
   closed_no_action: "Closed — no action",
-  review_not_approved: "Review not approved"
+  review_not_approved: "Review not approved",
+  review_queued: "Appeal queued",
+  review_requested: "Appeal requested",
+  review_received: "Appeal received by Discord",
+  review_confirmation_timeout: "Appeal sent - email unconfirmed",
+  review_request_failed: "Automatic appeal failed",
+  review_request_ambiguous: "Appeal result uncertain",
+  review_approved: "Appeal approved",
+  review_not_approved_final: "Appeal denied"
 };
 
 function statusLabel(status: string | null): string {
@@ -53,10 +63,31 @@ function statusLabel(status: string | null): string {
   return STATUS_LABELS[status] ?? status.replaceAll("_", " ");
 }
 
-function statusColor(report: Pick<ReportView, "status" | "discordStatus">): number {
-  if (report.status === "failed" || report.discordStatus === "review_not_approved") return Colors.Red;
+function displayStatus(report: ReportView): string {
+  if (report.reviewStatus === "approved") return "review_approved";
+  if (report.reviewStatus === "not_approved") return "review_not_approved_final";
+  if (report.reviewStatus !== null) return `review_${report.reviewStatus}`;
+  return report.discordStatus ?? report.status;
+}
+
+function statusColor(
+  report: Pick<ReportView, "status" | "discordStatus" | "reviewStatus">
+): number {
+  if (
+    report.status === "failed" ||
+    report.discordStatus === "review_not_approved" ||
+    report.reviewStatus === "request_failed" ||
+    report.reviewStatus === "request_ambiguous" ||
+    report.reviewStatus === "not_approved"
+  ) {
+    return Colors.Red;
+  }
+  if (report.reviewStatus === "approved") return Colors.Green;
+  if (report.reviewStatus === "confirmation_timeout") return Colors.Orange;
   if (report.discordStatus === "actioned") return Colors.Green;
-  if (report.discordStatus === "closed_no_action") return Colors.Greyple;
+  if (report.discordStatus === "closed_no_action" && report.reviewStatus === null) {
+    return Colors.Greyple;
+  }
   if (report.status === "submitted" || report.discordStatus === "received") return Colors.Blurple;
   return Colors.Yellow;
 }
@@ -204,6 +235,56 @@ function selectLabel(input: {
   return label;
 }
 
+export function buildReportSetupModal(draftId: string, draft: ReportDraft): ModalBuilder {
+  const preferences = new CheckboxGroupBuilder()
+    .setCustomId("preferences")
+    .setRequired(false)
+    .setMinValues(0)
+    .setMaxValues(2)
+    .addOptions(
+      new CheckboxGroupOptionBuilder()
+        .setLabel("Use AI")
+        .setValue("USE_AI")
+        .setDefault(draft.aiDisabled !== true),
+      new CheckboxGroupOptionBuilder()
+        .setLabel("Send report embed to DMs")
+        .setValue("SEND_DM")
+        .setDefault(draft.sendToDms !== false)
+    );
+  const countryOptions = [
+    {
+      label: "Auto",
+      value: "AUTO",
+      default: draft.countrySelection === "auto"
+    },
+    ...(draft.countrySelection === "default" && draft.country
+      ? [
+          {
+            label: `Saved default: ${countryDisplay(draft.country)}`,
+            value: "DEFAULT",
+            default: true
+          }
+        ]
+      : []),
+    { label: "Choose another country", value: "CHOOSE" }
+  ];
+  return new ModalBuilder()
+    .setCustomId(`report:setup:${draftId}`)
+    .setTitle(`Set up ${FLOW_LABELS[draft.flow].toLowerCase()} report`)
+    .addLabelComponents(
+      new LabelBuilder()
+        .setLabel("Report preferences")
+        .setDescription("Both options are enabled by default.")
+        .setCheckboxGroupComponent(preferences),
+      selectLabel({
+        customId: "country_mode",
+        label: "Country",
+        description: "Use Auto, your saved default, or choose another country.",
+        options: countryOptions
+      })
+    );
+}
+
 export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuilder {
   const modal = new ModalBuilder()
     .setCustomId(`report:modal:${draftId}`)
@@ -301,6 +382,22 @@ export function buildRefinementModal(draftId: string): ModalBuilder {
     );
 }
 
+export function buildResubmissionRewriteModal(reportId: string): ModalBuilder {
+  return new ModalBuilder()
+    .setCustomId(`reports:rewrite:${reportId}`)
+    .setTitle("Rewrite denied report")
+    .addLabelComponents(
+      textLabel({
+        customId: "instruction",
+        label: "What should be improved?",
+        description: "AI will create a new editable draft. Nothing is sent yet.",
+        style: TextInputStyle.Paragraph,
+        minLength: 1,
+        maxLength: 512
+      })
+    );
+}
+
 export function buildManualReportModal(draftId: string, draft: ReportDraft): ModalBuilder {
   const current = (draft.context ?? draft.reportBrief ?? "").trim();
   const displayLimit = 3_940;
@@ -337,7 +434,8 @@ export function buildCountryPicker(
   countries: readonly string[],
   draftId: string,
   page: number,
-  allowAuto = true
+  allowAuto = true,
+  scope: "country" | "setup-country" = "country"
 ): { embeds: EmbedBuilder[]; components: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] } {
   const pageSize = 24;
   const choices = allowAuto ? ["AUTO", ...countries] : [...countries];
@@ -345,7 +443,7 @@ export function buildCountryPicker(
   const safePage = Math.min(Math.max(page, 0), pageCount - 1);
   const options = choices.slice(safePage * pageSize, (safePage + 1) * pageSize);
   const picker = new StringSelectMenuBuilder()
-    .setCustomId(`country:select:${draftId}:${safePage}`)
+    .setCustomId(`${scope}:select:${draftId}:${safePage}`)
     .setPlaceholder("Choose the relevant EU country")
     .addOptions(options.map((country) => ({ label: countryDisplay(country), value: country })))
     .setMinValues(1)
@@ -357,12 +455,12 @@ export function buildCountryPicker(
     components.push(
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
-          .setCustomId(`country:page:${draftId}:${safePage - 1}`)
+          .setCustomId(`${scope}:page:${draftId}:${safePage - 1}`)
           .setLabel("Previous")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(safePage === 0),
         new ButtonBuilder()
-          .setCustomId(`country:page:${draftId}:${safePage + 1}`)
+          .setCustomId(`${scope}:page:${draftId}:${safePage + 1}`)
           .setLabel("Next")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(safePage === pageCount - 1)
@@ -387,10 +485,9 @@ export function buildCountryPicker(
 function profileSnapshotText(snapshot: ReportDraft["reportedUserSnapshot"]): string | null {
   if (!snapshot) return null;
   return [
-    snapshot.globalDisplayName ? `**${snapshot.globalDisplayName}**` : null,
+    `Display name: **${snapshot.globalDisplayName ?? snapshot.username}**`,
     `@${snapshot.username}`,
     `User ID: \`${snapshot.userId}\``,
-    snapshot.serverDisplayName ? `Server display name: **${snapshot.serverDisplayName}**` : null,
     snapshot.bot ? "Discord bot account" : null
   ]
     .filter((value): value is string => Boolean(value))
@@ -416,7 +513,15 @@ export function buildProfileTargetConfirmation(
     .addFields(
       resolved
         ? { name: "Resolved account", value: resolved }
-        : { name: "Original value", value: `\`${draft.profileTargetRaw}\`` }
+        : { name: "Original value", value: `\`${draft.profileTargetRaw}\`` },
+      {
+        name: "Report setup",
+        value: [
+          `AI: **${draft.aiDisabled ? "Off" : "On"}**`,
+          `Send to DMs: **${draft.sendToDms === false ? "No" : "Yes"}**`,
+          `Country: **${draft.country ? countryDisplay(draft.country) : "Auto"}**`
+        ].join("\n")
+      }
     );
   if (draft.reportedUserSnapshot?.avatarUrl) {
     embed.setThumbnail(draft.reportedUserSnapshot.avatarUrl);
@@ -445,6 +550,43 @@ export function buildProfileTargetConfirmation(
       .setStyle(ButtonStyle.Secondary)
   );
   return { embeds: [embed], components: [buttons] };
+}
+
+export function buildReportSetupConfirmation(
+  draftId: string,
+  draft: ReportDraft
+): { embeds: EmbedBuilder[]; components: ActionRowBuilder<ButtonBuilder>[] } {
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(Colors.Blurple)
+        .setTitle("Report setup")
+        .setDescription("Review these options, then continue to the report details.")
+        .addFields(
+          { name: "Item", value: truncate(targetSummary(draft), 1_000) },
+          {
+            name: "Options",
+            value: [
+              `AI: **${draft.aiDisabled ? "Off" : "On"}**`,
+              `Send to DMs: **${draft.sendToDms === false ? "No" : "Yes"}**`,
+              `Country: **${draft.country ? countryDisplay(draft.country) : "Auto"}**`
+            ].join("\n")
+          }
+        )
+    ],
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`setup:continue:${draftId}`)
+          .setLabel("Continue")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`draft:cancel:${draftId}`)
+          .setLabel("Cancel")
+          .setStyle(ButtonStyle.Secondary)
+      )
+    ]
+  };
 }
 
 function targetSummary(draft: ReportDraft): string {
@@ -737,7 +879,7 @@ function reportDetails(report: ReportView, snapshot?: ServerSnapshot | null): st
 
 function discordTime(value: string): string {
   const seconds = Math.floor(new Date(value).getTime() / 1_000);
-  return Number.isFinite(seconds) ? `<t:${seconds}:T>` : value;
+  return Number.isFinite(seconds) ? `<t:${seconds}:R>` : value;
 }
 
 function historyMilestone(
@@ -764,6 +906,23 @@ function historyMilestone(
         key: "failed",
         label: `Failed${event.errorCode ? ` · ${event.errorCode}` : ""}`
       };
+    case "review_queued":
+      return { key: "review_queued", label: "Appeal queued" };
+    case "review_requested":
+      return { key: "review_requested", label: "Appeal requested" };
+    case "review_received":
+      return { key: "review_received", label: "Appeal received by Discord" };
+    case "review_confirmation_timeout":
+      return {
+        key: "review_confirmation_timeout",
+        label: "Appeal sent; confirmation email not received"
+      };
+    case "review_request_failed":
+      return { key: "review_failed", label: "Automatic appeal failed" };
+    case "review_request_ambiguous":
+      return { key: "review_ambiguous", label: "Appeal result uncertain" };
+    case "review_approved":
+      return { key: "review_approved", label: "Appeal approved" };
     case "discord_status_updated":
       switch (event.discordStatus) {
         case "received":
@@ -783,6 +942,20 @@ function historyMilestone(
 }
 
 function currentHistoryLabel(report: ReportView): string | null {
+  switch (report.reviewStatus) {
+    case "queued":
+      return "Current: Queueing automatic appeal";
+    case "requested":
+      return "Current: Waiting for appeal confirmation";
+    case "received":
+    case "confirmation_timeout":
+      return "Current: Waiting for appeal decision";
+    case "request_failed":
+    case "request_ambiguous":
+    case "approved":
+    case "not_approved":
+      return null;
+  }
   if (
     report.status === "failed" ||
     report.discordStatus === "actioned" ||
@@ -848,7 +1021,7 @@ export function reportEmbed(
   snapshot?: ServerSnapshot | null,
   options: ReportEmbedOptions = {}
 ): EmbedBuilder {
-  const currentStatus = report.discordStatus ?? report.status;
+  const currentStatus = displayStatus(report);
   const category = reasonText(report.flow, report.reportType, reportElements(report));
   const reportReason = report.reportedDetails.reportReason ?? category;
   const embed = new EmbedBuilder()
@@ -885,6 +1058,20 @@ export function reportEmbed(
         inline: true
       }
     );
+  if (report.reviewStatus !== null) {
+    embed.addFields({
+      name: "Appeal",
+      value: `${statusLabel(displayStatus(report))}${
+        report.reviewError?.message ? `\n${report.reviewError.message}` : ""
+      }`
+    });
+  }
+  if (report.resubmittable) {
+    embed.addFields({
+      name: "Resubmission",
+      value: "A fresh linked report can be resent as-is or rewritten first."
+    });
+  }
   if (report.retrySequence > 0 || report.retryable) {
     embed.addFields({
       name: "Retry",
@@ -925,6 +1112,20 @@ export function reportEmbed(
 export function reportRetryComponents(
   report: ReportView
 ): ActionRowBuilder<ButtonBuilder>[] {
+  if (report.resubmittable) {
+    return [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`reports:retry:${report.internalReportId}`)
+          .setLabel("Resend same report")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`reports:rewrite:${report.internalReportId}`)
+          .setLabel("Rewrite & resend")
+          .setStyle(ButtonStyle.Secondary)
+      )
+    ];
+  }
   if (!(report.status === "failed" && report.retryable)) return [];
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(

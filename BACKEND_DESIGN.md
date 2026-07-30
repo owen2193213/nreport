@@ -67,7 +67,19 @@ separate `discord_status` field so they do not overwrite the API submission stat
 - `review_not_approved`: Discord closed a subsequent review request without action.
 
 Lifecycle updates are correlated using both the Discord report ID and the generated
-envelope recipient. Review links are never stored, logged, or opened automatically.
+envelope recipient. When an original `closed_no_action` email contains Discord's review link,
+the API encrypts that opaque link and queues one durable `submit_review` job. The worker resolves
+only Discord's trusted tracking host to `https://discord.com/report-review`, extracts the token,
+and submits `{ token }` to Discord's review endpoint through the report's sticky country proxy.
+The token and link are never returned to the bot or written to logs.
+
+Review progress is stored separately from `discord_status` as `queued`, `requested`, `received`,
+`confirmation_timeout`, `request_failed`, `request_ambiguous`, `approved`, or `not_approved`.
+A successful review POST is authoritative. The API waits up to 120 seconds for Discord's
+review-confirmation
+email, but a missing confirmation changes only the diagnostic review status and never causes a
+second appeal submission. A transport failure after the review POST begins is ambiguous and is
+also never automatically retried.
 
 ## Security and reliability
 
@@ -106,8 +118,10 @@ envelope recipient. Review links are never stored, logged, or opened automatical
 - Runtime menu resolution and sticky proxy continuity remain mandatory.
 - Discord lifecycle resolution is stored separately from submission status; overwriting
   `submitted` would make API delivery state and Discord's later decision ambiguous.
-- Review-decision emails are observed and recorded, but review links remain a manual
-  organizational action because opening them changes external state.
+- Review submission is API-owned and automatic for eligible original no-action decisions.
+  The bot never handles a review token, Discord user authorization, or the external POST.
+- Review-link resolution failures may use bounded job retry because no appeal has been submitted.
+  An ambiguous review POST is terminal for automation to prevent duplicate external actions.
 - Report ownership is stored with the report instead of in a second bot database, avoiding
   cross-database drift. The field remains optional for compatibility, while bot callers are
   expected to always provide it. A users table and pagination are deferred until needed.

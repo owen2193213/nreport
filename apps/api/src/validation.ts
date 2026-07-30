@@ -58,6 +58,8 @@ export type CreateReportInput =
 
 export interface RetryReportInput {
   submitterDiscordUserId: string;
+  reportReason?: string;
+  context?: string;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -243,7 +245,13 @@ export function parseRetryReportInput(value: unknown): RetryReportInput {
   if (!/^\d{15,22}$/.test(submitterDiscordUserId)) {
     throw new Error("submitterDiscordUserId must be a Discord snowflake.");
   }
-  return { submitterDiscordUserId };
+  const reportReason = optionalString(input, "reportReason", 512);
+  const context = optionalString(input, "context", 512);
+  return {
+    submitterDiscordUserId,
+    ...(reportReason === undefined ? {} : { reportReason }),
+    ...(context === undefined ? {} : { context })
+  };
 }
 
 export function toReportDraft(

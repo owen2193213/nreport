@@ -152,6 +152,7 @@ describe("OpenRouter report writer", () => {
     const text = JSON.stringify(research.messages);
     expect(text).toContain("Germany (DE)");
     expect(text).toContain("123456789012345678");
+    expect(text).toContain("Example Display");
     expect(text).toContain("profile imagery");
     expect(text).toContain("Consider every supported country impartially");
     expect(text).toContain("regardless of list order");
@@ -214,9 +215,9 @@ describe("OpenRouter report writer", () => {
       data_collection: "deny",
       order: [
         "sambanova/minimax-m2.7-dedicated",
+        "mara",
         "fireworks",
         "groq",
-        "mara",
         "sambanova"
       ]
     });
@@ -322,6 +323,33 @@ describe("OpenRouter report writer", () => {
     expect(text).toContain("video/mp4");
   });
 
+  it("rewrites a denied report instead of fixing its prior reason as the new reason", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        researchCompletion("DE", "A clearer evidence-grounded replacement reason.")
+      )
+      .mockResolvedValueOnce(reportCompletion("A newly written report under the researched law."));
+    const draft = profileDraft();
+    delete draft.reportBrief;
+    draft.resubmitOfReportId = "denied-report-id";
+    draft.rewriteRequest = {
+      previousReportReason: "The old denied reason.",
+      previousContext: "The old denied report text.",
+      instruction: "Make the evidence and requested action clearer."
+    };
+
+    const result = await fixedWriter(request).generate(draft, ACTOR);
+
+    const body = requestBody<{ messages: unknown[] }>(request, 0);
+    const text = JSON.stringify(body.messages);
+    expect(text).toContain("Reporter explanation: Rewrite");
+    expect(text).toContain("The old denied reason.");
+    expect(text).toContain("Make the evidence and requested action clearer.");
+    expect(text).not.toContain("Fixed reporter explanation");
+    expect(result.reportReason).toBe("A clearer evidence-grounded replacement reason.");
+  });
+
   it("uses tighter bounded search for a fixed country without bounding research output", async () => {
     const request = vi
       .fn()
@@ -423,9 +451,9 @@ describe("OpenRouter report writer", () => {
       data_collection: "deny",
       order: [
         "sambanova/minimax-m2.7-dedicated",
+        "mara",
         "fireworks",
         "groq",
-        "mara",
         "sambanova"
       ]
     });

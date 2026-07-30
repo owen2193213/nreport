@@ -11,6 +11,7 @@ import {
 } from "../src/email.js";
 import {
   DISCORD_RECEIPT_TIMEOUT_SECONDS,
+  DISCORD_REVIEW_CONFIRMATION_TIMEOUT_SECONDS,
   isRetryableFailure,
   shouldExpireDiscordReceipt,
   statusAfterSessionPersistence,
@@ -245,12 +246,30 @@ describe("backend identity and validation", () => {
   it("validates retry ownership and blocks unsafe failure stages", () => {
     expect(VERIFICATION_EMAIL_TIMEOUT_SECONDS).toBe(60);
     expect(DISCORD_RECEIPT_TIMEOUT_SECONDS).toBe(120);
+    expect(DISCORD_REVIEW_CONFIRMATION_TIMEOUT_SECONDS).toBe(120);
     expect(
       parseRetryReportInput({ submitterDiscordUserId: "1197857362942378017" })
     ).toEqual({ submitterDiscordUserId: "1197857362942378017" });
     expect(() =>
       parseRetryReportInput({ submitterDiscordUserId: "invalid" })
     ).toThrow(/Discord snowflake/);
+    expect(
+      parseRetryReportInput({
+        submitterDiscordUserId: "1197857362942378017",
+        reportReason: "A clearer replacement reason.",
+        context: "A rewritten final report."
+      })
+    ).toEqual({
+      submitterDiscordUserId: "1197857362942378017",
+      reportReason: "A clearer replacement reason.",
+      context: "A rewritten final report."
+    });
+    expect(() =>
+      parseRetryReportInput({
+        submitterDiscordUserId: "1197857362942378017",
+        reportReason: "x".repeat(513)
+      })
+    ).toThrow(/too long/);
     expect(
       isRetryableFailure("requesting_verification", "report_processing_failed", 1)
     ).toBe(true);
@@ -324,7 +343,9 @@ describe("backend secrets and inbound email", () => {
     expect(shouldApplyDiscordStatus("received", "received")).toBe(false);
     expect(shouldApplyDiscordStatus("received", "actioned")).toBe(true);
     expect(shouldApplyDiscordStatus("actioned", "received")).toBe(false);
-    expect(shouldApplyDiscordStatus("closed_no_action", "actioned")).toBe(false);
+    expect(shouldApplyDiscordStatus("closed_no_action", "review_not_approved")).toBe(true);
+    expect(shouldApplyDiscordStatus("closed_no_action", "actioned")).toBe(true);
+    expect(shouldApplyDiscordStatus("review_not_approved", "closed_no_action")).toBe(false);
   });
 
   it("encrypts persisted secrets and authenticates raw email", () => {
@@ -518,6 +539,39 @@ describe("backend secrets and inbound email", () => {
       kind: "report_update",
       reportId,
       status
+    });
+  });
+
+  it("extracts the tracked review link only from an eligible original closure", async () => {
+    const raw = Buffer.from(
+      "From: Discord <noreply@discord.com>\r\n" +
+        "Subject: Report Closed #1510655259763019999\r\n" +
+        "Content-Type: text/plain\r\n\r\n" +
+        "We decided not to take action. If you think we made a mistake, you can request " +
+        "we review this decision by clicking here: " +
+        "https://click.discord.com/ls/click?upn=opaque-review-link"
+    );
+
+    await expect(parseDiscordEmail(raw)).resolves.toEqual({
+      kind: "report_update",
+      reportId: "1510655259763019999",
+      status: "closed_no_action",
+      reviewUrl: "https://click.discord.com/ls/click?upn=opaque-review-link"
+    });
+  });
+
+  it("parses the review-request confirmation separately from the final decision", async () => {
+    const raw = Buffer.from(
+      "From: Discord <noreply@discord.com>\r\n" +
+        "Subject: Report Review Request Received #1510655259763019999\r\n" +
+        "Content-Type: text/plain\r\n\r\n" +
+        "We have received the review request you filed for report #1510655259763019999."
+    );
+
+    await expect(parseDiscordEmail(raw)).resolves.toEqual({
+      kind: "review_update",
+      reportId: "1510655259763019999",
+      status: "received"
     });
   });
 });

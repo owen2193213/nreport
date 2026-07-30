@@ -18,6 +18,7 @@ import type {
   ReportDraft,
   ReportFlow,
   ReportMenu,
+  ReportReviewSubmissionResult,
   ReportSubmissionResult,
   SubmissionPayload
 } from "./types.js";
@@ -54,6 +55,39 @@ function assertCode(code: string): void {
       "Verification code must contain exactly six letters or digits."
     );
   }
+}
+
+function isTrustedReviewPage(url: URL): boolean {
+  return (
+    url.protocol === "https:" &&
+    url.hostname === "discord.com" &&
+    url.port === "" &&
+    url.username === "" &&
+    url.password === "" &&
+    url.pathname === "/report-review"
+  );
+}
+
+function isTrustedReviewTracker(url: URL): boolean {
+  return (
+    url.protocol === "https:" &&
+    url.hostname === "click.discord.com" &&
+    url.port === "" &&
+    url.username === "" &&
+    url.password === "" &&
+    url.pathname === "/ls/click"
+  );
+}
+
+function reviewToken(url: URL): string {
+  if (!isTrustedReviewPage(url)) {
+    throw new PayloadValidationError("A trusted Discord report-review URL is required.");
+  }
+  const token = url.searchParams.get("token")?.trim();
+  if (!token || token.length > 4_096) {
+    throw new PayloadValidationError("Discord report-review URL did not contain a valid token.");
+  }
+  return token;
 }
 
 function emailToCodeQueryB(email: string): string {
@@ -231,6 +265,50 @@ export class DiscordDsaClient {
     return this.submitPrepared(
       this.prepareSubmission(menu, draft, emailToken, language)
     );
+  }
+
+  public async resolveReportReviewToken(reviewUrl: string): Promise<string> {
+    let url: URL;
+    try {
+      url = new URL(reviewUrl);
+    } catch {
+      throw new PayloadValidationError("A trusted Discord report-review URL is required.");
+    }
+    if (isTrustedReviewTracker(url)) {
+      if (this.transport.resolveRedirect === undefined) {
+        throw new DiscordDsaError(
+          "The configured transport cannot resolve Discord report-review links."
+        );
+      }
+      const location = await this.transport.resolveRedirect(url.toString());
+      try {
+        url = new URL(location);
+      } catch {
+        throw new PayloadValidationError("Discord review redirect returned an invalid URL.");
+      }
+    }
+    return reviewToken(url);
+  }
+
+  public async submitReportReviewToken(
+    token: string
+  ): Promise<ReportReviewSubmissionResult> {
+    if (!token.trim() || token.length > 4_096) {
+      throw new PayloadValidationError("A valid Discord report-review token is required.");
+    }
+    const response = await this.transport.requestJson<ReportReviewSubmissionResult>({
+      method: "POST",
+      path: "https://discord.com/api/v9/reporting/review",
+      body: { token }
+    });
+    if (typeof response.report_id !== "string" || response.report_id.length === 0) {
+      throw new DiscordDsaError("Discord review response did not contain report_id.");
+    }
+    return response;
+  }
+
+  public async submitReportReview(reviewUrl: string): Promise<ReportReviewSubmissionResult> {
+    return this.submitReportReviewToken(await this.resolveReportReviewToken(reviewUrl));
   }
 
   public async close(): Promise<void> {

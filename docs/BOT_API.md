@@ -151,6 +151,16 @@ type DiscordReportStatus =
   | "closed_no_action"
   | "review_not_approved";
 
+type DiscordReviewStatus =
+  | "queued"
+  | "requested"
+  | "received"
+  | "confirmation_timeout"
+  | "request_failed"
+  | "request_ambiguous"
+  | "approved"
+  | "not_approved";
+
 interface ReportSummary {
   internalReportId: string;
   country: string;
@@ -171,6 +181,10 @@ interface ReportSummary {
   discordReportId: string | null;
   discordStatus: DiscordReportStatus | null;
   discordStatusUpdatedAt: string | null;
+  reviewStatus: DiscordReviewStatus | null;
+  reviewStatusUpdatedAt: string | null;
+  reviewError: { code: string; message: string | null } | null;
+  resubmittable: boolean;
   error: { code: string; message: string | null } | null;
   createdAt: string;
   updatedAt: string;
@@ -180,7 +194,6 @@ interface ReportedUserSnapshot {
   userId: string;
   username: string;
   globalDisplayName: string | null;
-  serverDisplayName?: string;
   avatarUrl: string | null;
   bannerUrl: string | null;
   bot: boolean;
@@ -242,6 +255,21 @@ queued
 
 After submission, `discordStatus` can independently progress from `received` to
 `actioned`, `closed_no_action`, or `review_not_approved`.
+
+When an original `closed_no_action` email includes a valid Discord review link, the API
+automatically queues and submits one appeal. `reviewStatus` exposes that separate lifecycle.
+The API resolves the tracked link and posts only its token through the report's sticky country
+proxy; neither the link nor token crosses the bot contract. Discord user authorization is not
+part of this API-owned request.
+
+After a successful review POST, `reviewStatus` is `requested`. The confirmation email advances it
+to `received`. If no confirmation email arrives within 120 seconds, it becomes
+`confirmation_timeout`; this is diagnostic and does not trigger a second POST. Pre-POST link
+resolution can retry with bounded backoff, but a network-ambiguous review POST becomes
+`request_ambiguous` and is never automatically retried. A successful appeal followed by a
+`Report Actioned` email sets `discordStatus: "actioned"` and `reviewStatus: "approved"`. A final
+denied review sets both `discordStatus: "review_not_approved"` and
+`reviewStatus: "not_approved"`.
 
 After Discord returns a report ID, the API waits up to 120 seconds for the first report-update
 email. If no update is correlated in that window, the report moves from `submitted` to a
@@ -423,6 +451,10 @@ characters.
   "discordReportId": null,
   "discordStatus": null,
   "discordStatusUpdatedAt": null,
+  "reviewStatus": null,
+  "reviewStatusUpdatedAt": null,
+  "reviewError": null,
+  "resubmittable": false,
   "error": null,
   "createdAt": "2026-07-19T22:34:12.605Z",
   "updatedAt": "2026-07-19T22:34:12.605Z"
@@ -490,9 +522,14 @@ Webhook and feed events contain `eventId`, `internalReportId`, `submitterDiscord
 when deduplicating semantic status notifications. Webhook receipt must not advance the
 reconciliation cursor because webhook events can arrive out of order.
 
+Review lifecycle event types are `review_requested`, `review_received`,
+`review_confirmation_timeout`, `review_request_failed`, and `review_request_ambiguous`.
+Final outcomes continue to use `discord:actioned` or `discord:review_not_approved`.
+
 ### `POST /v1/reports/{internalReportId}/retry`
 
-Creates a new successor report only for a safely retryable failed report.
+Creates a new successor report for either a safely retryable failed report or a final denied
+review whose `resubmittable` field is true.
 
 ```http
 POST /v1/reports/example-report-id/retry
@@ -503,11 +540,14 @@ Content-Type: application/json
 
 ```json
 {
-  "submitterDiscordUserId": "1197857362942378017"
+  "submitterDiscordUserId": "1197857362942378017",
+  "reportReason": "Optional replacement text, at most 512 characters.",
+  "context": "Optional replacement context, at most 512 characters."
 }
 ```
 
-The backend verifies ownership, leaves ordinary failed report attempts immutable, and returns a new report with
+`reportReason` and `context` overrides are accepted only for a final denied review. Omit both to
+resend the same report. The backend verifies ownership, leaves predecessor reports immutable, and returns a new report with
 a new `internalReportId`, pseudonym, catch-all email alias, sticky proxy session, database row, and
 timeline. `retryOfReportId` links the successor to the failed report and `retriedAsReportId` links
 the failed report forward to its successor. `retrySequence` records the attempt number but does not
@@ -516,13 +556,24 @@ creating another branch.
 
 New retry: HTTP `202`. Idempotent replay: HTTP `200`.
 
-Never offer a retry button unless all are true:
+Offer the ordinary retry control only when all are true:
 
 ```text
 report.status === "failed"
 report.retryable === true
 report.submitterDiscordUserId === interaction.user.id
 ```
+
+Offer the denied-review resend and rewrite controls only when:
+
+```text
+report.resubmittable === true
+report.submitterDiscordUserId === interaction.user.id
+```
+
+The rewrite flow remains review-first and editable in the bot. It must enforce the existing
+512-character limit before sending the override to this endpoint. Neither resend path spends
+another credit.
 
 Ambiguous final-submission outcomes are deliberately non-retryable. The explicit
 `discord_receipt_timeout` state is the exception: Discord returned a report ID, but no receipt
@@ -622,12 +673,12 @@ Use `retryable` as the authority. Do not infer retry safety from the text or HTT
 Implemented user-installed app commands:
 
 ```text
-/report message message-link [country] [dont-use-ai]
-/report profile target [server-id] [country] [dont-use-ai]
-/report server [server-or-invite] [country] [dont-use-ai]
-/reports status report-id [send-to-dms]
-/reports list [send-to-dms]
-/reports retry report-id [send-to-dms]
+/report message message-link
+/report profile target [server-id]
+/report server [server-or-invite]
+/reports status report-id
+/reports list
+/reports retry report-id
 /access redeem key
 /access status
 /settings country country
@@ -638,10 +689,10 @@ The profile `target` accepts only a 15-22 digit raw Discord user ID. Usernames, 
 mentions are rejected. The bot resolves the ID and shows the account for confirmation before
 opening the report form.
 
-`/settings country` and each report country option accept `AUTO` or a code returned by
-`/v1/countries`. An explicit report option wins over the saved default; a missing or `NULL` saved
-default means Auto. Auto uses AI to select one supported code based on conduct and legal
-relevance, never guessed location.
+`/settings country` accepts `AUTO` or a code returned by `/v1/countries`. Each report opens a
+setup modal where the reporter can use Auto, keep the saved default, or open the paginated country
+picker. A missing or `NULL` saved default means Auto. Auto uses AI to select one supported code
+based on conduct and legal relevance, never guessed location.
 
 The AI modal allows category and explanation to be omitted as `Auto`. The bot sends fixed values
 when supplied, the active flow's exact category catalog, selected elements, supported country
@@ -668,10 +719,11 @@ combined research, and changing country clears the conversation. MiniMax M2.7 us
 reasoning without an effort-level override. Report-producing calls have a 4,096-token completion
 budget while final report text remains limited to 512 characters.
 
-The optional `dont-use-ai` boolean defaults to `false`. When true, the reporter supplies the final
-maximum-512-character text, the bot makes no OpenRouter call, and AI-only review controls are
-omitted. Auto cannot resolve a country without AI, so the bot requires a saved or explicit country
-before showing the manual review. The bot-to-API request shape remains unchanged.
+The report-setup modal enables Use AI and Send to DMs by default. Clearing Use AI requires the
+reporter to supply the final maximum-512-character text, makes no OpenRouter call, and omits
+AI-only review controls. Auto cannot resolve a country without AI, so the bot requires a saved or
+selected country before showing the manual review. Clearing Send to DMs suppresses the initial
+report card and later lifecycle DMs for that report. The bot-to-API request shape remains unchanged.
 
 Only the resolved ISO country, exact semantic category, concise report reason, and final reviewed
 text cross the bot-to-API boundary. Message content, author details, embed summaries,
@@ -787,7 +839,8 @@ export class DsaApi {
   retryReport(
     internalReportId: string,
     interactionId: string,
-    discordUserId: string
+    discordUserId: string,
+    overrides: { reportReason?: string; context?: string } = {}
   ): Promise<ReportView> {
     return this.request(
       `/v1/reports/${encodeURIComponent(internalReportId)}/retry`,
@@ -797,14 +850,15 @@ export class DsaApi {
           "content-type": "application/json",
           "idempotency-key": `retry:${interactionId}`
         },
-        body: JSON.stringify({ submitterDiscordUserId: discordUserId })
+        body: JSON.stringify({ submitterDiscordUserId: discordUserId, ...overrides })
       }
     );
   }
 }
 ```
 
-Copy the complete `ReportView`, `ReportStatus`, and `DiscordReportStatus` definitions from
+Copy the complete `ReportView`, `ReportStatus`, `DiscordReportStatus`, and
+`DiscordReviewStatus` definitions from
 section 5 into the adapter module.
 
 ### Framework-neutral command handler
@@ -842,7 +896,8 @@ These rules are mandatory because all bot instances share one backend API key:
 1. Always derive `submitterDiscordUserId` from the interaction; never accept it as an option.
 2. Before rendering a single report, compare its owner to the interaction user.
 3. Normal users may list only `/v1/users/{interaction.user.id}/reports`.
-4. Retry only after the owner comparison and only when `retryable` is true.
+4. Retry only after the owner comparison and when either `retryable` or `resubmittable` is true.
+   Send reason/context overrides only for `resubmittable` denied-review reports.
 5. Administrator access must be an explicit bot permission path and should be audited.
 6. Keep report responses ephemeral by default.
 7. Escape or suppress Discord mentions when rendering user-supplied context or errors.
@@ -872,7 +927,11 @@ These rules are mandatory because all bot instances share one backend API key:
   retains more unless separately maintained.
 - Restarting during code-request work is recoverable. Restarting during verification or
   submission is treated as ambiguous and is not automatically retried.
-- Review links in Discord emails are intentionally not stored or opened automatically.
+- An eligible original no-action review link is encrypted immediately, resolved only through
+  Discord's trusted hosts, and submitted once by the API worker. Review URLs and tokens never
+  enter bot responses or structured logs.
+- Missing review-request confirmation after 120 seconds updates `reviewStatus` but does not retry
+  the appeal POST. A worker restart or network failure during that POST is recorded as ambiguous.
 
 ## 13. Implementation checklist
 
@@ -885,7 +944,8 @@ These rules are mandatory because all bot instances share one backend API key:
 - [ ] Enforce owner comparison before showing a single report.
 - [ ] Use only the semantic report types in section 7.
 - [ ] Poll briefly, then rely on `/dsa-status` and `/dsa-reports`.
-- [ ] Show retry only when the API says `retryable: true`.
+- [ ] Show failure retry only when `retryable` is true; show denied-review resend/rewrite only
+      when `resubmittable` is true.
 - [ ] Keep API keys, verification codes, and raw email out of logs.
 - [ ] Handle `429`, transport timeouts, and idempotency replay.
 - [ ] Test against a mock API before running an authorized live report.
@@ -908,6 +968,13 @@ These rules are mandatory because all bot instances share one backend API key:
 - Numeric breadcrumbs remain entirely backend-owned and runtime-resolved.
 - Manual retry remains explicit, owner-checked, unlimited for safely retryable failures, and unavailable after unsafe
   submission failures.
+- Eligible original no-action decisions are appealed automatically inside the API. The review
+  link is encrypted at rest, tokens never cross the bot boundary, and no Discord account
+  authorization header is used.
+- Missing review-confirmation email is diagnostic only. The successful review POST remains
+  authoritative, so timeout and ambiguous POST states never cause an automatic duplicate appeal.
+- A final denied appeal enables one linked successor lifecycle. The owner may resend the same
+  report or submit bot-reviewed replacement reason/context text without another credit.
 
 ## 15. Related internal documentation
 

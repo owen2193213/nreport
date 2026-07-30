@@ -12,6 +12,7 @@ import { createMinimalMenu } from "./fixtures.js";
 
 class FakeTransport implements JsonTransport {
   public readonly requests: JsonRequest[] = [];
+  public readonly redirects: string[] = [];
 
   public requestJson<T>(request: JsonRequest): Promise<T> {
     this.requests.push(request);
@@ -20,8 +21,18 @@ class FakeTransport implements JsonTransport {
     else if (request.path.endsWith("/verify")) response = { token: "verified-token" };
     else if (request.path.startsWith("menu/")) response = createMinimalMenu("message_urf");
     else if (request.path === "message_urf") response = { report_id: "123" };
+    else if (request.path === "https://discord.com/api/v9/reporting/review") {
+      response = { report_id: "1510655259763019999" };
+    }
     else response = undefined;
     return Promise.resolve(response as T);
+  }
+
+  public resolveRedirect(url: string): Promise<string> {
+    this.redirects.push(url);
+    return Promise.resolve(
+      "https://discord.com/report-review?token=review-token-value"
+    );
   }
 
   public exportCookies(): string {
@@ -144,5 +155,31 @@ describe("DiscordDsaClient", () => {
       fingerprint: "persisted-fp",
       cookies: '{"cookies":[]}'
     });
+  });
+
+  it("resolves a trusted tracking link and submits a token-only report review", async () => {
+    const transport = new FakeTransport();
+    const client = new DiscordDsaClient({ transport });
+
+    await expect(
+      client.submitReportReview("https://click.discord.com/ls/click?upn=opaque")
+    ).resolves.toEqual({ report_id: "1510655259763019999" });
+
+    expect(transport.redirects).toEqual([
+      "https://click.discord.com/ls/click?upn=opaque"
+    ]);
+    expect(transport.requests.at(-1)).toEqual({
+      method: "POST",
+      path: "https://discord.com/api/v9/reporting/review",
+      body: { token: "review-token-value" }
+    });
+  });
+
+  it("rejects untrusted review and redirect URLs", async () => {
+    const client = new DiscordDsaClient({ transport: new FakeTransport() });
+
+    await expect(
+      client.submitReportReview("https://example.org/report-review?token=secret")
+    ).rejects.toThrow("trusted Discord report-review URL");
   });
 });

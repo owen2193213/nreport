@@ -131,6 +131,7 @@ CREATE TABLE IF NOT EXISTS report_tracking (
   last_discord_status text,
   poll_at timestamptz,
   locked_at timestamptz,
+  dm_enabled boolean NOT NULL DEFAULT true,
   dm_blocked boolean NOT NULL DEFAULT false,
   status_dm_message_id text,
   tracking_expires_at timestamptz NOT NULL DEFAULT
@@ -195,6 +196,7 @@ $$;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS draft_id uuid;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS server_snapshot jsonb;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS status_dm_message_id text;
+ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS dm_enabled boolean NOT NULL DEFAULT true;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS tracking_expires_at timestamptz;
 UPDATE report_tracking
    SET tracking_expires_at = created_at + interval '${REPORT_TRACKING_RETENTION_DAYS} days'
@@ -242,6 +244,7 @@ export interface TrackingRow extends QueryResultRow {
   flow: string;
   country: string;
   report_type: string;
+  dm_enabled: boolean;
   status_dm_message_id: string | null;
   tracking_expires_at: Date;
 }
@@ -275,7 +278,12 @@ const STATE_NOTIFICATION_TYPES = new Set([
   "discord:received",
   "discord:actioned",
   "discord:closed_no_action",
-  "discord:review_not_approved"
+  "discord:review_not_approved",
+  "review_requested",
+  "review_received",
+  "review_confirmation_timeout",
+  "review_request_failed",
+  "review_request_ambiguous"
 ]);
 
 export function notificationStateKey(eventType: string, lifecycleAttempt: number): string {
@@ -671,6 +679,7 @@ export class BotDatabase {
     reportType: string;
     encryptedRequest: string;
     serverSnapshot?: ServerSnapshot;
+    dmEnabled: boolean;
     adminBypass: boolean;
   }): Promise<{
     id: string;
@@ -732,8 +741,8 @@ export class BotDatabase {
       await client.query(
         `INSERT INTO report_tracking
            (id, draft_id, discord_user_id, interaction_id, idempotency_key, flow, country,
-            report_type, encrypted_request, credit_state, server_snapshot, poll_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+            report_type, encrypted_request, credit_state, server_snapshot, dm_enabled, poll_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
            now() + interval '1 minute')`,
         [
           id,
@@ -746,7 +755,8 @@ export class BotDatabase {
           input.reportType,
           input.encryptedRequest,
           creditState,
-          input.serverSnapshot ?? null
+          input.serverSnapshot ?? null,
+          input.dmEnabled
         ]
       );
       await client.query("COMMIT");
@@ -874,7 +884,8 @@ export class BotDatabase {
     previousReportId: string,
     userId: string,
     interactionId: string,
-    report: ReportView
+    report: ReportView,
+    encryptedRequest?: string
   ): Promise<string> {
     const client = await this.pool.connect();
     try {
@@ -903,10 +914,10 @@ export class BotDatabase {
         `INSERT INTO report_tracking (
            id, discord_user_id, interaction_id, idempotency_key, internal_report_id,
            flow, country, report_type, encrypted_request, credit_state,
-           last_status, last_discord_status, server_snapshot, poll_at
+           last_status, last_discord_status, server_snapshot, dm_enabled, poll_at
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, 'none', $10, $11, $12,
-           now() + interval '30 seconds'
+           true, now() + interval '30 seconds'
          )`,
         [
           trackingId,
@@ -914,10 +925,10 @@ export class BotDatabase {
           interactionId,
           `retry:${interactionId}`,
           report.internalReportId,
-          previous.flow,
-          previous.country,
-          previous.report_type,
-          previous.encrypted_request,
+          report.flow,
+          report.country,
+          report.reportType,
+          encryptedRequest ?? previous.encrypted_request,
           report.status,
           report.discordStatus,
           previous.server_snapshot
@@ -949,7 +960,7 @@ export class BotDatabase {
         tracking.last_discord_status,
         report
       );
-      for (const eventType of notificationTypes) {
+      for (const eventType of tracking.dm_enabled ? notificationTypes : []) {
         const occurredAt = eventType.startsWith("discord:")
           ? report.discordStatusUpdatedAt ?? report.updatedAt
           : report.updatedAt;
@@ -1070,7 +1081,11 @@ export class BotDatabase {
           event.occurredAt
         ]
       );
-      if ((inserted.rowCount ?? 0) > 0 && shouldNotifyLifecycleType(event.type)) {
+      if (
+        (inserted.rowCount ?? 0) > 0 &&
+        tracking.dm_enabled &&
+        shouldNotifyLifecycleType(event.type)
+      ) {
         const payload: NotificationPayload = {
           eventId: event.eventId,
           eventType: event.type,
@@ -1132,6 +1147,7 @@ export class BotDatabase {
          JOIN report_tracking AS tracking ON tracking.id = outbox.tracking_id
          WHERE outbox.state IN ('pending', 'sending') AND outbox.run_at <= now()
            AND (outbox.locked_at IS NULL OR outbox.locked_at < now() - interval '5 minutes')
+           AND tracking.dm_enabled = true
            AND tracking.dm_blocked = false
            AND tracking.tracking_expires_at > now()
          ORDER BY outbox.run_at, outbox.id

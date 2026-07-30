@@ -70,7 +70,8 @@ Lifecycle updates are correlated using both the Discord report ID and the genera
 envelope recipient. When an original `closed_no_action` email contains Discord's review link,
 the API encrypts that opaque link and queues one durable `submit_review` job. The worker resolves
 only Discord's trusted tracking host to `https://discord.com/report-review`, extracts the token,
-and submits `{ token }` to Discord's review endpoint through the report's sticky country proxy.
+and submits `{ token }` to Discord's review endpoint through a fresh proxy session in the report's
+selected country. It does not require the original report IP or Discord session to remain valid.
 The token and link are never returned to the bot or written to logs.
 
 Review progress is stored separately from `discord_status` as `queued`, `requested`, `received`,

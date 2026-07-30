@@ -13,7 +13,7 @@ import {
   type JobRow,
   type ReportRow
 } from "./database.js";
-import { buildAcceptLanguage, buildProxyUrl } from "./pseudonyms.js";
+import { buildAcceptLanguage, buildProxyUrl, createProxySessionId } from "./pseudonyms.js";
 import { decryptJson, encryptJson } from "./security.js";
 import { DISCORD_FORM_LANGUAGE, toReportDraft } from "./validation.js";
 
@@ -192,11 +192,15 @@ export class JobRunner {
     }
   }
 
-  private clientFor(report: ReportRow, sessionState?: DiscordDsaSessionState): DiscordDsaClient {
+  private clientFor(
+    report: ReportRow,
+    sessionState?: DiscordDsaSessionState,
+    proxySessionId = report.proxy_session_id
+  ): DiscordDsaClient {
     const proxyUrl = buildProxyUrl(
       this.config.proxyUrlTemplate,
       report.country,
-      report.proxy_session_id
+      proxySessionId
     );
     if (proxyUrl === undefined) {
       throw new Error("DSA_PROXY_URL_TEMPLATE is not configured.");
@@ -553,7 +557,7 @@ export class JobRunner {
       encryptedReviewUrl,
       this.config.sessionEncryptionKey
     );
-    const client = this.clientFor(report);
+    const client = this.clientFor(report, undefined, createProxySessionId());
     try {
       const token = await this.runStage(job, "resolve_review_link", () =>
         client.resolveReportReviewToken(reviewUrl)

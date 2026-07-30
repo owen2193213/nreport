@@ -78,8 +78,9 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
     fails the report with `discord_receipt_timeout`, edits the saved card, and offers the existing
     immutable new-report retry.
 12. If Discord closes the original report without action and supplies a review link, the API
-    encrypts the link and automatically submits one appeal through the existing country proxy.
-    The bot never receives the link, token, or a Discord account authorization credential.
+    encrypts the link and automatically submits one appeal through a fresh proxy session in the
+    report's selected country. The original sticky IP and Discord session do not need to remain
+    valid; the bot never receives the link, token, or a Discord account authorization credential.
 13. A successful appeal POST is authoritative. The API waits two minutes for the review-request
     confirmation email; a missing email becomes an explicit unconfirmed diagnostic and never
     submits the appeal again. A network-ambiguous appeal POST is likewise not retried.

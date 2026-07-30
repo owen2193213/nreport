@@ -40,7 +40,8 @@ sequenceDiagram
 The backend owns:
 
 - country-independent first-name plus last-name pseudonym and catch-all email generation;
-- one sticky, country-specific proxy session for the report lifecycle;
+- one sticky, country-specific proxy session for the original report lifecycle, plus a fresh
+  country-specific proxy session for an appeal when needed;
 - Discord fingerprint, cookie, verification-code, token, and menu handling;
 - live breadcrumb resolution from the current Discord menu;
 - durable jobs, retries, report ownership, and lifecycle-email correlation;
@@ -258,9 +259,10 @@ After submission, `discordStatus` can independently progress from `received` to
 
 When an original `closed_no_action` email includes a valid Discord review link, the API
 automatically queues and submits one appeal. `reviewStatus` exposes that separate lifecycle.
-The API resolves the tracked link and posts only its token through the report's sticky country
-proxy; neither the link nor token crosses the bot contract. Discord user authorization is not
-part of this API-owned request.
+The API resolves the tracked link and posts only its token through a fresh proxy session in the
+report's selected country; it does not rely on the original sticky IP or Discord session. Neither
+the link nor token crosses the bot contract. Discord user authorization is not part of this
+API-owned request.
 
 After a successful review POST, `reviewStatus` is `requested`. The confirmation email advances it
 to `received`. If no confirmation email arrives within 120 seconds, it becomes

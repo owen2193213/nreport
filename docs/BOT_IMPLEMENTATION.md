@@ -38,19 +38,21 @@ Apps -> Report Message
 ```
 
 Admin commands are visible in every supported context but authorize against the exact
-IDs in `DISCORD_ADMIN_USER_IDS`. All command responses, errors, forms, reviews, and
-administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs.
+IDs in `DISCORD_ADMIN_USER_IDS`. All command responses, errors, forms, and administrative
+results are ephemeral. A report review is ephemeral when DM delivery is cleared; otherwise the
+review and its confirmation controls are sent as an ordinary private bot DM.
 
 ## Report lifecycle
 
 1. Enforce access or configured-admin bypass.
-2. Open a report-setup modal shared by all three `/report` flows and **Apps -> Report Message**.
-   Use AI and DM delivery are selected by default. Country starts from the saved
+2. Open one combined report modal shared by all three `/report` flows and
+   **Apps -> Report Message**. There is no intermediate setup embed. Use AI and Send review to DMs
+   are selected by default. Country starts from the saved
    `/settings country` value or Auto, and the reporter can choose another supported country
    through the paginated picker. A saved `NULL` country means Auto.
-3. Collect the flow-specific elements and target in the report-details modal. Category and explanation are optional in the
+3. Collect the flow-specific elements in that modal. Category and explanation are optional in the
    AI flow: an omitted value is shown as `Auto` and is inferred from the resolved evidence.
-   Both remain required when Use AI is cleared in the setup modal.
+   Both are validated as required when Use AI is cleared.
    Profile targets accept only a raw Discord user ID. The bot resolves the account and requires
    confirmation before collecting the report details; unresolved IDs can be retried or cancelled.
    The profile's optional observed server and the server report's optional server/invite remain
@@ -62,15 +64,17 @@ administrative results are ephemeral. Lifecycle DMs are ordinary private bot DMs
    starts. There is no separate initial or research-complete edit, which avoids back-to-back Discord
    edits while preserving visible progress. Each stage shows the current selections in a code block.
    Then ask `minimax/minimax-m2.7` to write a factual report of at most 512 characters that naturally
-   names the researched law or provision. Show an ephemeral review with submit, refine, regenerate,
-   country-change, manual-edit, and cancel controls.
+   names the researched law or provision. Send the review and its submit, refine, regenerate,
+   country-change, manual-edit, and cancel controls to DMs when selected; otherwise show it in the
+   ephemeral interaction.
 6. Atomically reserve one credit and create the API report with the interaction ID.
 7. Consume the reservation after HTTP 202 or idempotent HTTP 200.
 8. Release it after a definite pre-creation rejection; reconcile ambiguous responses with
    the exact body and idempotency key.
 9. Poll briefly in the interaction, then let the durable worker continue.
-10. When Send to DMs is selected, immediately after API creation DM one complete current report
-    card and persist that Discord message ID. Later lifecycle events edit the same card. Clearing
+10. When Send review to DMs is selected, persist the review DM's message ID and turn that same
+    message into the complete current report card after submission. Later lifecycle events edit the
+    same card, so submission does not create a duplicate DM. Clearing
     the option durably suppresses that report's lifecycle DMs and shows the complete status in the
     ephemeral interaction instead. Receipt updates are silent; final
     accepted/denied outcomes edit the card and send a short plain-text reply to it.
@@ -119,7 +123,9 @@ OpenRouter's deprecated `web` plugin with Exa. It receives the complete report c
 supported country names/codes, reporter explanation, and resolved text evidence.
 The response schema requires a supported two-letter country code, an exact semantic category from
 the active flow's catalog, and a concise evidence-grounded report reason. A user-supplied category
-or reason is fixed and must be returned unchanged; only omitted values may be inferred. The bot also defensively
+or reason is fixed and must be returned unchanged; only omitted values may be inferred. A
+case-insensitive literal `Auto` in the reason field is normalized to omitted while AI is enabled,
+so it cannot be mistaken for fixed user text. The bot also defensively
 normalizes an exact supported English country name to its code before validation.
 The internal law reference has no length limit; validation distinguishes an invalid country,
 missing reference, and missing research summary.
@@ -156,15 +162,15 @@ media from reaching the provider. Attachment names and content types may remain 
 metadata. This is intentionally conservative even though OpenRouter supports multimodal inputs
 for compatible models.
 
-The shared report-setup modal enables Use AI and Send to DMs by default and lets the reporter use
-Auto, their saved country, or the paginated country picker. The AI details modal makes Category and
-Reason optional, uses the placeholder `Auto`, and labels the text limit only as
-`512 characters max.` When Use AI is cleared, the details modal requires both category and final
-report text, performs no OpenRouter
+The shared combined report modal enables Use AI and Send review to DMs by default and lets the
+reporter use Auto, their saved/current country, or the paginated country picker. The same modal
+makes Category and Reason optional, uses the placeholder `Auto`, and labels the text limit only as
+`512 characters max.` When Use AI is cleared, interaction validation requires both category and
+final report text and performs no OpenRouter
 request, and shows the normal review with Submit, Edit manually, Change country, and Cancel.
 Refine and Regenerate are omitted. Because Auto country selection requires AI, a manual report
-with no saved country must select a country before review. The message context-menu command uses
-the same setup modal and selected-message target as the slash flow.
+with no saved country must select a country before review. The message context-menu command opens
+the same combined modal with the selected-message target as the slash flow.
 
 The review has no submission disclaimer and uses Item, Category, Country, Reason, and code-blocked
 Details fields. Auto country is labeled `Auto-selected` without naming the model. The researched

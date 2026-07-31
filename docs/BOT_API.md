@@ -691,12 +691,13 @@ The profile `target` accepts only a 15-22 digit raw Discord user ID. Usernames, 
 mentions are rejected. The bot resolves the ID and shows the account for confirmation before
 opening the report form.
 
-`/settings country` accepts `AUTO` or a code returned by `/v1/countries`. Each report opens a
-setup modal where the reporter can use Auto, keep the saved default, or open the paginated country
+`/settings country` accepts `AUTO` or a code returned by `/v1/countries`. Each report opens one
+combined modal where the reporter can use Auto, keep the saved/current country, or open the paginated country
 picker. A missing or `NULL` saved default means Auto. Auto uses AI to select one supported code
 based on conduct and legal relevance, never guessed location.
 
-The AI modal allows category and explanation to be omitted as `Auto`. The bot sends fixed values
+The combined modal allows category and explanation to be omitted as `Auto`. A case-insensitive
+literal `Auto` reason is also treated as omitted while AI is enabled. The bot sends fixed values
 when supplied, the active flow's exact category catalog, selected elements, supported country
 names/codes, reporter text, and resolved evidence to one combined
 Auto-country/legal-research request using OpenRouter's deprecated `web` plugin with Exa. It makes
@@ -721,11 +722,14 @@ combined research, and changing country clears the conversation. MiniMax M2.7 us
 reasoning without an effort-level override. Report-producing calls have a 4,096-token completion
 budget while final report text remains limited to 512 characters.
 
-The report-setup modal enables Use AI and Send to DMs by default. Clearing Use AI requires the
+The combined report modal enables Use AI and Send review to DMs by default; no setup embed is
+shown. Clearing Use AI requires the
 reporter to supply the final maximum-512-character text, makes no OpenRouter call, and omits
 AI-only review controls. Auto cannot resolve a country without AI, so the bot requires a saved or
-selected country before showing the manual review. Clearing Send to DMs suppresses the initial
-report card and later lifecycle DMs for that report. The bot-to-API request shape remains unchanged.
+selected country before showing the manual review. When DM delivery is enabled, the bot sends the
+generated review and confirmation controls to DMs, then reuses that same message as the lifecycle
+status card after submission. Clearing it keeps the review ephemeral and suppresses later lifecycle
+DMs for that report. The bot-to-API request shape remains unchanged.
 
 Only the resolved ISO country, exact semantic category, concise report reason, and final reviewed
 text cross the bot-to-API boundary. Message content, author details, embed summaries,

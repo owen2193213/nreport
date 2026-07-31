@@ -225,6 +225,29 @@ describe("OpenRouter report writer", () => {
     expect(prompt).toContain("reportType");
   });
 
+  it("treats a literal Auto reason as omitted instead of a fixed supplied reason", async () => {
+    const inferredReason = "The profile imagery targets a protected group with hateful content.";
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        researchCompletion(
+          "DE",
+          inferredReason,
+          "sub_other_hate_speech"
+        )
+      )
+      .mockResolvedValueOnce(reportCompletion());
+    const draft = profileDraft();
+    draft.reportBrief = "Auto";
+
+    const result = await fixedWriter(request).generate(draft, ACTOR);
+
+    expect(result.reportReason).toBe(inferredReason);
+    expect(JSON.stringify(requestBody<{ messages: unknown[] }>(request, 0).messages)).toContain(
+      "Reporter explanation: Auto"
+    );
+  });
+
   it("normalizes a supported country display name and requests JSON mode", async () => {
     const request = vi
       .fn()

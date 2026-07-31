@@ -235,7 +235,7 @@ function selectLabel(input: {
   return label;
 }
 
-export function buildReportSetupModal(draftId: string, draft: ReportDraft): ModalBuilder {
+function reportPreferencesLabel(draft: ReportDraft): LabelBuilder {
   const preferences = new CheckboxGroupBuilder()
     .setCustomId("preferences")
     .setRequired(false)
@@ -245,22 +245,34 @@ export function buildReportSetupModal(draftId: string, draft: ReportDraft): Moda
       new CheckboxGroupOptionBuilder()
         .setLabel("Use AI")
         .setValue("USE_AI")
+        .setDescription("Infer missing details and write the final report.")
         .setDefault(draft.aiDisabled !== true),
       new CheckboxGroupOptionBuilder()
-        .setLabel("Send report embed to DMs")
+        .setLabel("Send review to DMs")
         .setValue("SEND_DM")
+        .setDescription("Send the generated review and confirmation buttons to DMs.")
         .setDefault(draft.sendToDms !== false)
     );
+  return new LabelBuilder()
+    .setLabel("Report preferences")
+    .setDescription("Both options are enabled by default.")
+    .setCheckboxGroupComponent(preferences);
+}
+
+function reportCountryLabel(draft: ReportDraft): LabelBuilder {
   const countryOptions = [
     {
       label: "Auto",
       value: "AUTO",
       default: draft.countrySelection === "auto"
     },
-    ...(draft.countrySelection === "default" && draft.country
+    ...(draft.countrySelection !== "auto" && draft.country
       ? [
           {
-            label: `Saved default: ${countryDisplay(draft.country)}`,
+            label:
+              draft.countrySelection === "default"
+                ? `Saved default: ${countryDisplay(draft.country)}`
+                : `Current: ${countryDisplay(draft.country)}`,
             value: "DEFAULT",
             default: true
           }
@@ -268,33 +280,25 @@ export function buildReportSetupModal(draftId: string, draft: ReportDraft): Moda
       : []),
     { label: "Choose another country", value: "CHOOSE" }
   ];
-  return new ModalBuilder()
-    .setCustomId(`report:setup:${draftId}`)
-    .setTitle(`Set up ${FLOW_LABELS[draft.flow].toLowerCase()} report`)
-    .addLabelComponents(
-      new LabelBuilder()
-        .setLabel("Report preferences")
-        .setDescription("Both options are enabled by default.")
-        .setCheckboxGroupComponent(preferences),
-      selectLabel({
-        customId: "country_mode",
-        label: "Country",
-        description: "Use Auto, your saved default, or choose another country.",
-        options: countryOptions
-      })
-    );
+  return selectLabel({
+    customId: "country_mode",
+    label: "Country",
+    description: "Use Auto, your saved default, or choose another country.",
+    options: countryOptions
+  });
 }
 
 export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuilder {
   const modal = new ModalBuilder()
     .setCustomId(`report:modal:${draftId}`)
-    .setTitle(`Report ${FLOW_LABELS[draft.flow]}`);
+    .setTitle(`Report ${FLOW_LABELS[draft.flow]}`)
+    .addLabelComponents(reportPreferencesLabel(draft), reportCountryLabel(draft));
   modal.addLabelComponents(
     selectLabel({
       customId: "report_type",
       label: "Why are you reporting this?",
       placeholder: "Auto",
-      required: draft.aiDisabled === true,
+      required: false,
       options: reportReasons(draft.flow).map((reason) => ({
         label: reason.label,
         value: reason.value,
@@ -303,16 +307,6 @@ export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuil
     })
   );
 
-  if (draft.flow === "message_urf" && draft.messageUrl === undefined) {
-    modal.addLabelComponents(
-      textLabel({
-        customId: "message_url",
-        label: "Discord message link",
-        description: "Copy Message Link from Discord",
-        maxLength: 300
-      })
-    );
-  }
   if (draft.flow === "user_urf") {
     modal.addLabelComponents(
       selectLabel({
@@ -328,15 +322,6 @@ export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuil
     );
   }
   if (draft.flow === "guild_urf") {
-    if (draft.guildIdOrInviteCode === undefined) {
-      modal.addLabelComponents(
-        textLabel({
-          customId: "guild_target",
-          label: "Server ID or invite code",
-          maxLength: 100
-        })
-      );
-    }
     modal.addLabelComponents(
       selectLabel({
         customId: "guild_elements",
@@ -353,12 +338,11 @@ export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuil
   modal.addLabelComponents(
     textLabel({
       customId: "brief",
-      label: draft.aiDisabled ? "Final report text" : "Briefly explain the report",
+      label: "Briefly explain the report",
       description: "512 characters max.",
-      ...(draft.aiDisabled ? {} : { placeholder: "Auto" }),
-      required: draft.aiDisabled === true,
+      placeholder: "Auto",
+      required: false,
       style: TextInputStyle.Paragraph,
-      ...(draft.aiDisabled ? { minLength: 1 } : {}),
       maxLength: 512,
       ...(draft.reportBrief === undefined ? {} : { value: draft.reportBrief })
     })
@@ -434,8 +418,7 @@ export function buildCountryPicker(
   countries: readonly string[],
   draftId: string,
   page: number,
-  allowAuto = true,
-  scope: "country" | "setup-country" = "country"
+  allowAuto = true
 ): { embeds: EmbedBuilder[]; components: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] } {
   const pageSize = 24;
   const choices = allowAuto ? ["AUTO", ...countries] : [...countries];
@@ -443,7 +426,7 @@ export function buildCountryPicker(
   const safePage = Math.min(Math.max(page, 0), pageCount - 1);
   const options = choices.slice(safePage * pageSize, (safePage + 1) * pageSize);
   const picker = new StringSelectMenuBuilder()
-    .setCustomId(`${scope}:select:${draftId}:${safePage}`)
+    .setCustomId(`country:select:${draftId}:${safePage}`)
     .setPlaceholder("Choose the relevant EU country")
     .addOptions(options.map((country) => ({ label: countryDisplay(country), value: country })))
     .setMinValues(1)
@@ -455,12 +438,12 @@ export function buildCountryPicker(
     components.push(
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
-          .setCustomId(`${scope}:page:${draftId}:${safePage - 1}`)
+          .setCustomId(`country:page:${draftId}:${safePage - 1}`)
           .setLabel("Previous")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(safePage === 0),
         new ButtonBuilder()
-          .setCustomId(`${scope}:page:${draftId}:${safePage + 1}`)
+          .setCustomId(`country:page:${draftId}:${safePage + 1}`)
           .setLabel("Next")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(safePage === pageCount - 1)
@@ -513,15 +496,7 @@ export function buildProfileTargetConfirmation(
     .addFields(
       resolved
         ? { name: "Resolved account", value: resolved }
-        : { name: "Original value", value: `\`${draft.profileTargetRaw}\`` },
-      {
-        name: "Report setup",
-        value: [
-          `AI: **${draft.aiDisabled ? "Off" : "On"}**`,
-          `Send to DMs: **${draft.sendToDms === false ? "No" : "Yes"}**`,
-          `Country: **${draft.country ? countryDisplay(draft.country) : "Auto"}**`
-        ].join("\n")
-      }
+        : { name: "Original value", value: `\`${draft.profileTargetRaw}\`` }
     );
   if (draft.reportedUserSnapshot?.avatarUrl) {
     embed.setThumbnail(draft.reportedUserSnapshot.avatarUrl);
@@ -550,43 +525,6 @@ export function buildProfileTargetConfirmation(
       .setStyle(ButtonStyle.Secondary)
   );
   return { embeds: [embed], components: [buttons] };
-}
-
-export function buildReportSetupConfirmation(
-  draftId: string,
-  draft: ReportDraft
-): { embeds: EmbedBuilder[]; components: ActionRowBuilder<ButtonBuilder>[] } {
-  return {
-    embeds: [
-      new EmbedBuilder()
-        .setColor(Colors.Blurple)
-        .setTitle("Report setup")
-        .setDescription("Review these options, then continue to the report details.")
-        .addFields(
-          { name: "Item", value: truncate(targetSummary(draft), 1_000) },
-          {
-            name: "Options",
-            value: [
-              `AI: **${draft.aiDisabled ? "Off" : "On"}**`,
-              `Send to DMs: **${draft.sendToDms === false ? "No" : "Yes"}**`,
-              `Country: **${draft.country ? countryDisplay(draft.country) : "Auto"}**`
-            ].join("\n")
-          }
-        )
-    ],
-    components: [
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`setup:continue:${draftId}`)
-          .setLabel("Continue")
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId(`draft:cancel:${draftId}`)
-          .setLabel("Cancel")
-          .setStyle(ButtonStyle.Secondary)
-      )
-    ]
-  };
 }
 
 function targetSummary(draft: ReportDraft): string {

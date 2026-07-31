@@ -515,28 +515,35 @@ export class ReportWriter {
     actor: AiRequestContext,
     onProgress?: WriterProgressHandler
   ): Promise<WriterResult> {
+    const normalizedDraft = { ...draft };
+    if (
+      !normalizedDraft.aiDisabled &&
+      normalizedDraft.reportBrief?.trim().toLocaleLowerCase("en") === "auto"
+    ) {
+      delete normalizedDraft.reportBrief;
+    }
     const deadline = Date.now() + WORKFLOW_TIMEOUT_MS;
-    const images = selectedImages(draft);
-    this.logWorkflowStarted(draft, images, actor, "generate");
+    const images = selectedImages(normalizedDraft);
+    this.logWorkflowStarted(normalizedDraft, images, actor, "generate");
     await onProgress?.({
       stage: "research",
-      country: draft.country ?? "Auto",
-      reportReason: draft.reportBrief ?? "Auto",
-      reportType: draft.reportType
-        ? reportReasonLabel(draft.flow, draft.reportType)
+      country: normalizedDraft.country ?? "Auto",
+      reportReason: normalizedDraft.reportBrief ?? "Auto",
+      reportType: normalizedDraft.reportType
+        ? reportReasonLabel(normalizedDraft.flow, normalizedDraft.reportType)
         : "Auto"
     });
-    const researchUserPrompt = researchPrompt(draft, this.supportedCountries);
+    const researchUserPrompt = researchPrompt(normalizedDraft, this.supportedCountries);
     const researchResult = await this.requestResearch(
       researchUserPrompt,
       images,
       deadline,
       actor,
-      draft.countrySelection === "auto"
+      normalizedDraft.countrySelection === "auto"
     );
     const research = parsedResearch(
       researchResult.message.content,
-      draft,
+      normalizedDraft,
       this.supportedCountries
     );
     const sources = validatedSources(researchResult.message);

@@ -54,8 +54,6 @@ import {
   buildManualReportModal,
   buildRefinementModal,
   buildReportModal,
-  buildReportSetupConfirmation,
-  buildReportSetupModal,
   buildResubmissionRewriteModal,
   buildReview,
   buildWriterProgress,
@@ -324,12 +322,62 @@ export class InteractionHandler {
     }
   }
 
+  private async deliverReview(
+    interaction: ModalSubmitInteraction | ButtonInteraction | StringSelectMenuInteraction,
+    draftId: string,
+    draft: ReportDraft
+  ): Promise<void> {
+    const review = {
+      ...buildReview(draftId, draft),
+      allowedMentions: { parse: [] }
+    };
+    const sourceMessageId = interaction.message?.id;
+    if (
+      draft.sendToDms === false ||
+      (draft.reviewDmMessageId !== undefined &&
+        sourceMessageId === draft.reviewDmMessageId)
+    ) {
+      await interaction.editReply(review);
+      return;
+    }
+    try {
+      const message = await interaction.user.send(review);
+      draft.reviewDmMessageId = message.id;
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+      await interaction.editReply({
+        content: null,
+        embeds: [
+          infoEmbed(
+            "Report ready for review",
+            "Check your DMs to review and confirm the report."
+          )
+        ],
+        components: [],
+        allowedMentions: { parse: [] }
+      });
+    } catch (error) {
+      botLog(
+        "report_review_dm_send_failed",
+        {
+          permanentlyBlocked: error instanceof DiscordAPIError && error.code === 50_007,
+          ...errorFields(error)
+        },
+        "warn"
+      );
+      await interaction.editReply({
+        content:
+          "I could not send the review to your DMs, so it is shown here instead. Check your privacy settings.",
+        ...review
+      });
+    }
+  }
+
   private async startDraft(
     interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
     draft: ReportDraft
   ): Promise<void> {
     const draftId = await this.prepareDraft(interaction, draft);
-    if (draftId) await interaction.showModal(buildReportSetupModal(draftId, draft));
+    if (draftId) await interaction.showModal(buildReportModal(draftId, draft));
   }
 
   private async prepareDraft(
@@ -357,24 +405,6 @@ export class InteractionHandler {
       if (snapshot) draft.serverSnapshot = snapshot;
     }
     return this.saveDraft(interaction.user.id, draft);
-  }
-
-  private async reportSetupConfirmation(
-    userId: string,
-    draftId: string,
-    draft: ReportDraft
-  ): Promise<ReturnType<typeof buildReportSetupConfirmation>> {
-    if (draft.flow !== "user_urf" || !draft.profileTargetRaw) {
-      return buildReportSetupConfirmation(draftId, draft);
-    }
-    const resolved = await this.profileResolver.resolve(draft.profileTargetRaw);
-    if (resolved) {
-      draft.reportedUsername = resolved.username;
-      draft.reportedUserId = resolved.userId;
-      draft.reportedUserSnapshot = resolved;
-      await this.replaceDraft(userId, draftId, draft);
-    }
-    return buildProfileTargetConfirmation(draftId, draft);
   }
 
   private async snapshotFor(report: ReportDetail, userId: string) {
@@ -467,7 +497,20 @@ export class InteractionHandler {
         profileTargetRaw: target,
         ...(serverId ? { reportedUserServerId: serverId } : {})
       };
-      await this.startDraft(interaction, draft);
+      const draftId = await this.prepareDraft(interaction, draft);
+      if (!draftId) return;
+      await interaction.deferReply({ flags: EPHEMERAL });
+      const resolved = await this.profileResolver.resolve(target);
+      if (resolved) {
+        draft.reportedUsername = resolved.username;
+        draft.reportedUserId = resolved.userId;
+        draft.reportedUserSnapshot = resolved;
+        await this.replaceDraft(interaction.user.id, draftId, draft);
+      }
+      await interaction.editReply({
+        ...buildProfileTargetConfirmation(draftId, draft),
+        allowedMentions: { parse: [] }
+      });
       return;
     }
     const suppliedTarget = interaction.options.getString("server-or-invite")?.trim();
@@ -795,39 +838,6 @@ export class InteractionHandler {
       }
       return;
     }
-    if (scope === "report" && action === "setup") {
-      const draft = await this.loadDraft(interaction.user.id, draftId);
-      const preferences = interaction.fields.getCheckboxGroup("preferences");
-      draft.aiDisabled = !preferences.includes("USE_AI");
-      draft.sendToDms = preferences.includes("SEND_DM");
-      const countryMode = interaction.fields.getStringSelectValues("country_mode")[0];
-      if (countryMode === "AUTO") {
-        delete draft.country;
-        draft.countrySelection = "auto";
-      } else if (countryMode !== "DEFAULT" && countryMode !== "CHOOSE") {
-        throw new AccessError("invalid_country", "Choose a valid country option.");
-      }
-      await interaction.deferReply({ flags: EPHEMERAL });
-      await this.replaceDraft(interaction.user.id, draftId, draft);
-      if (countryMode === "CHOOSE" || (draft.aiDisabled && !draft.country)) {
-        await interaction.editReply({
-          ...buildCountryPicker(
-            this.countries,
-            draftId,
-            0,
-            !draft.aiDisabled,
-            "setup-country"
-          ),
-          allowedMentions: { parse: [] }
-        });
-        return;
-      }
-      await interaction.editReply({
-        ...(await this.reportSetupConfirmation(interaction.user.id, draftId, draft)),
-        allowedMentions: { parse: [] }
-      });
-      return;
-    }
     if (scope === "writer" && action === "refine") {
       const draft = await this.loadDraft(interaction.user.id, draftId);
       const instruction = interaction.fields.getTextInputValue("instruction").trim();
@@ -849,7 +859,7 @@ export class InteractionHandler {
         draft.reportType = result.reportType;
         draft.writerConversation = result.conversation;
         await this.replaceDraft(interaction.user.id, draftId, draft);
-        await interaction.editReply({ ...buildReview(draftId, draft), allowedMentions: { parse: [] } });
+        await this.deliverReview(interaction, draftId, draft);
       } catch (error) {
         const canManualEdit = await this.preserveWriterCandidate(
           interaction.user.id,
@@ -891,14 +901,26 @@ export class InteractionHandler {
       }
       await interaction.deferUpdate();
       await this.replaceDraft(interaction.user.id, draftId, draft);
-      await interaction.editReply({
-        ...buildReview(draftId, draft),
-        allowedMentions: { parse: [] }
-      });
+      await this.deliverReview(interaction, draftId, draft);
       return;
     }
     if (scope !== "report" || action !== "modal") return;
     const draft = await this.loadDraft(interaction.user.id, draftId);
+    const preferences = interaction.fields.getCheckboxGroup("preferences");
+    draft.aiDisabled = !preferences.includes("USE_AI");
+    draft.sendToDms = preferences.includes("SEND_DM");
+    const countryMode = interaction.fields.getStringSelectValues("country_mode")[0];
+    const chooseCountry = countryMode === "CHOOSE";
+    if (countryMode === "AUTO") {
+      delete draft.country;
+      draft.countrySelection = "auto";
+    } else if (countryMode === "DEFAULT") {
+      if (!draft.country) {
+        throw new AccessError("invalid_country", "No saved or selected country is available.");
+      }
+    } else if (!chooseCountry) {
+      throw new AccessError("invalid_country", "Choose a valid country option.");
+    }
     const reportType = interaction.fields.getStringSelectValues("report_type")[0];
     if (reportType) {
       draft.reportType = reportType;
@@ -907,16 +929,17 @@ export class InteractionHandler {
     } else {
       delete draft.reportType;
     }
-    const reportBrief = interaction.fields.getTextInputValue("brief").trim();
+    const suppliedBrief = interaction.fields.getTextInputValue("brief").trim();
+    const reportBrief =
+      !draft.aiDisabled && suppliedBrief.toLocaleLowerCase("en") === "auto"
+        ? ""
+        : suppliedBrief;
     if (reportBrief) {
       draft.reportBrief = reportBrief;
     } else if (draft.aiDisabled) {
       throw new AccessError("invalid_report_text", "Enter the final report text.");
     } else {
       delete draft.reportBrief;
-    }
-    if (draft.flow === "message_urf" && draft.messageUrl === undefined) {
-      draft.messageUrl = interaction.fields.getTextInputValue("message_url").trim();
     }
     if (draft.flow === "user_urf") {
       const values = interaction.fields.getStringSelectValues("profile_elements");
@@ -925,9 +948,6 @@ export class InteractionHandler {
       );
     }
     if (draft.flow === "guild_urf") {
-      if (draft.guildIdOrInviteCode === undefined) {
-        draft.guildIdOrInviteCode = interaction.fields.getTextInputValue("guild_target").trim();
-      }
       const values = interaction.fields.getStringSelectValues("guild_elements");
       draft.guildElements = values.filter((value): value is GuildElement =>
         (GUILD_ELEMENTS as readonly string[]).includes(value)
@@ -944,17 +964,14 @@ export class InteractionHandler {
       delete draft.writerConversation;
       delete draft.legalResearch;
       await this.replaceDraft(interaction.user.id, draftId, draft);
-      if (!draft.country) {
+      if (chooseCountry || !draft.country) {
         await interaction.editReply({
           ...buildCountryPicker(this.countries, draftId, 0, false),
           allowedMentions: { parse: [] }
         });
         return;
       }
-      await interaction.editReply({
-        ...buildReview(draftId, draft),
-        allowedMentions: { parse: [] }
-      });
+      await this.deliverReview(interaction, draftId, draft);
       return;
     }
     if (draft.flow === "message_urf" && draft.messageUrl && !draft.messageSnapshot) {
@@ -974,6 +991,13 @@ export class InteractionHandler {
     delete draft.writerConversation;
     delete draft.legalResearch;
     await this.replaceDraft(interaction.user.id, draftId, draft);
+    if (chooseCountry) {
+      await interaction.editReply({
+        ...buildCountryPicker(this.countries, draftId, 0, true),
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
     try {
       const result = await this.reportWriter.generate(
         draft,
@@ -992,10 +1016,7 @@ export class InteractionHandler {
       draft.reportType = result.reportType;
       draft.writerConversation = result.conversation;
       await this.replaceDraft(interaction.user.id, draftId, draft);
-      await interaction.editReply({
-        ...buildReview(draftId, draft),
-        allowedMentions: { parse: [] }
-      });
+      await this.deliverReview(interaction, draftId, draft);
     } catch (error) {
       const canManualEdit = await this.preserveWriterCandidate(
         interaction.user.id,
@@ -1012,7 +1033,7 @@ export class InteractionHandler {
 
   private async handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
     const [scope, action, draftId] = customParts(interaction.customId);
-    if ((scope !== "country" && scope !== "setup-country") || action !== "select" || !draftId) {
+    if (scope !== "country" || action !== "select" || !draftId) {
       return;
     }
     const country = interaction.values[0];
@@ -1034,15 +1055,6 @@ export class InteractionHandler {
     delete draft.context;
     delete draft.writerConversation;
     delete draft.legalResearch;
-    if (scope === "setup-country") {
-      await interaction.deferUpdate();
-      await this.replaceDraft(interaction.user.id, draftId, draft);
-      await interaction.editReply({
-        ...(await this.reportSetupConfirmation(interaction.user.id, draftId, draft)),
-        allowedMentions: { parse: [] }
-      });
-      return;
-    }
     await this.replaceDraft(interaction.user.id, draftId, draft);
     if (draft.aiDisabled && (!draft.reportType || !draft.reportBrief)) {
       await interaction.showModal(buildReportModal(draftId, draft));
@@ -1059,10 +1071,7 @@ export class InteractionHandler {
       delete draft.writerConversation;
       delete draft.legalResearch;
       await this.replaceDraft(interaction.user.id, draftId, draft);
-      await interaction.editReply({
-        ...buildReview(draftId, draft),
-        allowedMentions: { parse: [] }
-      });
+      await this.deliverReview(interaction, draftId, draft);
       return;
     }
     try {
@@ -1083,10 +1092,7 @@ export class InteractionHandler {
       draft.reportType = result.reportType;
       draft.writerConversation = result.conversation;
       await this.replaceDraft(interaction.user.id, draftId, draft);
-      await interaction.editReply({
-        ...buildReview(draftId, draft),
-        allowedMentions: { parse: [] }
-      });
+      await this.deliverReview(interaction, draftId, draft);
     } catch (error) {
       const canManualEdit = await this.preserveWriterCandidate(
         interaction.user.id,
@@ -1182,7 +1188,7 @@ export class InteractionHandler {
       return;
     }
     if (
-      (parts[0] === "country" || parts[0] === "setup-country") &&
+      parts[0] === "country" &&
       parts[1] === "page" &&
       parts[2] &&
       parts[3]
@@ -1193,15 +1199,9 @@ export class InteractionHandler {
           this.countries,
           parts[2],
           Number(parts[3]),
-          !countryDraft.aiDisabled,
-          parts[0]
+          !countryDraft.aiDisabled
         )
       );
-      return;
-    }
-    if (parts[0] === "setup" && parts[1] === "continue" && parts[2]) {
-      const setupDraft = await this.loadDraft(interaction.user.id, parts[2]);
-      await interaction.showModal(buildReportModal(parts[2], setupDraft));
       return;
     }
     if (parts[0] !== "draft" || !parts[1] || !parts[2]) return;
@@ -1261,10 +1261,7 @@ export class InteractionHandler {
         draft.reportType = result.reportType;
         draft.writerConversation = result.conversation;
         await this.replaceDraft(interaction.user.id, draftId, draft);
-        await interaction.editReply({
-          ...buildReview(draftId, draft),
-          allowedMentions: { parse: [] }
-        });
+        await this.deliverReview(interaction, draftId, draft);
       } catch (error) {
         const canManualEdit = await this.preserveWriterCandidate(
           interaction.user.id,
@@ -1334,6 +1331,12 @@ export class InteractionHandler {
         creditBalanceBefore: tracking.balanceBefore,
         creditBalanceAfter: tracking.balanceAfter
       });
+      if (draft.sendToDms !== false && draft.reviewDmMessageId) {
+        await this.database.saveStatusDmMessageId(
+          tracking.id,
+          draft.reviewDmMessageId
+        );
+      }
       await interaction.editReply({
         content: null,
         embeds: [
@@ -1359,12 +1362,14 @@ export class InteractionHandler {
       const dmSent =
         draft.sendToDms === false
           ? null
-          : await this.sendReportDm(
-              interaction.user,
-              report,
-              draft.serverSnapshot,
-              tracking.id
-            );
+          : draft.reviewDmMessageId
+            ? true
+            : await this.sendReportDm(
+                interaction.user,
+                report,
+                draft.serverSnapshot,
+                tracking.id
+              );
       for (let attempt = 0; attempt < 5; attempt += 1) {
         if (report.status === "submitted" || report.status === "failed") break;
         await delay(2_000);
@@ -1384,7 +1389,11 @@ export class InteractionHandler {
             : null,
         embeds: [
           reportEmbed(report, draft.serverSnapshot, {
-            history: dmSent === true ? "dm_notice" : "full"
+            history:
+              dmSent === true &&
+              interaction.message.id !== draft.reviewDmMessageId
+                ? "dm_notice"
+                : "full"
           })
         ],
         components: reportRetryComponents(report),

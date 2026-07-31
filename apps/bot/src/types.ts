@@ -11,6 +11,7 @@ import type {
 export interface ReportDraft {
   aiDisabled?: boolean;
   sendToDms?: boolean;
+  reviewDmMessageId?: string;
   country?: string;
   countrySelection?: CountrySelection;
   context?: string;

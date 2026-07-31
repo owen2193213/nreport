@@ -60,7 +60,6 @@ import {
   buildManualReportModal,
   buildRefinementModal,
   buildReportModal,
-  buildReportSetupModal,
   buildReview,
   buildWriterProgress,
   accessKeyEmbed,
@@ -472,6 +471,9 @@ describe("report UI", () => {
     expect(message.components.length).toBeLessThanOrEqual(5);
     expect(profile.components.length).toBeLessThanOrEqual(5);
     expect(guild.components.length).toBeLessThanOrEqual(5);
+    expect(message.components).toHaveLength(4);
+    expect(profile.components).toHaveLength(5);
+    expect(guild.components).toHaveLength(5);
 
     const manual = buildReportModal("draft", {
       flow: "message_urf",
@@ -484,38 +486,47 @@ describe("report UI", () => {
     expect(automaticJson).toContain('"min_values":0');
     expect(automaticJson).toContain('"placeholder":"Auto"');
     expect(automaticJson).toContain('"description":"512 characters max."');
-    expect(manualJson).toContain('"custom_id":"report_type","required":true');
-    expect(manualJson).toContain('"custom_id":"brief","style":2,"required":true');
-    expect(manualJson).toContain('"min_length":1');
+    expect(manualJson).toContain('"custom_id":"report_type","required":false');
+    expect(manualJson).toContain('"custom_id":"brief","style":2,"required":false');
     expect(manualJson).toContain('"max_length":512');
   });
 
-  it("defaults report setup to AI and DM delivery while respecting saved country", () => {
-    const setup = buildReportSetupModal("draft", {
+  it("includes default-on AI and DM review options in the combined modal", () => {
+    const setup = buildReportModal("draft", {
       flow: "message_urf",
       country: "DE",
       countrySelection: "default"
     }).toJSON();
     const json = JSON.stringify(setup);
-    expect(setup.custom_id).toBe("report:setup:draft");
-    expect(setup.components).toHaveLength(2);
+    expect(setup.custom_id).toBe("report:modal:draft");
+    expect(setup.components).toHaveLength(4);
     expect(json).toContain('"custom_id":"preferences"');
-    expect(json).toContain('"label":"Use AI","value":"USE_AI","default":true');
-    expect(json).toContain('"label":"Send report embed to DMs","value":"SEND_DM","default":true');
+    expect(json).toContain('"label":"Use AI","value":"USE_AI"');
+    expect(json).toContain(
+      '"description":"Infer missing details and write the final report.","default":true'
+    );
+    expect(json).toContain('"label":"Send review to DMs","value":"SEND_DM"');
+    expect(json).toContain(
+      '"description":"Send the generated review and confirmation buttons to DMs.","default":true'
+    );
     expect(json).toContain('"label":"Saved default:');
     expect(json).toContain('"value":"DEFAULT","default":true');
     expect(json).toContain('"value":"CHOOSE"');
 
     const disabled = JSON.stringify(
-      buildReportSetupModal("draft", {
+      buildReportModal("draft", {
         flow: "message_urf",
         aiDisabled: true,
         sendToDms: false,
         countrySelection: "auto"
       }).toJSON()
     );
-    expect(disabled).toContain('"value":"USE_AI","default":false');
-    expect(disabled).toContain('"value":"SEND_DM","default":false');
+    expect(disabled).toContain(
+      '"description":"Infer missing details and write the final report.","default":false'
+    );
+    expect(disabled).toContain(
+      '"description":"Send the generated review and confirmation buttons to DMs.","default":false'
+    );
     expect(disabled).toContain('"value":"AUTO","default":true');
   });
 
@@ -1260,7 +1271,7 @@ describe("report component responsiveness", () => {
 });
 
 describe("report interaction country precedence", () => {
-  it("stores setup-modal preferences before opening report details", async () => {
+  it("stores combined-modal preferences and keeps review ephemeral when DM is off", async () => {
     const dataEncryptionKey = randomBytes(32);
     const updateDraft = vi.fn();
     const database = {
@@ -1270,7 +1281,8 @@ describe("report interaction country precedence", () => {
             flow: "message_urf",
             messageUrl:
               "https://discord.com/channels/@me/123456789012345678/123456789012345679",
-            countrySelection: "auto",
+            country: "DE",
+            countrySelection: "default",
             sendToDms: true
           },
           dataEncryptionKey
@@ -1294,6 +1306,7 @@ describe("report interaction country precedence", () => {
     });
     const deferReply = vi.fn();
     const editReply = vi.fn();
+    const send = vi.fn();
     const interaction = {
       isAutocomplete: () => false,
       isMessageContextMenuCommand: () => false,
@@ -1302,11 +1315,18 @@ describe("report interaction country precedence", () => {
       isStringSelectMenu: () => false,
       isButton: () => false,
       isRepliable: () => true,
-      customId: "report:setup:draft-id",
-      user: { id: "1197857362942378017" },
+      customId: "report:modal:draft-id",
+      user: { id: "1197857362942378017", send },
       fields: {
-        getCheckboxGroup: () => ["USE_AI"],
-        getStringSelectValues: () => ["AUTO"]
+        getCheckboxGroup: () => [],
+        getStringSelectValues: (name: string) =>
+          name === "country_mode"
+            ? ["DEFAULT"]
+            : name === "report_type"
+              ? ["sub_other_hate_speech"]
+              : [],
+        getTextInputValue: (name: string) =>
+          name === "brief" ? "I am reporting this message for abusive language." : ""
       },
       deferReply,
       editReply,
@@ -1318,15 +1338,16 @@ describe("report interaction country precedence", () => {
 
     const encrypted = String(updateDraft.mock.calls.at(-1)?.[2]);
     expect(decryptJson(encrypted, dataEncryptionKey)).toMatchObject({
-      aiDisabled: false,
-      countrySelection: "auto",
+      aiDisabled: true,
+      countrySelection: "default",
       sendToDms: false
     });
     expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
-    expect(JSON.stringify(editReply.mock.calls[0]?.[0])).toContain("setup:continue:draft-id");
+    expect(JSON.stringify(editReply.mock.calls.at(-1)?.[0])).toContain("Submit DSA Report");
+    expect(send).not.toHaveBeenCalled();
   });
 
-  it("opens profile setup before resolving the raw user ID", async () => {
+  it("resolves a profile before showing the account confirmation", async () => {
     const deferReply = vi.fn();
     const editReply = vi.fn();
     const showModal = vi.fn();
@@ -1393,15 +1414,14 @@ describe("report interaction country precedence", () => {
 
     await handler.handle(interaction);
 
-    expect(resolveProfile).not.toHaveBeenCalled();
+    expect(resolveProfile).toHaveBeenCalledWith("123456789012345678");
     expect(
       decryptJson(String(saveDraft.mock.calls[0]?.[1]), config.dataEncryptionKey)
     ).toMatchObject({ country: "DE", countrySelection: "default", sendToDms: true });
-    expect(deferReply).not.toHaveBeenCalled();
-    expect(editReply).not.toHaveBeenCalled();
-    expect(showModal).toHaveBeenCalledOnce();
-    const shownModal = showModal.mock.calls[0]?.[0] as { toJSON(): unknown };
-    expect(JSON.stringify(shownModal.toJSON())).toContain("report:setup:draft-id");
+    expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(JSON.stringify(editReply.mock.calls[0]?.[0])).toContain("Resolved account");
+    expect(JSON.stringify(editReply.mock.calls[0]?.[0])).toContain("Example Display");
+    expect(showModal).not.toHaveBeenCalled();
   });
 
   it("uses Auto when neither an explicit nor saved country exists", async () => {
@@ -1496,6 +1516,7 @@ describe("report interaction country precedence", () => {
     });
     const deferReply = vi.fn();
     const editReply = vi.fn();
+    const send = vi.fn().mockResolvedValue({ id: "review-dm-id" });
     const interaction = {
       isAutocomplete: () => false,
       isMessageContextMenuCommand: () => false,
@@ -1505,10 +1526,15 @@ describe("report interaction country precedence", () => {
       isButton: () => false,
       isRepliable: () => true,
       customId: "report:modal:draft-id",
-      user: { id: "1197857362942378017" },
+      user: { id: "1197857362942378017", send },
       fields: {
+        getCheckboxGroup: () => ["SEND_DM"],
         getStringSelectValues: (name: string) =>
-          name === "report_type" ? ["sub_other_hate_speech"] : [],
+          name === "country_mode"
+            ? ["DEFAULT"]
+            : name === "report_type"
+              ? ["sub_other_hate_speech"]
+              : [],
         getTextInputValue: (name: string) =>
           name === "brief" ? "I am reporting this message for abusive language." : ""
       },
@@ -1526,8 +1552,13 @@ describe("report interaction country precedence", () => {
     expect(decryptJson(encrypted, dataEncryptionKey)).toMatchObject({
       aiDisabled: true,
       context: "I am reporting this message for abusive language.",
-      reportType: "sub_other_hate_speech"
+      reportType: "sub_other_hate_speech",
+      reviewDmMessageId: "review-dm-id",
+      sendToDms: true
     });
-    expect(JSON.stringify(editReply.mock.calls.at(-1)?.[0])).toContain("Submit DSA Report");
+    expect(JSON.stringify(send.mock.calls[0]?.[0])).toContain("Submit DSA Report");
+    expect(JSON.stringify(editReply.mock.calls.at(-1)?.[0])).toContain(
+      "Check your DMs to review and confirm the report."
+    );
   });
 });

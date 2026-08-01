@@ -31,7 +31,7 @@ class FakeTransport implements JsonTransport {
   public resolveRedirect(url: string): Promise<string> {
     this.redirects.push(url);
     return Promise.resolve(
-      "https://discord.com/report-review?token=review-token-value"
+      "https://discord.com/report-review#token=review-token-value"
     );
   }
 
@@ -173,6 +173,16 @@ describe("DiscordDsaClient", () => {
       path: "https://discord.com/api/v9/reporting/review",
       body: { token: "review-token-value" }
     });
+  });
+
+  it("retains direct query-token compatibility", async () => {
+    const client = new DiscordDsaClient({ transport: new FakeTransport() });
+
+    await expect(
+      client.resolveReportReviewToken(
+        "https://discord.com/report-review?token=legacy-query-token"
+      )
+    ).resolves.toBe("legacy-query-token");
   });
 
   it("rejects untrusted review and redirect URLs", async () => {

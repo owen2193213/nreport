@@ -259,10 +259,11 @@ After submission, `discordStatus` can independently progress from `received` to
 
 When an original `closed_no_action` email includes a valid Discord review link, the API
 automatically queues and submits one appeal. `reviewStatus` exposes that separate lifecycle.
-The API resolves the tracked link and posts only its token through a fresh proxy session in the
-report's selected country; it does not rely on the original sticky IP or Discord session. Neither
-the link nor token crosses the bot contract. Discord user authorization is not part of this
-API-owned request.
+The API resolves the tracked link, reads Discord's token from the trusted
+`https://discord.com/report-review#token=...` fragment, and posts only that token through a fresh
+proxy session in the report's selected country; it does not rely on the original sticky IP or
+Discord session. Neither the link nor token crosses the bot contract. Discord user authorization
+is not part of this API-owned request.
 
 After a successful review POST, `reviewStatus` is `requested`. The confirmation email advances it
 to `received`. If no confirmation email arrives within 120 seconds, it becomes

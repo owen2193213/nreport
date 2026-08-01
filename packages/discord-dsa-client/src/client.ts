@@ -83,7 +83,9 @@ function reviewToken(url: URL): string {
   if (!isTrustedReviewPage(url)) {
     throw new PayloadValidationError("A trusted Discord report-review URL is required.");
   }
-  const token = url.searchParams.get("token")?.trim();
+  const fragmentParams = new URLSearchParams(url.hash.replace(/^#/, ""));
+  const token =
+    fragmentParams.get("token")?.trim() ?? url.searchParams.get("token")?.trim();
   if (!token || token.length > 4_096) {
     throw new PayloadValidationError("Discord report-review URL did not contain a valid token.");
   }

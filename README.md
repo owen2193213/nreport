@@ -95,10 +95,14 @@ uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypt
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
 the global commands automatically. Set `OPENROUTER_API_KEY` for the bot-side report writer;
 `OPENROUTER_MODEL` defaults to `minimax/minimax-m2.7`.
-Combined Auto-country/legal research uses OpenRouter's deprecated `web` plugin with Exa and the
-complete text report context. Each
-generation makes one research completion, with up to five results for Auto country selection or
-three for a fixed country. Search-count metadata and HTTPS source annotations are
+One adaptive research completion resolves only omitted Auto fields and researches the law. Fixed
+values remain application-owned and are not included in model output schemas. The model first
+checks whether unfamiliar or coded evidence terminology needs clarification; when it does, the
+first Parallel search uses that exact evidence wording. After the meaning is clear, it resolves Auto
+fields and searches for the country-specific law. Explicit evidence skips terminology search. The
+server tool permits at most two searches and two results per search, for four total results at most.
+The final writer receives a compact resolved context rather than the
+country list, category catalog, tool instructions, or raw research transcript. Search-count metadata and HTTPS source annotations are
 optional; a report is accepted from usable structured legal research without requiring either.
 The bot records per-user request/token/reasoning/search/cost totals and operational workflow metadata
 such as flow, category, country mode, selected elements, counts, lengths, latency, and validation

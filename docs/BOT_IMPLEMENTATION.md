@@ -58,8 +58,10 @@ review and its confirmation controls are sent as an ordinary private bot DM.
    The profile's optional observed server and the server report's optional server/invite remain
    slash-command parameters. A server report without either a slash target or current server is rejected.
 4. Encrypt the draft and its OpenRouter conversation at rest with a 30-minute expiry.
-5. In one structured OpenRouter request, resolve Auto country, category, and explanation when
-   needed and research a supporting law. The ephemeral response is edited only at the two meaningful
+5. Run one adaptive OpenRouter research completion. It conditionally searches unfamiliar evidence
+   terminology first, resolves only omitted Auto fields after the meaning is clear, then searches
+   for and confirms the country-specific law. The final writer receives only compact resolved
+   evidence and research context. The ephemeral response is edited only at the two meaningful
    network boundaries: Researching before research starts, then Writing before report drafting
    starts. There is no separate initial or research-complete edit, which avoids back-to-back Discord
    edits while preserving visible progress. Each stage shows the current selections in a code block.
@@ -112,41 +114,46 @@ attempts for that tracked report; `/reports` remains available.
 
 The bot calls OpenRouter directly; the API and low-level Discord client never receive the
 reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KEY` is required and
-`OPENROUTER_MODEL` defaults to `minimax/minimax-m2.7`. The same configured model handles research,
-writing, refinement, and repair. Provider routing requires zero data retention,
+`OPENROUTER_MODEL` defaults to `minimax/minimax-m2.7`. The same configured model handles adaptive
+research, writing, refinement, and repair. Provider routing requires zero data retention,
 denies provider data collection, and requires JSON-mode output support. The bot instructs the model
 to return the required object shape and validates it locally. The complete generation workflow is
 capped at 90 seconds.
 
-Every generation begins with one combined country/category/reason selection and legal-research request using
-OpenRouter's deprecated `web` plugin with Exa. It receives the complete report category, selected elements,
-supported country names/codes, reporter explanation, and resolved text evidence.
-The response schema requires a supported two-letter country code, an exact semantic category from
-the active flow's catalog, and a concise evidence-grounded report reason. A user-supplied category
-or reason is fixed and must be returned unchanged; only omitted values may be inferred. A
-case-insensitive literal `Auto` in the reason field is normalized to omitted while AI is enabled,
-so it cannot be mistaken for fixed user text. The bot also defensively
-normalizes an exact supported English country name to its code before validation.
+Generation starts with one adaptive interpretation-and-research completion. Its output schema is
+dynamic: fixed country, category, and reason values remain application-owned and are not requested
+from the model; only missing Auto fields are returned alongside the law reference and summary. This
+prevents AI echoes from changing supplied values. A case-insensitive literal `Auto` in the reason
+field is normalized to omitted. The active flow's category catalog is supplied only when category
+is Auto. Auto country results accept an exact supported code or defensively normalize a supported
+English country name before validation.
 The internal law reference has no length limit; validation distinguishes an invalid country,
 missing reference, and missing research summary.
 The prompt asks for only the essential legal relevance in a concise research summary without
-hard-capping research output tokens. Fixed/default country research gets one plugin-backed
-completion with up to three Exa results; Auto gets one with up to five results. No domain filter is
-imposed. OpenRouter search counts and URL annotations are retained
+hard-capping research output tokens. The model first checks for unfamiliar, coded, ambiguous, or
+context-dependent terminology that could materially affect classification or legal relevance. If
+needed, it searches the exact evidence wording with minimal neutral context before resolving Auto
+fields. Explicit evidence skips that search. After interpretation it chooses an Auto country when
+needed and searches for the relevant current law and provision. Terminology and law searches have
+separate purposes; category-catalog labels and unrelated categories are forbidden as search terms.
+OpenRouter's Parallel server tool allows at most two searches and two results per search, for four
+total results at most. This leaves room for both terminology and
+law research when both are needed. No domain filter is imposed. Search counts and URL annotations are retained
 when available but are not required for a usable result.
 Research denies provider data collection but omits ZDR and required-parameter routing so a
-plugin-compatible endpoint can be selected. The plugin runs inside the single OpenRouter request;
-the bot does not implement a tool loop or retry an intermediate tool call. No fallback model is used.
+server-tool-compatible endpoint can be selected. Parallel runs inside the single OpenRouter
+request; the bot does not implement a client-side tool loop or retry an intermediate tool call. No
+fallback model is used.
 Writing, refinement, and repair retain ZDR, denied data collection, and
 required-parameter routing because they do not use the web-search server tool.
 
 The AI integration intentionally remains bot-local and single-model. It assumes normal interactive
 bot traffic, keeps the existing 90-second workflow budget, records the cost of every attempted
 OpenRouter request, and adds no fallback model, local search executor, queue, database table, or
-background worker. Media processing remains disabled.
+background worker or separate search API key. Media processing remains disabled.
 
-The prompt contains the selected semantic reason, the reporter's brief, and only the useful
-resolved target data. Message reports include the accessible message content, author, timestamp,
+The research prompt contains the supplied or Auto-selectable semantic reason, reporter brief, and
+only useful resolved target data. Message reports include the accessible message content, author, timestamp,
 server/channel context, embed summary, and attachment names/content types. Link-based reports fall
 back to the link and brief when Discord does not allow the bot to fetch the message. Profile
 reports include the ID, username, global display name, and bot status. A supplied server ID remains
@@ -180,10 +187,13 @@ The structured `lawReference` and final report name the country, clear full law 
 provision instead of relying on an unexplained abbreviation or section number. The internal
 `lawReference` is required but has no report-length limit; only the submitted report is capped at
 512 characters.
-Changing country clears the AI conversation and research before running both again. Refine appends
+After research, the writer receives a compact context containing only evidence, resolved category,
+reason, country, law reference, and legal summary. It does not receive the supported-country list,
+category catalog, search instructions, or raw research transcript. This compact context is retained
+for refinement. Changing country clears the AI conversation and research before running both again. Refine appends
 the instruction and report-only result to the same encrypted conversation and reuses the existing
-research without web search or country changes. Regenerate starts a new conversation and reruns
-combined research; Auto may choose a
+research without web search or country changes. Regenerate starts a new conversation, resolves any
+missing Auto fields, and reruns research; Auto may choose a
 different country. Manual edits become the current assistant answer so a later refinement
 continues from that text. Repair also
 continues the same conversation, performs no search, and is attempted only once.
@@ -205,7 +215,8 @@ conversation. The manual-edit modal shows the AI draft in a copyable read-only t
 provides a separate required 512-character input. Drafts already within the limit prefill that
 input; overlength drafts leave it blank for the user to shorten and paste. Insufficient
 OpenRouter balance, rate limits, timeouts, malformed output, unsupported Auto countries, and
-unusable legal research use the safe AI failure screen. Retry, country override, detail editing,
+unusable legal research use the safe AI failure screen. Errors identify legal research, writing,
+refinement, or repair as the failed stage. Retry, country override, detail editing,
 manual editing when candidate text is available, and cancel remain available. The bot asks AI
 to include the researched law but does not reject reviewed text for omitting it or attempt to
 verify that the law exists.
@@ -450,6 +461,9 @@ same immutable audit relationship as failure retries.
   `discord.com` domain or its true subdomains; the API retains the exact parsed-sender check.
 - Inbound-email correlation records the parsed email kind, database result, correlated report ID
   when available, and a one-way message-ID digest. It does not record recipient or email content.
+- Original closure emails use the trusted HTML `here` anchor associated with Discord's review
+  sentence as the appeal-link source. The plain-text URL is fallback-only because MIME text
+  conversion can corrupt the opaque signed tracking value while leaving the URL structurally valid.
 - Ignored inbound email records a stable failure classification, sender addresses, sanitized
   subject, and a sanitized 500-character text preview. Email addresses and verification-code
   candidates are redacted, and raw MIME or HTML is never logged.
@@ -458,14 +472,24 @@ same immutable audit relationship as failure retries.
 
 ### Decision log
 
+- Chosen: prefer the eligible closure email's trusted HTML review anchor over its generated
+  plain-text representation, while retaining text-only compatibility. Selecting by URL length or
+  decoding Discord's opaque `upn` value would be brittle and cross the transport boundary.
 - Chosen: use `minimax/minimax-m2.7` for research, writing, refinement, and repair. A single
   configurable model keeps prompts, usage accounting, deployment configuration, and failure
   behavior consistent.
-- Chosen: temporarily use OpenRouter's deprecated `web` plugin for one-shot Exa research because it
-  returns a normal completion without requiring the bot to execute a tool loop.
-- Rejected: a Perplexity fallback, client-side Exa implementation, provider pinning, and an
-  unbounded tool loop. They add cost and operational state without being required for this report
-  workflow.
+- Chosen: use OpenRouter's Parallel server-side web-search tool. The research model decides whether
+  search is necessary, with two uses and bounded retrieval context, while OpenRouter executes the
+  tool inside one completion.
+- Chosen: keep supplied country/category/reason values application-owned and omit them from dynamic
+  model output schemas. One adaptive research completion conditionally clarifies terminology,
+  resolves only missing fields, and confirms the law. This avoids a separate classification call
+  and lets terminology inform Auto classification.
+- Chosen: hand the writer a compact resolved context instead of replaying the research prompt and
+  response. This avoids resending country lists, category catalogs, and tool instructions.
+- Rejected: direct Parallel or Exa integration, a Perplexity fallback, provider pinning, and an
+  unbounded client-side tool loop. They add keys, cost, or operational state without being required
+  for this report workflow.
 - Chosen: validate only the Cloudflare envelope domain (`discord.com` or a true subdomain) and the
   generated recipient shape in the email worker. The API remains the sole MIME parser and exact
   visible-sender validator, avoiding duplicated checks for Discord's changing bounce formats.

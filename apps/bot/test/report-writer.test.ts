@@ -137,26 +137,40 @@ describe("OpenRouter report writer", () => {
     expect(result.country).toBe("DE");
     expect(request).toHaveBeenCalledTimes(2);
     const research = requestBody<{
-      max_tool_calls?: unknown;
+      max_tool_calls: number;
       max_tokens?: number;
       messages: unknown[];
-      plugins: unknown[];
+      plugins?: unknown[];
       stream: boolean;
-      tools?: unknown;
+      tools: unknown[];
     }>(request, 0);
-    expect(research.max_tool_calls).toBeUndefined();
+    expect(research.max_tool_calls).toBe(2);
     expect(research.max_tokens).toBeUndefined();
-    expect(research.plugins).toEqual([{ id: "web", engine: "exa", max_results: 5 }]);
+    expect(research.plugins).toBeUndefined();
     expect(research.stream).toBe(false);
-    expect(research.tools).toBeUndefined();
+    expect(research.tools).toEqual([
+      {
+        type: "openrouter:web_search",
+        parameters: {
+          engine: "parallel",
+          max_results: 2,
+          max_total_results: 4,
+          max_characters: 2_500,
+          max_uses: 2
+        }
+      }
+    ]);
     const text = JSON.stringify(research.messages);
     expect(text).toContain("Germany (DE)");
     expect(text).toContain("123456789012345678");
     expect(text).toContain("Example Display");
     expect(text).toContain("profile imagery");
-    expect(text).toContain("Consider every supported country impartially");
-    expect(text).toContain("regardless of list order");
-    expect(text).toContain("strongest applicable legal basis");
+    expect(text).toContain("impartially identify the strongest likely legal fit");
+    expect(text).toContain("without using list order or presumed location");
+    expect(text).toContain("then confirm that country's law");
+    expect(text).toContain("skip terminology search");
+    expect(text).not.toContain("Child sexual abuse material");
+    expect(text).not.toContain("sub_csam");
     expect(text).not.toContain("Germany's Criminal Code");
     expect(text).not.toContain('"type":"image_url"');
     expect(text).not.toContain("https://cdn.discordapp.com/avatar.png");
@@ -201,6 +215,7 @@ describe("OpenRouter report writer", () => {
         reportType: "Other: hate speech"
       }
     ]);
+    expect(request).toHaveBeenCalledTimes(2);
     const research = requestBody<{
       messages: unknown[];
       provider: Record<string, unknown>;
@@ -210,6 +225,8 @@ describe("OpenRouter report writer", () => {
     expect(prompt).toContain("Report category: Auto");
     expect(prompt).toContain("Reporter explanation: Auto");
     expect(prompt).toContain("sub_other_hate_speech");
+    expect(prompt).toContain("search its exact evidence wording");
+    expect(prompt).toContain("then use web search to identify and confirm");
     expect(research.response_format).toEqual({ type: "json_object" });
     expect(research.provider).toEqual({
       data_collection: "deny",
@@ -223,6 +240,16 @@ describe("OpenRouter report writer", () => {
     });
     expect(prompt).toContain("reportReason");
     expect(prompt).toContain("reportType");
+    const writingPrompt = JSON.stringify(
+      requestBody<{ messages: unknown[] }>(request, 1).messages
+    );
+    expect(writingPrompt).toContain("Other: hate speech");
+    expect(writingPrompt).toContain(inferredReason);
+    expect(writingPrompt).toContain(LAW_REFERENCE);
+    expect(writingPrompt).not.toContain("Supported countries:");
+    expect(writingPrompt).not.toContain("Child sexual abuse material");
+    expect(writingPrompt).not.toContain("sub_csam");
+    expect(writingPrompt).not.toContain("openrouter:web_search");
   });
 
   it("treats a literal Auto reason as omitted instead of a fixed supplied reason", async () => {
@@ -230,11 +257,7 @@ describe("OpenRouter report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        researchCompletion(
-          "DE",
-          inferredReason,
-          "sub_other_hate_speech"
-        )
+        researchCompletion("DE", inferredReason, "sub_other_hate_speech")
       )
       .mockResolvedValueOnce(reportCompletion());
     const draft = profileDraft();
@@ -350,7 +373,11 @@ describe("OpenRouter report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        researchCompletion("DE", "A clearer evidence-grounded replacement reason.")
+        researchCompletion(
+          "DE",
+          "A clearer evidence-grounded replacement reason.",
+          "sub_other_hate_speech"
+        )
       )
       .mockResolvedValueOnce(reportCompletion("A newly written report under the researched law."));
     const draft = profileDraft();
@@ -380,27 +407,53 @@ describe("OpenRouter report writer", () => {
       .mockResolvedValueOnce(reportCompletion());
     await fixedWriter(request).generate(profileDraft(), ACTOR);
     const body = requestBody<{
-      max_tool_calls?: unknown;
+      max_tool_calls: number;
       max_tokens?: number;
-      plugins: unknown[];
+      plugins?: unknown[];
       stream: boolean;
-      tools?: unknown;
+      tools: unknown[];
     }>(request, 0);
-    expect(body.max_tool_calls).toBeUndefined();
+    expect(body.max_tool_calls).toBe(2);
     expect(body.max_tokens).toBeUndefined();
-    expect(body.plugins).toEqual([{ id: "web", engine: "exa", max_results: 3 }]);
+    expect(body.plugins).toBeUndefined();
     expect(body.stream).toBe(false);
-    expect(body.tools).toBeUndefined();
+    expect(body.tools).toEqual([
+      {
+        type: "openrouter:web_search",
+        parameters: {
+          engine: "parallel",
+          max_results: 2,
+          max_total_results: 4,
+          max_characters: 2_500,
+          max_uses: 2
+        }
+      }
+    ]);
     expect(JSON.stringify(body)).not.toContain("allowed_domains");
+    const prompt = JSON.stringify(
+      requestBody<{ messages: unknown[] }>(request, 0).messages
+    );
+    expect(prompt).toContain(
+      "Return raw JSON containing exactly these string properties: lawReference, researchSummary."
+    );
+    expect(prompt).not.toContain("Report category: Auto");
+    expect(prompt).not.toContain("Child sexual abuse material");
+    expect(prompt).not.toContain("sub_csam");
   });
 
-  it("keeps a fixed override and rejects an unsupported Auto country", async () => {
+  it("keeps application-owned values and rejects an unsupported Auto country", async () => {
     const fixedRequest = vi
       .fn()
-      .mockResolvedValueOnce(researchCompletion("FR"));
-    await expect(fixedWriter(fixedRequest).generate(profileDraft(), ACTOR)).rejects.toThrow(
-      /fixed country/
-    );
+      .mockResolvedValueOnce(
+        researchCompletion("FR", "AI rewrote the reason.", "sub_csam")
+      )
+      .mockResolvedValueOnce(reportCompletion());
+    const fixed = await fixedWriter(fixedRequest).generate(profileDraft(), ACTOR);
+    expect(fixed).toMatchObject({
+      country: "DE",
+      reportReason: "The profile imagery contains unlawful hate speech.",
+      reportType: "sub_other_hate_speech"
+    });
 
     const autoRequest = vi.fn().mockResolvedValueOnce(researchCompletion("US"));
     const auto = profileDraft();
@@ -694,5 +747,26 @@ describe("OpenRouter report writer", () => {
         ACTOR
       )
     ).rejects.toThrow(/rate limited/);
+  });
+
+  it("identifies the failed AI stage in safe response errors", async () => {
+    await expect(
+      fixedWriter(
+        vi.fn().mockResolvedValue(new Response("not json", { status: 200 }))
+      ).generate(profileDraft(), ACTOR)
+    ).rejects.toThrow(/AI legal research returned a malformed response/);
+
+    const writingRequest = vi
+      .fn()
+      .mockResolvedValueOnce(researchCompletion())
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ choices: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        })
+      );
+    await expect(fixedWriter(writingRequest).generate(profileDraft(), ACTOR)).rejects.toThrow(
+      /AI report writing returned no completion/
+    );
   });
 });

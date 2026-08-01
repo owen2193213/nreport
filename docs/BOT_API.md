@@ -698,12 +698,17 @@ picker. A missing or `NULL` saved default means Auto. Auto uses AI to select one
 based on conduct and legal relevance, never guessed location.
 
 The combined modal allows category and explanation to be omitted as `Auto`. A case-insensitive
-literal `Auto` reason is also treated as omitted while AI is enabled. The bot sends fixed values
-when supplied, the active flow's exact category catalog, selected elements, supported country
-names/codes, reporter text, and resolved evidence to one combined
-Auto-country/legal-research request using OpenRouter's deprecated `web` plugin with Exa. It makes
-one research completion per generation, using up to five results for Auto or three for a fixed
-country, without a domain list.
+literal `Auto` reason is also treated as omitted while AI is enabled. One adaptive research
+completion resolves only omitted fields and always returns the law reference and summary. Supplied
+country, category, and reason values stay application-owned and are omitted from the model's output
+schema. When category is Auto, only the active flow's catalog is supplied for selection.
+The model first inspects the evidence for unfamiliar, coded, ambiguous, or context-dependent
+terminology. If that meaning could affect classification or legal relevance, it uses the first
+Parallel search for the exact evidence wording with minimal neutral context. Otherwise it skips
+terminology search. Once the meaning is clear, it resolves missing fields, selects a country when
+Auto, and searches for the relevant current law and provision. Category-catalog labels are forbidden
+as terminology-search terms. Research is limited to two searches and two results per search, for
+four total results at most, without a domain list.
 The writing prompt asks the final maximum-512-character text to naturally name the structured
 research result's specific law or provision. Brackets, URLs, footnotes, OpenRouter URL annotations,
 and a separate sources section are not required. Bot validation requires only non-empty text of at
@@ -717,9 +722,12 @@ GIFs, videos, avatars, banners, server art, or media URLs to OpenRouter. It remo
 media URLs plus message attachment/embed URLs from AI evidence. Attachment names and content types
 may remain as text metadata.
 
-Refine continues the encrypted conversation and reuses the existing research without searching.
+The writing completion receives a compact context containing evidence, resolved values, law
+reference, and legal summary. It does not receive the supported-country list, category catalog,
+search instructions, or raw research transcript. Refine continues this encrypted compact
+conversation and reuses the existing research without searching.
 Repair continues the same conversation without search and receives one attempt. Regenerate reruns
-combined research, and changing country clears the conversation. MiniMax M2.7 uses mandatory
+adaptive research, and changing country clears the conversation. MiniMax M2.7 uses mandatory
 reasoning without an effort-level override. Report-producing calls have a 4,096-token completion
 budget while final report text remains limited to 512 characters.
 

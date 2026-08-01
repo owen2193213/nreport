@@ -97,15 +97,9 @@ function ignoredDiagnostic(parsed: ParsedMail): IgnoredEmailDiagnostic {
   };
 }
 
-function reportReviewUrl(parsed: ParsedMail): string | undefined {
-  const candidate =
-    /request we review this decision by clicking here:\s*(https:\/\/[^\s<>"']+)/i.exec(
-      parsed.text ?? ""
-    )?.[1];
-  if (!candidate) return undefined;
-  const value = candidate.replace(/[),.;]+$/, "");
+function trustedReportReviewUrl(value: string): string | undefined {
   try {
-    const url = new URL(value);
+    const url = new URL(value.replace(/[),.;]+$/, ""));
     const trustedDirect =
       url.protocol === "https:" &&
       url.hostname === "discord.com" &&
@@ -118,6 +112,47 @@ function reportReviewUrl(parsed: ParsedMail): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function normalizedHtmlText(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;|&#0*160;|&#x0*a0;/gi, " ")
+    .replace(/&amp;|&#0*38;|&#x0*26;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function reportReviewUrlFromHtml(html: string): string | undefined {
+  const anchors = html.matchAll(
+    /<a\b[^>]*\bhref\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*>([\s\S]*?)<\/a>/gi
+  );
+  for (const anchor of anchors) {
+    if (normalizedHtmlText(anchor[3] ?? "").toLowerCase() !== "here") continue;
+    const context = normalizedHtmlText(
+      html.slice(Math.max(0, (anchor.index ?? 0) - 600), anchor.index)
+    );
+    if (!/request we review this decision by clicking$/i.test(context)) continue;
+    const href = (anchor[1] ?? anchor[2] ?? "").replace(
+      /&amp;|&#0*38;|&#x0*26;/gi,
+      "&"
+    );
+    const trusted = trustedReportReviewUrl(href);
+    if (trusted !== undefined) return trusted;
+  }
+  return undefined;
+}
+
+function reportReviewUrl(parsed: ParsedMail): string | undefined {
+  if (typeof parsed.html === "string") {
+    const htmlUrl = reportReviewUrlFromHtml(parsed.html);
+    if (htmlUrl !== undefined) return htmlUrl;
+  }
+  const candidate =
+    /request we review this decision by clicking here:\s*(https:\/\/[^\s<>"']+)/i.exec(
+      parsed.text ?? ""
+    )?.[1];
+  return candidate === undefined ? undefined : trustedReportReviewUrl(candidate);
 }
 
 export async function extractVerificationCode(rawEmail: Buffer): Promise<string | undefined> {

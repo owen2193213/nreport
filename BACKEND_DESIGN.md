@@ -68,7 +68,10 @@ separate `discord_status` field so they do not overwrite the API submission stat
 
 Lifecycle updates are correlated using both the Discord report ID and the generated
 envelope recipient. When an original `closed_no_action` email contains Discord's review link,
-the API encrypts that opaque link and queues one durable `submit_review` job. The worker resolves
+the API prefers the trusted HTML `here` anchor associated with Discord's review sentence and uses
+the plain-text URL only as a fallback. This prevents MIME text conversion from corrupting the
+opaque signed tracking value. The API encrypts that link and queues one durable `submit_review`
+job. The worker resolves
 only Discord's trusted tracking host to `https://discord.com/report-review#token=...`, extracts
 the fragment token, and submits `{ token }` to Discord's review endpoint through a fresh proxy
 session in the report's selected country. It does not require the original report IP or Discord

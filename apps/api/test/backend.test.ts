@@ -560,6 +560,31 @@ describe("backend secrets and inbound email", () => {
     });
   });
 
+  it("prefers the HTML review anchor when the plain-text tracking URL is corrupted", async () => {
+    const raw = Buffer.from(
+      "From: Discord <noreply@discord.com>\r\n" +
+        "Subject: Report Closed #1510655259763019999\r\n" +
+        'Content-Type: multipart/alternative; boundary="review-boundary"\r\n\r\n' +
+        "--review-boundary\r\n" +
+        "Content-Type: text/plain; charset=utf-8\r\n\r\n" +
+        "If you think we made a mistake, you can request we review this decision by " +
+        "clicking here: https://click.discord.com/ls/click?upn=corrupted-text-link\r\n" +
+        "--review-boundary\r\n" +
+        "Content-Type: text/html; charset=utf-8\r\n\r\n" +
+        "<p>If you think we made a mistake, you can request we review this decision by " +
+        'clicking <a href="https://click.discord.com/ls/click?upn=valid-html-link">' +
+        "here</a>.</p>\r\n" +
+        "--review-boundary--\r\n"
+    );
+
+    await expect(parseDiscordEmail(raw)).resolves.toEqual({
+      kind: "report_update",
+      reportId: "1510655259763019999",
+      status: "closed_no_action",
+      reviewUrl: "https://click.discord.com/ls/click?upn=valid-html-link"
+    });
+  });
+
   it("parses the review-request confirmation separately from the final decision", async () => {
     const raw = Buffer.from(
       "From: Discord <noreply@discord.com>\r\n" +

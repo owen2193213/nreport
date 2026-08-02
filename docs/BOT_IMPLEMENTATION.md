@@ -236,7 +236,9 @@ latency, media-allowed status, and failure category. They never contain raw user
 sources, evidence, images, prompts, research, reports, AI responses, or secrets.
 Failed OpenRouter requests opt into router metadata and log only an allowlisted diagnostic summary:
 error type/code, categorized message, provider code, retry delay, routing strategy/attempt, endpoint
-counts, and provider names. Raw error messages and response bodies are never logged.
+counts, provider names, per-provider attempt statuses, server-tool pipeline stage names, and the
+OpenRouter generation ID needed for a provider-side post-mortem. Raw error messages, pipeline data,
+summaries, and response bodies are never logged.
 
 The initial writer prompt contains one generalized report structure plus two style examples. They
 appear once in the retained conversation and are explicitly examples of tone and organization,

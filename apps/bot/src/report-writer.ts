@@ -77,10 +77,12 @@ interface OpenRouterFailurePayload {
   };
   openrouter_metadata?: {
     attempt?: unknown;
+    attempts?: Array<{ provider?: unknown; status?: unknown }>;
     endpoints?: {
       available?: Array<{ provider?: unknown; selected?: unknown }>;
       total?: unknown;
     };
+    pipeline?: Array<{ name?: unknown; type?: unknown }>;
     strategy?: unknown;
   };
 }
@@ -88,14 +90,17 @@ interface OpenRouterFailurePayload {
 interface AiFailureDiagnostics {
   openRouterErrorCode?: number | string;
   openRouterErrorType?: string;
+  openRouterGenerationId?: string;
   openRouterMessageCategory?: string;
   openRouterProviderCode?: number | string;
   retryAfterSeconds?: number;
   routingAttempt?: number;
+  routingAttempts?: string;
   routingEndpointAvailable?: number;
   routingEndpointSelected?: number;
   routingEndpointTotal?: number;
   routingProviders?: string;
+  routingPipeline?: string;
   routingStrategy?: string;
 }
 
@@ -672,8 +677,29 @@ async function openRouterFailureDiagnostics(
         .map((endpoint) => safeDiagnosticName(endpoint.provider))
         .filter((provider): provider is string => provider !== undefined)
     )
-  ].sort();
+  ].sort().slice(0, 10);
+  const attempts = Array.isArray(payload.openrouter_metadata?.attempts)
+    ? payload.openrouter_metadata.attempts
+        .slice(0, 10)
+        .flatMap((attempt) => {
+          const provider = safeDiagnosticName(attempt.provider);
+          const status = finiteNonnegative(attempt.status);
+          return provider && status !== undefined ? [`${provider}:${status}`] : [];
+        })
+    : [];
+  const pipeline = Array.isArray(payload.openrouter_metadata?.pipeline)
+    ? payload.openrouter_metadata.pipeline
+        .slice(0, 10)
+        .flatMap((stage) => {
+          const type = safeDiagnosticName(stage.type);
+          const name = safeDiagnosticName(stage.name);
+          return type && name ? [`${type}:${name}`] : [];
+        })
+    : [];
   const retryAfterSeconds = finiteNonnegative(response.headers.get("Retry-After"));
+  const openRouterGenerationId = safeDiagnosticCode(
+    response.headers.get("X-Generation-Id")
+  );
   const routingAttempt = finiteNonnegative(payload.openrouter_metadata?.attempt);
   const routingEndpointTotal = finiteNonnegative(
     payload.openrouter_metadata?.endpoints?.total
@@ -687,15 +713,18 @@ async function openRouterFailureDiagnostics(
   return {
     ...(openRouterErrorCode === undefined ? {} : { openRouterErrorCode }),
     ...(openRouterErrorType === undefined ? {} : { openRouterErrorType }),
+    ...(typeof openRouterGenerationId === "string" ? { openRouterGenerationId } : {}),
     openRouterMessageCategory: openRouterMessageCategory(payload.error?.message),
     ...(openRouterProviderCode === undefined ? {} : { openRouterProviderCode }),
     ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
     ...(routingAttempt === undefined ? {} : { routingAttempt }),
+    ...(attempts.length === 0 ? {} : { routingAttempts: attempts.join(",") }),
     routingEndpointAvailable: available.length,
     routingEndpointSelected: available.filter((endpoint) => endpoint.selected === true)
       .length,
     ...(routingEndpointTotal === undefined ? {} : { routingEndpointTotal }),
     ...(providers.length === 0 ? {} : { routingProviders: providers.join(",") }),
+    ...(pipeline.length === 0 ? {} : { routingPipeline: pipeline.join(",") }),
     ...(routingStrategy === undefined ? {} : { routingStrategy })
   };
 }

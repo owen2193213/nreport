@@ -908,18 +908,33 @@ describe("OpenRouter report writer", () => {
             openrouter_metadata: {
               strategy: "direct",
               attempt: 0,
+              attempts: [
+                { provider: "Mara", model: "minimax/minimax-m2.7", status: 404 },
+                { provider: "Fireworks", model: "minimax/minimax-m2.7", status: 502 }
+              ],
               endpoints: {
                 total: 2,
                 available: [
                   { provider: "Mara", selected: false },
                   { provider: "Fireworks", selected: false }
                 ]
-              }
+              },
+              pipeline: [
+                {
+                  type: "server_tool",
+                  name: "web-search",
+                  data: { private: "must not be logged" }
+                }
+              ]
             }
           }),
           {
             status: 404,
-            headers: { "Content-Type": "application/json", "Retry-After": "3" }
+            headers: {
+              "Content-Type": "application/json",
+              "Retry-After": "3",
+              "X-Generation-Id": "gen-safe123"
+            }
           }
         )
       );
@@ -934,13 +949,17 @@ describe("OpenRouter report writer", () => {
       expect(output).toContain('"openRouterErrorType":"not_found"');
       expect(output).toContain('"openRouterProviderCode":"NO_ENDPOINTS"');
       expect(output).toContain('"openRouterMessageCategory":"no_allowed_providers"');
+      expect(output).toContain('"openRouterGenerationId":"gen-safe123"');
       expect(output).toContain('"routingAttempt":0');
       expect(output).toContain('"routingEndpointTotal":2');
       expect(output).toContain('"routingEndpointAvailable":2');
       expect(output).toContain('"routingEndpointSelected":0');
       expect(output).toContain('"routingProviders":"Fireworks,Mara"');
+      expect(output).toContain('"routingAttempts":"Mara:404,Fireworks:502"');
+      expect(output).toContain('"routingPipeline":"server_tool:web-search"');
       expect(output).toContain('"retryAfterSeconds":3');
       expect(output).not.toContain("private upstream detail");
+      expect(output).not.toContain("must not be logged");
     } finally {
       write.mockRestore();
     }

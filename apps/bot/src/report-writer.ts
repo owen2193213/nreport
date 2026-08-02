@@ -265,17 +265,24 @@ function targetEvidence(draft: ReportDraft): Record<string, unknown> {
   };
 }
 
-function researchPrompt(draft: ReportDraft, countries: readonly string[]): string {
+function researchOutputFields(draft: ReportDraft): string[] {
   const selection = countryMode(draft);
   const needsReportType = !draft.reportType;
   const needsReportReason = !draft.reportBrief;
-  const outputFields = [
+  return [
     ...(selection === "auto" ? ["country"] : []),
     ...(needsReportType ? ["reportType"] : []),
     ...(needsReportReason ? ["reportReason"] : []),
     "lawReference",
     "researchSummary"
   ];
+}
+
+function researchPrompt(draft: ReportDraft, countries: readonly string[]): string {
+  const selection = countryMode(draft);
+  const needsReportType = !draft.reportType;
+  const needsReportReason = !draft.reportBrief;
+  const outputFields = researchOutputFields(draft);
   const countryInstruction =
     selection === "auto"
       ? "After interpreting the evidence, impartially identify the strongest likely legal fit from the supported countries, without using list order or presumed location, then confirm that country's law."
@@ -507,8 +514,53 @@ function validatedSources(message: OpenRouterMessage): LegalSource[] {
   return sources;
 }
 
-function jsonObjectResponseFormat() {
-  return { type: "json_object" };
+function reportResponseFormat() {
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: "discord_dsa_report",
+      strict: true,
+      schema: {
+        type: "object",
+        properties: {
+          report: { type: "string", minLength: 1, maxLength: MAX_REPORT_LENGTH }
+        },
+        required: ["report"],
+        additionalProperties: false
+      }
+    }
+  };
+}
+
+function researchResponseFormat(draft: ReportDraft, countries: readonly string[]) {
+  const properties: Record<string, unknown> = {};
+  if (countryMode(draft) === "auto") {
+    properties.country = { type: "string", enum: [...countries] };
+  }
+  if (!draft.reportType) {
+    properties.reportType = {
+      type: "string",
+      enum: reportReasons(draft.flow).map((reason) => reason.value)
+    };
+  }
+  if (!draft.reportBrief) {
+    properties.reportReason = { type: "string", minLength: 1, maxLength: 512 };
+  }
+  properties.lawReference = { type: "string", minLength: 1 };
+  properties.researchSummary = { type: "string", minLength: 1 };
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: "discord_dsa_research",
+      strict: true,
+      schema: {
+        type: "object",
+        properties,
+        required: researchOutputFields(draft),
+        additionalProperties: false
+      }
+    }
+  };
 }
 
 function numeric(value: unknown): number {
@@ -577,16 +629,12 @@ export class ReportWriter {
         : "Auto"
     });
     const researchUserPrompt = researchPrompt(normalizedDraft, this.supportedCountries);
-    const researchResult = await this.requestResearch(
+    const { researchResult, research } = await this.completeResearch(
       researchUserPrompt,
+      normalizedDraft,
       images,
       deadline,
       actor
-    );
-    const research = parsedResearch(
-      researchResult.message.content,
-      normalizedDraft,
-      this.supportedCountries
     );
     const sources = validatedSources(researchResult.message);
     const legalResearch: LegalResearch = {
@@ -659,7 +707,7 @@ export class ReportWriter {
         ),
         max_tokens: REPORT_COMPLETION_TOKEN_LIMIT,
         reasoning: { enabled: true, exclude: true },
-        response_format: jsonObjectResponseFormat(),
+        response_format: reportResponseFormat(),
         provider: this.provider()
       },
       deadline,
@@ -740,6 +788,7 @@ export class ReportWriter {
 
   private async requestResearch(
     prompt: string,
+    draft: ReportDraft,
     images: SelectedImage[],
     deadline: number,
     actor: AiRequestContext
@@ -770,9 +819,10 @@ export class ReportWriter {
             }
           }
         ],
+        tool_choice: "required",
         max_tool_calls: 2,
         reasoning: { enabled: true, exclude: true },
-        response_format: jsonObjectResponseFormat(),
+        response_format: researchResponseFormat(draft, this.supportedCountries),
         provider: this.researchProvider(),
         stream: false
       },
@@ -780,6 +830,72 @@ export class ReportWriter {
       actor,
       "research"
     );
+  }
+
+  private async completeResearch(
+    prompt: string,
+    draft: ReportDraft,
+    images: SelectedImage[],
+    deadline: number,
+    actor: AiRequestContext
+  ): Promise<{ researchResult: OpenRouterResult; research: ResearchCompletion }> {
+    let researchResult = await this.requestResearch(
+      prompt,
+      draft,
+      images,
+      deadline,
+      actor
+    );
+    let research: ResearchCompletion | undefined;
+    let retryReason: "invalid_structured_data" | "missing_web_search";
+    try {
+      research = parsedResearch(
+        researchResult.message.content,
+        draft,
+        this.supportedCountries
+      );
+      retryReason = "missing_web_search";
+    } catch (error) {
+      if (!(error instanceof ReportWriterError)) throw error;
+      retryReason = "invalid_structured_data";
+    }
+    if (research && researchResult.usage.searchRequests > 0) {
+      return { researchResult, research };
+    }
+
+    botLog(
+      "ai_research_retry_started",
+      { actorKey: actor.actorKey, retryReason },
+      "warn"
+    );
+    const retryRequirement =
+      retryReason === "missing_web_search"
+        ? "Previous research attempt did not use the required legal web search."
+        : "Previous research attempt returned invalid structured data.";
+    const retryPrompt = [
+      prompt,
+      "",
+      `Retry requirement: ${retryRequirement}`,
+      "Start the research again from the supplied evidence. Use the required web search and return only the requested JSON object. Do not repeat or repair any prior response."
+    ].join("\n");
+    researchResult = await this.requestResearch(
+      retryPrompt,
+      draft,
+      images,
+      deadline,
+      actor
+    );
+    research = parsedResearch(
+      researchResult.message.content,
+      draft,
+      this.supportedCountries
+    );
+    if (researchResult.usage.searchRequests <= 0) {
+      throw new ReportWriterError(
+        "AI legal research did not use the required web search after one retry."
+      );
+    }
+    return { researchResult, research };
   }
 
   private async completeReport(
@@ -865,7 +981,7 @@ export class ReportWriter {
         ),
         max_tokens: REPORT_COMPLETION_TOKEN_LIMIT,
         reasoning: { enabled: true, exclude: true },
-        response_format: jsonObjectResponseFormat(),
+        response_format: reportResponseFormat(),
         provider: this.provider()
       },
       deadline,
@@ -907,6 +1023,7 @@ export class ReportWriter {
     return {
       zdr: true,
       data_collection: "deny",
+      require_parameters: true,
       order: [
         "sambanova/minimax-m2.7-dedicated",
         "mara",
@@ -920,6 +1037,7 @@ export class ReportWriter {
   private researchProvider() {
     return {
       data_collection: "deny",
+      require_parameters: true,
       order: [
         "sambanova/minimax-m2.7-dedicated",
         "mara",

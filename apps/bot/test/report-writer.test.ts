@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { reportReasons } from "@discord-dsa/contracts";
 
 import type { AiRequestContext } from "../src/report-writer.js";
 import { ReportWriter, ReportWriterError } from "../src/report-writer.js";
@@ -219,7 +220,8 @@ describe("OpenRouter report writer", () => {
     const research = requestBody<{
       messages: unknown[];
       provider: Record<string, unknown>;
-      response_format: { type: string };
+      response_format: Record<string, unknown>;
+      tool_choice: string;
     }>(request, 0);
     const prompt = JSON.stringify(research.messages);
     expect(prompt).toContain("Report category: Auto");
@@ -227,8 +229,37 @@ describe("OpenRouter report writer", () => {
     expect(prompt).toContain("sub_other_hate_speech");
     expect(prompt).toContain("search its exact evidence wording");
     expect(prompt).toContain("then use web search to identify and confirm");
-    expect(research.response_format).toEqual({ type: "json_object" });
+    expect(research.tool_choice).toBe("required");
+    expect(research.response_format).toEqual({
+      type: "json_schema",
+      json_schema: {
+        name: "discord_dsa_research",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            country: { type: "string", enum: [...COUNTRIES] },
+            reportType: {
+              type: "string",
+              enum: reportReasons("user_urf").map((reason) => reason.value)
+            },
+            reportReason: { type: "string", minLength: 1, maxLength: 512 },
+            lawReference: { type: "string", minLength: 1 },
+            researchSummary: { type: "string", minLength: 1 }
+          },
+          required: [
+            "country",
+            "reportType",
+            "reportReason",
+            "lawReference",
+            "researchSummary"
+          ],
+          additionalProperties: false
+        }
+      }
+    });
     expect(research.provider).toEqual({
+      require_parameters: true,
       data_collection: "deny",
       order: [
         "sambanova/minimax-m2.7-dedicated",
@@ -271,7 +302,7 @@ describe("OpenRouter report writer", () => {
     );
   });
 
-  it("normalizes a supported country display name and requests JSON mode", async () => {
+  it("normalizes a supported country display name and requests strict JSON", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(researchCompletion("Germany"))
@@ -284,7 +315,7 @@ describe("OpenRouter report writer", () => {
 
     expect(result.country).toBe("DE");
     const research = requestBody<{ response_format: { type: string } }>(request, 0);
-    expect(research.response_format).toEqual({ type: "json_object" });
+    expect(research.response_format.type).toBe("json_schema");
   });
 
   it("does not send media or media URLs for any report category", async () => {
@@ -410,13 +441,34 @@ describe("OpenRouter report writer", () => {
       max_tool_calls: number;
       max_tokens?: number;
       plugins?: unknown[];
+      provider: Record<string, unknown>;
+      response_format: {
+        json_schema: { schema: { required: string[] } };
+      };
       stream: boolean;
+      tool_choice: string;
       tools: unknown[];
     }>(request, 0);
     expect(body.max_tool_calls).toBe(2);
     expect(body.max_tokens).toBeUndefined();
     expect(body.plugins).toBeUndefined();
+    expect(body.tool_choice).toBe("required");
     expect(body.stream).toBe(false);
+    expect(body.provider).toEqual({
+      require_parameters: true,
+      data_collection: "deny",
+      order: [
+        "sambanova/minimax-m2.7-dedicated",
+        "mara",
+        "fireworks",
+        "groq",
+        "sambanova"
+      ]
+    });
+    expect(body.response_format.json_schema.schema.required).toEqual([
+      "lawReference",
+      "researchSummary"
+    ]);
     expect(body.tools).toEqual([
       {
         type: "openrouter:web_search",
@@ -455,7 +507,10 @@ describe("OpenRouter report writer", () => {
       reportType: "sub_other_hate_speech"
     });
 
-    const autoRequest = vi.fn().mockResolvedValueOnce(researchCompletion("US"));
+    const autoRequest = vi
+      .fn()
+      .mockResolvedValueOnce(researchCompletion("US"))
+      .mockResolvedValueOnce(researchCompletion("US"));
     const auto = profileDraft();
     delete auto.country;
     auto.countrySelection = "auto";
@@ -464,11 +519,11 @@ describe("OpenRouter report writer", () => {
     );
   });
 
-  it("accepts usable legal research without a search count or HTTPS annotation", async () => {
+  it("retries usable legal research that reports zero searches", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-      completion(
+        completion(
           {
             country: "DE",
             lawReference: LAW_REFERENCE,
@@ -479,10 +534,70 @@ describe("OpenRouter report writer", () => {
           { annotations: [], searchRequests: 0 }
         )
       )
+      .mockResolvedValueOnce(researchCompletion())
       .mockResolvedValueOnce(reportCompletion());
     const result = await fixedWriter(request).generate(profileDraft(), ACTOR);
-    expect(result.legalResearch.sources).toEqual([]);
-    expect(result.legalResearch.searchRequests).toBe(0);
+    expect(result.legalResearch.searchRequests).toBe(1);
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(
+      JSON.stringify(requestBody<{ messages: unknown[] }>(request, 1).messages)
+    ).toContain("Previous research attempt did not use the required legal web search");
+  });
+
+  it("stops after one zero-search research retry", async () => {
+    const zeroSearchResearch = completion(
+      {
+        country: "DE",
+        lawReference: LAW_REFERENCE,
+        reportReason: "The profile imagery contains unlawful hate speech.",
+        reportType: "sub_other_hate_speech",
+        researchSummary: `${LAW_REFERENCE} protects human dignity.`
+      },
+      { searchRequests: 0 }
+    );
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(zeroSearchResearch)
+      .mockResolvedValueOnce(zeroSearchResearch.clone());
+
+    await expect(fixedWriter(request).generate(profileDraft(), ACTOR)).rejects.toThrow(
+      /did not use the required web search after one retry/
+    );
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries malformed research JSON once without logging or replaying it", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completion({}, { content: "analysis before a malformed object", searchRequests: 1 })
+      )
+      .mockResolvedValueOnce(researchCompletion())
+      .mockResolvedValueOnce(reportCompletion());
+
+    await expect(fixedWriter(request).generate(profileDraft(), ACTOR)).resolves.toMatchObject({
+      country: "DE"
+    });
+    expect(request).toHaveBeenCalledTimes(3);
+    const retryBody = JSON.stringify(requestBody<{ messages: unknown[] }>(request, 1));
+    expect(retryBody).toContain("Previous research attempt returned invalid structured data");
+    expect(retryBody).not.toContain("analysis before a malformed object");
+  });
+
+  it("stops after one malformed research retry", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completion({}, { content: "first malformed response", searchRequests: 1 })
+      )
+      .mockResolvedValueOnce(
+        completion({}, { content: "second malformed response", searchRequests: 1 })
+      );
+
+    await expect(fixedWriter(request).generate(profileDraft(), ACTOR)).rejects.toThrow(
+      /AI research returned invalid JSON/
+    );
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("accepts an internal law reference longer than the final report limit", async () => {
@@ -491,13 +606,16 @@ describe("OpenRouter report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        completion({
-          country: "DE",
-          lawReference: detailedLawReference,
-          reportReason: "The profile imagery contains unlawful hate speech.",
-          reportType: "sub_other_hate_speech",
-          researchSummary: "The provision may be relevant to the reported conduct."
-        })
+        completion(
+          {
+            country: "DE",
+            lawReference: detailedLawReference,
+            reportReason: "The profile imagery contains unlawful hate speech.",
+            reportType: "sub_other_hate_speech",
+            researchSummary: "The provision may be relevant to the reported conduct."
+          },
+          { searchRequests: 1 }
+        )
       )
       .mockResolvedValueOnce(reportCompletion("Concise reviewed report."));
 
@@ -524,6 +642,7 @@ describe("OpenRouter report writer", () => {
     expect(writing.reasoning).toEqual({ enabled: true, exclude: true });
     expect(writing.provider).toEqual({
       zdr: true,
+      require_parameters: true,
       data_collection: "deny",
       order: [
         "sambanova/minimax-m2.7-dedicated",
@@ -590,7 +709,21 @@ describe("OpenRouter report writer", () => {
     }>(request, 2);
     expect(body.max_tokens).toBe(4_096);
     expect(body.reasoning).toEqual({ enabled: true, exclude: true });
-    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(body.response_format).toEqual({
+      type: "json_schema",
+      json_schema: {
+        name: "discord_dsa_report",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            report: { type: "string", minLength: 1, maxLength: 512 }
+          },
+          required: ["report"],
+          additionalProperties: false
+        }
+      }
+    });
     expect(JSON.stringify(body.messages)).toContain("Make it clearer.");
     expect(JSON.stringify(body.messages)).toContain(initial.report);
   });

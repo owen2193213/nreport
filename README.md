@@ -101,9 +101,12 @@ checks whether unfamiliar or coded evidence terminology needs clarification; whe
 first Parallel search uses that exact evidence wording. After the meaning is clear, it resolves Auto
 fields and searches for the country-specific law. Explicit evidence skips terminology search. The
 server tool permits at most two searches and two results per search, for four total results at most.
-The final writer receives a compact resolved context rather than the
-country list, category catalog, tool instructions, or raw research transcript. Search-count metadata and HTTPS source annotations are
-optional; a report is accepted from usable structured legal research without requiring either.
+OpenRouter is required to route to a provider that supports the requested strict JSON schema and
+web-search parameters, and the research call must perform at least one search. If research returns
+malformed structured data or no recorded search, the bot starts the research once more from the
+original evidence; a second failure is returned to the reporter. The final writer receives a compact
+resolved context rather than the country list, category catalog, tool instructions, failed response,
+or raw research transcript. HTTPS source annotations remain optional.
 The bot records per-user request/token/reasoning/search/cost totals and operational workflow metadata
 such as flow, category, country mode, selected elements, counts, lengths, latency, and validation
 failures. Logs are intended to support development diagnostics and may include report and lifecycle

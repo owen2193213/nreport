@@ -698,17 +698,22 @@ picker. A missing or `NULL` saved default means Auto. Auto uses AI to select one
 based on conduct and legal relevance, never guessed location.
 
 The combined modal allows category and explanation to be omitted as `Auto`. A case-insensitive
-literal `Auto` reason is also treated as omitted while AI is enabled. One adaptive research
+literal `Auto` reason is also treated as omitted while AI is enabled. Normally one adaptive research
 completion resolves only omitted fields and always returns the law reference and summary. Supplied
 country, category, and reason values stay application-owned and are omitted from the model's output
-schema. When category is Auto, only the active flow's catalog is supplied for selection.
+schema. The schema is strict and contains only the dynamically required fields. When category is
+Auto, only the active flow's catalog is supplied for selection.
 The model first inspects the evidence for unfamiliar, coded, ambiguous, or context-dependent
 terminology. If that meaning could affect classification or legal relevance, it uses the first
 Parallel search for the exact evidence wording with minimal neutral context. Otherwise it skips
 terminology search. Once the meaning is clear, it resolves missing fields, selects a country when
 Auto, and searches for the relevant current law and provision. Category-catalog labels are forbidden
 as terminology-search terms. Research is limited to two searches and two results per search, for
-four total results at most, without a domain list.
+four total results at most, without a domain list. OpenRouter must choose a provider that supports
+the requested strict schema and web-search parameters, and at least one search is required. If a
+completed research response is malformed or records zero searches, the bot retries the research
+once from the original evidence without replaying the failed response. A second failure stops the
+workflow with the safe AI error response.
 The writing prompt asks the final maximum-512-character text to naturally name the structured
 research result's specific law or provision. Brackets, URLs, footnotes, OpenRouter URL annotations,
 and a separate sources section are not required. Bot validation requires only non-empty text of at

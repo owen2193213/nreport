@@ -58,9 +58,10 @@ review and its confirmation controls are sent as an ordinary private bot DM.
    The profile's optional observed server and the server report's optional server/invite remain
    slash-command parameters. A server report without either a slash target or current server is rejected.
 4. Encrypt the draft and its OpenRouter conversation at rest with a 30-minute expiry.
-5. Run one adaptive OpenRouter research completion. It conditionally searches unfamiliar evidence
+5. Run an adaptive OpenRouter research completion. It conditionally searches unfamiliar evidence
    terminology first, resolves only omitted Auto fields after the meaning is clear, then searches
-   for and confirms the country-specific law. The final writer receives only compact resolved
+   for and confirms the country-specific law. Invalid structured data or a missing recorded search
+   causes one fresh research attempt from the original evidence. The final writer receives only compact resolved
    evidence and research context. The ephemeral response is edited only at the two meaningful
    network boundaries: Researching before research starts, then Writing before report drafting
    starts. There is no separate initial or research-complete edit, which avoids back-to-back Discord
@@ -116,11 +117,11 @@ The bot calls OpenRouter directly; the API and low-level Discord client never re
 reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KEY` is required and
 `OPENROUTER_MODEL` defaults to `minimax/minimax-m2.7`. The same configured model handles adaptive
 research, writing, refinement, and repair. Provider routing requires zero data retention,
-denies provider data collection, and requires JSON-mode output support. The bot instructs the model
-to return the required object shape and validates it locally. The complete generation workflow is
+denies provider data collection, and requires support for every requested parameter. Research and
+report calls use strict JSON Schemas, and the bot also validates returned values locally. The complete generation workflow is
 capped at 90 seconds.
 
-Generation starts with one adaptive interpretation-and-research completion. Its output schema is
+Generation normally starts with one adaptive interpretation-and-research completion. Its output schema is
 dynamic: fixed country, category, and reason values remain application-owned and are not requested
 from the model; only missing Auto fields are returned alongside the law reference and summary. This
 prevents AI echoes from changing supplied values. A case-insensitive literal `Auto` in the reason
@@ -138,12 +139,15 @@ needed and searches for the relevant current law and provision. Terminology and 
 separate purposes; category-catalog labels and unrelated categories are forbidden as search terms.
 OpenRouter's Parallel server tool allows at most two searches and two results per search, for four
 total results at most. This leaves room for both terminology and
-law research when both are needed. No domain filter is imposed. Search counts and URL annotations are retained
-when available but are not required for a usable result.
-Research denies provider data collection but omits ZDR and required-parameter routing so a
-server-tool-compatible endpoint can be selected. Parallel runs inside the single OpenRouter
-request; the bot does not implement a client-side tool loop or retry an intermediate tool call. No
-fallback model is used.
+law research when both are needed. No domain filter is imposed. The web-search tool is required, so
+explicit evidence uses at least the law search, and a usable result must record one or more search
+requests. URL annotations are retained when available but remain optional.
+Research denies provider data collection and enables required-parameter routing so OpenRouter selects
+only an endpoint compatible with the strict schema and server-tool request. Parallel runs inside the
+OpenRouter completion; the bot does not implement a client-side tool loop or retry an intermediate
+tool call. If the completed research is malformed or records zero searches, the bot makes exactly one
+fresh research request from the original evidence with a short failure reason. It never includes the
+failed model response in that retry. No fallback model is used.
 Writing, refinement, and repair retain ZDR, denied data collection, and
 required-parameter routing because they do not use the web-search server tool.
 
@@ -203,13 +207,14 @@ so every stage enables reasoning without an effort override and excludes reasoni
 responses. Report-producing calls have a 4,096-token completion budget; the reviewed report itself
 remains limited to 512 characters. Provider routing explicitly prefers SambaNova Dedicated,
 MARA, Fireworks, Groq, then SambaNova; other endpoints remain availability fallbacks. The model is told
-to return raw JSON without Markdown. The parser also accepts one whole-response `json` code fence
-defensively before applying the normal schema and 512-character validation.
+to return raw JSON without Markdown, and OpenRouter receives a strict JSON Schema containing only
+the fields that stage owns. The parser also accepts one whole-response `json` code fence defensively
+before applying local semantic and 512-character validation.
 Reasoning, input/output tokens, search requests, request counts, and OpenRouter-reported cost are
 accumulated per user in `bot_users` and displayed by `/access status`. Safe logs use a keyed
 pseudonymous actor value plus stage, model, latency, usage, cost, and failure category.
 
-If a model result is empty, malformed, or exceeds 512 characters, the bot asks once for a repair.
+If a report-writing result is empty, malformed, or exceeds 512 characters, the bot asks once for a repair.
 If the repaired result is still invalid, the encrypted draft retains the latest AI text and
 conversation. The manual-edit modal shows the AI draft in a copyable read-only text display and
 provides a separate required 512-character input. Drafts already within the limit prefill that
@@ -478,15 +483,18 @@ same immutable audit relationship as failure retries.
 - Chosen: use `minimax/minimax-m2.7` for research, writing, refinement, and repair. A single
   configurable model keeps prompts, usage accounting, deployment configuration, and failure
   behavior consistent.
-- Chosen: use OpenRouter's Parallel server-side web-search tool. The research model decides whether
-  search is necessary, with two uses and bounded retrieval context, while OpenRouter executes the
-  tool inside one completion.
+- Chosen: use OpenRouter's Parallel server-side web-search tool and require at least one search, with
+  two uses and bounded retrieval context. Strict JSON Schema and required-parameter routing prevent
+  a provider from silently ignoring the search or structured-output contract.
 - Chosen: keep supplied country/category/reason values application-owned and omit them from dynamic
   model output schemas. One adaptive research completion conditionally clarifies terminology,
   resolves only missing fields, and confirms the law. This avoids a separate classification call
   and lets terminology inform Auto classification.
 - Chosen: hand the writer a compact resolved context instead of replaying the research prompt and
   response. This avoids resending country lists, category catalogs, and tool instructions.
+- Chosen: retry completed research exactly once when its structured output is invalid or it records
+  zero searches. The retry starts from the original evidence and a categorical failure reason, never
+  the failed response body.
 - Rejected: direct Parallel or Exa integration, a Perplexity fallback, provider pinning, and an
   unbounded client-side tool loop. They add keys, cost, or operational state without being required
   for this report workflow.

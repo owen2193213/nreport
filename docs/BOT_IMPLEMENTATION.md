@@ -142,6 +142,9 @@ total results at most. This leaves room for both terminology and
 law research when both are needed. No domain filter is imposed. The web-search tool is required, so
 explicit evidence uses at least the law search, and a usable result must record one or more search
 requests. URL annotations are retained when available but remain optional.
+The request leaves `tool_choice` unset because OpenRouter's beta server-search flow is model-decided;
+forcing the server tool caused its pipeline to return HTTP 404 before a provider completion. The bot
+enforces the search requirement after completion and makes one fresh attempt when usage records zero.
 The two-search limit is expressed by the web tool's `max_uses` parameter. The outer Chat Completions
 request does not send `max_tool_calls`, because MiniMax M2.7 endpoints do not advertise that parameter
 and required-parameter routing would otherwise reject every endpoint before generation.

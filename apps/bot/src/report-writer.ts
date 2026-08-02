@@ -957,7 +957,6 @@ export class ReportWriter {
             }
           }
         ],
-        tool_choice: "required",
         reasoning: { enabled: true, exclude: true },
         response_format: researchResponseFormat(draft, this.supportedCountries),
         provider: this.researchProvider(),

@@ -232,7 +232,7 @@ describe("OpenRouter report writer", () => {
       messages: unknown[];
       provider: Record<string, unknown>;
       response_format: Record<string, unknown>;
-      tool_choice: string;
+      tool_choice?: string;
     }>(request, 0);
     const prompt = JSON.stringify(research.messages);
     expect(prompt).toContain("Report category: Auto");
@@ -240,7 +240,7 @@ describe("OpenRouter report writer", () => {
     expect(prompt).toContain("sub_other_hate_speech");
     expect(prompt).toContain("search its exact evidence wording");
     expect(prompt).toContain("then use web search to identify and confirm");
-    expect(research.tool_choice).toBe("required");
+    expect(research.tool_choice).toBeUndefined();
     expect(research.response_format).toEqual({
       type: "json_schema",
       json_schema: {
@@ -457,13 +457,13 @@ describe("OpenRouter report writer", () => {
         json_schema: { schema: { required: string[] } };
       };
       stream: boolean;
-      tool_choice: string;
+      tool_choice?: string;
       tools: unknown[];
     }>(request, 0);
     expect(body.max_tool_calls).toBeUndefined();
     expect(body.max_tokens).toBeUndefined();
     expect(body.plugins).toBeUndefined();
-    expect(body.tool_choice).toBe("required");
+    expect(body.tool_choice).toBeUndefined();
     expect(body.stream).toBe(false);
     expect(body.provider).toEqual({
       require_parameters: true,

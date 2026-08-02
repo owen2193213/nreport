@@ -142,6 +142,9 @@ total results at most. This leaves room for both terminology and
 law research when both are needed. No domain filter is imposed. The web-search tool is required, so
 explicit evidence uses at least the law search, and a usable result must record one or more search
 requests. URL annotations are retained when available but remain optional.
+The two-search limit is expressed by the web tool's `max_uses` parameter. The outer Chat Completions
+request does not send `max_tool_calls`, because MiniMax M2.7 endpoints do not advertise that parameter
+and required-parameter routing would otherwise reject every endpoint before generation.
 Research denies provider data collection and enables required-parameter routing so OpenRouter selects
 only an endpoint compatible with the strict schema and server-tool request. Parallel runs inside the
 OpenRouter completion; the bot does not implement a client-side tool loop or retry an intermediate
@@ -231,6 +234,9 @@ normal expiry. Logs include pseudonymous actor keys, report flow/category, count
 element names, evidence/image/attachment counts or lengths, request/response lengths, usage, cost,
 latency, media-allowed status, and failure category. They never contain raw user IDs, queries,
 sources, evidence, images, prompts, research, reports, AI responses, or secrets.
+Failed OpenRouter requests opt into router metadata and log only an allowlisted diagnostic summary:
+error type/code, categorized message, provider code, retry delay, routing strategy/attempt, endpoint
+counts, and provider names. Raw error messages and response bodies are never logged.
 
 The initial writer prompt contains one generalized report structure plus two style examples. They
 appear once in the retained conversation and are explicitly examples of tone and organization,

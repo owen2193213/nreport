@@ -69,6 +69,36 @@ interface OpenRouterResponse {
   usage?: OpenRouterUsage;
 }
 
+interface OpenRouterFailurePayload {
+  error?: {
+    code?: unknown;
+    message?: unknown;
+    metadata?: { error_type?: unknown; provider_code?: unknown };
+  };
+  openrouter_metadata?: {
+    attempt?: unknown;
+    endpoints?: {
+      available?: Array<{ provider?: unknown; selected?: unknown }>;
+      total?: unknown;
+    };
+    strategy?: unknown;
+  };
+}
+
+interface AiFailureDiagnostics {
+  openRouterErrorCode?: number | string;
+  openRouterErrorType?: string;
+  openRouterMessageCategory?: string;
+  openRouterProviderCode?: number | string;
+  retryAfterSeconds?: number;
+  routingAttempt?: number;
+  routingEndpointAvailable?: number;
+  routingEndpointSelected?: number;
+  routingEndpointTotal?: number;
+  routingProviders?: string;
+  routingStrategy?: string;
+}
+
 interface OpenRouterResult {
   message: OpenRouterMessage;
   usage: AiUsage;
@@ -591,6 +621,85 @@ function stageDescription(stage: AiRequestStage): string {
   return "AI report writing";
 }
 
+function safeDiagnosticCode(value: unknown): number | string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || !/^[A-Za-z0-9_.:_-]{1,64}$/.test(value)) {
+    return undefined;
+  }
+  return value;
+}
+
+function safeDiagnosticName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return /^[A-Za-z0-9_. -]{1,64}$/.test(trimmed) ? trimmed : undefined;
+}
+
+function finiteNonnegative(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function openRouterMessageCategory(value: unknown): string {
+  if (typeof value !== "string") return "missing";
+  const message = value.toLocaleLowerCase("en");
+  if (message.includes("no allowed providers")) return "no_allowed_providers";
+  if (message.includes("no endpoints") || message.includes("no providers available")) {
+    return "no_compatible_endpoints";
+  }
+  if (message.includes("model") && message.includes("not found")) {
+    return "model_not_found";
+  }
+  return "unclassified";
+}
+
+async function openRouterFailureDiagnostics(
+  response: Response
+): Promise<AiFailureDiagnostics> {
+  let payload: OpenRouterFailurePayload = {};
+  try {
+    payload = (await response.json()) as OpenRouterFailurePayload;
+  } catch {
+    // Error bodies may be plain text or empty. Never log the raw body.
+  }
+  const available = Array.isArray(payload.openrouter_metadata?.endpoints?.available)
+    ? payload.openrouter_metadata.endpoints.available
+    : [];
+  const providers = [
+    ...new Set(
+      available
+        .map((endpoint) => safeDiagnosticName(endpoint.provider))
+        .filter((provider): provider is string => provider !== undefined)
+    )
+  ].sort();
+  const retryAfterSeconds = finiteNonnegative(response.headers.get("Retry-After"));
+  const routingAttempt = finiteNonnegative(payload.openrouter_metadata?.attempt);
+  const routingEndpointTotal = finiteNonnegative(
+    payload.openrouter_metadata?.endpoints?.total
+  );
+  const routingStrategy = safeDiagnosticName(payload.openrouter_metadata?.strategy);
+  const openRouterErrorType = safeDiagnosticName(payload.error?.metadata?.error_type);
+  const openRouterErrorCode = safeDiagnosticCode(payload.error?.code);
+  const openRouterProviderCode = safeDiagnosticCode(
+    payload.error?.metadata?.provider_code
+  );
+  return {
+    ...(openRouterErrorCode === undefined ? {} : { openRouterErrorCode }),
+    ...(openRouterErrorType === undefined ? {} : { openRouterErrorType }),
+    openRouterMessageCategory: openRouterMessageCategory(payload.error?.message),
+    ...(openRouterProviderCode === undefined ? {} : { openRouterProviderCode }),
+    ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+    ...(routingAttempt === undefined ? {} : { routingAttempt }),
+    routingEndpointAvailable: available.length,
+    routingEndpointSelected: available.filter((endpoint) => endpoint.selected === true)
+      .length,
+    ...(routingEndpointTotal === undefined ? {} : { routingEndpointTotal }),
+    ...(providers.length === 0 ? {} : { routingProviders: providers.join(",") }),
+    ...(routingStrategy === undefined ? {} : { routingStrategy })
+  };
+}
+
 export class ReportWriter {
   private readonly recordUsage: UsageRecorder;
   private readonly request: typeof globalThis.fetch;
@@ -820,7 +929,6 @@ export class ReportWriter {
           }
         ],
         tool_choice: "required",
-        max_tool_calls: 2,
         reasoning: { enabled: true, exclude: true },
         response_format: researchResponseFormat(draft, this.supportedCountries),
         provider: this.researchProvider(),
@@ -1068,7 +1176,8 @@ export class ReportWriter {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "X-OpenRouter-Metadata": "enabled"
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining))
@@ -1080,13 +1189,21 @@ export class ReportWriter {
       );
     }
     if (!response.ok) {
+      const diagnostics = await openRouterFailureDiagnostics(response);
       const failureCategory =
         response.status === 402
           ? "insufficient_balance"
           : response.status === 429
             ? "rate_limited"
             : "provider_error";
-      this.logFailure(actor, stage, Date.now() - startedAt, failureCategory, response.status);
+      this.logFailure(
+        actor,
+        stage,
+        Date.now() - startedAt,
+        failureCategory,
+        response.status,
+        diagnostics
+      );
       if (response.status === 402) {
         throw new ReportWriterError(
           "OpenRouter has insufficient balance for this request. Retry after adding credit."
@@ -1143,7 +1260,8 @@ export class ReportWriter {
     stage: AiRequestStage,
     latencyMs: number,
     failureCategory: string,
-    httpStatus?: number
+    httpStatus?: number,
+    diagnostics: AiFailureDiagnostics = {}
   ): void {
     botLog(
       "ai_request_failed",
@@ -1153,7 +1271,8 @@ export class ReportWriter {
         ...(httpStatus === undefined ? {} : { httpStatus }),
         latencyMs,
         model: this.model,
-        stage
+        stage,
+        ...diagnostics
       },
       "warn"
     );

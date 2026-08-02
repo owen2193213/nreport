@@ -124,6 +124,17 @@ function requestBody<T>(request: ReturnType<typeof vi.fn>, index: number): T {
   return JSON.parse(body) as T;
 }
 
+function requestHeaders(
+  request: ReturnType<typeof vi.fn>,
+  index: number
+): Record<string, string> {
+  const headers = (request.mock.calls[index]?.[1] as RequestInit | undefined)?.headers;
+  if (!headers || headers instanceof Headers || Array.isArray(headers)) {
+    throw new Error("Expected object request headers.");
+  }
+  return headers;
+}
+
 describe("OpenRouter report writer", () => {
   it("merges Auto country selection and research with full text context", async () => {
     const request = vi
@@ -138,14 +149,14 @@ describe("OpenRouter report writer", () => {
     expect(result.country).toBe("DE");
     expect(request).toHaveBeenCalledTimes(2);
     const research = requestBody<{
-      max_tool_calls: number;
+      max_tool_calls?: number;
       max_tokens?: number;
       messages: unknown[];
       plugins?: unknown[];
       stream: boolean;
       tools: unknown[];
     }>(request, 0);
-    expect(research.max_tool_calls).toBe(2);
+    expect(research.max_tool_calls).toBeUndefined();
     expect(research.max_tokens).toBeUndefined();
     expect(research.plugins).toBeUndefined();
     expect(research.stream).toBe(false);
@@ -438,7 +449,7 @@ describe("OpenRouter report writer", () => {
       .mockResolvedValueOnce(reportCompletion());
     await fixedWriter(request).generate(profileDraft(), ACTOR);
     const body = requestBody<{
-      max_tool_calls: number;
+      max_tool_calls?: number;
       max_tokens?: number;
       plugins?: unknown[];
       provider: Record<string, unknown>;
@@ -449,7 +460,7 @@ describe("OpenRouter report writer", () => {
       tool_choice: string;
       tools: unknown[];
     }>(request, 0);
-    expect(body.max_tool_calls).toBe(2);
+    expect(body.max_tool_calls).toBeUndefined();
     expect(body.max_tokens).toBeUndefined();
     expect(body.plugins).toBeUndefined();
     expect(body.tool_choice).toBe("required");
@@ -880,6 +891,59 @@ describe("OpenRouter report writer", () => {
         ACTOR
       )
     ).rejects.toThrow(/rate limited/);
+  });
+
+  it("requests and safely logs OpenRouter routing diagnostics", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const request = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 404,
+              message:
+                "No allowed providers are available for the selected model; private upstream detail",
+              metadata: { error_type: "not_found", provider_code: "NO_ENDPOINTS" }
+            },
+            openrouter_metadata: {
+              strategy: "direct",
+              attempt: 0,
+              endpoints: {
+                total: 2,
+                available: [
+                  { provider: "Mara", selected: false },
+                  { provider: "Fireworks", selected: false }
+                ]
+              }
+            }
+          }),
+          {
+            status: 404,
+            headers: { "Content-Type": "application/json", "Retry-After": "3" }
+          }
+        )
+      );
+
+      await expect(fixedWriter(request).generate(profileDraft(), ACTOR)).rejects.toThrow(
+        /temporarily unavailable/
+      );
+      const headers = requestHeaders(request, 0);
+      expect(headers["X-OpenRouter-Metadata"]).toBe("enabled");
+      const output = write.mock.calls.map((call) => String(call[0])).join("");
+      expect(output).toContain('"openRouterErrorCode":404');
+      expect(output).toContain('"openRouterErrorType":"not_found"');
+      expect(output).toContain('"openRouterProviderCode":"NO_ENDPOINTS"');
+      expect(output).toContain('"openRouterMessageCategory":"no_allowed_providers"');
+      expect(output).toContain('"routingAttempt":0');
+      expect(output).toContain('"routingEndpointTotal":2');
+      expect(output).toContain('"routingEndpointAvailable":2');
+      expect(output).toContain('"routingEndpointSelected":0');
+      expect(output).toContain('"routingProviders":"Fireworks,Mara"');
+      expect(output).toContain('"retryAfterSeconds":3');
+      expect(output).not.toContain("private upstream detail");
+    } finally {
+      write.mockRestore();
+    }
   });
 
   it("identifies the failed AI stage in safe response errors", async () => {

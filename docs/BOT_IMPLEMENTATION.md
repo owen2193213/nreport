@@ -131,31 +131,25 @@ English country name before validation.
 The internal law reference has no length limit; validation distinguishes an invalid country,
 missing reference, and missing research summary.
 The prompt asks for only the essential legal relevance in a concise research summary without
-hard-capping research output tokens. The model first checks for unfamiliar, coded, ambiguous, or
-context-dependent terminology that could materially affect classification or legal relevance. If
-needed, it searches the exact evidence wording with minimal neutral context before resolving Auto
-fields. Explicit evidence skips that search. After interpretation it chooses an Auto country when
-needed and searches for the relevant current law and provision. Terminology and law searches have
-separate purposes; category-catalog labels and unrelated categories are forbidden as search terms.
-OpenRouter's Parallel server tool allows at most two searches and two results per search, for four
-total results at most. This leaves room for both terminology and
-law research when both are needed. No domain filter is imposed. The web-search tool is required, so
-explicit evidence uses at least the law search, and a usable result must record one or more search
-requests. URL annotations are retained when available but remain optional.
-The request leaves `tool_choice` unset because OpenRouter's beta server-search flow is model-decided;
-forcing the server tool caused its pipeline to return HTTP 404 before a provider completion. The bot
-enforces the search requirement after completion and makes one fresh attempt when usage records zero.
-The two-search limit is expressed by the web tool's `max_uses` parameter. The outer Chat Completions
-request does not send `max_tool_calls`, because MiniMax M2.7 endpoints do not advertise that parameter
-and required-parameter routing would otherwise reject every endpoint before generation.
-Research denies provider data collection and enables required-parameter routing so OpenRouter selects
-only an endpoint compatible with the strict schema and server-tool request. Parallel runs inside the
-OpenRouter completion; the bot does not implement a client-side tool loop or retry an intermediate
-tool call. If the completed research is malformed or records zero searches, the bot makes exactly one
+hard-capping research output tokens. OpenRouter's web plugin performs one Parallel search with at
+most two results. The model uses that search to clarify an unfamiliar, coded, ambiguous, or
+context-dependent evidence term only when its meaning could materially affect classification or
+legal relevance, and to confirm the relevant current law and provision. With explicit evidence it
+focuses directly on the law. Category-catalog labels and unrelated categories are forbidden as
+search terms. No domain filter is imposed. A usable result must record one or more search requests;
+URL annotations are retained when available but remain optional.
+The plugin receives a custom search-results prompt that treats results as untrusted source material,
+aligns them with the terminology-and-law workflow, and forbids Markdown citations in the JSON. This
+replaces OpenRouter's default results prompt and avoids injecting unrelated formatting instructions.
+The request does not send the beta `openrouter:web_search` server tool, `tool_choice`, or
+`max_tool_calls`: repeated production requests reached OpenRouter's `server_tools` pipeline and
+returned HTTP 404 before any provider completion. Research still denies provider data collection and
+enables required-parameter routing so OpenRouter selects an endpoint compatible with the strict schema
+and plugin request. If the completed research is malformed or records zero searches, the bot makes exactly one
 fresh research request from the original evidence with a short failure reason. It never includes the
 failed model response in that retry. No fallback model is used.
 Writing, refinement, and repair retain ZDR, denied data collection, and
-required-parameter routing because they do not use the web-search server tool.
+required-parameter routing because they do not use the web-search plugin.
 
 The AI integration intentionally remains bot-local and single-model. It assumes normal interactive
 bot traffic, keeps the existing 90-second workflow budget, records the cost of every attempted
@@ -494,8 +488,8 @@ same immutable audit relationship as failure retries.
 - Chosen: use `minimax/minimax-m2.7` for research, writing, refinement, and repair. A single
   configurable model keeps prompts, usage accounting, deployment configuration, and failure
   behavior consistent.
-- Chosen: use OpenRouter's Parallel server-side web-search tool and require at least one search, with
-  two uses and bounded retrieval context. Strict JSON Schema and required-parameter routing prevent
+- Chosen: use OpenRouter's web plugin with the Parallel engine and require its one search, with two
+  results and bounded retrieval context. Strict JSON Schema and required-parameter routing prevent
   a provider from silently ignoring the search or structured-output contract.
 - Chosen: keep supplied country/category/reason values application-owned and omit them from dynamic
   model output schemas. One adaptive research completion conditionally clarifies terminology,
@@ -506,9 +500,10 @@ same immutable audit relationship as failure retries.
 - Chosen: retry completed research exactly once when its structured output is invalid or it records
   zero searches. The retry starts from the original evidence and a categorical failure reason, never
   the failed response body.
-- Rejected: direct Parallel or Exa integration, a Perplexity fallback, provider pinning, and an
-  unbounded client-side tool loop. They add keys, cost, or operational state without being required
-  for this report workflow.
+- Rejected: OpenRouter's beta `openrouter:web_search` server-tool pipeline after repeated production
+  HTTP 404 responses before provider completion. Also rejected direct Parallel or Exa integration,
+  a Perplexity fallback, provider pinning, and an unbounded client-side tool loop; they add keys,
+  cost, or operational state without being required for this report workflow.
 - Chosen: validate only the Cloudflare envelope domain (`discord.com` or a true subdomain) and the
   generated recipient shape in the email worker. The API remains the sole MIME parser and exact
   visible-sender validator, avoiding duplicated checks for Discord's changing bounce formats.

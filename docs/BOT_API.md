@@ -703,14 +703,12 @@ completion resolves only omitted fields and always returns the law reference and
 country, category, and reason values stay application-owned and are omitted from the model's output
 schema. The schema is strict and contains only the dynamically required fields. When category is
 Auto, only the active flow's catalog is supplied for selection.
-The model first inspects the evidence for unfamiliar, coded, ambiguous, or context-dependent
-terminology. If that meaning could affect classification or legal relevance, it uses the first
-Parallel search for the exact evidence wording with minimal neutral context. Otherwise it skips
-terminology search. Once the meaning is clear, it resolves missing fields, selects a country when
-Auto, and searches for the relevant current law and provision. Category-catalog labels are forbidden
-as terminology-search terms. Research is limited to two searches and two results per search, for
-four total results at most, without a domain list. OpenRouter must choose a provider that supports
-the requested strict schema and web-search parameters, and at least one search is required. If a
+OpenRouter's web plugin performs one Parallel search with at most two results. When unfamiliar,
+coded, ambiguous, or context-dependent terminology could affect classification or legal relevance,
+the model uses the search to clarify the exact evidence wording and confirm the relevant current
+law and provision. With explicit evidence it focuses directly on the law. Category-catalog labels
+and unrelated categories are forbidden as search terms. OpenRouter must choose a provider that
+supports the requested strict schema and plugin parameters, and at least one search is required. If a
 completed research response is malformed or records zero searches, the bot retries the research
 once from the original evidence without replaying the failed response. A second failure stops the
 workflow with the safe AI error response.

@@ -3,7 +3,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   DsaApiError,
   GUILD_ELEMENTS,
-  PROFILE_ELEMENTS
+  PROFILE_ELEMENTS,
+  reportReasonLabel
 } from "@discord-dsa/contracts";
 import type {
   DsaApi,
@@ -19,6 +20,7 @@ import {
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Interaction,
+  type MessageCreateOptions,
   type MessageContextMenuCommandInteraction,
   type ModalSubmitInteraction,
   type StringSelectMenuInteraction,
@@ -42,9 +44,9 @@ import {
   initialWriterPrompt,
   ReportWriterError
 } from "./report-writer.js";
-import type { ReportWriter } from "./report-writer.js";
+import type { ReportWriter, WriterResult } from "./report-writer.js";
 import type { ServerResolver } from "./server-resolver.js";
-import type { ReportDraft, ServerSnapshot } from "./types.js";
+import type { AiDecisionSummary, ReportDraft, ServerSnapshot } from "./types.js";
 import {
   accessEmbed,
   accessKeyEmbed,
@@ -70,6 +72,10 @@ import {
 
 const EPHEMERAL = MessageFlags.Ephemeral;
 const SNOWFLAKE = /^\d{15,22}$/;
+type DraftMessagePayload = Omit<Pick<
+  MessageCreateOptions,
+  "allowedMentions" | "components" | "content" | "embeds"
+>, "content"> & { content?: string | null };
 
 export interface InteractionHandlerOptions {
   api: DsaApi;
@@ -95,6 +101,48 @@ export function conciseError(error: unknown): string {
 
 function isDefinitePreCreationError(error: unknown): boolean {
   return error instanceof DsaApiError && error.status < 500 && error.status !== 409;
+}
+
+function applyWriterResult(
+  draft: ReportDraft,
+  result: WriterResult,
+  action: AiDecisionSummary["action"]
+): void {
+  const firstDecision = !draft.aiDecisions?.length;
+  const countryBefore =
+    firstDecision && (draft.countrySelection === "auto" || !draft.country)
+      ? "Auto"
+      : draft.country
+        ? countryDisplay(draft.country)
+        : "Auto";
+  const categoryBefore = draft.reportType
+    ? reportReasonLabel(draft.flow, draft.reportType)
+    : "Auto";
+  const detailsBefore = draft.context
+    ? "Existing draft"
+    : draft.reportBrief
+      ? "User guidance"
+      : "Blank";
+  const decision: AiDecisionSummary = {
+    action,
+    decidedAt: new Date().toISOString(),
+    country: { before: countryBefore, after: countryDisplay(result.country) },
+    category: {
+      before: categoryBefore,
+      after: reportReasonLabel(draft.flow, result.reportType)
+    },
+    details: {
+      before: detailsBefore,
+      after: action === "Refined" ? "AI-refined report" : "AI-written report"
+    }
+  };
+  draft.country = result.country;
+  draft.legalResearch = result.legalResearch;
+  draft.context = result.report;
+  draft.reportReason = result.reportReason;
+  draft.reportType = result.reportType;
+  draft.writerConversation = result.conversation;
+  draft.aiDecisions = [...(draft.aiDecisions ?? []), decision].slice(-5);
 }
 
 export function shouldBypassReportCredits(
@@ -260,6 +308,9 @@ export class InteractionHandler {
   }
 
   private async saveDraft(userId: string, draft: ReportDraft): Promise<string> {
+    const now = new Date().toISOString();
+    draft.createdAt ??= now;
+    draft.updatedAt = now;
     return this.database.saveDraft(
       userId,
       encryptJson(draft, this.config.dataEncryptionKey)
@@ -267,6 +318,7 @@ export class InteractionHandler {
   }
 
   private async replaceDraft(userId: string, draftId: string, draft: ReportDraft): Promise<void> {
+    draft.updatedAt = new Date().toISOString();
     await this.database.updateDraft(
       userId,
       draftId,
@@ -301,8 +353,9 @@ export class InteractionHandler {
   ): Promise<boolean> {
     try {
       if (trackingId && (await this.database.statusDmMessageId(trackingId))) return true;
+      const aiDecisions = trackingId ? await this.database.aiDecisions(trackingId) : [];
       const message = await user.send({
-        embeds: [reportEmbed(report, snapshot, { history: "full" })],
+        embeds: [reportEmbed(report, snapshot, { history: "full", aiDecisions })],
         components: reportRetryComponents(report),
         allowedMentions: { parse: [] }
       });
@@ -341,15 +394,14 @@ export class InteractionHandler {
       return;
     }
     try {
-      const message = await interaction.user.send(review);
-      draft.reviewDmMessageId = message.id;
+      await this.upsertDraftDm(interaction.user, draft, review);
       await this.replaceDraft(interaction.user.id, draftId, draft);
       await interaction.editReply({
         content: null,
         embeds: [
           infoEmbed(
             "Report ready for review",
-            "Check your DMs to review and confirm the report."
+            "Check your DMs."
           )
         ],
         components: [],
@@ -368,6 +420,134 @@ export class InteractionHandler {
         content:
           "I could not send the review to your DMs, so it is shown here instead. Check your privacy settings.",
         ...review
+      });
+    }
+  }
+
+  private async upsertDraftDm(
+    user: User,
+    draft: ReportDraft,
+    payload: DraftMessagePayload
+  ): Promise<void> {
+    if (draft.reviewDmMessageId) {
+      const channel = await user.createDM();
+      try {
+        const message = await channel.messages.fetch(draft.reviewDmMessageId);
+        await message.edit(payload);
+        return;
+      } catch (error) {
+        if (!(error instanceof DiscordAPIError) || error.code !== 10_008) throw error;
+        delete draft.reviewDmMessageId;
+      }
+    }
+    const { content, ...sharedPayload } = payload;
+    const message = await user.send({
+      ...sharedPayload,
+      ...(content === null || content === undefined ? {} : { content })
+    });
+    draft.reviewDmMessageId = message.id;
+  }
+
+  private async deliverWriterProgress(
+    interaction: ModalSubmitInteraction | ButtonInteraction | StringSelectMenuInteraction,
+    draftId: string,
+    draft: ReportDraft,
+    progress: Parameters<typeof buildWriterProgress>[2],
+    status?: string
+  ): Promise<void> {
+    const payload = {
+      content: null,
+      embeds: [buildWriterProgress(draftId, draft, progress, status)],
+      components: [],
+      allowedMentions: { parse: [] }
+    } satisfies DraftMessagePayload;
+    const sourceMessageId = interaction.message?.id;
+    if (
+      draft.sendToDms === false ||
+      (draft.reviewDmMessageId !== undefined && sourceMessageId === draft.reviewDmMessageId)
+    ) {
+      await interaction.editReply(payload);
+      return;
+    }
+    try {
+      await this.upsertDraftDm(interaction.user, draft, payload);
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+      await interaction.editReply({
+        content: null,
+        embeds: [
+          infoEmbed(
+            "Preparing report in DMs",
+            "Check your DMs."
+          )
+        ],
+        components: [],
+        allowedMentions: { parse: [] }
+      });
+    } catch (error) {
+      botLog(
+        "report_progress_dm_send_failed",
+        {
+          permanentlyBlocked: error instanceof DiscordAPIError && error.code === 50_007,
+          ...errorFields(error)
+        },
+        "warn"
+      );
+      await interaction.editReply({
+        ...payload,
+        content:
+          "I could not update the report in your DMs, so the current status is shown here instead. Check your privacy settings."
+      });
+    }
+  }
+
+  private async deliverWriterFailure(
+    interaction: ModalSubmitInteraction | ButtonInteraction | StringSelectMenuInteraction,
+    draftId: string,
+    draft: ReportDraft,
+    description: string,
+    retryAction: "refine" | "regenerate" = "regenerate",
+    canManualEdit = false
+  ): Promise<void> {
+    const payload = {
+      content: null,
+      ...buildWriterFailure(draftId, description, retryAction, canManualEdit, draft),
+      allowedMentions: { parse: [] }
+    } satisfies DraftMessagePayload;
+    const sourceMessageId = interaction.message?.id;
+    if (
+      draft.sendToDms === false ||
+      (draft.reviewDmMessageId !== undefined && sourceMessageId === draft.reviewDmMessageId)
+    ) {
+      await interaction.editReply(payload);
+      return;
+    }
+    try {
+      await this.upsertDraftDm(interaction.user, draft, payload);
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+      await interaction.editReply({
+        content: null,
+        embeds: [
+          infoEmbed(
+            "Report draft needs attention",
+            "Check your DMs to retry, change the report details, or continue manually."
+          )
+        ],
+        components: [],
+        allowedMentions: { parse: [] }
+      });
+    } catch (error) {
+      botLog(
+        "report_failure_dm_send_failed",
+        {
+          permanentlyBlocked: error instanceof DiscordAPIError && error.code === 50_007,
+          ...errorFields(error)
+        },
+        "warn"
+      );
+      await interaction.editReply({
+        ...payload,
+        content:
+          "I could not update the report in your DMs, so the error and recovery controls are shown here instead."
       });
     }
   }
@@ -798,27 +978,21 @@ export class InteractionHandler {
           draft,
           this.aiActor(interaction.user.id),
           async (progress) => {
-            await interaction.editReply({
-              embeds: [buildWriterProgress(progress)],
-              components: []
-            });
+            await this.deliverWriterProgress(
+              interaction,
+              rewriteDraftId,
+              draft,
+              progress
+            );
           }
         );
-        draft.country = result.country;
-        draft.legalResearch = result.legalResearch;
-        draft.context = result.report;
-        draft.reportReason = result.reportReason;
-        draft.reportType = result.reportType;
-        draft.writerConversation = result.conversation;
+        applyWriterResult(draft, result, "Rewritten");
         await this.replaceDraft(
           interaction.user.id,
           rewriteDraftId,
           draft
         );
-        await interaction.editReply({
-          ...buildReview(rewriteDraftId, draft),
-          allowedMentions: { parse: [] }
-        });
+        await this.deliverReview(interaction, rewriteDraftId, draft);
       } catch (error) {
         const canManualEdit = await this.preserveWriterCandidate(
           interaction.user.id,
@@ -826,15 +1000,14 @@ export class InteractionHandler {
           draft,
           error
         );
-        await interaction.editReply({
-          ...buildWriterFailure(
-            rewriteDraftId,
-            conciseError(error),
-            "regenerate",
-            canManualEdit
-          ),
-          allowedMentions: { parse: [] }
-        });
+        await this.deliverWriterFailure(
+          interaction,
+          rewriteDraftId,
+          draft,
+          conciseError(error),
+          "regenerate",
+          canManualEdit
+        );
       }
       return;
     }
@@ -842,22 +1015,27 @@ export class InteractionHandler {
       const draft = await this.loadDraft(interaction.user.id, draftId);
       const instruction = interaction.fields.getTextInputValue("instruction").trim();
       await interaction.deferUpdate();
-      await interaction.editReply({
-        embeds: [infoEmbed("Refining report", "AI is applying your feedback in the same conversation.")],
-        components: []
-      });
+      await this.deliverWriterProgress(
+        interaction,
+        draftId,
+        draft,
+        {
+          stage: "write",
+          country: draft.country ?? "Auto",
+          reportReason: draft.reportReason ?? draft.reportBrief ?? "Auto",
+          reportType: draft.reportType
+            ? reportReasonLabel(draft.flow, draft.reportType)
+            : "Auto"
+        },
+        "Refining report"
+      );
       try {
         const result = await this.reportWriter.refine(
           draft,
           instruction,
           this.aiActor(interaction.user.id)
         );
-        draft.country = result.country;
-        draft.legalResearch = result.legalResearch;
-        draft.context = result.report;
-        draft.reportReason = result.reportReason;
-        draft.reportType = result.reportType;
-        draft.writerConversation = result.conversation;
+        applyWriterResult(draft, result, "Refined");
         await this.replaceDraft(interaction.user.id, draftId, draft);
         await this.deliverReview(interaction, draftId, draft);
       } catch (error) {
@@ -867,15 +1045,14 @@ export class InteractionHandler {
           draft,
           error
         );
-        await interaction.editReply({
-          ...buildWriterFailure(
-            draftId,
-            conciseError(error),
-            "refine",
-            canManualEdit
-          ),
-          allowedMentions: { parse: [] }
-        });
+        await this.deliverWriterFailure(
+          interaction,
+          draftId,
+          draft,
+          conciseError(error),
+          "refine",
+          canManualEdit
+        );
       }
       return;
     }
@@ -1003,18 +1180,10 @@ export class InteractionHandler {
         draft,
         this.aiActor(interaction.user.id),
         async (progress) => {
-          await interaction.editReply({
-            embeds: [buildWriterProgress(progress)],
-            components: []
-          });
+          await this.deliverWriterProgress(interaction, draftId, draft, progress);
         }
       );
-      draft.country = result.country;
-      draft.legalResearch = result.legalResearch;
-      draft.context = result.report;
-      draft.reportReason = result.reportReason;
-      draft.reportType = result.reportType;
-      draft.writerConversation = result.conversation;
+      applyWriterResult(draft, result, "Generated");
       await this.replaceDraft(interaction.user.id, draftId, draft);
       await this.deliverReview(interaction, draftId, draft);
     } catch (error) {
@@ -1024,10 +1193,14 @@ export class InteractionHandler {
         draft,
         error
       );
-      await interaction.editReply({
-        ...buildWriterFailure(draftId, conciseError(error), "regenerate", canManualEdit),
-        allowedMentions: { parse: [] }
-      });
+      await this.deliverWriterFailure(
+        interaction,
+        draftId,
+        draft,
+        conciseError(error),
+        "regenerate",
+        canManualEdit
+      );
     }
   }
 
@@ -1079,18 +1252,10 @@ export class InteractionHandler {
         draft,
         this.aiActor(interaction.user.id),
         async (progress) => {
-          await interaction.editReply({
-            embeds: [buildWriterProgress(progress)],
-            components: []
-          });
+          await this.deliverWriterProgress(interaction, draftId, draft, progress);
         }
       );
-      draft.country = result.country;
-      draft.legalResearch = result.legalResearch;
-      draft.context = result.report;
-      draft.reportReason = result.reportReason;
-      draft.reportType = result.reportType;
-      draft.writerConversation = result.conversation;
+      applyWriterResult(draft, result, "Generated");
       await this.replaceDraft(interaction.user.id, draftId, draft);
       await this.deliverReview(interaction, draftId, draft);
     } catch (error) {
@@ -1100,10 +1265,14 @@ export class InteractionHandler {
         draft,
         error
       );
-      await interaction.editReply({
-        ...buildWriterFailure(draftId, conciseError(error), "regenerate", canManualEdit),
-        allowedMentions: { parse: [] }
-      });
+      await this.deliverWriterFailure(
+        interaction,
+        draftId,
+        draft,
+        conciseError(error),
+        "regenerate",
+        canManualEdit
+      );
     }
   }
 
@@ -1248,18 +1417,10 @@ export class InteractionHandler {
           draft,
           this.aiActor(interaction.user.id),
           async (progress) => {
-            await interaction.editReply({
-              embeds: [buildWriterProgress(progress)],
-              components: []
-            });
+            await this.deliverWriterProgress(interaction, draftId, draft, progress);
           }
         );
-        draft.country = result.country;
-        draft.legalResearch = result.legalResearch;
-        draft.context = result.report;
-        draft.reportReason = result.reportReason;
-        draft.reportType = result.reportType;
-        draft.writerConversation = result.conversation;
+        applyWriterResult(draft, result, "Regenerated");
         await this.replaceDraft(interaction.user.id, draftId, draft);
         await this.deliverReview(interaction, draftId, draft);
       } catch (error) {
@@ -1269,15 +1430,14 @@ export class InteractionHandler {
           draft,
           error
         );
-        await interaction.editReply({
-          ...buildWriterFailure(
-            draftId,
-            conciseError(error),
-            "regenerate",
-            canManualEdit
-          ),
-          allowedMentions: { parse: [] }
-        });
+        await this.deliverWriterFailure(
+          interaction,
+          draftId,
+          draft,
+          conciseError(error),
+          "regenerate",
+          canManualEdit
+        );
       }
       return;
     }
@@ -1315,6 +1475,7 @@ export class InteractionHandler {
         reportType: request.reportType,
         encryptedRequest: encryptJson(request, this.config.dataEncryptionKey),
         ...(draft.serverSnapshot ? { serverSnapshot: draft.serverSnapshot } : {}),
+        ...(draft.aiDecisions ? { aiDecisions: draft.aiDecisions } : {}),
         dmEnabled: draft.sendToDms !== false,
         adminBypass: shouldBypassReportCredits(
           isAdmin,
@@ -1337,16 +1498,20 @@ export class InteractionHandler {
           draft.reviewDmMessageId
         );
       }
-      await interaction.editReply({
-        content: null,
-        embeds: [
-          infoEmbed(
-            "Submitting report",
-            "Your report is being prepared and sent securely. This may take a moment."
-          )
-        ],
-        components: []
-      });
+      await this.deliverWriterProgress(
+        interaction,
+        draftId,
+        draft,
+        {
+          stage: "write",
+          country: draft.country ?? "Auto",
+          reportReason: draft.context ?? draft.reportReason ?? "Preparing submission",
+          reportType: draft.reportType
+            ? reportReasonLabel(draft.flow, draft.reportType)
+            : "Auto"
+        },
+        "Submitting report"
+      );
       let report = await this.api.createReport(tracking.interactionId, request);
       const creditStateAfterCreation = await this.database.markSubmissionCreated(
         tracking.id,
@@ -1389,6 +1554,7 @@ export class InteractionHandler {
             : null,
         embeds: [
           reportEmbed(report, draft.serverSnapshot, {
+            aiDecisions: draft.aiDecisions ?? [],
             history:
               dmSent === true &&
               interaction.message.id !== draft.reviewDmMessageId
@@ -1443,16 +1609,20 @@ export class InteractionHandler {
         );
       }
       const request = draftToCreateInput(draft, interaction.user.id);
-      await interaction.editReply({
-        content: null,
-        embeds: [
-          infoEmbed(
-            "Resubmitting report",
-            "The rewritten report is being sent as a fresh linked lifecycle."
-          )
-        ],
-        components: []
-      });
+      await this.deliverWriterProgress(
+        interaction,
+        draftId,
+        draft,
+        {
+          stage: "write",
+          country: draft.country ?? "Auto",
+          reportReason: draft.context ?? draft.reportReason ?? "Preparing resubmission",
+          reportType: draft.reportType
+            ? reportReasonLabel(draft.flow, draft.reportType)
+            : "Auto"
+        },
+        "Resubmitting report"
+      );
       let report = await this.api.retryReport(
         previousReportId,
         interaction.id,
@@ -1467,8 +1637,12 @@ export class InteractionHandler {
         interaction.user.id,
         interaction.id,
         report,
-        encryptJson(request, this.config.dataEncryptionKey)
+        encryptJson(request, this.config.dataEncryptionKey),
+        draft.aiDecisions
       );
+      if (draft.reviewDmMessageId) {
+        await this.database.saveStatusDmMessageId(trackingId, draft.reviewDmMessageId);
+      }
       await this.database.deleteDraft(interaction.user.id, draftId);
       const dmSent = await this.sendReportDm(
         interaction.user,
@@ -1486,7 +1660,12 @@ export class InteractionHandler {
         content: dmSent
           ? null
           : "I could not send the full status log to your DMs. Check your privacy settings.",
-        embeds: [reportEmbed(report, draft.serverSnapshot, { history: "dm_notice" })],
+        embeds: [
+          reportEmbed(report, draft.serverSnapshot, {
+            history: "dm_notice",
+            aiDecisions: draft.aiDecisions ?? []
+          })
+        ],
         components: reportRetryComponents(report),
         allowedMentions: { parse: [] }
       });

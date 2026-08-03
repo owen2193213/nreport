@@ -158,6 +158,7 @@ type DiscordReviewStatus =
   | "received"
   | "confirmation_timeout"
   | "request_failed"
+  | "ineligible"
   | "request_ambiguous"
   | "approved"
   | "not_approved";
@@ -273,6 +274,11 @@ resolution can retry with bounded backoff, but a network-ambiguous review POST b
 `Report Actioned` email sets `discordStatus: "actioned"` and `reviewStatus: "approved"`. A final
 denied review sets both `discordStatus: "review_not_approved"` and
 `reviewStatus: "not_approved"`.
+
+If Discord rejects the appeal POST with API code `521004`, the API records the first-class terminal
+state `reviewStatus: "ineligible"` and emits `review_ineligible`. This means Discord says the DSA
+report is not eligible for review; it is not treated as a transport failure and the appeal is not
+retried. The state is not resubmittable by default.
 
 After Discord returns a report ID, the API waits up to 120 seconds for the first report-update
 email. If no update is correlated in that window, the report moves from `submitted` to a
@@ -526,7 +532,8 @@ when deduplicating semantic status notifications. Webhook receipt must not advan
 reconciliation cursor because webhook events can arrive out of order.
 
 Review lifecycle event types are `review_requested`, `review_received`,
-`review_confirmation_timeout`, `review_request_failed`, and `review_request_ambiguous`.
+`review_confirmation_timeout`, `review_request_failed`, `review_ineligible`, and
+`review_request_ambiguous`.
 Final outcomes continue to use `discord:actioned` or `discord:review_not_approved`.
 
 ### `POST /v1/reports/{internalReportId}/retry`
@@ -735,13 +742,21 @@ adaptive research, and changing country clears the conversation. MiniMax M2.7 us
 reasoning without an effort-level override. Report-producing calls have a 4,096-token completion
 budget while final report text remains limited to 512 characters.
 
-The combined report modal enables Use AI and Send review to DMs by default; no setup embed is
-shown. Clearing Use AI requires the
+The combined report modal places report category, flow-specific elements, and report details before
+country and the default-on Use AI and Send review to DMs preferences; no setup embed is shown.
+Blank category/details help text explains that AI fills the field when Use AI is enabled. Clearing Use AI requires the
 reporter to supply the final maximum-512-character text, makes no OpenRouter call, and omits
 AI-only review controls. Auto cannot resolve a country without AI, so the bot requires a saved or
-selected country before showing the manual review. When DM delivery is enabled, the bot sends the
-generated review and confirmation controls to DMs, then reuses that same message as the lifecycle
-status card after submission. Clearing it keeps the review ephemeral and suppresses later lifecycle
+selected country before showing the manual review. When DM delivery is enabled, the first drafting
+status creates one structured report card in DMs. Research, writing, refinement, review, submission,
+and later lifecycle updates edit that same message. The shared card uses Item, Status, Category,
+Country, Details, AI decisions, References, Dates, and Appeal; it does not duplicate Details in a
+Reason field. AI decisions are bot-owned, bounded before/after summaries with timestamps; they do
+not contain model reasoning or change the bot-to-API request. Lifecycle history hides verification
+and receipt transport noise, distinguishes the original report result from the appeal result, and
+bolds the latest stage without bolding its relative timestamp. The modal acknowledgement is the
+minimal `Check your DMs.`
+Clearing DM delivery keeps the draft/review ephemeral and suppresses later lifecycle
 DMs for that report. The bot-to-API request shape remains unchanged.
 
 Only the resolved ISO country, exact semantic category, concise report reason, and final reviewed

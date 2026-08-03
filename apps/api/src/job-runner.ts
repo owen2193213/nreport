@@ -45,10 +45,14 @@ interface NetworkCauseDiagnostic {
   depth: number;
 }
 
-interface RedactedError {
+export interface RedactedError {
+  type: string;
   code: string;
   message: string;
   retryAfter?: number;
+  httpStatus?: number;
+  discordErrorCode?: string;
+  discordResponseSummary?: string;
   networkCause?: NetworkCauseDiagnostic;
 }
 
@@ -104,10 +108,30 @@ export function inspectNetworkCause(error: unknown): NetworkCauseDiagnostic | un
   return fallback;
 }
 
-function redactedError(error: unknown): RedactedError {
+function safeErrorType(error: unknown): string {
+  if (typeof error !== "object" || error === null) return "UnknownError";
+  return (
+    safeDiagnosticValue(safeProperty(error, "name"), /^[A-Za-z][A-Za-z0-9_.-]*$/, 80) ??
+    "Error"
+  );
+}
+
+function discordErrorCode(responseSummary: string | undefined): string | undefined {
+  return /^code ([A-Za-z0-9_.-]{1,40})(?:;|$)/.exec(responseSummary ?? "")?.[1];
+}
+
+export function isReviewIneligible(error: unknown): boolean {
+  return (
+    error instanceof DiscordDsaHttpError &&
+    discordErrorCode(error.responseSummary) === "521004"
+  );
+}
+
+export function redactedError(error: unknown): RedactedError {
   if (error instanceof DiscordDsaNetworkError) {
     const networkCause = inspectNetworkCause(error);
     return {
+      type: error.name,
       code: "discord_network_error",
       message: "Temporary connection to Discord failed. Please retry this report.",
       ...(networkCause === undefined ? {} : { networkCause })
@@ -115,18 +139,103 @@ function redactedError(error: unknown): RedactedError {
   }
   if (error instanceof DiscordDsaHttpError) {
     const detail = error.responseSummary === undefined ? "" : `: ${error.responseSummary}`;
+    const responseCode = discordErrorCode(error.responseSummary);
     return {
+      type: error.name,
       code: `discord_http_${error.status}`,
       message: `Discord returned HTTP ${error.status}${detail}`.slice(0, 500),
+      httpStatus: error.status,
+      ...(responseCode === undefined ? {} : { discordErrorCode: responseCode }),
+      ...(error.responseSummary === undefined
+        ? {}
+        : { discordResponseSummary: error.responseSummary }),
       ...(error.retryAfterSeconds === undefined
         ? {}
         : { retryAfter: error.retryAfterSeconds })
     };
   }
   if (error instanceof Error) {
-    return { code: "report_processing_failed", message: error.message.slice(0, 500) };
+    return {
+      type: safeErrorType(error),
+      code: "report_processing_failed",
+      message: error.message.slice(0, 500)
+    };
   }
-  return { code: "report_processing_failed", message: "Unknown report processing error." };
+  return {
+    type: "UnknownError",
+    code: "report_processing_failed",
+    message: "Unknown report processing error."
+  };
+}
+
+function errorLogFields(error: RedactedError): Record<string, unknown> {
+  return {
+    errorType: error.type,
+    errorCode: error.code,
+    errorMessage: error.message,
+    ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
+    ...(error.discordErrorCode === undefined
+      ? {}
+      : { discordErrorCode: error.discordErrorCode }),
+    ...(error.discordResponseSummary === undefined
+      ? {}
+      : { discordResponseSummary: error.discordResponseSummary }),
+    ...(error.retryAfter === undefined
+      ? {}
+      : { retryAfterSeconds: error.retryAfter }),
+    ...(error.networkCause === undefined ? {} : { networkCause: error.networkCause })
+  };
+}
+
+function discordSnowflakeAgeSeconds(value: string, now: number): number | undefined {
+  try {
+    const createdAt = Number((BigInt(value) >> 22n) + 1_420_070_400_000n);
+    if (!Number.isFinite(createdAt) || createdAt > now) return undefined;
+    return Math.floor((now - createdAt) / 1_000);
+  } catch {
+    return undefined;
+  }
+}
+
+function reviewLogContext(report: ReportRow): Record<string, unknown> {
+  const common = {
+    flow: report.flow,
+    country: report.country,
+    reportType: report.input.reportType,
+    reportReasonLength: report.input.reportReason.length,
+    contextLength: report.input.context?.length ?? 0,
+    proxyStrategy: "fresh_same_country",
+    discordAuthorization: false
+  };
+  if (report.input.flow === "message_urf") {
+    const parts = new URL(report.input.messageUrl).pathname.split("/");
+    const guildOrDm = parts[2];
+    const messageId = parts[4];
+    return {
+      ...common,
+      messageScope: guildOrDm === "@me" ? "dm" : "guild",
+      ...(messageId === undefined
+        ? {}
+        : {
+            messageAgeSeconds: discordSnowflakeAgeSeconds(messageId, Date.now())
+          })
+    };
+  }
+  if (report.input.flow === "user_urf") {
+    return {
+      ...common,
+      selectedElementCount: report.input.profileElements.length,
+      hasServerContext: report.input.reportedUserServerId !== undefined,
+      targetIsBot: report.input.reportedUserSnapshot?.bot ?? false
+    };
+  }
+  return {
+    ...common,
+    selectedElementCount: report.input.guildElements.length,
+    guildTargetKind: /^\d{15,22}$/.test(report.input.guildIdOrInviteCode)
+      ? "snowflake"
+      : "invite"
+  };
 }
 
 export class JobRunner {
@@ -186,7 +295,10 @@ export class JobRunner {
         }
         await this.processJob(job);
       } catch (error) {
-        this.logger.error({ error: redactedError(error) }, "Job loop failed");
+        this.logger.error(
+          { event: "report_job_loop_failed", ...errorLogFields(redactedError(error)) },
+          "Job loop failed"
+        );
         await delay(1_500);
       }
     }
@@ -257,9 +369,7 @@ export class JobRunner {
             jobId: job.id,
             reportId: job.report_id,
             resendNumber: job.payload.resendNumber,
-            errorCode: redacted.code,
-            errorMessage: redacted.message,
-            networkCause: redacted.networkCause,
+            ...errorLogFields(redacted),
             durationMs: Date.now() - startedAt,
             event: "verification_resend_failed"
           },
@@ -283,7 +393,7 @@ export class JobRunner {
               event: "review_ambiguity_persistence_failed",
               jobId: job.id,
               reportId: job.report_id,
-              error: redactedError(persistenceError)
+              ...errorLogFields(redactedError(persistenceError))
             },
             "Discord review request is ambiguous and its status could not be persisted"
           );
@@ -294,8 +404,11 @@ export class JobRunner {
             event: "review_request_ambiguous",
             jobId: job.id,
             reportId: job.report_id,
-            errorCode: redacted.code,
-            networkCause: redacted.networkCause,
+            jobKind: job.kind,
+            attempt: job.attempts,
+            maxAttempts: job.max_attempts,
+            stage: "submit_report_review",
+            ...errorLogFields(redacted),
             durationMs: Date.now() - startedAt
           },
           "Discord review request result is ambiguous; automatic retry is disabled"
@@ -311,8 +424,11 @@ export class JobRunner {
               event: "review_link_resolution_retry_scheduled",
               jobId: job.id,
               reportId: job.report_id,
-              errorCode: redacted.code,
-              networkCause: redacted.networkCause,
+              jobKind: job.kind,
+              attempt: job.attempts,
+              maxAttempts: job.max_attempts,
+              stage: "resolve_review_link",
+              ...errorLogFields(redacted),
               delaySeconds,
               durationMs: Date.now() - startedAt
             },
@@ -331,8 +447,11 @@ export class JobRunner {
               event: "review_link_resolution_failed",
               jobId: job.id,
               reportId: job.report_id,
-              errorCode: redacted.code,
-              networkCause: redacted.networkCause,
+              jobKind: job.kind,
+              attempt: job.attempts,
+              maxAttempts: job.max_attempts,
+              stage: "resolve_review_link",
+              ...errorLogFields(redacted),
               durationMs: Date.now() - startedAt
             },
             "Discord review link resolution failed"
@@ -355,9 +474,9 @@ export class JobRunner {
             jobId: job.id,
             reportId: job.report_id,
             jobKind: job.kind,
-            errorCode: redacted.code,
-            errorMessage: redacted.message,
-            networkCause: redacted.networkCause,
+            attempt: job.attempts,
+            maxAttempts: job.max_attempts,
+            ...errorLogFields(redacted),
             delaySeconds,
             durationMs: Date.now() - startedAt
           },
@@ -372,9 +491,9 @@ export class JobRunner {
           jobId: job.id,
           reportId: job.report_id,
           jobKind: job.kind,
-          errorCode: redacted.code,
-          errorMessage: redacted.message,
-          networkCause: redacted.networkCause,
+          attempt: job.attempts,
+          maxAttempts: job.max_attempts,
+          ...errorLogFields(redacted),
           durationMs: Date.now() - startedAt
         },
         "Report job failed"
@@ -421,9 +540,9 @@ export class JobRunner {
           reportId: job.report_id,
           jobKind: job.kind,
           stage,
-          errorCode: redacted.code,
-          errorMessage: redacted.message,
-          networkCause: redacted.networkCause,
+          attempt: job.attempts,
+          maxAttempts: job.max_attempts,
+          ...errorLogFields(redacted),
           durationMs: Date.now() - startedAt
         },
         "Report job stage failed"
@@ -557,40 +676,82 @@ export class JobRunner {
       encryptedReviewUrl,
       this.config.sessionEncryptionKey
     );
+    const reviewContext = reviewLogContext(report);
     const client = this.clientFor(report, undefined, createProxySessionId());
     try {
       const token = await this.runStage(job, "resolve_review_link", () =>
         client.resolveReportReviewToken(reviewUrl)
       );
+      const tokenSegments = token.split(".").length;
+      this.logger.info(
+        {
+          event: "review_link_resolved",
+          jobId: job.id,
+          reportId: report.id,
+          jobKind: job.kind,
+          ...reviewContext,
+          attempt: job.attempts,
+          maxAttempts: job.max_attempts,
+          tokenLength: token.length,
+          tokenSegments
+        },
+        "Discord review link resolved"
+      );
       let result;
+      const submissionStartedAt = Date.now();
       try {
         result = await this.runStage(job, "submit_report_review", () =>
           client.submitReportReviewToken(token)
         );
       } catch (error) {
         const redacted = redactedError(error);
-        const ambiguous = error instanceof DiscordDsaNetworkError;
+        const ineligible = isReviewIneligible(error);
+        const ambiguous = !ineligible && error instanceof DiscordDsaNetworkError;
         try {
-          await this.database.failReviewRequest(
-            report.id,
-            ambiguous,
-            ambiguous ? "review_request_ambiguous" : "review_request_failed",
-            ambiguous
-              ? "Discord review request submission could not be confirmed."
-              : "Discord did not accept the automatic review request."
-          );
+          if (ineligible) {
+            await this.database.markReviewIneligible(
+              report.id,
+              "discord_review_ineligible",
+              "Discord says this DSA report is ineligible for review."
+            );
+          } else {
+            await this.database.failReviewRequest(
+              report.id,
+              ambiguous,
+              ambiguous ? "review_request_ambiguous" : "review_request_failed",
+              ambiguous
+                ? "Discord review request submission could not be confirmed."
+                : "Discord did not accept the automatic review request."
+            );
+          }
         } catch (persistenceError) {
           throw new ReviewSubmissionStartedError(persistenceError);
         }
+        const event = ineligible
+          ? "review_ineligible"
+          : ambiguous
+            ? "review_request_ambiguous"
+            : "review_request_failed";
         this.logger.error(
           {
-            event: ambiguous ? "review_request_ambiguous" : "review_request_failed",
+            event,
             jobId: job.id,
             reportId: report.id,
-            errorCode: redacted.code,
-            networkCause: redacted.networkCause
+            jobKind: job.kind,
+            stage: "submit_report_review",
+            ...reviewContext,
+            attempt: job.attempts,
+            maxAttempts: job.max_attempts,
+            tokenLength: token.length,
+            tokenSegments,
+            ineligible,
+            ambiguous,
+            ...errorLogFields(redacted),
+            durationMs: Date.now() - submissionStartedAt
           },
-          ambiguous
+          ineligible
+            ? "Discord says the DSA report is ineligible for review"
+            : ambiguous
             ? "Discord review request result is ambiguous"
             : "Discord review request failed"
         );
@@ -607,6 +768,19 @@ export class JobRunner {
         } catch (error) {
           throw new ReviewSubmissionStartedError(error);
         }
+        this.logger.error(
+          {
+            event: "review_report_id_mismatch",
+            jobId: job.id,
+            reportId: report.id,
+            jobKind: job.kind,
+            stage: "validate_review_response",
+            ...reviewContext,
+            attempt: job.attempts,
+            maxAttempts: job.max_attempts
+          },
+          "Discord review response report ID did not match"
+        );
         return;
       }
       try {
@@ -614,6 +788,21 @@ export class JobRunner {
       } catch (error) {
         throw new ReviewSubmissionStartedError(error);
       }
+      this.logger.info(
+        {
+          event: "review_request_submitted",
+          jobId: job.id,
+          reportId: report.id,
+          jobKind: job.kind,
+          stage: "submit_report_review",
+          ...reviewContext,
+          attempt: job.attempts,
+          maxAttempts: job.max_attempts,
+          tokenLength: token.length,
+          tokenSegments
+        },
+        "Discord review request submitted"
+      );
     } finally {
       try {
         await client.close();
@@ -623,7 +812,10 @@ export class JobRunner {
             event: "review_session_close_failed",
             jobId: job.id,
             reportId: report.id,
-            error: redactedError(error)
+            jobKind: job.kind,
+            stage: "close_review_session",
+            ...reviewContext,
+            ...errorLogFields(redactedError(error))
           },
           "Discord review session close failed"
         );

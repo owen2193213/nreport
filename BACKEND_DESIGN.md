@@ -78,12 +78,22 @@ session in the report's selected country. It does not require the original repor
 session to remain valid. The token and link are never returned to the bot or written to logs.
 
 Review progress is stored separately from `discord_status` as `queued`, `requested`, `received`,
-`confirmation_timeout`, `request_failed`, `request_ambiguous`, `approved`, or `not_approved`.
+`confirmation_timeout`, `request_failed`, `ineligible`, `request_ambiguous`, `approved`, or
+`not_approved`.
 A successful review POST is authoritative. The API waits up to 120 seconds for Discord's
 review-confirmation
 email, but a missing confirmation changes only the diagnostic review status and never causes a
 second appeal submission. A transport failure after the review POST begins is ambiguous and is
 also never automatically retried.
+
+Discord HTTP error code `521004` is a definite terminal eligibility outcome rather than a generic
+submission failure. The API stores `review_status = 'ineligible'`, emits `review_ineligible`, and
+does not retry or make the report resubmittable.
+
+Structured review diagnostics record the stage, attempt, flow, country, fresh-proxy use, bounded
+Discord HTTP classification, safe network cause, duration, token shape, and non-identifying target
+shape. They deliberately omit the review URL/token, target ID, email, cookies, authorization, IP,
+proxy session ID, and proxy URL.
 
 ## Security and reliability
 

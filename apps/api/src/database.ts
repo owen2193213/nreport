@@ -459,6 +459,7 @@ export class Database {
       eventType === "review_received" ||
       eventType === "review_confirmation_timeout" ||
       eventType === "review_request_failed" ||
+      eventType === "review_ineligible" ||
       eventType === "review_request_ambiguous"
     ) {
       await client.query(
@@ -1202,6 +1203,38 @@ export class Database {
           ambiguous ? "review_request_ambiguous" : "review_request_failed",
           { errorCode }
         );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async markReviewIneligible(
+    reportId: string,
+    errorCode: string,
+    errorMessage: string
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const updated = await client.query(
+        `UPDATE reports
+         SET review_status = 'ineligible', review_status_updated_at = now(),
+             review_confirmation_deadline = NULL,
+             review_error_code = $2, review_error_message = $3,
+             updated_at = now()
+         WHERE id = $1 AND review_status = 'queued'`,
+        [reportId, errorCode, errorMessage]
+      );
+      if (updated.rowCount === 1) {
+        await this.event(client, reportId, "review_ineligible", {
+          errorCode,
+          discordErrorCode: "521004"
+        });
       }
       await client.query("COMMIT");
     } catch (error) {

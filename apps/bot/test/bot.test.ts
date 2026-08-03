@@ -485,7 +485,21 @@ describe("report UI", () => {
     expect(automaticJson).toContain('"custom_id":"report_type","required":false');
     expect(automaticJson).toContain('"min_values":0');
     expect(automaticJson).toContain('"placeholder":"Auto"');
-    expect(automaticJson).toContain('"description":"512 characters max."');
+    expect(automaticJson).toContain(
+      '"description":"If blank, AI will automatically choose this field when Use AI is enabled."'
+    );
+    expect(automaticJson).toContain(
+      '"description":"If blank, AI will automatically write this field when Use AI is enabled. Maximum 512 characters."'
+    );
+    expect(automaticJson.indexOf('"custom_id":"report_type"')).toBeLessThan(
+      automaticJson.indexOf('"custom_id":"brief"')
+    );
+    expect(automaticJson.indexOf('"custom_id":"brief"')).toBeLessThan(
+      automaticJson.indexOf('"custom_id":"country_mode"')
+    );
+    expect(automaticJson.indexOf('"custom_id":"country_mode"')).toBeLessThan(
+      automaticJson.indexOf('"custom_id":"preferences"')
+    );
     expect(manualJson).toContain('"custom_id":"report_type","required":false');
     expect(manualJson).toContain('"custom_id":"brief","style":2,"required":false');
     expect(manualJson).toContain('"max_length":512');
@@ -680,10 +694,14 @@ describe("report UI", () => {
     expect(review.embeds[0]?.toJSON().description).toBeUndefined();
     expect(review.embeds[0]?.toJSON().fields?.map((field) => field.name)).toEqual([
       "Item",
+      "Status",
       "Category",
       "Country",
-      "Reason",
-      "Details"
+      "Details",
+      "AI decisions",
+      "References",
+      "Dates",
+      "Appeal"
     ]);
     expect(review.embeds[0]?.toJSON().fields?.find((field) => field.name === "Details")?.value)
       .toMatch(/^```\n[\s\S]*\n```$/);
@@ -723,6 +741,10 @@ describe("report UI", () => {
     expect(embed?.fields?.find((field) => field.name === "Status")?.value).toBe(
       "Action taken"
     );
+    expect(embed?.fields?.some((field) => field.name === "Reason")).toBe(false);
+    expect(embed?.fields?.find((field) => field.name === "Appeal")?.value).toBe(
+      "Not available"
+    );
     expect(embed?.fields?.find((field) => field.name === "History")?.value).toBe(
       "Check your DMs for the full status log."
     );
@@ -753,7 +775,7 @@ describe("report UI", () => {
       );
     expect(characters).toBeLessThanOrEqual(6_000);
     expect(json.fields?.length).toBeLessThanOrEqual(25);
-    expect(JSON.stringify(json)).toContain("Attempt 3");
+    expect(JSON.stringify(json)).toContain("Attempt 1");
     expect(JSON.stringify(json)).not.toContain("Verification started");
   });
 
@@ -807,11 +829,11 @@ describe("report UI", () => {
     expect(json).toContain("discord.com/channels");
     expect(json).toContain("sensitive context");
     expect(json).toContain("History");
-    expect(json).toContain("Report requested");
-    expect(json).toContain("Verification email requested");
-    expect(json).toContain("Verification completed");
     expect(json).toContain("Submitted to Discord");
-    expect(json).toContain("Result: Discord took action");
+    expect(json).toContain("**Original report: Discord took action**");
+    expect(json).not.toContain("Report requested");
+    expect(json).not.toContain("Verification email requested");
+    expect(json).not.toContain("Verification completed");
     expect(json).not.toContain("pending");
     expect(json).not.toContain("code processed");
     expect(json).not.toContain("ABCD12");
@@ -840,25 +862,204 @@ describe("report UI", () => {
     );
   });
 
-  it("renders each writer stage as a code-block progress embed", () => {
-    const research = buildWriterProgress({
+  it("separates the original result from the current appeal stage", () => {
+    const report = reportFixture();
+    report.discordStatus = "closed_no_action";
+    report.reviewStatus = "received";
+    report.reviewStatusUpdatedAt = "2026-07-20T00:02:00.000Z";
+    report.timeline = [
+      {
+        eventId: "1",
+        type: "report_submitted",
+        occurredAt: "2026-07-19T00:00:00.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: null,
+        errorCode: null
+      },
+      {
+        eventId: "2",
+        type: "discord_status_updated",
+        occurredAt: "2026-07-20T00:00:00.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: "closed_no_action",
+        errorCode: null
+      },
+      {
+        eventId: "3",
+        type: "review_received",
+        occurredAt: "2026-07-20T00:01:00.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: "closed_no_action",
+        errorCode: null
+      }
+    ];
+    const history = reportEmbed(report)
+      .toJSON()
+      .fields?.find((field) => field.name === "History")?.value;
+    expect(history).toContain("Submitted to Discord");
+    expect(history).toContain("Original report: Closed without action");
+    expect(history).toContain("Appeal submitted");
+    expect(history).toMatch(/<t:\d+:R> \*\*Waiting for appeal decision\*\*/);
+    expect(history).not.toContain("Verification");
+  });
+
+  it("labels a denied appeal as the final bold stage", () => {
+    const report = reportFixture();
+    report.discordStatus = "review_not_approved";
+    report.reviewStatus = "not_approved";
+    report.reviewStatusUpdatedAt = "2026-07-20T00:03:00.000Z";
+    report.timeline = [
+      {
+        eventId: "1",
+        type: "report_submitted",
+        occurredAt: "2026-07-19T00:00:00.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: null,
+        errorCode: null
+      },
+      {
+        eventId: "2",
+        type: "discord_status_updated",
+        occurredAt: "2026-07-20T00:00:00.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: "closed_no_action",
+        errorCode: null
+      },
+      {
+        eventId: "3",
+        type: "review_received",
+        occurredAt: "2026-07-20T00:01:00.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: "closed_no_action",
+        errorCode: null
+      },
+      {
+        eventId: "4",
+        type: "discord_status_updated",
+        occurredAt: "2026-07-20T00:03:00.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: "review_not_approved",
+        errorCode: null
+      }
+    ];
+    const history = reportEmbed(report)
+      .toJSON()
+      .fields?.find((field) => field.name === "History")?.value;
+    expect(history).toContain("Original report: Closed without action");
+    expect(history).toContain("Appeal submitted");
+    expect(history).toMatch(
+      /<t:\d+:R> \*\*Appeal denied — Discord upheld no action\*\*/
+    );
+    expect(history).not.toContain("Result: Review not approved");
+  });
+
+  it("renders Discord review ineligibility as a first-class terminal outcome", () => {
+    const report = reportFixture();
+    report.discordStatus = "closed_no_action";
+    report.reviewStatus = "ineligible";
+    report.reviewStatusUpdatedAt = "2026-07-20T00:03:00.000Z";
+    report.reviewError = {
+      code: "discord_review_ineligible",
+      message: "Discord says this DSA report is ineligible for review."
+    };
+    report.timeline = [
+      {
+        eventId: "1",
+        type: "discord_status_updated",
+        occurredAt: "2026-07-20T00:00:00.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: "closed_no_action",
+        errorCode: null
+      },
+      {
+        eventId: "2",
+        type: "review_ineligible",
+        occurredAt: "2026-07-20T00:03:00.000Z",
+        lifecycleAttempt: 1,
+        discordStatus: "closed_no_action",
+        errorCode: "discord_review_ineligible"
+      }
+    ];
+
+    const json = reportEmbed(report).toJSON();
+    expect(json.fields?.find((field) => field.name === "Status")?.value).toBe(
+      "DSA report ineligible for review"
+    );
+    expect(json.fields?.find((field) => field.name === "Appeal")?.value).toContain(
+      "Discord says this DSA report is ineligible for review."
+    );
+    expect(json.fields?.find((field) => field.name === "History")?.value).toMatch(
+      /\*\*Appeal unavailable — DSA report ineligible\*\*/
+    );
+    expect(reportRetryComponents(report)).toEqual([]);
+    expect(lifecycleReplyText("review_ineligible", report)).toBe(
+      "Discord says this DSA report is ineligible for review. No appeal was submitted."
+    );
+  });
+
+  it("renders each writer stage with the durable report field structure", () => {
+    const draft = {
+      flow: "message_urf" as const,
+      messageUrl: "https://discord.com/channels/@me/123/456",
+      reportBrief: "The message contains hateful content.",
+      createdAt: "2026-07-20T00:00:00.000Z",
+      updatedAt: "2026-07-20T00:00:00.000Z"
+    };
+    const research = buildWriterProgress("draft-id", draft, {
       stage: "research",
       country: "Auto",
       reportReason: "Auto",
       reportType: "Auto"
     }).toJSON();
-    const writing = buildWriterProgress({
+    const writing = buildWriterProgress("draft-id", draft, {
       stage: "write",
       country: "DE",
       reportReason: "The message contains hateful content.",
       reportType: "Other: hate speech"
     }).toJSON();
-    expect(research.title).toBe("Researching report");
-    expect(research.description).toMatch(/^```\n[\s\S]*\n```$/);
-    expect(writing.description).toContain("Germany");
-    expect(writing.description).toContain("Category: Other: hate speech");
-    expect(writing.title).toBe("Writing report");
-    expect(writing.description).toContain("Reason: The message contains hateful content.");
+    expect(research.title).toBe("Message report");
+    expect(research.fields?.map((field) => field.name)).toEqual([
+      "Item",
+      "Status",
+      "Category",
+      "Country",
+      "Details",
+      "AI decisions",
+      "References",
+      "Dates",
+      "Appeal"
+    ]);
+    expect(writing.fields?.find((field) => field.name === "Country")?.value).toBe(
+      "🇩🇪 Germany"
+    );
+    expect(writing.fields?.find((field) => field.name === "Category")?.value).toBe(
+      "Other: hate speech"
+    );
+    expect(writing.fields?.find((field) => field.name === "Status")?.value).toBe(
+      "Writing report"
+    );
+    expect(writing.fields?.some((field) => field.name === "Reason")).toBe(false);
+    expect(
+      writing.fields?.find((field) => field.name === "AI decisions")?.value
+    ).toContain("Country: Auto →");
+  });
+
+  it("includes completed AI field decisions in review and lifecycle DM cards", () => {
+    const aiDecisions = [
+      {
+        action: "Generated" as const,
+        decidedAt: "2026-07-20T00:00:00.000Z",
+        country: { before: "Auto", after: "🇩🇪 Germany" },
+        category: { before: "Auto", after: "Other: hate speech" },
+        details: { before: "Blank", after: "AI-written report" }
+      }
+    ];
+    const report = reportFixture();
+    const lifecycle = renderNotification(report, null, "discord:actioned", aiDecisions).toJSON();
+    const field = lifecycle.fields?.find((candidate) => candidate.name === "AI decisions");
+    expect(field?.value).toContain("Country: Auto → 🇩🇪 Germany");
+    expect(field?.value).toContain("Category: Auto → Other: hate speech");
+    expect(field?.value).toMatch(/\*\*Generated\*\* <t:\d+:R>/);
   });
 
   it("uses plain reply notifications for final Discord decisions", () => {
@@ -923,6 +1124,7 @@ describe("lifecycle notification deduplication", () => {
     expect(shouldNotifyLifecycleType("report_submitted")).toBe(true);
     expect(shouldNotifyLifecycleType("discord:received")).toBe(true);
     expect(shouldNotifyLifecycleType("discord:actioned")).toBe(true);
+    expect(shouldNotifyLifecycleType("review_ineligible")).toBe(true);
   });
 
   it("edits the saved status DM and replies when Discord makes a decision", async () => {
@@ -957,6 +1159,7 @@ describe("lifecycle notification deduplication", () => {
         }
       ]),
       statusDmMessageId: vi.fn().mockResolvedValue("dm-message-1"),
+      aiDecisions: vi.fn().mockResolvedValue([]),
       completeNotification
     } as unknown as BotDatabase;
     const api = {
@@ -1013,6 +1216,7 @@ describe("lifecycle notification deduplication", () => {
         }
       ]),
       statusDmMessageId: vi.fn().mockResolvedValue(null),
+      aiDecisions: vi.fn().mockResolvedValue([]),
       saveStatusDmMessageId,
       completeNotification
     } as unknown as BotDatabase;
@@ -1295,7 +1499,8 @@ describe("report interaction country precedence", () => {
       config: {
         whitelistEnabled: false,
         adminUserIds: new Set<string>(),
-        dataEncryptionKey
+        dataEncryptionKey,
+        keyPepper: "test-key-pepper"
       } as unknown as BotConfig,
       countries: ["DE"],
       database,
@@ -1505,7 +1710,8 @@ describe("report interaction country precedence", () => {
       config: {
         whitelistEnabled: false,
         adminUserIds: new Set<string>(),
-        dataEncryptionKey
+        dataEncryptionKey,
+        keyPepper: "test-key-pepper"
       } as unknown as BotConfig,
       countries: ["DE"],
       database,
@@ -1558,7 +1764,123 @@ describe("report interaction country precedence", () => {
     });
     expect(JSON.stringify(send.mock.calls[0]?.[0])).toContain("Submit DSA Report");
     expect(JSON.stringify(editReply.mock.calls.at(-1)?.[0])).toContain(
-      "Check your DMs to review and confirm the report."
+      "Check your DMs."
     );
+  });
+
+  it("creates one drafting DM and edits it through progress and review", async () => {
+    const dataEncryptionKey = randomBytes(32);
+    const draft = {
+      flow: "message_urf" as const,
+      country: "DE",
+      countrySelection: "default" as const,
+      messageUrl:
+        "https://discord.com/channels/@me/123456789012345678/123456789012345679"
+    };
+    const updateDraft = vi.fn();
+    const database = {
+      getDraft: vi.fn().mockResolvedValue(encryptJson(draft, dataEncryptionKey)),
+      updateDraft
+    } as unknown as BotDatabase;
+    const editDm = vi.fn().mockResolvedValue(undefined);
+    const dmMessage = { id: "draft-dm-id", edit: editDm };
+    const send = vi.fn().mockResolvedValue(dmMessage);
+    const fetchDm = vi.fn().mockResolvedValue(dmMessage);
+    const generate = vi.fn().mockImplementation(
+      async (
+        _draft: unknown,
+        _actor: unknown,
+        progress: (value: {
+          stage: "research" | "write";
+          country: string;
+          reportReason: string;
+          reportType: string;
+        }) => Promise<void>
+      ) => {
+        await progress({
+          stage: "research",
+          country: "DE",
+          reportReason: "The message contains hateful content.",
+          reportType: "Other: hate speech"
+        });
+        await progress({
+          stage: "write",
+          country: "DE",
+          reportReason: "The message contains hateful content.",
+          reportType: "Other: hate speech"
+        });
+        return {
+          country: "DE",
+          legalResearch: {
+            country: "DE",
+            summary: "Relevant law.",
+            sources: [],
+            researchedAt: "2026-07-20T00:00:00.000Z",
+            searchRequests: 0
+          },
+          report: "The final report details.",
+          reportReason: "The message contains hateful content.",
+          reportType: "sub_other_hate_speech",
+          conversation: []
+        };
+      }
+    );
+    const handler = new InteractionHandler({
+      api: {} as DsaApi,
+      config: {
+        whitelistEnabled: false,
+        adminUserIds: new Set<string>(),
+        dataEncryptionKey,
+        keyPepper: "test-key-pepper"
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database,
+      messageResolver: { resolve: vi.fn().mockResolvedValue(null) } as unknown as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: { generate } as unknown as ReportWriter,
+      serverResolver: {} as ServerResolver
+    });
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => true,
+      isStringSelectMenu: () => false,
+      isButton: () => false,
+      isRepliable: () => true,
+      customId: "report:modal:draft-id",
+      user: {
+        id: "1197857362942378017",
+        send,
+        createDM: vi.fn().mockResolvedValue({ messages: { fetch: fetchDm } })
+      },
+      fields: {
+        getCheckboxGroup: () => ["USE_AI", "SEND_DM"],
+        getStringSelectValues: (name: string) =>
+          name === "country_mode" ? ["DEFAULT"] : [],
+        getTextInputValue: () => ""
+      },
+      deferReply: vi.fn(),
+      editReply,
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    expect(generate).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledOnce();
+    expect(editDm).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(send.mock.calls[0]?.[0])).toContain("Researching report");
+    expect(JSON.stringify(editDm.mock.calls[0]?.[0])).toContain("Writing report");
+    expect(JSON.stringify(editDm.mock.calls[1]?.[0])).toContain("Ready for review");
+    expect(JSON.stringify(editDm.mock.calls[1]?.[0])).toContain("Submit DSA Report");
+    expect(JSON.stringify(editReply.mock.calls.at(-1)?.[0])).toContain(
+      "Check your DMs."
+    );
+    expect(
+      decryptJson(String(updateDraft.mock.calls.at(-1)?.[2]), dataEncryptionKey)
+    ).toMatchObject({ reviewDmMessageId: "draft-dm-id", sendToDms: true });
   });
 });

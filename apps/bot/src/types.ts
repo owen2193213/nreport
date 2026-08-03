@@ -10,8 +10,11 @@ import type {
 
 export interface ReportDraft {
   aiDisabled?: boolean;
+  aiDecisions?: AiDecisionSummary[];
   sendToDms?: boolean;
   reviewDmMessageId?: string;
+  createdAt?: string;
+  updatedAt?: string;
   country?: string;
   countrySelection?: CountrySelection;
   context?: string;
@@ -38,6 +41,14 @@ export interface ReportDraft {
     instruction: string;
   };
   serverSnapshot?: ServerSnapshot;
+}
+
+export interface AiDecisionSummary {
+  action: "Generated" | "Refined" | "Regenerated" | "Rewritten";
+  decidedAt: string;
+  country: { before: string; after: string };
+  category: { before: string; after: string };
+  details: { before: string; after: string };
 }
 
 export type CountrySelection = "auto" | "default" | "override";

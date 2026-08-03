@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 
 import { faker } from "@faker-js/faker";
+import { DiscordDsaHttpError, DiscordDsaNetworkError } from "@discord-dsa/client";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -20,7 +21,11 @@ import {
   VERIFICATION_EMAIL_RESEND_DELAYS_SECONDS,
   VERIFICATION_EMAIL_TIMEOUT_SECONDS
 } from "../src/database.js";
-import { inspectNetworkCause } from "../src/job-runner.js";
+import {
+  inspectNetworkCause,
+  isReviewIneligible,
+  redactedError
+} from "../src/job-runner.js";
 import {
   buildAcceptLanguage,
   generateEmailAlias,
@@ -70,6 +75,59 @@ describe("backend identity and validation", () => {
       depth: 0
     });
     expect(inspectNetworkCause("not an error")).toBeUndefined();
+  });
+
+  it("preserves safe Discord HTTP diagnostics for structured logs", () => {
+    const error = new DiscordDsaHttpError("request failed", 400, {
+      retryAfterSeconds: 7,
+      responseSummary: "code 521004; Report is not eligible for report review"
+    });
+    const diagnostic = redactedError(error);
+
+    expect(diagnostic).toEqual({
+      type: "DiscordDsaHttpError",
+      code: "discord_http_400",
+      message:
+        "Discord returned HTTP 400: code 521004; Report is not eligible for report review",
+      httpStatus: 400,
+      discordErrorCode: "521004",
+      discordResponseSummary:
+        "code 521004; Report is not eligible for report review",
+      retryAfter: 7
+    });
+    expect(isReviewIneligible(error)).toBe(true);
+    expect(
+      isReviewIneligible(
+        new DiscordDsaHttpError("request failed", 400, {
+          responseSummary: "code 50035; Invalid Form Body"
+        })
+      )
+    ).toBe(false);
+  });
+
+  it("logs only bounded network classifications instead of connection secrets", () => {
+    const cause = Object.assign(new Error("secret proxy failed"), {
+      code: "UND_ERR_CONNECT_TIMEOUT",
+      syscall: "connect",
+      proxyUrl: "sensitive-proxy-value"
+    });
+    const diagnostic = redactedError(
+      new DiscordDsaNetworkError("network request failed", { cause })
+    );
+
+    expect(diagnostic).toEqual({
+      type: "DiscordDsaNetworkError",
+      code: "discord_network_error",
+      message: "Temporary connection to Discord failed. Please retry this report.",
+      networkCause: {
+        name: "Error",
+        code: "UND_ERR_CONNECT_TIMEOUT",
+        syscall: "connect",
+        depth: 1
+      }
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("secret-proxy");
+    expect(JSON.stringify(diagnostic)).not.toContain("password");
   });
 
   it("keeps Discord's form language independent from the country locale", () => {

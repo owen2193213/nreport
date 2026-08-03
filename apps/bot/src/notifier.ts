@@ -9,7 +9,7 @@ import { decryptJson } from "./crypto.js";
 import { shouldNotifyLifecycleType, type BotDatabase } from "./database.js";
 import { botLog, errorFields } from "./observability.js";
 import type { ServerResolver } from "./server-resolver.js";
-import type { ServerSnapshot } from "./types.js";
+import type { AiDecisionSummary, ServerSnapshot } from "./types.js";
 import { reportEmbed, reportRetryComponents } from "./ui.js";
 
 function errorMessage(error: unknown): string {
@@ -23,10 +23,14 @@ function definiteCreateFailure(error: unknown): boolean {
 export function renderNotification(
   report: ReportDetail,
   snapshot?: ServerSnapshot | null,
-  eventType?: string
+  eventType?: string,
+  aiDecisions?: readonly AiDecisionSummary[]
 ) {
   void eventType;
-  return reportEmbed(report, snapshot, { history: "full" }).setTimestamp(
+  return reportEmbed(report, snapshot, {
+    history: "full",
+    ...(aiDecisions === undefined ? {} : { aiDecisions })
+  }).setTimestamp(
     new Date(report.discordStatusUpdatedAt ?? report.updatedAt)
   );
 }
@@ -45,6 +49,8 @@ export function lifecycleReplyText(eventType: string, report: ReportDetail): str
       return "Discord accepted the appeal request, but its confirmation email did not arrive within 2 minutes. The appeal was not submitted again.";
     case "review_request_failed":
       return "Discord did not accept the automatic appeal request. Check the report status before taking further action.";
+    case "review_ineligible":
+      return "Discord says this DSA report is ineligible for review. No appeal was submitted.";
     case "review_request_ambiguous":
       return "The automatic appeal request could not be confirmed. It was not retried to avoid submitting a duplicate.";
     case "report_failed":
@@ -241,10 +247,12 @@ export class NotificationWorker {
         const report = await this.api.report(job.payload.internalReportId);
         const user = await this.client.users.fetch(job.discord_user_id);
         const components = reportRetryComponents(report);
+        const aiDecisions = await this.database.aiDecisions(job.tracking_id);
         const embed = renderNotification(
           report,
           await this.snapshotFor(report, job.discord_user_id),
-          job.payload.eventType
+          job.payload.eventType,
+          aiDecisions
         );
         let statusMessage = await this.storedStatusMessage(user, job.tracking_id);
         if (statusMessage === null) {

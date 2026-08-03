@@ -27,6 +27,7 @@ export const DISCORD_REVIEW_STATUSES = [
   "received",
   "confirmation_timeout",
   "request_failed",
+  "ineligible",
   "request_ambiguous",
   "approved",
   "not_approved"

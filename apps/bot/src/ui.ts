@@ -26,7 +26,12 @@ import {
 
 import type { AccessKeyView } from "./database.js";
 import { countryDisplay } from "./countries.js";
-import type { AccessView, ReportDraft, ServerSnapshot } from "./types.js";
+import type {
+  AccessView,
+  AiDecisionSummary,
+  ReportDraft,
+  ServerSnapshot
+} from "./types.js";
 import type { WriterProgress } from "./report-writer.js";
 
 const FLOW_LABELS: Record<ReportFlow, string> = {
@@ -53,6 +58,7 @@ const STATUS_LABELS: Record<string, string> = {
   review_received: "Appeal received by Discord",
   review_confirmation_timeout: "Appeal sent - email unconfirmed",
   review_request_failed: "Automatic appeal failed",
+  review_ineligible: "DSA report ineligible for review",
   review_request_ambiguous: "Appeal result uncertain",
   review_approved: "Appeal approved",
   review_not_approved_final: "Appeal denied"
@@ -83,7 +89,12 @@ function statusColor(
     return Colors.Red;
   }
   if (report.reviewStatus === "approved") return Colors.Green;
-  if (report.reviewStatus === "confirmation_timeout") return Colors.Orange;
+  if (
+    report.reviewStatus === "confirmation_timeout" ||
+    report.reviewStatus === "ineligible"
+  ) {
+    return Colors.Orange;
+  }
   if (report.discordStatus === "actioned") return Colors.Green;
   if (report.discordStatus === "closed_no_action" && report.reviewStatus === null) {
     return Colors.Greyple;
@@ -169,16 +180,102 @@ function codeBlock(value: string): string {
   return `\`\`\`\n${value.replaceAll("```", "`\u200b``")}\n\`\`\``;
 }
 
-export function buildWriterProgress(progress: WriterProgress): EmbedBuilder {
-  const lines = [
-    `Country: ${progress.country === "Auto" ? "Auto" : countryDisplay(progress.country)}`,
-    `Category: ${progress.reportType}`,
-    `Reason: ${progress.reportReason}`
-  ];
-  return new EmbedBuilder()
+function decisionText(decisions: readonly AiDecisionSummary[]): string {
+  const visible = decisions.slice(-3);
+  const lines = visible.flatMap((decision) => [
+    `**${decision.action}** ${discordTimestamp(decision.decidedAt)}`,
+    `Country: ${decision.country.before} → ${decision.country.after}`,
+    `Category: ${decision.category.before} → ${decision.category.after}`,
+    `Details: ${decision.details.before} → ${decision.details.after}`
+  ]);
+  if (decisions.length > visible.length) {
+    lines.unshift(`_${decisions.length - visible.length} earlier AI decision(s) hidden_`);
+  }
+  return truncate(lines.join("\n"), 1_024);
+}
+
+function draftDecisionText(draft: ReportDraft, progress?: WriterProgress): string {
+  if (progress) {
+    const countryBefore =
+      draft.countrySelection === "auto" || !draft.country
+        ? "Auto"
+        : countryDisplay(draft.country);
+    const categoryBefore = draft.reportType
+      ? reportReasonLabel(draft.flow, draft.reportType)
+      : "Auto";
+    const detailsBefore = draft.context
+      ? "Existing draft"
+      : draft.reportBrief
+        ? "User guidance"
+        : "Blank";
+    const countryAfter =
+      progress.country === "Auto" ? "Deciding" : countryDisplay(progress.country);
+    const categoryAfter = progress.reportType === "Auto" ? "Deciding" : progress.reportType;
+    return truncate(
+      [
+        `**In progress** ${discordTimestamp(new Date().toISOString())}`,
+        `Country: ${countryBefore} → ${countryAfter}`,
+        `Category: ${categoryBefore} → ${categoryAfter}`,
+        `Details: ${detailsBefore} → ${progress.stage === "research" ? "Researching" : "Writing"}`
+      ].join("\n"),
+      1_024
+    );
+  }
+  if (draft.aiDecisions?.length) return decisionText(draft.aiDecisions);
+  return draft.aiDisabled
+    ? "AI disabled — the report fields were supplied by the user."
+    : "No completed AI decision yet.";
+}
+
+export function buildWriterProgress(
+  draftId: string,
+  draft: ReportDraft,
+  progress: WriterProgress,
+  status?: string
+): EmbedBuilder {
+  const now = new Date().toISOString();
+  const details =
+    progress.reportReason === "Auto"
+      ? draft.reportBrief ?? "AI is interpreting the supplied evidence."
+      : progress.reportReason;
+  const embed = new EmbedBuilder()
     .setColor(Colors.Yellow)
-    .setTitle(progress.stage === "research" ? "Researching report" : "Writing report")
-    .setDescription(codeBlock(lines.join("\n")));
+    .setTitle(`${FLOW_LABELS[draft.flow]} report`)
+    .addFields(
+      { name: "Item", value: truncate(targetSummary(draft), 1_024) },
+      {
+        name: "Status",
+        value:
+          status ?? (progress.stage === "research" ? "Researching report" : "Writing report"),
+        inline: true
+      },
+      { name: "Category", value: progress.reportType, inline: true },
+      {
+        name: "Country",
+        value:
+          progress.country === "Auto" ? "Auto-selected by AI" : countryDisplay(progress.country),
+        inline: true
+      },
+      { name: "Details", value: codeBlock(details) },
+      { name: "AI decisions", value: draftDecisionText(draft, progress) },
+      {
+        name: "References",
+        value: `Draft: \`${shortId(draftId)}\`\nDiscord: Not assigned`,
+        inline: true
+      },
+      {
+        name: "Dates",
+        value: `Created ${discordTimestamp(draft.createdAt ?? now)}\nUpdated ${discordTimestamp(now)}`,
+        inline: true
+      },
+      { name: "Appeal", value: "Not available until submission" }
+    );
+  if (draft.flow === "user_urf" && draft.reportedUserSnapshot?.avatarUrl) {
+    embed.setThumbnail(draft.reportedUserSnapshot.avatarUrl);
+  } else if (draft.serverSnapshot?.iconUrl) {
+    embed.setThumbnail(draft.serverSnapshot.iconUrl);
+  }
+  return embed;
 }
 
 function textLabel(input: {
@@ -291,12 +388,13 @@ function reportCountryLabel(draft: ReportDraft): LabelBuilder {
 export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuilder {
   const modal = new ModalBuilder()
     .setCustomId(`report:modal:${draftId}`)
-    .setTitle(`Report ${FLOW_LABELS[draft.flow]}`)
-    .addLabelComponents(reportPreferencesLabel(draft), reportCountryLabel(draft));
+    .setTitle(`Report ${FLOW_LABELS[draft.flow]}`);
   modal.addLabelComponents(
     selectLabel({
       customId: "report_type",
       label: "Why are you reporting this?",
+      description:
+        "If blank, AI will automatically choose this field when Use AI is enabled.",
       placeholder: "Auto",
       required: false,
       options: reportReasons(draft.flow).map((reason) => ({
@@ -339,7 +437,8 @@ export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuil
     textLabel({
       customId: "brief",
       label: "Briefly explain the report",
-      description: "512 characters max.",
+      description:
+        "If blank, AI will automatically write this field when Use AI is enabled. Maximum 512 characters.",
       placeholder: "Auto",
       required: false,
       style: TextInputStyle.Paragraph,
@@ -347,6 +446,7 @@ export function buildReportModal(draftId: string, draft: ReportDraft): ModalBuil
       ...(draft.reportBrief === undefined ? {} : { value: draft.reportBrief })
     })
   );
+  modal.addLabelComponents(reportCountryLabel(draft), reportPreferencesLabel(draft));
   return modal;
 }
 
@@ -588,9 +688,10 @@ export function buildReview(draftId: string, draft: ReportDraft): {
     .join("\n\n");
   const embed = new EmbedBuilder()
     .setColor(Colors.Orange)
-    .setTitle(`Review ${FLOW_LABELS[draft.flow].toLowerCase()} report`)
+    .setTitle(`${FLOW_LABELS[draft.flow]} report`)
     .addFields(
       { name: "Item", value: truncate(targetSummary(draft), 1_000) },
+      { name: "Status", value: "Ready for review", inline: true },
       {
         name: "Category",
         value: reasonText(draft.flow, draft.reportType, elements),
@@ -601,11 +702,22 @@ export function buildReview(draftId: string, draft: ReportDraft): {
         value: `${countryDisplay(draft.country)}\n${countryOrigin(draft)}`,
         inline: true
       },
-      { name: "Reason", value: draft.reportReason },
       ...splitField(details, 1_016).map((value, index) => ({
         name: index === 0 ? "Details" : `Details (${index + 1})`,
         value: codeBlock(value)
-      }))
+      })),
+      { name: "AI decisions", value: draftDecisionText(draft) },
+      {
+        name: "References",
+        value: `Draft: \`${shortId(draftId)}\`\nDiscord: Not assigned`,
+        inline: true
+      },
+      {
+        name: "Dates",
+        value: `Created ${discordTimestamp(draft.createdAt ?? new Date().toISOString())}\nUpdated ${discordTimestamp(draft.updatedAt ?? new Date().toISOString())}`,
+        inline: true
+      },
+      { name: "Appeal", value: "Not available until submission" }
     );
   embed.setFooter({ text: `${draft.context.length}/512 characters • Review carefully before submitting` });
   if (draft.flow === "user_urf" && draft.reportedUserSnapshot?.avatarUrl) {
@@ -652,13 +764,19 @@ export function buildWriterFailure(
   draftId: string,
   description: string,
   retryAction: "refine" | "regenerate" = "regenerate",
-  canManualEdit = false
+  canManualEdit = false,
+  draft?: ReportDraft
 ): {
   embeds: EmbedBuilder[];
   components: ActionRowBuilder<ButtonBuilder>[];
 } {
   return {
-    embeds: [errorEmbed(description)],
+    embeds: [
+      errorEmbed(description).addFields({
+        name: "AI decisions",
+        value: draft ? draftDecisionText(draft) : "No completed AI decision was recorded."
+      })
+    ],
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
@@ -820,135 +938,199 @@ function discordTime(value: string): string {
   return Number.isFinite(seconds) ? `<t:${seconds}:R>` : value;
 }
 
-function historyMilestone(
-  event: ReportView["timeline"][number]
-): { key: string; label: string } | null {
-  switch (event.type) {
-    case "report_api_request_sent":
-    case "report_created":
-    case "report_retry_requested":
-    case "report_retry_created":
-      return { key: "requested", label: "Report requested" };
-    case "verification_requested":
-    case "verification_email_resent":
-      return { key: "verification_requested", label: "Verification email requested" };
-    case "verification_email_received":
-    case "verification_started":
-      return { key: "verification_complete", label: "Verification completed" };
-    case "report_submitted":
-      return { key: "submitted", label: "Submitted to Discord" };
-    case "report_receipt_recovered":
-      return { key: "confirmation", label: "Confirmation received" };
-    case "report_failed":
-      return {
-        key: "failed",
-        label: `Failed${event.errorCode ? ` · ${event.errorCode}` : ""}`
-      };
-    case "review_queued":
-      return { key: "review_queued", label: "Appeal queued" };
-    case "review_requested":
-      return { key: "review_requested", label: "Appeal requested" };
-    case "review_received":
-      return { key: "review_received", label: "Appeal received by Discord" };
-    case "review_confirmation_timeout":
-      return {
-        key: "review_confirmation_timeout",
-        label: "Appeal sent; confirmation email not received"
-      };
-    case "review_request_failed":
-      return { key: "review_failed", label: "Automatic appeal failed" };
-    case "review_request_ambiguous":
-      return { key: "review_ambiguous", label: "Appeal result uncertain" };
-    case "review_approved":
-      return { key: "review_approved", label: "Appeal approved" };
-    case "discord_status_updated":
-      switch (event.discordStatus) {
-        case "received":
-          return { key: "confirmation", label: "Confirmation received" };
-        case "actioned":
-          return { key: "result", label: "Result: Discord took action" };
-        case "closed_no_action":
-          return { key: "result", label: "Result: Closed without action" };
-        case "review_not_approved":
-          return { key: "result", label: "Result: Review not approved" };
-        default:
-          return null;
-      }
-    default:
-      return null;
-  }
+interface HistoryStage {
+  key: string;
+  label: string;
+  occurredAt: string;
 }
 
-function currentHistoryLabel(report: ReportView): string | null {
+function attemptHistoryStages(events: ReportView["timeline"]): HistoryStage[] {
+  const stages: HistoryStage[] = [];
+  const add = (key: string, label: string, occurredAt: string): void => {
+    if (!stages.some((stage) => stage.key === key)) stages.push({ key, label, occurredAt });
+  };
+  for (const event of events) {
+    if (event.type === "report_submitted") {
+      add("submitted", "Submitted to Discord", event.occurredAt);
+    } else if (event.type === "report_failed") {
+      add(
+        "failed",
+        `Report failed${event.errorCode ? ` · ${event.errorCode}` : ""}`,
+        event.occurredAt
+      );
+    } else if (event.type === "review_requested" || event.type === "review_received") {
+      add("appeal_submitted", "Appeal submitted", event.occurredAt);
+    } else if (event.type === "review_request_failed") {
+      add("appeal_failed", "Appeal could not be submitted", event.occurredAt);
+    } else if (event.type === "review_ineligible") {
+      add(
+        "appeal_ineligible",
+        "Appeal unavailable — DSA report ineligible",
+        event.occurredAt
+      );
+    } else if (event.type === "review_request_ambiguous") {
+      add("appeal_ambiguous", "Appeal submission uncertain", event.occurredAt);
+    } else if (event.type === "review_approved") {
+      add("appeal_approved", "Appeal approved — Discord took action", event.occurredAt);
+    } else if (event.type === "discord_status_updated") {
+      if (event.discordStatus === "closed_no_action") {
+        add("original_closed", "Original report: Closed without action", event.occurredAt);
+      } else if (event.discordStatus === "actioned") {
+        if (stages.some((stage) => stage.key === "appeal_submitted")) {
+          add(
+            "appeal_approved",
+            "Appeal approved — Discord took action",
+            event.occurredAt
+          );
+        } else {
+          add("original_actioned", "Original report: Discord took action", event.occurredAt);
+        }
+      } else if (event.discordStatus === "review_not_approved") {
+        add(
+          "appeal_denied",
+          "Appeal denied — Discord upheld no action",
+          event.occurredAt
+        );
+      }
+    }
+  }
+  return stages;
+}
+
+function currentHistoryStage(report: ReportView): HistoryStage {
+  const reviewTime = report.reviewStatusUpdatedAt ?? report.updatedAt;
   switch (report.reviewStatus) {
     case "queued":
-      return "Current: Queueing automatic appeal";
+      return { key: "appeal_preparing", label: "Preparing appeal", occurredAt: reviewTime };
     case "requested":
-      return "Current: Waiting for appeal confirmation";
+      return {
+        key: "appeal_confirmation",
+        label: "Waiting for appeal confirmation",
+        occurredAt: reviewTime
+      };
     case "received":
+      return {
+        key: "appeal_waiting",
+        label: "Waiting for appeal decision",
+        occurredAt: reviewTime
+      };
     case "confirmation_timeout":
-      return "Current: Waiting for appeal decision";
+      return {
+        key: "appeal_waiting",
+        label: "Waiting for appeal decision — confirmation delayed",
+        occurredAt: reviewTime
+      };
     case "request_failed":
+      return {
+        key: "appeal_failed",
+        label: "Appeal could not be submitted",
+        occurredAt: reviewTime
+      };
+    case "ineligible":
+      return {
+        key: "appeal_ineligible",
+        label: "Appeal unavailable — DSA report ineligible",
+        occurredAt: reviewTime
+      };
     case "request_ambiguous":
+      return {
+        key: "appeal_ambiguous",
+        label: "Appeal submission uncertain",
+        occurredAt: reviewTime
+      };
     case "approved":
+      return {
+        key: "appeal_approved",
+        label: "Appeal approved — Discord took action",
+        occurredAt: reviewTime
+      };
     case "not_approved":
-      return null;
+      return {
+        key: "appeal_denied",
+        label: "Appeal denied — Discord upheld no action",
+        occurredAt: reviewTime
+      };
+  }
+  const discordTimeValue = report.discordStatusUpdatedAt ?? report.updatedAt;
+  if (report.discordStatus === "actioned") {
+    return {
+      key: "original_actioned",
+      label: "Original report: Discord took action",
+      occurredAt: discordTimeValue
+    };
+  }
+  if (report.discordStatus === "closed_no_action") {
+    return {
+      key: "original_closed",
+      label: "Original report: Closed without action",
+      occurredAt: discordTimeValue
+    };
+  }
+  if (report.discordStatus === "review_not_approved") {
+    return {
+      key: "appeal_denied",
+      label: "Appeal denied — Discord upheld no action",
+      occurredAt: discordTimeValue
+    };
+  }
+  if (report.status === "failed") {
+    return { key: "failed", label: "Report failed", occurredAt: report.updatedAt };
+  }
+  if (report.status === "queued") {
+    return { key: "preparing", label: "Preparing report", occurredAt: report.updatedAt };
+  }
+  if (report.status === "requesting_verification" || report.status === "awaiting_verification") {
+    return {
+      key: "verification",
+      label: "Waiting for verification email",
+      occurredAt: report.updatedAt
+    };
   }
   if (
-    report.status === "failed" ||
-    report.discordStatus === "actioned" ||
-    report.discordStatus === "closed_no_action" ||
-    report.discordStatus === "review_not_approved"
+    report.status === "verification_received" ||
+    report.status === "verifying" ||
+    report.status === "submitting"
   ) {
-    return null;
+    return { key: "submitting", label: "Preparing submission", occurredAt: report.updatedAt };
   }
-  switch (report.status) {
-    case "queued":
-      return "Current: Preparing report";
-    case "requesting_verification":
-    case "awaiting_verification":
-      return "Current: Waiting for verification email";
-    case "verification_received":
-    case "verifying":
-    case "submitting":
-      return "Current: Preparing submission";
-    case "submitted":
-      return report.discordStatus === null
-        ? "Current: Waiting for confirmation"
-        : "Current: Waiting for result";
-  }
+  return {
+    key: "original_waiting",
+    label:
+      report.discordStatus === "received"
+        ? "Waiting for original report decision"
+        : "Waiting for Discord confirmation",
+    occurredAt: discordTimeValue
+  };
 }
 
 export function reportHistory(report: ReportView): string {
-  const lines: string[] = [];
-  const seen = new Set<string>();
-  const attempts = [
-    ...new Set(report.timeline.map((event) => event.lifecycleAttempt ?? 1))
-  ]
+  const attempts = [...new Set(report.timeline.map((event) => event.lifecycleAttempt ?? 1))]
     .sort((left, right) => left - right)
     .slice(-3);
-  const showAttempts = attempts.length > 1;
-  let activeAttempt: number | null = null;
-  for (const event of report.timeline.filter((entry) =>
-    attempts.includes(entry.lifecycleAttempt ?? 1)
-  )) {
-    const attempt = event.lifecycleAttempt ?? 1;
-    const milestone = historyMilestone(event);
-    const milestoneKey = `${attempt}:${milestone?.key}`;
-    if (!milestone || seen.has(milestoneKey)) continue;
-    if (showAttempts && activeAttempt !== attempt) {
-      lines.push(`**Attempt ${attempt}**`);
-      activeAttempt = attempt;
+  const latestAttempt = attempts.at(-1) ?? report.lifecycleAttempt;
+  const lines: string[] = [];
+  for (const attempt of attempts.filter((value) => value !== latestAttempt)) {
+    const stages = attemptHistoryStages(
+      report.timeline.filter((event) => (event.lifecycleAttempt ?? 1) === attempt)
+    );
+    const summary = stages.at(-1);
+    if (summary) {
+      lines.push(`• ${discordTime(summary.occurredAt)} Attempt ${attempt} — ${summary.label}`);
     }
-    seen.add(milestoneKey);
-    lines.push(`• ${discordTime(event.occurredAt)} ${milestone.label}`);
   }
-  const current = currentHistoryLabel(report);
-  if (current) lines.push(`• ${discordTime(report.updatedAt)} ${current}`);
-  return lines.join("\n") || `• ${discordTime(report.updatedAt)} Status unavailable`;
+  const current = currentHistoryStage(report);
+  const latestStages = attemptHistoryStages(
+    report.timeline.filter((event) => (event.lifecycleAttempt ?? 1) === latestAttempt)
+  ).filter((stage) => stage.key !== current.key);
+  for (const stage of latestStages) {
+    lines.push(`• ${discordTime(stage.occurredAt)} ${stage.label}`);
+  }
+  lines.push(`• ${discordTime(current.occurredAt)} **${current.label}**`);
+  return lines.join("\n");
 }
 
 export interface ReportEmbedOptions {
+  aiDecisions?: readonly AiDecisionSummary[];
   history?: "dm_notice" | "full";
   page?: { current: number; total: number };
   title?: string;
@@ -961,7 +1143,6 @@ export function reportEmbed(
 ): EmbedBuilder {
   const currentStatus = displayStatus(report);
   const category = reasonText(report.flow, report.reportType, reportElements(report));
-  const reportReason = report.reportedDetails.reportReason ?? category;
   const embed = new EmbedBuilder()
     .setColor(statusColor(report))
     .setTitle(options.title ?? `${FLOW_LABELS[report.flow]} report`)
@@ -970,11 +1151,20 @@ export function reportEmbed(
       { name: "Status", value: statusLabel(currentStatus), inline: true },
       { name: "Category", value: category, inline: true },
       { name: "Country", value: countryDisplay(report.country), inline: true },
-      { name: "Reason", value: reportReason },
       ...splitField(reportDetails(report, snapshot), 1_016).map((value, index) => ({
         name: index === 0 ? "Details" : `Details (${index + 1})`,
         value: codeBlock(value)
       })),
+      ...(options.aiDecisions === undefined
+        ? []
+        : [
+            {
+              name: "AI decisions",
+              value: options.aiDecisions.length
+                ? decisionText(options.aiDecisions)
+                : "No AI decisions were recorded for this report."
+            }
+          ]),
       {
         name: "References",
         value: `Report: \`${shortId(report.internalReportId)}\`\nDiscord: ${
@@ -996,14 +1186,15 @@ export function reportEmbed(
         inline: true
       }
     );
-  if (report.reviewStatus !== null) {
-    embed.addFields({
-      name: "Appeal",
-      value: `${statusLabel(displayStatus(report))}${
-        report.reviewError?.message ? `\n${report.reviewError.message}` : ""
-      }`
-    });
-  }
+  embed.addFields({
+    name: "Appeal",
+    value:
+      report.reviewStatus === null
+        ? "Not available"
+        : `${statusLabel(displayStatus(report))}${
+            report.reviewError?.message ? `\n${report.reviewError.message}` : ""
+          }`
+  });
   if (report.resubmittable) {
     embed.addFields({
       name: "Resubmission",

@@ -11,6 +11,7 @@ import type { PoolClient, QueryResultRow } from "pg";
 
 import type {
   AccessView,
+  AiDecisionSummary,
   AiUsage,
   NotificationPayload,
   PollingTracking,
@@ -134,6 +135,7 @@ CREATE TABLE IF NOT EXISTS report_tracking (
   dm_enabled boolean NOT NULL DEFAULT true,
   dm_blocked boolean NOT NULL DEFAULT false,
   status_dm_message_id text,
+  ai_decisions jsonb NOT NULL DEFAULT '[]'::jsonb,
   tracking_expires_at timestamptz NOT NULL DEFAULT
     (now() + interval '${REPORT_TRACKING_RETENTION_DAYS} days'),
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -196,6 +198,7 @@ $$;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS draft_id uuid;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS server_snapshot jsonb;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS status_dm_message_id text;
+ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS ai_decisions jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS dm_enabled boolean NOT NULL DEFAULT true;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS tracking_expires_at timestamptz;
 UPDATE report_tracking
@@ -246,6 +249,7 @@ export interface TrackingRow extends QueryResultRow {
   report_type: string;
   dm_enabled: boolean;
   status_dm_message_id: string | null;
+  ai_decisions: AiDecisionSummary[];
   tracking_expires_at: Date;
 }
 
@@ -283,6 +287,7 @@ const STATE_NOTIFICATION_TYPES = new Set([
   "review_received",
   "review_confirmation_timeout",
   "review_request_failed",
+  "review_ineligible",
   "review_request_ambiguous"
 ]);
 
@@ -679,6 +684,7 @@ export class BotDatabase {
     reportType: string;
     encryptedRequest: string;
     serverSnapshot?: ServerSnapshot;
+    aiDecisions?: AiDecisionSummary[];
     dmEnabled: boolean;
     adminBypass: boolean;
   }): Promise<{
@@ -741,8 +747,9 @@ export class BotDatabase {
       await client.query(
         `INSERT INTO report_tracking
            (id, draft_id, discord_user_id, interaction_id, idempotency_key, flow, country,
-            report_type, encrypted_request, credit_state, server_snapshot, dm_enabled, poll_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+            report_type, encrypted_request, credit_state, server_snapshot, dm_enabled,
+            ai_decisions, poll_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
            now() + interval '1 minute')`,
         [
           id,
@@ -756,7 +763,8 @@ export class BotDatabase {
           input.encryptedRequest,
           creditState,
           input.serverSnapshot ?? null,
-          input.dmEnabled
+          input.dmEnabled,
+          input.aiDecisions ?? []
         ]
       );
       await client.query("COMMIT");
@@ -885,7 +893,8 @@ export class BotDatabase {
     userId: string,
     interactionId: string,
     report: ReportView,
-    encryptedRequest?: string
+    encryptedRequest?: string,
+    aiDecisions?: AiDecisionSummary[]
   ): Promise<string> {
     const client = await this.pool.connect();
     try {
@@ -914,10 +923,10 @@ export class BotDatabase {
         `INSERT INTO report_tracking (
            id, discord_user_id, interaction_id, idempotency_key, internal_report_id,
            flow, country, report_type, encrypted_request, credit_state,
-           last_status, last_discord_status, server_snapshot, dm_enabled, poll_at
+           last_status, last_discord_status, server_snapshot, dm_enabled, ai_decisions, poll_at
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, 'none', $10, $11, $12,
-           true, now() + interval '30 seconds'
+           true, $13, now() + interval '30 seconds'
          )`,
         [
           trackingId,
@@ -931,7 +940,8 @@ export class BotDatabase {
           encryptedRequest ?? previous.encrypted_request,
           report.status,
           report.discordStatus,
-          previous.server_snapshot
+          previous.server_snapshot,
+          aiDecisions ?? previous.ai_decisions
         ]
       );
       await client.query("COMMIT");
@@ -1038,6 +1048,14 @@ export class BotDatabase {
       [trackingId]
     );
     return result.rows[0]?.status_dm_message_id ?? null;
+  }
+
+  public async aiDecisions(trackingId: string): Promise<AiDecisionSummary[]> {
+    const result = await this.pool.query<{ ai_decisions: AiDecisionSummary[] }>(
+      "SELECT ai_decisions FROM report_tracking WHERE id = $1",
+      [trackingId]
+    );
+    return result.rows[0]?.ai_decisions ?? [];
   }
 
   public async saveStatusDmMessageId(trackingId: string, messageId: string): Promise<void> {

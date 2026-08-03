@@ -50,8 +50,9 @@ review and its confirmation controls are sent as an ordinary private bot DM.
    are selected by default. Country starts from the saved
    `/settings country` value or Auto, and the reporter can choose another supported country
    through the paginated picker. A saved `NULL` country means Auto.
-3. Collect the flow-specific elements in that modal. Category and explanation are optional in the
-   AI flow: an omitted value is shown as `Auto` and is inferred from the resolved evidence.
+3. Collect the flow-specific elements in that modal. Report fields appear first; country and the
+   AI/DM preferences appear below them. Category and explanation are optional in the AI flow: their
+   help text says that AI fills a blank field when Use AI is enabled.
    Both are validated as required when Use AI is cleared.
    Profile targets accept only a raw Discord user ID. The bot resolves the account and requires
    confirmation before collecting the report details; unresolved IDs can be retried or cancelled.
@@ -60,24 +61,22 @@ review and its confirmation controls are sent as an ordinary private bot DM.
 4. Encrypt the draft and its OpenRouter conversation at rest with a 30-minute expiry.
 5. Run an adaptive OpenRouter research completion. It conditionally searches unfamiliar evidence
    terminology first, resolves only omitted Auto fields after the meaning is clear, then searches
-   for and confirms the country-specific law. Invalid structured data or a missing recorded search
-   causes one fresh research attempt from the original evidence. The final writer receives only compact resolved
-   evidence and research context. The ephemeral response is edited only at the two meaningful
-   network boundaries: Researching before research starts, then Writing before report drafting
-   starts. There is no separate initial or research-complete edit, which avoids back-to-back Discord
-   edits while preserving visible progress. Each stage shows the current selections in a code block.
-   Then ask `minimax/minimax-m2.7` to write a factual report of at most 512 characters that naturally
-   names the researched law or provision. Send the review and its submit, refine, regenerate,
-   country-change, manual-edit, and cancel controls to DMs when selected; otherwise show it in the
-   ephemeral interaction.
+   for and confirms the country-specific law. Invalid structured data causes one fresh research
+   attempt from the original evidence. The final writer receives only compact resolved evidence and
+   research context. When DM delivery is selected, the Researching stage creates one structured
+   report card in DMs; Writing, Refining, Regenerating, review, submission, and resubmission edit
+   that same message. The ephemeral interaction points to the DM and remains the fallback if DM
+   delivery fails. When DM delivery is cleared, the same cards remain ephemeral. Then ask
+   `minimax/minimax-m2.7` to write a factual report of at most 512 characters that naturally names
+   the researched law or provision.
 6. Atomically reserve one credit and create the API report with the interaction ID.
 7. Consume the reservation after HTTP 202 or idempotent HTTP 200.
 8. Release it after a definite pre-creation rejection; reconcile ambiguous responses with
    the exact body and idempotency key.
 9. Poll briefly in the interaction, then let the durable worker continue.
-10. When Send review to DMs is selected, persist the review DM's message ID and turn that same
-    message into the complete current report card after submission. Later lifecycle events edit the
-    same card, so submission does not create a duplicate DM. Clearing
+10. When Send review to DMs is selected, persist the drafting DM's message ID and turn that same
+    message into the review and then the complete current report card. Later lifecycle events edit
+    the same card, so drafting, review, and submission do not create duplicate DMs. Clearing
     the option durably suppresses that report's lifecycle DMs and shows the complete status in the
     ephemeral interaction instead. Receipt updates are silent; final
     accepted/denied outcomes edit the card and send a short plain-text reply to it.
@@ -96,14 +95,18 @@ review and its confirmation controls are sent as an ordinary private bot DM.
     editable and review-first, enforces 512 characters, creates a fresh linked report, and does
     not reserve another credit.
 
-Report cards use the same Item, Status, Category, Country, Reason, code-blocked Details,
-References, Dates, Retry, and History structure in interactions and DMs. Interaction embeds replace
+Draft and report cards share Item, Status, Category, Country, code-blocked Details, AI decisions,
+References, Dates, and Appeal. Submitted cards add Retry, Resubmission, errors, and History when applicable.
+There is no separate Reason field because the reviewed report text is the clearer Details value. Interaction embeds replace
 the timeline with `Check your DMs for the full status log.` The DM card uses relative Discord
-timestamps and compresses the API timeline into at most these key milestones: report requested,
-verification email requested, verification completed, submitted to Discord, confirmation received,
-and final result or failure. Up to the three latest retry attempts are grouped separately; the API
-remains the source of truth for older attempts. A single `Current` line describes a nonterminal report. History is not
-wrapped in a code block, so Discord renders each timestamp. Verification codes are never displayed.
+timestamps and compresses the API timeline into user-facing phases: submission, the original
+Discord result, appeal submission, and the appeal result. Request, verification, receipt, and queue
+transport events are deliberately hidden. The latest stage or final outcome is bold while its
+timestamp remains unbolded. Original results and appeal results are explicitly distinguished, such
+as `Original report: Closed without action` followed by `Appeal denied — Discord upheld no action`.
+Up to the three latest retry attempts are summarized; the API remains the source of truth for older
+attempts and the complete technical timeline. History is not wrapped in a code block, so Discord
+renders each timestamp. Verification codes are never displayed.
 Only submission, failure, receipt, and final-result notifications edit the saved DM card; internal
 transitions remain available from the API without causing an embed edit for every event. The API
 retains the complete technical timeline. Server metadata and ID-backed profile metadata are
@@ -177,23 +180,31 @@ metadata. This is intentionally conservative even though OpenRouter supports mul
 for compatible models.
 
 The shared combined report modal enables Use AI and Send review to DMs by default and lets the
-reporter use Auto, their saved/current country, or the paginated country picker. The same modal
-makes Category and Reason optional, uses the placeholder `Auto`, and labels the text limit only as
-`512 characters max.` When Use AI is cleared, interaction validation requires both category and
+reporter use Auto, their saved/current country, or the paginated country picker. Report category,
+flow-specific elements, and report details appear before country and preferences. Category and
+details are optional, use the placeholder `Auto`, and explain that AI fills a blank field when Use
+AI is enabled. When Use AI is cleared, interaction validation requires both category and
 final report text and performs no OpenRouter
 request, and shows the normal review with Submit, Edit manually, Change country, and Cancel.
 Refine and Regenerate are omitted. Because Auto country selection requires AI, a manual report
 with no saved country must select a country before review. The message context-menu command opens
 the same combined modal with the selected-message target as the slash flow.
 
-The review has no submission disclaimer and uses Item, Category, Country, Reason, and code-blocked
-Details fields. Auto country is labeled `Auto-selected` without naming the model. The researched
+The review has no submission disclaimer and uses the shared draft/report field structure. Auto
+country is labeled `Auto-selected` without naming the model. The researched
 law or provision appears naturally inside the 512-character report;
 brackets, URLs, footnotes, and separate source fields are not required.
 The structured `lawReference` and final report name the country, clear full law title, and
 provision instead of relying on an unexplained abbreviation or section number. The internal
 `lawReference` is required but has no report-length limit; only the submitted report is capped at
 512 characters.
+Every AI-enabled drafting card includes an `AI decisions` field. During work it shows the observable
+parameters still being resolved. After completion it records the operation time and concise
+before/after values for country, category, and details handling, for example `Country: Auto →
+Germany`. It never exposes model reasoning, prompts, evidence, sources, or report text. Generate,
+refine, regenerate, and rewrite decisions are retained as a five-entry bounded log in the encrypted
+draft and copied into bot-owned report tracking so later lifecycle DM edits can still display the
+latest three entries after draft deletion. Manual reports explicitly say that AI was disabled.
 After research, the writer receives a compact context containing only evidence, resolved category,
 reason, country, law reference, and legal summary. It does not receive the supported-country list,
 category catalog, search instructions, or raw research transcript. This compact context is retained
@@ -273,6 +284,19 @@ transient failures with a bounded exponential delay.
 
 ### Notification decision log
 
+- Understanding: one user-owned DM card must explain drafting choices and lifecycle outcomes without
+  exposing internal transport noise or hidden model reasoning. Normal interactive scale and the
+  existing PostgreSQL deployment are assumed; the API contract and submission semantics are out of
+  scope.
+- Chosen: persist a bounded, non-sensitive AI decision summary in bot `report_tracking`. Keeping it
+  only in the encrypted draft would lose it after submission; adding it to the API request would
+  cross the bot/API ownership boundary without improving report processing.
+- Chosen: acknowledge a DM-enabled modal with only `Check your DMs.` Discord interactions still need
+  a completed response, so sending no acknowledgement is not reliable.
+- Chosen: render phase-based history and bold only the current/final stage text, leaving Discord's
+  relative timestamp outside the bold span. The API retains the complete event history for
+  diagnostics.
+
 - API creation immediately creates the lifecycle status embed and stores its Discord message ID
   on the tracking row.
 - `discord:received`, timeout, and outcome events edit that saved embed instead of sending another
@@ -280,8 +304,10 @@ transient failures with a bounded exponential delay.
   `review_not_approved` additionally send a plain-text reply to the saved card so the user receives
   a new Discord notification.
 - `review_requested`, `review_received`, `review_confirmation_timeout`,
-  `review_request_failed`, and `review_request_ambiguous` update the same saved card. A missing
-  confirmation explicitly says that the appeal was not sent again.
+  `review_request_failed`, `review_ineligible`, and `review_request_ambiguous` update the same saved
+  card. A missing confirmation explicitly says that the appeal was not sent again. Discord error
+  `521004` is shown as **DSA report ineligible for review**, not as a generic automatic-appeal
+  failure, and does not expose resend controls.
 - Pre-submission failures edit the same full report embed and add the retry control when the API
   marks the failure safe to retry.
 - A missing or user-deleted saved status message is replaced only when Discord had already
@@ -458,7 +484,9 @@ same immutable audit relationship as failure retries.
   `verification_resend_completed`, `verification_resend_skipped`,
   `verification_resend_failed`, `verification_wait_expired`, `discord_receipt_wait_expired`,
   `review_confirmation_wait_expired`, `review_link_resolution_retry_scheduled`,
-  `review_link_resolution_failed`, `review_request_failed`, `review_request_ambiguous`,
+  `review_link_resolution_failed`, `review_link_resolved`, `review_request_submitted`,
+  `review_request_failed`, `review_ineligible`, `review_request_ambiguous`,
+  `review_report_id_mismatch`,
   `inbound_email_rejected`,
   `inbound_email_ignored`, and `inbound_email_correlated`.
 - Bot: `interaction_failed`, `interaction_error_response_failed`,
@@ -482,12 +510,30 @@ same immutable audit relationship as failure retries.
   candidates are redacted, and raw MIME or HTML is never logged.
 - Job stage records include duration so an operator can distinguish email delay, Discord network
   delay, and bot polling delay.
+- Appeal diagnostics identify the exact stage, job attempt, flow, country, fresh-proxy use, HTTP
+  status, Discord error code and bounded response summary, retry delay, safe network-cause
+  classification, duration, token length/segment count, report type and text lengths, and safe
+  target shape such as message scope/age or selected-element count. They also record explicitly
+  that no Discord account authorization is sent. They never include the review URL or token,
+  target ID, generated email, authorization, cookies, IP address, proxy session ID, or proxy URL.
 
 ### Decision log
 
+- Chosen: create one DM report card at the first drafting stage and reuse its message ID through
+  review, submission, resubmission, and lifecycle notifications. Separate progress and review DMs
+  were rejected because they fragment one report across multiple messages; a new database mapping
+  was rejected because the encrypted draft and existing tracking message ID already provide the
+  required handoff.
 - Chosen: prefer the eligible closure email's trusted HTML review anchor over its generated
   plain-text representation, while retaining text-only compatibility. Selecting by URL length or
   decoding Discord's opaque `upn` value would be brittle and cross the transport boundary.
+- Chosen: emit one self-contained, redacted structured record for each appeal boundary and terminal
+  result. Raw request/response dumps were rejected because review tokens, account credentials,
+  cookies, and proxy credentials must remain unavailable to Railway logs.
+- Chosen: classify exact Discord API code `521004` as the terminal `ineligible` review state. Reusing
+  `request_failed` was rejected because it conflates Discord eligibility with transport/API faults;
+  automatic or user-triggered resubmission was rejected to avoid looping an explicitly ineligible
+  report.
 - Chosen: use `minimax/minimax-m2.7` for research, writing, refinement, and repair. A single
   configurable model keeps prompts, usage accounting, deployment configuration, and failure
   behavior consistent.

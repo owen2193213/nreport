@@ -641,6 +641,9 @@ describe("OpenRouter report writer", () => {
     expect(messages).not.toContain("§130 StGB");
     expect(messages).toContain("country-qualified lawReference");
     expect(messages).toContain("Never wrap the JSON in Markdown or a code fence");
+    expect(messages).toContain("finished report text");
+    expect(messages).toContain("never return a placeholder or template marker");
+    expect(messages).not.toContain("After brief internal reasoning");
   });
 
   it("accepts one whole-response Markdown JSON fence from a provider", async () => {

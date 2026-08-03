@@ -28,7 +28,7 @@ const WRITER_SYSTEM_PROMPT = [
   "Name every law with its country and clear full title before any abbreviation or section.",
   "Do not discuss output formatting, count characters step by step, or restate the task.",
   "Return raw JSON only. Never wrap the JSON in Markdown or a code fence.",
-  "After brief internal reasoning, return the JSON object immediately.",
+  "Return the JSON object immediately with the finished report text in report; never return a placeholder or template marker.",
   "Return a valid JSON object with exactly one string property named report. The report must be no more than 512 characters."
 ].join(" ");
 

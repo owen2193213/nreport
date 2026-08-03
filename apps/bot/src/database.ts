@@ -50,6 +50,12 @@ export function creditBalanceAfterReservation(
   return bypassCredits ? currentCredits : currentCredits - 1;
 }
 
+export function jsonbParameter(value: unknown): string {
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new Error("JSONB parameter could not be serialized.");
+  return encoded;
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS bot_users (
   discord_user_id text PRIMARY KEY,
@@ -764,7 +770,7 @@ export class BotDatabase {
           creditState,
           input.serverSnapshot ?? null,
           input.dmEnabled,
-          input.aiDecisions ?? []
+          jsonbParameter(input.aiDecisions ?? [])
         ]
       );
       await client.query("COMMIT");
@@ -941,7 +947,7 @@ export class BotDatabase {
           report.status,
           report.discordStatus,
           previous.server_snapshot,
-          aiDecisions ?? previous.ai_decisions
+          jsonbParameter(aiDecisions ?? previous.ai_decisions)
         ]
       );
       await client.query("COMMIT");

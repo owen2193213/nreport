@@ -32,6 +32,7 @@ import type { BotDatabase } from "../src/database.js";
 import {
   ACTIVE_REPORT_POLL_SECONDS,
   creditBalanceAfterReservation,
+  jsonbParameter,
   nextReportPollDelaySeconds,
   notificationEventKey,
   observedNotificationTypes,
@@ -317,6 +318,13 @@ describe("access key administration views", () => {
   it("deducts exactly one credit from large balances unless bypassed", () => {
     expect(creditBalanceAfterReservation(9_999, false)).toBe(9_998);
     expect(creditBalanceAfterReservation(9_999, true)).toBe(9_999);
+  });
+
+  it("serializes AI decision arrays as JSONB parameters", () => {
+    expect(jsonbParameter([])).toBe("[]");
+    expect(jsonbParameter([{ action: "Generated" }])).toBe(
+      '[{"action":"Generated"}]'
+    );
   });
 
   it("labels key credits as the original grant rather than a live balance", () => {

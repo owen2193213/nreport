@@ -983,36 +983,26 @@ export class ReportWriter {
       deadline,
       actor
     );
-    let research: ResearchCompletion | undefined;
-    let retryReason: "invalid_structured_data" | "missing_web_search";
     try {
-      research = parsedResearch(
+      const research = parsedResearch(
         researchResult.message.content,
         draft,
         this.supportedCountries
       );
-      retryReason = "missing_web_search";
+      return { researchResult, research };
     } catch (error) {
       if (!(error instanceof ReportWriterError)) throw error;
-      retryReason = "invalid_structured_data";
-    }
-    if (research && researchResult.usage.searchRequests > 0) {
-      return { researchResult, research };
     }
 
     botLog(
       "ai_research_retry_started",
-      { actorKey: actor.actorKey, retryReason },
+      { actorKey: actor.actorKey, retryReason: "invalid_structured_data" },
       "warn"
     );
-    const retryRequirement =
-      retryReason === "missing_web_search"
-        ? "Previous research attempt did not use the required legal web search."
-        : "Previous research attempt returned invalid structured data.";
     const retryPrompt = [
       prompt,
       "",
-      `Retry requirement: ${retryRequirement}`,
+      "Retry requirement: Previous research attempt returned invalid structured data.",
       "Start the research again from the supplied evidence. Use the required web search and return only the requested JSON object. Do not repeat or repair any prior response."
     ].join("\n");
     researchResult = await this.requestResearch(
@@ -1022,16 +1012,11 @@ export class ReportWriter {
       deadline,
       actor
     );
-    research = parsedResearch(
+    const research = parsedResearch(
       researchResult.message.content,
       draft,
       this.supportedCountries
     );
-    if (researchResult.usage.searchRequests <= 0) {
-      throw new ReportWriterError(
-        "AI legal research did not use the required web search after one retry."
-      );
-    }
     return { researchResult, research };
   }
 

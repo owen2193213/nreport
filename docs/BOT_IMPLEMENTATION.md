@@ -136,8 +136,8 @@ most two results. The model uses that search to clarify an unfamiliar, coded, am
 context-dependent evidence term only when its meaning could materially affect classification or
 legal relevance, and to confirm the relevant current law and provision. With explicit evidence it
 focuses directly on the law. Category-catalog labels and unrelated categories are forbidden as
-search terms. No domain filter is imposed. A usable result must record one or more search requests;
-URL annotations are retained when available but remain optional.
+search terms. No domain filter is imposed. URL annotations are retained when available but remain
+optional.
 The plugin receives a custom search-results prompt that treats results as untrusted source material,
 aligns them with the terminology-and-law workflow, and forbids Markdown citations in the JSON. This
 replaces OpenRouter's default results prompt and avoids injecting unrelated formatting instructions.
@@ -145,9 +145,12 @@ The request does not send the beta `openrouter:web_search` server tool, `tool_ch
 `max_tool_calls`: repeated production requests reached OpenRouter's `server_tools` pipeline and
 returned HTTP 404 before any provider completion. Research still denies provider data collection and
 enables required-parameter routing so OpenRouter selects an endpoint compatible with the strict schema
-and plugin request. If the completed research is malformed or records zero searches, the bot makes exactly one
-fresh research request from the original evidence with a short failure reason. It never includes the
-failed model response in that retry. No fallback model is used.
+and plugin request. The plugin runs once by request contract, while
+`usage.server_tool_use.web_search_requests` belongs to server-tool accounting and may be absent from
+plugin responses. The bot records that value when present but never treats its absence as a research
+failure. If completed research is malformed, the bot makes exactly one fresh research request from
+the original evidence with a short failure reason. It never includes the failed model response in
+that retry. No fallback model is used.
 Writing, refinement, and repair retain ZDR, denied data collection, and
 required-parameter routing because they do not use the web-search plugin.
 
@@ -497,9 +500,10 @@ same immutable audit relationship as failure retries.
   and lets terminology inform Auto classification.
 - Chosen: hand the writer a compact resolved context instead of replaying the research prompt and
   response. This avoids resending country lists, category catalogs, and tool instructions.
-- Chosen: retry completed research exactly once when its structured output is invalid or it records
-  zero searches. The retry starts from the original evidence and a categorical failure reason, never
-  the failed response body.
+- Chosen: retry completed research exactly once when its structured output is invalid. Missing
+  server-tool search accounting remains telemetry only because plugin-backed search runs by request
+  contract. The retry starts from the original evidence and a categorical failure reason, never the
+  failed response body.
 - Rejected: OpenRouter's beta `openrouter:web_search` server-tool pipeline after repeated production
   HTTP 404 responses before provider completion. Also rejected direct Parallel or Exa integration,
   a Perplexity fallback, provider pinning, and an unbounded client-side tool loop; they add keys,

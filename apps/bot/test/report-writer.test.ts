@@ -524,7 +524,7 @@ describe("OpenRouter report writer", () => {
     );
   });
 
-  it("retries usable legal research that reports zero searches", async () => {
+  it("accepts usable plugin research when server-tool usage is absent", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
@@ -539,35 +539,9 @@ describe("OpenRouter report writer", () => {
           { annotations: [], searchRequests: 0 }
         )
       )
-      .mockResolvedValueOnce(researchCompletion())
       .mockResolvedValueOnce(reportCompletion());
     const result = await fixedWriter(request).generate(profileDraft(), ACTOR);
-    expect(result.legalResearch.searchRequests).toBe(1);
-    expect(request).toHaveBeenCalledTimes(3);
-    expect(
-      JSON.stringify(requestBody<{ messages: unknown[] }>(request, 1).messages)
-    ).toContain("Previous research attempt did not use the required legal web search");
-  });
-
-  it("stops after one zero-search research retry", async () => {
-    const zeroSearchResearch = completion(
-      {
-        country: "DE",
-        lawReference: LAW_REFERENCE,
-        reportReason: "The profile imagery contains unlawful hate speech.",
-        reportType: "sub_other_hate_speech",
-        researchSummary: `${LAW_REFERENCE} protects human dignity.`
-      },
-      { searchRequests: 0 }
-    );
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce(zeroSearchResearch)
-      .mockResolvedValueOnce(zeroSearchResearch.clone());
-
-    await expect(fixedWriter(request).generate(profileDraft(), ACTOR)).rejects.toThrow(
-      /did not use the required web search after one retry/
-    );
+    expect(result.legalResearch.searchRequests).toBe(0);
     expect(request).toHaveBeenCalledTimes(2);
   });
 

@@ -35,6 +35,7 @@ registration script requires only `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_I
 /admin key create|list|inspect|revoke
 /admin user inspect|suspend|reinstate
 Apps -> Report Message
+Apps -> Quick Report Message
 ```
 
 Admin commands are visible in every supported context but authorize against the exact
@@ -113,6 +114,21 @@ retains the complete technical timeline. Server metadata and ID-backed profile m
 resolved best-effort and captured at submission time. DMs include full report details but omit the
 generated reporter identity and email. A Discord 50007 response permanently disables DM
 attempts for that tracked report; `/reports` remains available.
+
+## Quick report
+
+**Apps -> Quick Report Message** reports the targeted message immediately, with no modal, review,
+or confirmation. Access and credit enforcement are identical to the normal flow. The bot builds an
+all-Auto draft from the target message: country is the saved `/settings country` default when set,
+otherwise Auto, and category and report text are always decided by the AI writer. The interaction
+answers ephemerally with a single "Quick report started" notice; nothing else is shown in chat.
+Writer progress, submission progress, and the final report card are delivered in one DM message
+that is edited in place and registered as the tracked status card, so later lifecycle events edit
+the same message. A writer failure keeps the encrypted draft and DMs the error card with the usual
+Retry / Change country / Edit details / Cancel recovery controls. A definite pre-creation rejection
+releases the reservation and DMs the same recovery card; an ambiguous failure keeps the reservation
+for reconciliation and DMs the error without retry controls. When DM delivery is blocked, the
+ephemeral interaction becomes the fallback surface for progress and results.
 
 ## AI report writing
 

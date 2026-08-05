@@ -211,11 +211,18 @@ const reportMessage = new ContextMenuCommandBuilder()
   .setIntegrationTypes(ApplicationIntegrationType.UserInstall)
   .setContexts(...contexts);
 
+const quickReportMessage = new ContextMenuCommandBuilder()
+  .setName("Quick Report Message")
+  .setType(ApplicationCommandType.Message)
+  .setIntegrationTypes(ApplicationIntegrationType.UserInstall)
+  .setContexts(...contexts);
+
 export const COMMANDS: RESTPostAPIApplicationCommandsJSONBody[] = [
   report.toJSON(),
   reports.toJSON(),
   access.toJSON(),
   settings.toJSON(),
   admin.toJSON(),
-  reportMessage.toJSON()
+  reportMessage.toJSON(),
+  quickReportMessage.toJSON()
 ];

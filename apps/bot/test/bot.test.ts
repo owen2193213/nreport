@@ -152,7 +152,7 @@ describe("Discord command registration", () => {
   });
 
   it("registers user-installed commands in every requested interaction context", () => {
-    expect(COMMANDS).toHaveLength(6);
+    expect(COMMANDS).toHaveLength(7);
     for (const command of COMMANDS) {
       expect(command.integration_types).toEqual([ApplicationIntegrationType.UserInstall]);
       expect(command.contexts).toEqual([
@@ -165,6 +165,11 @@ describe("Discord command registration", () => {
 
   it("registers Apps → Report Message as a message context command", () => {
     const command = COMMANDS.find((candidate) => candidate.name === "Report Message");
+    expect(command?.type).toBe(ApplicationCommandType.Message);
+  });
+
+  it("registers Apps → Quick Report Message as a message context command", () => {
+    const command = COMMANDS.find((candidate) => candidate.name === "Quick Report Message");
     expect(command?.type).toBe(ApplicationCommandType.Message);
   });
 
@@ -1890,5 +1895,192 @@ describe("report interaction country precedence", () => {
     expect(
       decryptJson(String(updateDraft.mock.calls.at(-1)?.[2]), dataEncryptionKey)
     ).toMatchObject({ reviewDmMessageId: "draft-dm-id", sendToDms: true });
+  });
+});
+
+describe("quick report message context flow", () => {
+  function quickTargetMessage() {
+    return {
+      id: "123456789012345679",
+      channelId: "123456789012345678",
+      channel: { name: "general" },
+      guildId: null,
+      guild: null,
+      member: null,
+      author: { id: "999", username: "reported-user", globalName: null, bot: false },
+      content: "hateful content",
+      createdAt: new Date("2026-07-19T00:00:00.000Z"),
+      attachments: { values: () => [] },
+      embeds: [],
+      url: "https://discord.com/channels/1/123456789012345678/123456789012345679"
+    };
+  }
+
+  function quickInteraction(overrides: {
+    send: ReturnType<typeof vi.fn>;
+    createDM?: ReturnType<typeof vi.fn>;
+    deferReply: ReturnType<typeof vi.fn>;
+    editReply: ReturnType<typeof vi.fn>;
+    reply?: ReturnType<typeof vi.fn>;
+  }) {
+    return {
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => true,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => false,
+      isRepliable: () => true,
+      commandName: "Quick Report Message",
+      id: "interaction-id",
+      user: {
+        id: "1197857362942378017",
+        send: overrides.send,
+        ...(overrides.createDM ? { createDM: overrides.createDM } : {})
+      },
+      targetMessage: quickTargetMessage(),
+      deferReply: overrides.deferReply,
+      editReply: overrides.editReply,
+      ...(overrides.reply ? { reply: overrides.reply } : {}),
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+  }
+
+  it("generates and submits without confirmation, delivering the result to DMs", async () => {
+    const report = reportFixture();
+    const dataEncryptionKey = randomBytes(32);
+    const saveDraft = vi.fn().mockResolvedValue("draft-id");
+    const updateDraft = vi.fn().mockResolvedValue(undefined);
+    const reserveSubmission = vi.fn().mockResolvedValue({
+      id: "tracking-id",
+      interactionId: "interaction-id",
+      creditState: "reserved",
+      replayed: false,
+      balanceBefore: 1,
+      balanceAfter: 0
+    });
+    const markSubmissionCreated = vi.fn().mockResolvedValue("consumed");
+    const deleteDraft = vi.fn().mockResolvedValue(undefined);
+    const saveStatusDmMessageId = vi.fn().mockResolvedValue(undefined);
+    const observeReport = vi.fn().mockResolvedValue(undefined);
+    const database = {
+      getAccess: vi.fn().mockResolvedValue({
+        credits: 1,
+        suspended: false,
+        defaultCountry: "DE"
+      }),
+      saveDraft,
+      updateDraft,
+      reserveSubmission,
+      markSubmissionCreated,
+      deleteDraft,
+      saveStatusDmMessageId,
+      observeReport
+    } as unknown as BotDatabase;
+    const createReport = vi.fn().mockResolvedValue(report);
+    const generate = vi.fn().mockResolvedValue({
+      conversation: [],
+      country: "DE",
+      legalResearch: {
+        country: "DE",
+        summary: "Legal summary.",
+        sources: [],
+        researchedAt: "2026-07-19T00:00:00.000Z",
+        searchRequests: 0
+      },
+      report: "AI-written report text.",
+      reportReason: "The message contains hateful content.",
+      reportType: "sub_other_hate_speech"
+    });
+    const handler = new InteractionHandler({
+      api: { createReport } as unknown as DsaApi,
+      config: {
+        whitelistEnabled: true,
+        adminUserIds: new Set<string>(),
+        dataEncryptionKey,
+        keyPepper: "test-key-pepper"
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database,
+      messageResolver: {} as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: { generate } as unknown as ReportWriter,
+      serverResolver: {} as ServerResolver
+    });
+    const send = vi.fn().mockResolvedValue({ id: "progress-dm-id" });
+    const editDm = vi.fn().mockResolvedValue(undefined);
+    const createDM = vi.fn().mockResolvedValue({
+      messages: { fetch: vi.fn().mockResolvedValue({ edit: editDm }) }
+    });
+    const deferReply = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const interaction = quickInteraction({ send, createDM, deferReply, editReply });
+
+    await handler.handle(interaction);
+
+    expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(JSON.stringify(editReply.mock.calls[0]?.[0])).toContain("Quick report started");
+    expect(generate).toHaveBeenCalledOnce();
+    expect(
+      decryptJson(String(saveDraft.mock.calls[0]?.[1]), dataEncryptionKey)
+    ).toMatchObject({
+      flow: "message_urf",
+      country: "DE",
+      countrySelection: "default",
+      sendToDms: true
+    });
+    expect(createReport).toHaveBeenCalledWith(
+      "interaction-id",
+      expect.objectContaining({
+        flow: "message_urf",
+        country: "DE",
+        messageUrl: "https://discord.com/channels/1/123456789012345678/123456789012345679"
+      })
+    );
+    expect(reserveSubmission).toHaveBeenCalledOnce();
+    expect(deleteDraft).toHaveBeenCalledWith("1197857362942378017", "draft-id");
+    expect(saveStatusDmMessageId).toHaveBeenCalledWith("tracking-id", "progress-dm-id");
+    expect(observeReport).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledOnce();
+    expect(editDm).toHaveBeenCalledOnce();
+    expect(JSON.stringify(editDm.mock.calls[0]?.[0])).toContain("1527695430949798110");
+  });
+
+  it("rejects suspended users without generating a report", async () => {
+    const database = {
+      getAccess: vi.fn().mockResolvedValue({
+        credits: 1,
+        suspended: true,
+        defaultCountry: null
+      })
+    } as unknown as BotDatabase;
+    const generate = vi.fn();
+    const handler = new InteractionHandler({
+      api: {} as DsaApi,
+      config: {
+        whitelistEnabled: true,
+        adminUserIds: new Set<string>()
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database,
+      messageResolver: {} as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: { generate } as unknown as ReportWriter,
+      serverResolver: {} as ServerResolver
+    });
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = quickInteraction({
+      send: vi.fn(),
+      deferReply: vi.fn(),
+      editReply: vi.fn(),
+      reply
+    });
+
+    await handler.handle(interaction);
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledOnce();
+    expect(JSON.stringify(reply.mock.calls[0]?.[0])).toContain("suspended");
   });
 });

@@ -76,6 +76,16 @@ type DraftMessagePayload = Omit<Pick<
   MessageCreateOptions,
   "allowedMentions" | "components" | "content" | "embeds"
 >, "content"> & { content?: string | null };
+type DraftDeliveryInteraction =
+  | ModalSubmitInteraction
+  | ButtonInteraction
+  | StringSelectMenuInteraction
+  | MessageContextMenuCommandInteraction;
+
+function deliverySourceMessageId(interaction: DraftDeliveryInteraction): string | undefined {
+  if ("message" in interaction) return interaction.message?.id;
+  return undefined;
+}
 
 export interface InteractionHandlerOptions {
   api: DsaApi;
@@ -449,7 +459,7 @@ export class InteractionHandler {
   }
 
   private async deliverWriterProgress(
-    interaction: ModalSubmitInteraction | ButtonInteraction | StringSelectMenuInteraction,
+    interaction: DraftDeliveryInteraction,
     draftId: string,
     draft: ReportDraft,
     progress: Parameters<typeof buildWriterProgress>[2],
@@ -461,7 +471,7 @@ export class InteractionHandler {
       components: [],
       allowedMentions: { parse: [] }
     } satisfies DraftMessagePayload;
-    const sourceMessageId = interaction.message?.id;
+    const sourceMessageId = deliverySourceMessageId(interaction);
     if (
       draft.sendToDms === false ||
       (draft.reviewDmMessageId !== undefined && sourceMessageId === draft.reviewDmMessageId)
@@ -501,7 +511,7 @@ export class InteractionHandler {
   }
 
   private async deliverWriterFailure(
-    interaction: ModalSubmitInteraction | ButtonInteraction | StringSelectMenuInteraction,
+    interaction: DraftDeliveryInteraction,
     draftId: string,
     draft: ReportDraft,
     description: string,
@@ -513,7 +523,7 @@ export class InteractionHandler {
       ...buildWriterFailure(draftId, description, retryAction, canManualEdit, draft),
       allowedMentions: { parse: [] }
     } satisfies DraftMessagePayload;
-    const sourceMessageId = interaction.message?.id;
+    const sourceMessageId = deliverySourceMessageId(interaction);
     if (
       draft.sendToDms === false ||
       (draft.reviewDmMessageId !== undefined && sourceMessageId === draft.reviewDmMessageId)
@@ -560,23 +570,27 @@ export class InteractionHandler {
     if (draftId) await interaction.showModal(buildReportModal(draftId, draft));
   }
 
+  private applyDraftDefaults(draft: ReportDraft, defaultCountry: string | null): void {
+    draft.sendToDms ??= true;
+    if (!draft.countrySelection) {
+      if (draft.country) {
+        draft.countrySelection = "override";
+      } else if (defaultCountry !== null) {
+        draft.country = defaultCountry;
+        draft.countrySelection = "default";
+      } else {
+        draft.countrySelection = "auto";
+      }
+    }
+  }
+
   private async prepareDraft(
     interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
     draft: ReportDraft
   ): Promise<string | null> {
     await this.requireReportAccess(interaction.user.id);
     const access = await this.database.getAccess(interaction.user.id);
-    draft.sendToDms ??= true;
-    if (!draft.countrySelection) {
-      if (draft.country) {
-        draft.countrySelection = "override";
-      } else if (access.defaultCountry !== null) {
-        draft.country = access.defaultCountry;
-        draft.countrySelection = "default";
-      } else {
-        draft.countrySelection = "auto";
-      }
-    }
+    this.applyDraftDefaults(draft, access.defaultCountry);
     if (draft.flow === "guild_urf" && draft.guildIdOrInviteCode && !draft.serverSnapshot) {
       const snapshot = await this.serverResolver.resolve(
         draft.guildIdOrInviteCode,
@@ -622,12 +636,243 @@ export class InteractionHandler {
   private async handleMessageContext(
     interaction: MessageContextMenuCommandInteraction
   ): Promise<void> {
+    if (interaction.commandName === "Quick Report Message") {
+      await this.startQuickReport(interaction);
+      return;
+    }
     if (interaction.commandName !== "Report Message") return;
     await this.startDraft(interaction, {
       flow: "message_urf",
       messageUrl: interaction.targetMessage.url,
       messageSnapshot: snapshotMessage(interaction.targetMessage)
     });
+  }
+
+  private async startQuickReport(
+    interaction: MessageContextMenuCommandInteraction
+  ): Promise<void> {
+    await this.requireReportAccess(interaction.user.id);
+    const access = await this.database.getAccess(interaction.user.id);
+    const draft: ReportDraft = {
+      flow: "message_urf",
+      messageUrl: interaction.targetMessage.url,
+      messageSnapshot: snapshotMessage(interaction.targetMessage),
+      sendToDms: true
+    };
+    this.applyDraftDefaults(draft, access.defaultCountry);
+    const draftId = await this.saveDraft(interaction.user.id, draft);
+    await interaction.deferReply({ flags: EPHEMERAL });
+    await interaction.editReply({
+      content: "Quick report started. I will DM you the result.",
+      embeds: [],
+      components: [],
+      allowedMentions: { parse: [] }
+    });
+    try {
+      const result = await this.reportWriter.generate(
+        draft,
+        this.aiActor(interaction.user.id),
+        async (progress) => {
+          await this.deliverWriterProgress(interaction, draftId, draft, progress);
+        }
+      );
+      applyWriterResult(draft, result, "Generated");
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+    } catch (error) {
+      const canManualEdit = await this.preserveWriterCandidate(
+        interaction.user.id,
+        draftId,
+        draft,
+        error
+      );
+      await this.deliverWriterFailure(
+        interaction,
+        draftId,
+        draft,
+        conciseError(error),
+        "regenerate",
+        canManualEdit
+      );
+      return;
+    }
+    await this.submitQuickDraft(interaction, draftId, draft);
+  }
+
+  private async submitQuickDraft(
+    interaction: MessageContextMenuCommandInteraction,
+    draftId: string,
+    draft: ReportDraft
+  ): Promise<void> {
+    let tracking: Awaited<ReturnType<BotDatabase["reserveSubmission"]>> | undefined;
+    try {
+      await this.requireReportAccess(interaction.user.id);
+      const request = draftToCreateInput(draft, interaction.user.id);
+      const isAdmin = this.isAdmin(interaction.user.id);
+      const creditBypassReason = isAdmin
+        ? "administrator"
+        : !this.config.whitelistEnabled
+          ? "whitelist_disabled"
+          : "none";
+      tracking = await this.database.reserveSubmission({
+        draftId,
+        userId: interaction.user.id,
+        interactionId: interaction.id,
+        flow: request.flow,
+        country: request.country,
+        reportType: request.reportType,
+        encryptedRequest: encryptJson(request, this.config.dataEncryptionKey),
+        ...(draft.aiDecisions ? { aiDecisions: draft.aiDecisions } : {}),
+        dmEnabled: draft.sendToDms !== false,
+        adminBypass: shouldBypassReportCredits(isAdmin, this.config.whitelistEnabled)
+      });
+      botLog("report_quick_submission_reserved", {
+        trackingId: tracking.id,
+        flow: request.flow,
+        country: request.country,
+        creditState: tracking.creditState,
+        creditBypassReason,
+        reservationReplayed: tracking.replayed,
+        creditBalanceBefore: tracking.balanceBefore,
+        creditBalanceAfter: tracking.balanceAfter
+      });
+      await this.deliverWriterProgress(
+        interaction,
+        draftId,
+        draft,
+        {
+          stage: "write",
+          country: draft.country ?? "Auto",
+          reportReason: draft.context ?? draft.reportReason ?? "Preparing submission",
+          reportType: draft.reportType
+            ? reportReasonLabel(draft.flow, draft.reportType)
+            : "Auto"
+        },
+        "Submitting report"
+      );
+      let report = await this.api.createReport(tracking.interactionId, request);
+      const creditStateAfterCreation = await this.database.markSubmissionCreated(
+        tracking.id,
+        report
+      );
+      botLog("report_quick_submission_created", {
+        trackingId: tracking.id,
+        reportId: report.internalReportId,
+        status: report.status,
+        creditState: creditStateAfterCreation
+      });
+      await this.database.deleteDraft(interaction.user.id, draftId);
+      if (draft.reviewDmMessageId) {
+        await this.database.saveStatusDmMessageId(tracking.id, draft.reviewDmMessageId);
+      }
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        if (report.status === "submitted" || report.status === "failed") break;
+        await delay(2_000);
+        report = await this.api.report(report.internalReportId);
+      }
+      await this.database.observeReport(tracking.id, report);
+      botLog("report_quick_submission_observed", {
+        trackingId: tracking.id,
+        reportId: report.internalReportId,
+        status: report.status,
+        discordStatus: report.discordStatus
+      });
+      await this.deliverQuickResult(interaction, draft, report);
+    } catch (error) {
+      botLog(
+        "report_quick_submission_failed",
+        {
+          ...(tracking ? { trackingId: tracking.id, creditState: tracking.creditState } : {}),
+          ...errorFields(error)
+        },
+        "error"
+      );
+      if (tracking && isDefinitePreCreationError(error)) {
+        await this.database.releaseReservation(tracking.id, "report_rejected");
+        await this.deliverWriterFailure(
+          interaction,
+          draftId,
+          draft,
+          conciseError(error),
+          "regenerate",
+          false
+        );
+        return;
+      }
+      await this.deliverQuickFailure(
+        interaction,
+        draftId,
+        draft,
+        `${conciseError(error)}\n\nYour submission identity has been preserved and the bot will reconcile it safely.`
+      );
+    }
+  }
+
+  private async deliverQuickResult(
+    interaction: MessageContextMenuCommandInteraction,
+    draft: ReportDraft,
+    report: ReportDetail
+  ): Promise<void> {
+    const payload = {
+      content: null,
+      embeds: [
+        reportEmbed(report, null, {
+          history: "full",
+          aiDecisions: draft.aiDecisions ?? []
+        })
+      ],
+      components: reportRetryComponents(report),
+      allowedMentions: { parse: [] }
+    } satisfies DraftMessagePayload;
+    try {
+      await this.upsertDraftDm(interaction.user, draft, payload);
+    } catch (error) {
+      botLog(
+        "report_quick_result_dm_send_failed",
+        {
+          reportId: report.internalReportId,
+          permanentlyBlocked: error instanceof DiscordAPIError && error.code === 50_007,
+          ...errorFields(error)
+        },
+        "warn"
+      );
+      await interaction.editReply({
+        ...payload,
+        content:
+          "I could not send the report to your DMs, so the result is shown here instead. Check your privacy settings."
+      });
+    }
+  }
+
+  private async deliverQuickFailure(
+    interaction: MessageContextMenuCommandInteraction,
+    draftId: string,
+    draft: ReportDraft,
+    description: string
+  ): Promise<void> {
+    const payload = {
+      content: null,
+      embeds: [errorEmbed(description)],
+      components: [],
+      allowedMentions: { parse: [] }
+    } satisfies DraftMessagePayload;
+    try {
+      await this.upsertDraftDm(interaction.user, draft, payload);
+      await this.replaceDraft(interaction.user.id, draftId, draft);
+    } catch (error) {
+      botLog(
+        "report_quick_failure_dm_send_failed",
+        {
+          permanentlyBlocked: error instanceof DiscordAPIError && error.code === 50_007,
+          ...errorFields(error)
+        },
+        "warn"
+      );
+      await interaction.editReply({
+        ...payload,
+        content:
+          "I could not send the failure details to your DMs, so they are shown here instead. Check your privacy settings."
+      });
+    }
   }
 
   private async handleChatInput(interaction: ChatInputCommandInteraction): Promise<void> {

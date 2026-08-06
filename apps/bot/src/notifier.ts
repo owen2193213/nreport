@@ -50,7 +50,7 @@ export function lifecycleReplyText(eventType: string, report: ReportDetail): str
     case "discord:closed_no_action":
       return report.reviewStatus === null
         ? "Report denied. No appeal link was available. Please contact me."
-        : "Report denied. Appeal sent.";
+        : "Report denied & appeal sent.";
     case "discord:review_not_approved":
       return "Appeal denied. You can resubmit as-is or rewrite it.";
     case "review_confirmation_timeout":

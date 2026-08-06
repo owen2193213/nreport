@@ -636,6 +636,7 @@ describe("OpenRouter report writer", () => {
       requestBody<{ messages: unknown[] }>(request, 1).messages
     );
     expect(messages).toContain("Use this adaptable structure");
+    expect(messages).toContain("entirely in English");
     expect(messages).not.toContain("Femboy6767");
     expect(messages).not.toContain("Hungarian Act");
     expect(messages).not.toContain("§130 StGB");
@@ -707,6 +708,7 @@ describe("OpenRouter report writer", () => {
       }
     });
     expect(JSON.stringify(body.messages)).toContain("Make it clearer.");
+    expect(JSON.stringify(body.messages)).toContain("Keep the report entirely in English");
     expect(JSON.stringify(body.messages)).toContain(initial.report);
   });
 
@@ -783,6 +785,7 @@ describe("OpenRouter report writer", () => {
     const repair = requestBody<{ messages: unknown[] }>(request, 2);
     expect(JSON.stringify(repair.messages)).toContain(overlength);
     expect(JSON.stringify(repair.messages)).toContain("Task: Repair the current report.");
+    expect(JSON.stringify(repair.messages)).toContain("Keep the report entirely in English");
   });
 
   it("preserves the latest invalid AI report for manual repair", async () => {

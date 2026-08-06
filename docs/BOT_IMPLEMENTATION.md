@@ -271,6 +271,8 @@ The initial writer prompt contains one generalized report structure plus two sty
 appear once in the retained conversation and are explicitly examples of tone and organization,
 not reusable facts or legal conclusions. Refine and Repair append compact instructions to that
 same conversation instead of adding another copy of the examples.
+The writer system prompt, initial writer prompt, and the Refine and Repair instructions all
+require the report text to be written entirely in English.
 
 Message snapshots support ordinary text channels, threads, forum posts, Stage chat, voice-channel
 chat, and DMs. A context-menu message can have a valid channel ID while Discord.js has no hydrated

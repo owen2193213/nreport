@@ -752,7 +752,7 @@ describe("report UI", () => {
     const embed = browser.embeds[0]?.toJSON();
     expect(embed?.title).toBe("Message report");
     expect(embed?.fields?.find((field) => field.name === "Status")?.value).toBe(
-      "Action taken"
+      "Report accepted"
     );
     expect(embed?.fields?.some((field) => field.name === "Reason")).toBe(false);
     expect(embed?.fields?.find((field) => field.name === "Appeal")?.value).toBe(
@@ -838,12 +838,12 @@ describe("report UI", () => {
     ];
     const rendered = renderNotification(report);
     const json = JSON.stringify(rendered.toJSON());
-    expect(json).toContain("Discord took action");
+    expect(json).toContain("Report accepted");
     expect(json).toContain("discord.com/channels");
     expect(json).toContain("sensitive context");
     expect(json).toContain("History");
-    expect(json).toContain("Submitted to Discord");
-    expect(json).toContain("**Original report: Discord took action**");
+    expect(json).toContain("Report submitted");
+    expect(json).toContain("**Report accepted**");
     expect(json).not.toContain("Report requested");
     expect(json).not.toContain("Verification email requested");
     expect(json).not.toContain("Verification completed");
@@ -866,7 +866,7 @@ describe("report UI", () => {
     expect(json.title).toBe("Message report");
     expect(json.description).toBeUndefined();
     expect(json.fields?.find((field) => field.name === "Status")?.value).toBe(
-      "Received by Discord"
+      "Report received"
     );
     expect(json.fields?.find((field) => field.name === "History")?.value).toContain("<t:");
     expect(json.fields?.find((field) => field.name === "History")?.value).not.toContain("```");
@@ -909,10 +909,10 @@ describe("report UI", () => {
     const history = reportEmbed(report)
       .toJSON()
       .fields?.find((field) => field.name === "History")?.value;
-    expect(history).toContain("Submitted to Discord");
-    expect(history).toContain("Original report: Closed without action");
+    expect(history).toContain("Report submitted");
+    expect(history).toContain("Report closed");
     expect(history).toContain("Appeal submitted");
-    expect(history).toMatch(/<t:\d+:R> \*\*Waiting for appeal decision\*\*/);
+    expect(history).toMatch(/<t:\d+:R> \*\*Appeal received\*\*/);
     expect(history).not.toContain("Verification");
   });
 
@@ -958,12 +958,12 @@ describe("report UI", () => {
     const history = reportEmbed(report)
       .toJSON()
       .fields?.find((field) => field.name === "History")?.value;
-    expect(history).toContain("Original report: Closed without action");
+    expect(history).toContain("Report closed");
     expect(history).toContain("Appeal submitted");
     expect(history).toMatch(
-      /<t:\d+:R> \*\*Appeal denied — Discord upheld no action\*\*/
+      /<t:\d+:R> \*\*Appeal denied\*\*/
     );
-    expect(history).not.toContain("Result: Review not approved");
+    expect(history).not.toContain("Result: Appeal denied");
   });
 
   it("renders Discord review ineligibility as a first-class terminal outcome", () => {
@@ -996,13 +996,13 @@ describe("report UI", () => {
 
     const json = reportEmbed(report).toJSON();
     expect(json.fields?.find((field) => field.name === "Status")?.value).toBe(
-      "DSA report ineligible for review"
+      "Appeal ineligible"
     );
     expect(json.fields?.find((field) => field.name === "Appeal")?.value).toContain(
       "Discord says this DSA report is ineligible for review."
     );
     expect(json.fields?.find((field) => field.name === "History")?.value).toMatch(
-      /\*\*Appeal unavailable — DSA report ineligible\*\*/
+      /\*\*Appeal ineligible\*\*/
     );
     expect(reportRetryComponents(report)).toEqual([]);
     expect(lifecycleReplyText("review_ineligible", report)).toBe(

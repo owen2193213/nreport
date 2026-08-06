@@ -47,20 +47,20 @@ const STATUS_LABELS: Record<string, string> = {
   verification_received: "Preparing report",
   verifying: "Preparing report",
   submitting: "Preparing report",
-  submitted: "Submitted to Discord",
-  failed: "Failed",
-  received: "Received by Discord",
-  actioned: "Action taken",
-  closed_no_action: "Closed — no action",
-  review_not_approved: "Review not approved",
+  submitted: "Report submitted",
+  failed: "Report failed",
+  received: "Report received",
+  actioned: "Report accepted",
+  closed_no_action: "Report closed",
+  review_not_approved: "Appeal denied",
   review_queued: "Appeal queued",
-  review_requested: "Appeal requested",
-  review_received: "Appeal received by Discord",
-  review_confirmation_timeout: "Appeal sent - email unconfirmed",
-  review_request_failed: "Automatic appeal failed",
-  review_ineligible: "DSA report ineligible for review",
-  review_request_ambiguous: "Appeal result uncertain",
-  review_approved: "Appeal approved",
+  review_requested: "Appeal submitted",
+  review_received: "Appeal received",
+  review_confirmation_timeout: "Appeal unconfirmed",
+  review_request_failed: "Appeal failed",
+  review_ineligible: "Appeal ineligible",
+  review_request_ambiguous: "Appeal uncertain",
+  review_approved: "Appeal accepted",
   review_not_approved_final: "Appeal denied"
 };
 
@@ -951,7 +951,7 @@ function attemptHistoryStages(events: ReportView["timeline"]): HistoryStage[] {
   };
   for (const event of events) {
     if (event.type === "report_submitted") {
-      add("submitted", "Submitted to Discord", event.occurredAt);
+      add("submitted", "Report submitted", event.occurredAt);
     } else if (event.type === "report_failed") {
       add(
         "failed",
@@ -961,36 +961,24 @@ function attemptHistoryStages(events: ReportView["timeline"]): HistoryStage[] {
     } else if (event.type === "review_requested" || event.type === "review_received") {
       add("appeal_submitted", "Appeal submitted", event.occurredAt);
     } else if (event.type === "review_request_failed") {
-      add("appeal_failed", "Appeal could not be submitted", event.occurredAt);
+      add("appeal_failed", "Appeal failed", event.occurredAt);
     } else if (event.type === "review_ineligible") {
-      add(
-        "appeal_ineligible",
-        "Appeal unavailable — DSA report ineligible",
-        event.occurredAt
-      );
+      add("appeal_ineligible", "Appeal ineligible", event.occurredAt);
     } else if (event.type === "review_request_ambiguous") {
-      add("appeal_ambiguous", "Appeal submission uncertain", event.occurredAt);
+      add("appeal_ambiguous", "Appeal uncertain", event.occurredAt);
     } else if (event.type === "review_approved") {
-      add("appeal_approved", "Appeal approved — Discord took action", event.occurredAt);
+      add("appeal_approved", "Appeal accepted", event.occurredAt);
     } else if (event.type === "discord_status_updated") {
       if (event.discordStatus === "closed_no_action") {
-        add("original_closed", "Original report: Closed without action", event.occurredAt);
+        add("original_closed", "Report closed", event.occurredAt);
       } else if (event.discordStatus === "actioned") {
         if (stages.some((stage) => stage.key === "appeal_submitted")) {
-          add(
-            "appeal_approved",
-            "Appeal approved — Discord took action",
-            event.occurredAt
-          );
+          add("appeal_approved", "Appeal accepted", event.occurredAt);
         } else {
-          add("original_actioned", "Original report: Discord took action", event.occurredAt);
+          add("original_actioned", "Report accepted", event.occurredAt);
         }
       } else if (event.discordStatus === "review_not_approved") {
-        add(
-          "appeal_denied",
-          "Appeal denied — Discord upheld no action",
-          event.occurredAt
-        );
+        add("appeal_denied", "Appeal denied", event.occurredAt);
       }
     }
   }
@@ -1005,49 +993,49 @@ function currentHistoryStage(report: ReportView): HistoryStage {
     case "requested":
       return {
         key: "appeal_confirmation",
-        label: "Waiting for appeal confirmation",
+        label: "Appeal submitted",
         occurredAt: reviewTime
       };
     case "received":
       return {
         key: "appeal_waiting",
-        label: "Waiting for appeal decision",
+        label: "Appeal received",
         occurredAt: reviewTime
       };
     case "confirmation_timeout":
       return {
         key: "appeal_waiting",
-        label: "Waiting for appeal decision — confirmation delayed",
+        label: "Appeal unconfirmed",
         occurredAt: reviewTime
       };
     case "request_failed":
       return {
         key: "appeal_failed",
-        label: "Appeal could not be submitted",
+        label: "Appeal failed",
         occurredAt: reviewTime
       };
     case "ineligible":
       return {
         key: "appeal_ineligible",
-        label: "Appeal unavailable — DSA report ineligible",
+        label: "Appeal ineligible",
         occurredAt: reviewTime
       };
     case "request_ambiguous":
       return {
         key: "appeal_ambiguous",
-        label: "Appeal submission uncertain",
+        label: "Appeal uncertain",
         occurredAt: reviewTime
       };
     case "approved":
       return {
         key: "appeal_approved",
-        label: "Appeal approved — Discord took action",
+        label: "Appeal accepted",
         occurredAt: reviewTime
       };
     case "not_approved":
       return {
         key: "appeal_denied",
-        label: "Appeal denied — Discord upheld no action",
+        label: "Appeal denied",
         occurredAt: reviewTime
       };
   }
@@ -1055,21 +1043,21 @@ function currentHistoryStage(report: ReportView): HistoryStage {
   if (report.discordStatus === "actioned") {
     return {
       key: "original_actioned",
-      label: "Original report: Discord took action",
+      label: "Report accepted",
       occurredAt: discordTimeValue
     };
   }
   if (report.discordStatus === "closed_no_action") {
     return {
       key: "original_closed",
-      label: "Original report: Closed without action",
+      label: "Report closed",
       occurredAt: discordTimeValue
     };
   }
   if (report.discordStatus === "review_not_approved") {
     return {
       key: "appeal_denied",
-      label: "Appeal denied — Discord upheld no action",
+      label: "Appeal denied",
       occurredAt: discordTimeValue
     };
   }
@@ -1097,8 +1085,8 @@ function currentHistoryStage(report: ReportView): HistoryStage {
     key: "original_waiting",
     label:
       report.discordStatus === "received"
-        ? "Waiting for original report decision"
-        : "Waiting for Discord confirmation",
+        ? "Waiting for report decision"
+        : "Waiting for confirmation",
     occurredAt: discordTimeValue
   };
 }

@@ -35,27 +35,35 @@ export function renderNotification(
   );
 }
 
+function shouldIncludeRetryComponents(eventType: string): boolean {
+  return (
+    eventType === "report_failed" ||
+    eventType === "review_request_failed" ||
+    eventType === "review_confirmation_timeout"
+  );
+}
+
 export function lifecycleReplyText(eventType: string, report: ReportDetail): string | null {
   switch (eventType) {
     case "discord:actioned":
-      return "Your DSA report was accepted and Discord took action.";
+      return "Report accepted.";
     case "discord:closed_no_action":
       return report.reviewStatus === null
-        ? "Discord denied your DSA report by closing it without action. No automatic appeal link was available."
-        : "Discord denied your DSA report by closing it without action; the automatic appeal process has started.";
+        ? "Report denied. No appeal link was available. Please contact me."
+        : "Report denied. Appeal sent.";
     case "discord:review_not_approved":
-      return "Your DSA report appeal was denied by Discord. You can resend it as-is or rewrite it first.";
+      return "Appeal denied. You can resubmit as-is or rewrite it.";
     case "review_confirmation_timeout":
-      return "Discord accepted the appeal request, but its confirmation email did not arrive within 2 minutes. The appeal was not submitted again.";
+      return "Appeal email timed out. Not submitted. Please contact me with details.";
     case "review_request_failed":
-      return "Discord did not accept the automatic appeal request. Check the report status before taking further action.";
+      return "Automatic appeal failed. Check report status before retrying. Please contact me with details.";
     case "review_ineligible":
-      return "Discord says this DSA report is ineligible for review. No appeal was submitted.";
+      return "Report ineligible for review. No appeal sent.";
     case "review_request_ambiguous":
-      return "The automatic appeal request could not be confirmed. It was not retried to avoid submitting a duplicate.";
+      return "Appeal status uncertain. Not retried to avoid duplicates. Please contact me with details.";
     case "report_failed":
       return report.error?.code === "discord_receipt_timeout"
-        ? "Discord did not confirm receipt within 2 minutes. You can retry this as a new report below."
+        ? "Discord didn't confirm receipt within 2 min. Retry below or contact me."
         : null;
     default:
       return null;
@@ -273,7 +281,7 @@ export class NotificationWorker {
         if (replyText !== null) {
           await statusMessage.reply({
             content: replyText,
-            components: job.payload.eventType === "report_failed" ? components : [],
+            components: shouldIncludeRetryComponents(job.payload.eventType) ? components : [],
             allowedMentions: { parse: [] }
           });
         }

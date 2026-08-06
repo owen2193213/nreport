@@ -1006,7 +1006,7 @@ describe("report UI", () => {
     );
     expect(reportRetryComponents(report)).toEqual([]);
     expect(lifecycleReplyText("review_ineligible", report)).toBe(
-      "Discord says this DSA report is ineligible for review. No appeal was submitted."
+      "Report ineligible for review. No appeal sent."
     );
   });
 

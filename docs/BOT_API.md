@@ -715,10 +715,7 @@ coded, ambiguous, or context-dependent terminology could affect classification o
 the model uses the search to clarify the exact evidence wording and confirm the relevant current
 law and provision. With explicit evidence it focuses directly on the law. Category-catalog labels
 and unrelated categories are forbidden as search terms. OpenRouter must choose a provider that
-supports the requested strict schema and plugin parameters. Research denies provider data
-collection without requiring ZDR; writing, refinement, and repair require ZDR. All AI stages use a
-soft 50 TPS p90 preference and retain OpenRouter's normal uptime-aware provider balancing rather
-than explicitly sorting providers by throughput. If a completed research response is
+supports the requested strict schema and plugin parameters. If a completed research response is
 malformed, the bot retries the research once from the original evidence without replaying the failed
 response. A missing `server_tool_use.web_search_requests` value is retained as telemetry and does not
 invalidate plugin-backed research. A second malformed response stops the workflow with the safe AI

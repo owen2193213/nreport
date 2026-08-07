@@ -1150,15 +1150,16 @@ export class ReportWriter {
       zdr: true,
       data_collection: "deny",
       require_parameters: true,
-      preferred_min_throughput: { p90: 50 }
+      sort: "throughput"
     };
   }
 
   private researchProvider() {
     return {
+      zdr: true,
       data_collection: "deny",
       require_parameters: true,
-      preferred_min_throughput: { p90: 50 }
+      sort: "throughput"
     };
   }
 

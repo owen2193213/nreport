@@ -1,9 +1,5 @@
 # DeepSeek Throughput and ZDR Routing Implementation Plan
 
-> Superseded by `2026-08-07-openrouter-routing-reliability.md`, which removes ZDR from research and
-> replaces explicit throughput sorting with a soft throughput preference so uptime-aware routing
-> remains enabled.
-
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Default the bot to DeepSeek V4 Flash and dynamically route every AI request to the fastest compatible ZDR endpoint.

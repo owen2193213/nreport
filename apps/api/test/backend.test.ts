@@ -22,7 +22,11 @@ import {
   VERIFICATION_EMAIL_TIMEOUT_SECONDS
 } from "../src/database.js";
 import {
+  discordErrorCode,
   inspectNetworkCause,
+  isAmbiguousReviewFailure,
+  isRetryableDiscordFailure,
+  isReviewAlreadyRequested,
   isReviewIneligible,
   redactedError
 } from "../src/job-runner.js";
@@ -103,6 +107,48 @@ describe("backend identity and validation", () => {
         })
       )
     ).toBe(false);
+  });
+
+  it("classifies Discord appeal convergence and ineligibility codes", () => {
+    const alreadyRequested = new DiscordDsaHttpError("request failed", 400, {
+      responseSummary: "code 521002; DSA_RSL_ALREADY_REQUESTED"
+    });
+    const ineligible = new DiscordDsaHttpError("request failed", 400, {
+      responseSummary: "code 521004; DSA_RSL_REPORT_INELIGIBLE"
+    });
+
+    expect(discordErrorCode(alreadyRequested.responseSummary)).toBe("521002");
+    expect(isReviewAlreadyRequested(alreadyRequested)).toBe(true);
+    expect(isReviewIneligible(alreadyRequested)).toBe(false);
+    expect(isReviewAlreadyRequested(ineligible)).toBe(false);
+    expect(isReviewIneligible(ineligible)).toBe(true);
+  });
+
+  it("retries only transient Discord transport failures", () => {
+    const network = new DiscordDsaNetworkError("network failed");
+    const rateLimited = new DiscordDsaHttpError("rate limited", 429);
+    const serverError = new DiscordDsaHttpError("server failed", 503);
+    const internalAppealError = new DiscordDsaHttpError("appeal failed", 400, {
+      responseSummary: "code 522002; Internal error occurred while processing the appeal"
+    });
+
+    expect(isRetryableDiscordFailure(network)).toBe(true);
+    expect(isRetryableDiscordFailure(rateLimited)).toBe(true);
+    expect(isRetryableDiscordFailure(serverError)).toBe(true);
+    expect(isRetryableDiscordFailure(internalAppealError)).toBe(false);
+    expect(isRetryableDiscordFailure(new Error("local failure"))).toBe(false);
+  });
+
+  it("marks exhausted network and server failures ambiguous but rate limits failed", () => {
+    expect(isAmbiguousReviewFailure(new DiscordDsaNetworkError("network failed"))).toBe(
+      true
+    );
+    expect(isAmbiguousReviewFailure(new DiscordDsaHttpError("server failed", 500))).toBe(
+      true
+    );
+    expect(isAmbiguousReviewFailure(new DiscordDsaHttpError("rate limited", 429))).toBe(
+      false
+    );
   });
 
   it("logs only bounded network classifications instead of connection secrets", () => {

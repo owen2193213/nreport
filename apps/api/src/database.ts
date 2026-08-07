@@ -517,7 +517,7 @@ export class Database {
       );
       await client.query(
         `INSERT INTO report_jobs (report_id, kind, dedupe_key, max_attempts)
-         VALUES ($1, 'request_code', $2, 2)`,
+         VALUES ($1, 'request_code', $2, 3)`,
         [record.id, `${record.id}:request-code:1`]
       );
       await this.event(client, record.id, "report_api_request_sent");
@@ -667,7 +667,8 @@ export class Database {
 
   public async saveAwaitingVerification(
     reportId: string,
-    encryptedSessionState: string
+    encryptedSessionState: string,
+    proxySessionId: string
   ): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -679,18 +680,24 @@ export class Database {
                ELSE 'awaiting_verification'
              END,
              session_state = $2,
+             proxy_session_id = $3,
              verification_deadline = CASE
                WHEN status = 'verification_received' THEN NULL
                ELSE COALESCE(
                  verification_deadline,
-                 now() + ($3 * interval '1 second')
+                 now() + ($4 * interval '1 second')
                )
              END,
              updated_at = now()
          WHERE id = $1
            AND status IN ('requesting_verification', 'awaiting_verification', 'verification_received')
          RETURNING status`,
-        [reportId, encryptedSessionState, VERIFICATION_EMAIL_TIMEOUT_SECONDS]
+        [
+          reportId,
+          encryptedSessionState,
+          proxySessionId,
+          VERIFICATION_EMAIL_TIMEOUT_SECONDS
+        ]
       );
       if (updated.rowCount === 0) {
         throw new Error("Report is no longer waiting for verification.");
@@ -1414,7 +1421,7 @@ export class Database {
       );
       await client.query(
         `INSERT INTO report_jobs (report_id, kind, dedupe_key, max_attempts)
-         VALUES ($1, 'request_code', $2, 2)`,
+         VALUES ($1, 'request_code', $2, 3)`,
         [record.id, `${record.id}:request-code:1`]
       );
       const successor = inserted.rows[0];

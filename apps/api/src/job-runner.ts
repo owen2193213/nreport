@@ -116,14 +116,45 @@ function safeErrorType(error: unknown): string {
   );
 }
 
-function discordErrorCode(responseSummary: string | undefined): string | undefined {
+export function discordErrorCode(responseSummary: string | undefined): string | undefined {
   return /^code ([A-Za-z0-9_.-]{1,40})(?:;|$)/.exec(responseSummary ?? "")?.[1];
+}
+
+class ReviewAttemptError extends Error {
+  public constructor(
+    public readonly stage: string,
+    cause: unknown
+  ) {
+    super(`Discord review attempt failed during ${stage}.`, { cause });
+    this.name = "ReviewAttemptError";
+  }
+}
+
+export function isReviewAlreadyRequested(error: unknown): boolean {
+  return (
+    error instanceof DiscordDsaHttpError &&
+    discordErrorCode(error.responseSummary) === "521002"
+  );
 }
 
 export function isReviewIneligible(error: unknown): boolean {
   return (
     error instanceof DiscordDsaHttpError &&
     discordErrorCode(error.responseSummary) === "521004"
+  );
+}
+
+export function isRetryableDiscordFailure(error: unknown): boolean {
+  return (
+    error instanceof DiscordDsaNetworkError ||
+    (error instanceof DiscordDsaHttpError && (error.status === 429 || error.status >= 500))
+  );
+}
+
+export function isAmbiguousReviewFailure(error: unknown): boolean {
+  return (
+    error instanceof DiscordDsaNetworkError ||
+    (error instanceof DiscordDsaHttpError && error.status >= 500)
   );
 }
 
@@ -319,6 +350,7 @@ export class JobRunner {
     }
     return new DiscordDsaClient({
       proxyUrl,
+      fingerprintMaxAttempts: 1,
       timezone: report.timezone,
       locale: report.locale,
       extraHeaders: {
@@ -361,7 +393,8 @@ export class JobRunner {
         "Report job completed"
       );
     } catch (error) {
-      const redacted = redactedError(error);
+      const failure = error instanceof ReviewAttemptError ? error.cause : error;
+      const redacted = redactedError(failure);
       if (job.kind === "request_code" && job.payload.resend === true) {
         await this.database.completeJob(job.id);
         this.logger.error(
@@ -416,23 +449,33 @@ export class JobRunner {
         return;
       }
       if (job.kind === "submit_review") {
-        if (job.attempts < job.max_attempts) {
-          const delaySeconds = Math.min(60, 2 ** job.attempts * 5);
+        if (
+          job.attempts < job.max_attempts &&
+          isRetryableDiscordFailure(failure)
+        ) {
+          const delaySeconds = Math.max(
+            redacted.retryAfter ?? 0,
+            Math.min(60, 2 ** job.attempts * 5)
+          );
           await this.database.retryJob(job, redacted.message, delaySeconds);
           this.logger.info(
             {
-              event: "review_link_resolution_retry_scheduled",
+              event: "proxy_rotation_scheduled",
               jobId: job.id,
               reportId: job.report_id,
               jobKind: job.kind,
               attempt: job.attempts,
               maxAttempts: job.max_attempts,
-              stage: "resolve_review_link",
+              rotationCount: job.attempts,
+              stage:
+                error instanceof ReviewAttemptError
+                  ? error.stage
+                  : "resolve_review_link",
               ...errorLogFields(redacted),
               delaySeconds,
               durationMs: Date.now() - startedAt
             },
-            "Discord review link resolution retry scheduled"
+            "Discord proxy rotation scheduled"
           );
         } else {
           await this.database.failReviewRequest(
@@ -461,7 +504,8 @@ export class JobRunner {
       }
       const canRetry =
         job.attempts < job.max_attempts &&
-        (job.kind === "request_code" || error instanceof SessionNotReadyError);
+        ((job.kind === "request_code" && isRetryableDiscordFailure(error)) ||
+          error instanceof SessionNotReadyError);
       if (canRetry) {
         const delaySeconds = Math.max(
           redacted.retryAfter ?? 0,
@@ -551,6 +595,18 @@ export class JobRunner {
     }
   }
 
+  private async runReviewStage<T>(
+    job: JobRow,
+    stage: string,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    try {
+      return await this.runStage(job, stage, operation);
+    } catch (error) {
+      throw new ReviewAttemptError(stage, error);
+    }
+  }
+
   private async requiredReport(reportId: string): Promise<ReportRow> {
     const report = await this.database.getReport(reportId);
     if (!report) throw new Error("Report no longer exists.");
@@ -608,7 +664,23 @@ export class JobRunner {
       return;
     }
     await this.database.setStatus(report.id, "requesting_verification", "requesting_verification");
-    const client = this.clientFor(report);
+    const proxySessionId =
+      job.attempts === 1 ? report.proxy_session_id : createProxySessionId();
+    this.logger.info(
+      {
+        event: "proxy_attempt_started",
+        jobId: job.id,
+        reportId: report.id,
+        jobKind: job.kind,
+        country: report.country,
+        stage: "request_verification_email",
+        attempt: job.attempts,
+        maxAttempts: job.max_attempts,
+        rotationCount: job.attempts - 1
+      },
+      "Discord proxy attempt started"
+    );
+    const client = this.clientFor(report, undefined, proxySessionId);
     try {
       await this.runStage(job, "request_verification_email", () =>
         client.sendEmailCode(report.flow, report.reporter_email)
@@ -618,7 +690,22 @@ export class JobRunner {
       );
       await this.database.saveAwaitingVerification(
         report.id,
-        encryptJson(sessionState, this.config.sessionEncryptionKey)
+        encryptJson(sessionState, this.config.sessionEncryptionKey),
+        proxySessionId
+      );
+      this.logger.info(
+        {
+          event: "proxy_attempt_succeeded",
+          jobId: job.id,
+          reportId: report.id,
+          jobKind: job.kind,
+          country: report.country,
+          stage: "request_verification_email",
+          attempt: job.attempts,
+          maxAttempts: job.max_attempts,
+          rotationCount: job.attempts - 1
+        },
+        "Discord proxy attempt succeeded"
       );
     } finally {
       await this.runStage(job, "close_discord_session", () => client.close());
@@ -678,8 +765,25 @@ export class JobRunner {
     );
     const reviewContext = reviewLogContext(report);
     const client = this.clientFor(report, undefined, createProxySessionId());
+    this.logger.info(
+      {
+        event: "proxy_attempt_started",
+        jobId: job.id,
+        reportId: report.id,
+        jobKind: job.kind,
+        country: report.country,
+        stage: "submit_review",
+        attempt: job.attempts,
+        maxAttempts: job.max_attempts,
+        rotationCount: job.attempts - 1
+      },
+      "Discord proxy attempt started"
+    );
     try {
-      const token = await this.runStage(job, "resolve_review_link", () =>
+      await this.runReviewStage(job, "test_review_proxy", () =>
+        client.bootstrapFingerprint()
+      );
+      const token = await this.runReviewStage(job, "resolve_review_link", () =>
         client.resolveReportReviewToken(reviewUrl)
       );
       const tokenSegments = token.split(".").length;
@@ -705,10 +809,20 @@ export class JobRunner {
         );
       } catch (error) {
         const redacted = redactedError(error);
+        const alreadyRequested = isReviewAlreadyRequested(error);
         const ineligible = isReviewIneligible(error);
-        const ambiguous = !ineligible && error instanceof DiscordDsaNetworkError;
+        const retryable = isRetryableDiscordFailure(error);
+        if (retryable && job.attempts < job.max_attempts) {
+          throw new ReviewAttemptError("submit_report_review", error);
+        }
+        const ambiguous = !ineligible && isAmbiguousReviewFailure(error);
         try {
-          if (ineligible) {
+          if (alreadyRequested) {
+            await this.database.markReviewRequested(
+              report.id,
+              report.discord_report_id
+            );
+          } else if (ineligible) {
             await this.database.markReviewIneligible(
               report.id,
               "discord_review_ineligible",
@@ -726,6 +840,37 @@ export class JobRunner {
           }
         } catch (persistenceError) {
           throw new ReviewSubmissionStartedError(persistenceError);
+        }
+        if (alreadyRequested) {
+          this.logger.info(
+            {
+              event: "review_request_already_requested",
+              jobId: job.id,
+              reportId: report.id,
+              jobKind: job.kind,
+              stage: "submit_report_review",
+              ...reviewContext,
+              attempt: job.attempts,
+              maxAttempts: job.max_attempts,
+              discordErrorCode: "521002"
+            },
+            "Discord review request was already submitted"
+          );
+          this.logger.info(
+            {
+              event: "proxy_attempt_succeeded",
+              jobId: job.id,
+              reportId: report.id,
+              jobKind: job.kind,
+              country: report.country,
+              stage: "submit_review",
+              attempt: job.attempts,
+              maxAttempts: job.max_attempts,
+              rotationCount: job.attempts - 1
+            },
+            "Discord proxy attempt succeeded"
+          );
+          return;
         }
         const event = ineligible
           ? "review_ineligible"
@@ -802,6 +947,20 @@ export class JobRunner {
           tokenSegments
         },
         "Discord review request submitted"
+      );
+      this.logger.info(
+        {
+          event: "proxy_attempt_succeeded",
+          jobId: job.id,
+          reportId: report.id,
+          jobKind: job.kind,
+          country: report.country,
+          stage: "submit_review",
+          attempt: job.attempts,
+          maxAttempts: job.max_attempts,
+          rotationCount: job.attempts - 1
+        },
+        "Discord proxy attempt succeeded"
       );
     } finally {
       try {

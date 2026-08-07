@@ -85,12 +85,17 @@ review and its confirmation controls are sent as an ordinary private bot DM.
     fails the report with `discord_receipt_timeout`, edits the saved card, and offers the existing
     immutable new-report retry.
 12. If Discord closes the original report without action and supplies a review link, the API
-    encrypts the link and automatically submits one appeal through a fresh proxy session in the
-    report's selected country. The original sticky IP and Discord session do not need to remain
-    valid; the bot never receives the link, token, or a Discord account authorization credential.
-13. A successful appeal POST is authoritative. The API waits two minutes for the review-request
-    confirmation email; a missing email becomes an explicit unconfirmed diagnostic and never
-    submits the appeal again. A network-ambiguous appeal POST is likewise not retried.
+    encrypts the link and automatically submits the appeal with up to three bounded attempts. Each
+    attempt first tests a fresh proxy session in the report's selected country, then uses that same
+    session to resolve the link and submit. The original sticky IP and Discord session do not need
+    to remain valid; the bot never receives the link, token, or a Discord account authorization
+    credential.
+13. A successful appeal POST or Discord code `521002` (**already requested**) is authoritative.
+    Transient network, rate-limit, and server failures rotate to another same-country proxy with
+    bounded backoff. Initial report submission POSTs remain single-shot because Discord provides no
+    equivalent duplicate protection. After appeal acceptance, the API waits two minutes for the
+    review-request confirmation email; a missing email becomes an explicit unconfirmed diagnostic
+    and never submits the appeal again.
 14. If Discord denies the appeal, the report card exposes **Resend same report** and
     **Rewrite & resend**. The rewrite path uses the existing AI drafting workflow, remains
     editable and review-first, enforces 512 characters, creates a fresh linked report, and does
@@ -380,10 +385,11 @@ that have deliberately aged out.
   email never reaches the Cloudflare worker.
 - The API waits for at most 60 seconds after requesting verification, then marks the report failed
   with `verification_email_timeout` and makes it retryable.
-- The API makes the initial verification request and, while the same report is still waiting,
-  repeats that same Discord request at 20 and 40 seconds. Every request uses the report's existing
-  sticky proxy identity, email alias, and persisted Discord session. Resends never extend the
-  original 60-second deadline.
+- The initial verification job tests the report's same-country proxy before requesting email and
+  rotates to a fresh session on each of at most three transient-failure attempts. Once one attempt
+  succeeds, the API persists that proxy identity with the Discord session. While the same report is
+  still waiting, resends at 20 and 40 seconds reuse that persisted sticky proxy, email alias, and
+  session. Resends never extend the original 60-second deadline.
 - An email may reach the inbound worker before the initial request job finishes saving its Discord
   session. Persisting the session must therefore preserve an already-recorded
   `verification_received` state rather than moving the report backwards to
@@ -398,7 +404,8 @@ that have deliberately aged out.
 
 ### Final design
 
-The initial request transaction schedules two durable `request_code` resend jobs. A resend is a
+The initial request transaction schedules a three-attempt durable initial `request_code` job and
+two single-attempt resend jobs. A resend is a
 no-op unless the report is still `awaiting_verification`, has a saved session, and remains inside
 its original deadline. This makes restarts safe and stops both resending and report correlation as
 soon as mail arrives or the deadline expires. The Cloudflare catch-all itself remains online for
@@ -501,9 +508,11 @@ same immutable audit relationship as failure retries.
   `report_job_stage_failed`, `report_job_retry_scheduled`, `report_job_failed`,
   `verification_resend_completed`, `verification_resend_skipped`,
   `verification_resend_failed`, `verification_wait_expired`, `discord_receipt_wait_expired`,
-  `review_confirmation_wait_expired`, `review_link_resolution_retry_scheduled`,
+  `review_confirmation_wait_expired`, `proxy_attempt_started`, `proxy_attempt_succeeded`,
+  `proxy_rotation_scheduled`,
   `review_link_resolution_failed`, `review_link_resolved`, `review_request_submitted`,
-  `review_request_failed`, `review_ineligible`, `review_request_ambiguous`,
+  `review_request_already_requested`, `review_request_failed`, `review_ineligible`,
+  `review_request_ambiguous`,
   `review_report_id_mismatch`,
   `inbound_email_rejected`,
   `inbound_email_ignored`, and `inbound_email_correlated`.
@@ -552,6 +561,9 @@ same immutable audit relationship as failure retries.
   `request_failed` was rejected because it conflates Discord eligibility with transport/API faults;
   automatic or user-triggered resubmission was rejected to avoid looping an explicitly ineligible
   report.
+- Chosen: treat Discord API code `521002` as successful appeal convergence and retry transient
+  appeal submission failures through a fresh same-country proxy. Initial report submission remains
+  non-retryable after its final POST starts because it has no equivalent duplicate guard.
 - Chosen: use `minimax/minimax-m2.7` for research, writing, refinement, and repair. A single
   configurable model keeps prompts, usage accounting, deployment configuration, and failure
   behavior consistent.

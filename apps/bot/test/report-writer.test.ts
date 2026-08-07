@@ -112,7 +112,7 @@ function fixedWriter(
   request: ReturnType<typeof vi.fn>,
   recordUsage: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined)
 ): ReportWriter {
-  return new ReportWriter("secret", "minimax/minimax-m2.7", COUNTRIES, {
+  return new ReportWriter("secret", "deepseek/deepseek-v4-flash", COUNTRIES, {
     recordUsage: recordUsage as unknown as (userId: string, usage: AiUsage) => Promise<void>,
     request: request as unknown as typeof globalThis.fetch
   });
@@ -267,15 +267,10 @@ describe("OpenRouter report writer", () => {
       }
     });
     expect(research.provider).toEqual({
+      zdr: true,
       require_parameters: true,
       data_collection: "deny",
-      order: [
-        "sambanova/minimax-m2.7-dedicated",
-        "mara",
-        "fireworks",
-        "groq",
-        "sambanova"
-      ]
+      sort: "throughput"
     });
     expect(prompt).toContain("reportReason");
     expect(prompt).toContain("reportType");
@@ -471,15 +466,10 @@ describe("OpenRouter report writer", () => {
     expect(body.tool_choice).toBeUndefined();
     expect(body.stream).toBe(false);
     expect(body.provider).toEqual({
+      zdr: true,
       require_parameters: true,
       data_collection: "deny",
-      order: [
-        "sambanova/minimax-m2.7-dedicated",
-        "mara",
-        "fireworks",
-        "groq",
-        "sambanova"
-      ]
+      sort: "throughput"
     });
     expect(body.response_format.json_schema.schema.required).toEqual([
       "lawReference",
@@ -612,24 +602,20 @@ describe("OpenRouter report writer", () => {
     const result = await fixedWriter(request).generate(profileDraft(), ACTOR);
     expect(result.report).toContain(LAW_REFERENCE);
     const writing = requestBody<{
-      max_tokens: number;
+      max_completion_tokens: number;
+      max_tokens?: number;
       provider: Record<string, unknown>;
       reasoning: { enabled: boolean; exclude: boolean };
       response_format: unknown;
     }>(request, 1);
-    expect(writing.max_tokens).toBe(4_096);
+    expect(writing.max_completion_tokens).toBe(4_096);
+    expect(writing.max_tokens).toBeUndefined();
     expect(writing.reasoning).toEqual({ enabled: true, exclude: true });
     expect(writing.provider).toEqual({
       zdr: true,
       require_parameters: true,
       data_collection: "deny",
-      order: [
-        "sambanova/minimax-m2.7-dedicated",
-        "mara",
-        "fireworks",
-        "groq",
-        "sambanova"
-      ]
+      sort: "throughput"
     });
     expect(JSON.stringify(writing.response_format)).not.toContain("lawCitation");
     const messages = JSON.stringify(
@@ -685,13 +671,22 @@ describe("OpenRouter report writer", () => {
     const refined = await writer.refine(draft, "Make it clearer.", ACTOR);
     expect(refined.report).toContain("Refined report");
     const body = requestBody<{
-      max_tokens: number;
+      max_completion_tokens: number;
+      max_tokens?: number;
       messages: unknown[];
+      provider: Record<string, unknown>;
       reasoning: { enabled: boolean; exclude: boolean };
       response_format: unknown;
     }>(request, 2);
-    expect(body.max_tokens).toBe(4_096);
+    expect(body.max_completion_tokens).toBe(4_096);
+    expect(body.max_tokens).toBeUndefined();
     expect(body.reasoning).toEqual({ enabled: true, exclude: true });
+    expect(body.provider).toEqual({
+      zdr: true,
+      require_parameters: true,
+      data_collection: "deny",
+      sort: "throughput"
+    });
     expect(body.response_format).toEqual({
       type: "json_schema",
       json_schema: {
@@ -759,12 +754,21 @@ describe("OpenRouter report writer", () => {
     const refined = await writer.refine(draft, "Make it shorter.", ACTOR);
     expect(refined.report).toContain("Repaired refinement");
     const repair = requestBody<{
-      max_tokens: number;
+      max_completion_tokens: number;
+      max_tokens?: number;
       messages: unknown[];
+      provider: Record<string, unknown>;
       reasoning: { enabled: boolean; exclude: boolean };
     }>(request, 3);
-    expect(repair.max_tokens).toBe(4_096);
+    expect(repair.max_completion_tokens).toBe(4_096);
+    expect(repair.max_tokens).toBeUndefined();
     expect(repair.reasoning).toEqual({ enabled: true, exclude: true });
+    expect(repair.provider).toEqual({
+      zdr: true,
+      require_parameters: true,
+      data_collection: "deny",
+      sort: "throughput"
+    });
     const messages = JSON.stringify(repair.messages);
     expect(messages).toContain("Make it shorter.");
     expect(messages).toContain(overlength);

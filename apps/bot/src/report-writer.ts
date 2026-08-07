@@ -852,7 +852,7 @@ export class ReportWriter {
           [{ role: "system", content: WRITER_SYSTEM_PROMPT }, ...conversation],
           images
         ),
-        max_completion_tokens: REPORT_COMPLETION_TOKEN_LIMIT,
+        max_tokens: REPORT_COMPLETION_TOKEN_LIMIT,
         reasoning: { enabled: true, exclude: true },
         response_format: reportResponseFormat(),
         provider: this.provider()
@@ -1105,7 +1105,7 @@ export class ReportWriter {
           [{ role: "system", content: WRITER_SYSTEM_PROMPT }, ...conversation],
           images
         ),
-        max_completion_tokens: REPORT_COMPLETION_TOKEN_LIMIT,
+        max_tokens: REPORT_COMPLETION_TOKEN_LIMIT,
         reasoning: { enabled: true, exclude: true },
         response_format: reportResponseFormat(),
         provider: this.provider()
@@ -1150,16 +1150,27 @@ export class ReportWriter {
       zdr: true,
       data_collection: "deny",
       require_parameters: true,
-      sort: "throughput"
+      order: [
+        "sambanova/minimax-m2.7-dedicated",
+        "mara",
+        "fireworks",
+        "groq",
+        "sambanova"
+      ]
     };
   }
 
   private researchProvider() {
     return {
-      zdr: true,
       data_collection: "deny",
       require_parameters: true,
-      sort: "throughput"
+      order: [
+        "sambanova/minimax-m2.7-dedicated",
+        "mara",
+        "fireworks",
+        "groq",
+        "sambanova"
+      ]
     };
   }
 

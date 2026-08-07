@@ -94,7 +94,7 @@ Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. 
 uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
 the global commands automatically. Set `OPENROUTER_API_KEY` for the bot-side report writer;
-`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-flash`.
+`OPENROUTER_MODEL` defaults to `minimax/minimax-m2.7`.
 One adaptive research completion resolves only omitted Auto fields and researches the law. Fixed
 values remain application-owned and are not included in model output schemas. OpenRouter's web
 plugin performs one Parallel search with at most two results. The model uses that search to clarify

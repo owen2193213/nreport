@@ -101,7 +101,10 @@ plugin performs one Parallel search with at most two results. The model uses tha
 unfamiliar or coded evidence terminology only when materially necessary and to confirm the
 country-specific law; with explicit evidence it focuses directly on the law.
 OpenRouter is required to route to a provider that supports the requested strict JSON schema and
-plugin parameters. If research returns malformed structured data, the bot starts the research once
+plugin parameters. Research providers must deny data collection but are not required to support
+zero data retention (ZDR). Writing, refinement, and repair providers must support ZDR. Every AI
+stage uses a soft 50 TPS p90 preference while leaving OpenRouter's normal uptime-aware balancing
+enabled. If research returns malformed structured data, the bot starts the research once
 more from the original evidence; a second failure is returned to the reporter. Missing server-tool
 usage metadata is retained as telemetry and does not invalidate plugin-backed research. The final writer receives a compact
 resolved context rather than the country list, category catalog, tool instructions, failed response,

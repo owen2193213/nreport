@@ -135,10 +135,11 @@ ephemeral interaction becomes the fallback surface for progress and results.
 The bot calls OpenRouter directly; the API and low-level Discord client never receive the
 reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KEY` is required and
 `OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-flash`. The same configured model handles adaptive
-research, writing, refinement, and repair. Every stage requires zero data retention, denies provider
-data collection, requires support for every requested parameter, and dynamically sorts eligible
-providers by throughput. Research and
-report calls use strict JSON Schemas, and the bot also validates returned values locally. The complete generation workflow is
+research, writing, refinement, and repair. Every stage denies provider data collection, requires
+support for every requested parameter, and uses a soft 50 TPS p90 preference while preserving
+OpenRouter's normal uptime-aware provider balancing. Writing, refinement, and repair require zero
+data retention; research does not require ZDR. Research and report calls use strict JSON Schemas,
+and the bot also validates returned values locally. The complete generation workflow is
 capped at 90 seconds.
 
 Generation normally starts with one adaptive interpretation-and-research completion. Its output schema is
@@ -163,16 +164,16 @@ aligns them with the terminology-and-law workflow, and forbids Markdown citation
 replaces OpenRouter's default results prompt and avoids injecting unrelated formatting instructions.
 The request does not send the beta `openrouter:web_search` server tool, `tool_choice`, or
 `max_tool_calls`: repeated production requests reached OpenRouter's `server_tools` pipeline and
-returned HTTP 404 before any provider completion. Research retains ZDR, denied data collection, and
-required-parameter routing so OpenRouter selects an endpoint compatible with the strict schema and
-plugin request. The plugin runs once by request contract, while
+returned HTTP 404 before any provider completion. Research retains denied data collection and
+required-parameter routing, without ZDR, so OpenRouter selects a broader set of endpoints compatible
+with the strict schema and plugin request. The plugin runs once by request contract, while
 `usage.server_tool_use.web_search_requests` belongs to server-tool accounting and may be absent from
 plugin responses. The bot records that value when present but never treats its absence as a research
 failure. If completed research is malformed, the bot makes exactly one fresh research request from
 the original evidence with a short failure reason. It never includes the failed model response in
 that retry. No fallback model is used.
-Writing, refinement, and repair use the same ZDR, denied-data-collection, required-parameter, and
-throughput-sorted provider policy.
+Writing, refinement, and repair retain ZDR in addition to denied-data-collection and
+required-parameter routing. Every stage uses the same soft throughput preference.
 
 The AI integration intentionally remains bot-local and single-model. It assumes normal interactive
 bot traffic, keeps the existing 90-second workflow budget, records the cost of every attempted
@@ -235,8 +236,8 @@ continues the same conversation, performs no search, and is attempted only once.
 
 Every stage enables reasoning without an effort override and excludes reasoning text from
 responses. Report-producing calls send `max_completion_tokens: 4096`; the reviewed report itself
-remains limited to 512 characters. OpenRouter dynamically sorts eligible ZDR endpoints by current
-throughput and retains availability fallbacks. The model is told
+remains limited to 512 characters. OpenRouter receives a soft 50 TPS p90 preference and retains its
+normal uptime-aware load balancing and availability fallbacks. The model is told
 to return raw JSON without Markdown, and OpenRouter receives a strict JSON Schema containing only
 the fields that stage owns. The parser also accepts one whole-response `json` code fence defensively
 before applying local semantic and 512-character validation.
@@ -555,9 +556,12 @@ same immutable audit relationship as failure retries.
 - Chosen: use `deepseek/deepseek-v4-flash` for research, writing, refinement, and repair. A single
   configurable model keeps prompts, usage accounting, deployment configuration, and failure
   behavior consistent.
-- Chosen: filter every AI stage to ZDR endpoints that deny data collection and support every
-  requested parameter, then use OpenRouter's dynamic throughput sort. A fixed provider order was
-  rejected because endpoint performance and availability change over time.
+- Chosen: require ZDR only for writing, refinement, and repair. Research still denies provider data
+  collection but can use non-ZDR endpoints so web-enabled strict-schema calls have a broader provider
+  pool.
+- Chosen: require every provider to support the requested parameters and use a soft 50 TPS p90
+  preference. Do not explicitly sort by throughput, because that disables OpenRouter's normal
+  uptime-aware balancing.
 - Chosen: use OpenRouter's web plugin with the Parallel engine and require its one search, with two
   results and bounded retrieval context. Strict JSON Schema and required-parameter routing prevent
   a provider from silently ignoring the search or structured-output contract.

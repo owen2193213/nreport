@@ -267,10 +267,9 @@ describe("OpenRouter report writer", () => {
       }
     });
     expect(research.provider).toEqual({
-      zdr: true,
       require_parameters: true,
       data_collection: "deny",
-      sort: "throughput"
+      preferred_min_throughput: { p90: 50 }
     });
     expect(prompt).toContain("reportReason");
     expect(prompt).toContain("reportType");
@@ -466,10 +465,9 @@ describe("OpenRouter report writer", () => {
     expect(body.tool_choice).toBeUndefined();
     expect(body.stream).toBe(false);
     expect(body.provider).toEqual({
-      zdr: true,
       require_parameters: true,
       data_collection: "deny",
-      sort: "throughput"
+      preferred_min_throughput: { p90: 50 }
     });
     expect(body.response_format.json_schema.schema.required).toEqual([
       "lawReference",
@@ -615,7 +613,7 @@ describe("OpenRouter report writer", () => {
       zdr: true,
       require_parameters: true,
       data_collection: "deny",
-      sort: "throughput"
+      preferred_min_throughput: { p90: 50 }
     });
     expect(JSON.stringify(writing.response_format)).not.toContain("lawCitation");
     const messages = JSON.stringify(
@@ -685,7 +683,7 @@ describe("OpenRouter report writer", () => {
       zdr: true,
       require_parameters: true,
       data_collection: "deny",
-      sort: "throughput"
+      preferred_min_throughput: { p90: 50 }
     });
     expect(body.response_format).toEqual({
       type: "json_schema",
@@ -767,7 +765,7 @@ describe("OpenRouter report writer", () => {
       zdr: true,
       require_parameters: true,
       data_collection: "deny",
-      sort: "throughput"
+      preferred_min_throughput: { p90: 50 }
     });
     const messages = JSON.stringify(repair.messages);
     expect(messages).toContain("Make it shorter.");

@@ -120,7 +120,7 @@ function isDefinitePreCreationError(error: unknown): boolean {
   return error instanceof DsaApiError && error.status < 500 && error.status !== 409;
 }
 
-function applyWriterResult(
+export function applyWriterResult(
   draft: ReportDraft,
   result: WriterResult,
   action: AiDecisionSummary["action"]
@@ -692,7 +692,7 @@ export class InteractionHandler {
       adminBypass
     });
     botLog("experimental_report_batch_reserved", {
-      batchId: reservation.batchId,
+      actorKey: pseudonymousActorKey(interaction.user.id, this.config.keyPepper),
       mode,
       itemCount: reservation.itemCount,
       creditBypassReason: isAdmin

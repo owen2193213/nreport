@@ -351,6 +351,7 @@ interface ExperimentalBatchRow extends QueryResultRow {
 
 export interface TrackingRow extends QueryResultRow {
   id: string;
+  experimental_batch_item_id: string | null;
   discord_user_id: string;
   interaction_id: string;
   internal_report_id: string | null;
@@ -370,7 +371,6 @@ export interface TrackingRow extends QueryResultRow {
 
 export interface ExperimentalBatchWorkItemRow extends QueryResultRow {
   id: string;
-  experimental_batch_item_id: string | null;
   batch_id: string;
   ordinal: number;
   report_type: string | null;

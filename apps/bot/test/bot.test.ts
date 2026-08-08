@@ -2123,25 +2123,26 @@ describe("experimental report batch interaction flow", () => {
       const order: string[] = [];
       const dataEncryptionKey = randomBytes(32);
       const reserveExperimentalBatch = vi.fn(
-        async (_input: Parameters<BotDatabase["reserveExperimentalBatch"]>[0]) => {
-        order.push("reserve");
-        return {
-          batchId: "batch-id",
-          itemCount: requiredCredits,
-          balanceBefore: 30,
-          balanceAfter: 30 - requiredCredits,
-          replayed: false
-        };
+        (input: Parameters<BotDatabase["reserveExperimentalBatch"]>[0]) => {
+          void input;
+          order.push("reserve");
+          return Promise.resolve({
+            batchId: "batch-id",
+            itemCount: requiredCredits,
+            balanceBefore: 30,
+            balanceAfter: 30 - requiredCredits,
+            replayed: false
+          });
         }
       );
       const database = {
-        getAccess: vi.fn(async () => {
+        getAccess: vi.fn(() => {
           order.push("access");
-          return {
+          return Promise.resolve({
             credits: 30,
             suspended: false,
             defaultCountry: "DE"
-          };
+          });
         }),
         reserveExperimentalBatch
       } as unknown as BotDatabase;
@@ -2162,8 +2163,10 @@ describe("experimental report batch interaction flow", () => {
         reportWriter: { generate } as unknown as ReportWriter,
         serverResolver: {} as ServerResolver
       });
-      const editReply = vi.fn(async (_payload: unknown) => {
+      const editReply = vi.fn((payload: unknown) => {
+        void payload;
         order.push("edit");
+        return Promise.resolve();
       });
       const interaction = {
         isAutocomplete: () => false,
@@ -2177,8 +2180,9 @@ describe("experimental report batch interaction flow", () => {
         id: "interaction-id",
         user: { id: "1197857362942378017" },
         targetMessage: experimentalTargetMessage(),
-        deferReply: vi.fn(async () => {
+        deferReply: vi.fn(() => {
           order.push("defer");
+          return Promise.resolve();
         }),
         editReply,
         deferred: false,

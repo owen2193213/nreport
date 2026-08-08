@@ -1,8 +1,15 @@
-import type { ReportDetail } from "@discord-dsa/contracts";
-import { USER_MESSAGE_REPORT_REASONS } from "@discord-dsa/contracts";
-import type { Pool } from "pg";
-import { describe, expect, it } from "vitest";
+import { randomBytes } from "node:crypto";
 
+import { DsaApiError } from "@discord-dsa/contracts";
+import type { ReportDetail } from "@discord-dsa/contracts";
+import type { DsaApi } from "@discord-dsa/contracts";
+import { USER_MESSAGE_REPORT_REASONS } from "@discord-dsa/contracts";
+import type { Client } from "discord.js";
+import type { Pool } from "pg";
+import { describe, expect, it, vi } from "vitest";
+
+import type { BotConfig } from "../src/config.js";
+import { encryptJson } from "../src/crypto.js";
 import {
   explanationFingerprint,
   experimentalBatchDefinitions,
@@ -17,6 +24,13 @@ import {
   experimentalRetryDelaySeconds
 } from "../src/database.js";
 import { experimentalBatchEmbed } from "../src/experimental-batch-ui.js";
+import {
+  ExperimentalBatchWorker,
+  runWithConcurrency
+} from "../src/experimental-batch-worker.js";
+import type { ReportWriter } from "../src/report-writer.js";
+import type { ReportDraft } from "../src/types.js";
+import type { ExperimentalBatchWorkItemRow } from "../src/database.js";
 
 class ReservationPool {
   public balance: number;
@@ -30,8 +44,8 @@ class ReservationPool {
     this.balance = balance;
   }
 
-  public connect = async () => ({
-    query: async (sql: string, values: unknown[] = []) => {
+  public connect = () => ({
+    query: (sql: string, values: unknown[] = []) => {
       if (sql === "BEGIN") return { rows: [], rowCount: null };
       if (sql === "COMMIT") {
         this.commits += 1;
@@ -84,8 +98,8 @@ class ClaimPool {
   public selectedLimit: number | null = null;
   public lockedIds: string[] = [];
 
-  public connect = async () => ({
-    query: async (sql: string, values: unknown[] = []) => {
+  public connect = () => ({
+    query: (sql: string, values: unknown[] = []) => {
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
         return { rows: [], rowCount: null };
       }
@@ -115,8 +129,8 @@ class ReleasePool {
   public state = "queued";
   public ledgerEntries = 0;
 
-  public connect = async () => ({
-    query: async (sql: string, values: unknown[] = []) => {
+  public connect = () => ({
+    query: (sql: string, values: unknown[] = []) => {
       if (sql === "BEGIN" || sql === "ROLLBACK") return { rows: [], rowCount: null };
       if (sql === "COMMIT") return { rows: [], rowCount: null };
       if (
@@ -400,5 +414,510 @@ describe("experimental report batch aggregate card", () => {
         0
       );
     expect(characters).toBeLessThanOrEqual(6_000);
+  });
+});
+
+describe("experimental report batch worker", () => {
+  const encryptionKey = randomBytes(32);
+  const draft = {
+    flow: "message_urf" as const,
+    country: "DE",
+    countrySelection: "default" as const,
+    messageUrl:
+      "https://discord.com/channels/1/123456789012345678/123456789012345679",
+    sendToDms: false
+  };
+
+  function workItem(
+    overrides: Partial<ExperimentalBatchWorkItemRow> = {}
+  ): ExperimentalBatchWorkItemRow {
+    return {
+      id: "item-1",
+      batch_id: "batch-1",
+      ordinal: 1,
+      report_type: null,
+      state: "queued",
+      preparation_attempts: 0,
+      create_attempts: 0,
+      lifecycle_retries: 0,
+      explanation_fingerprint: null,
+      tracking_id: null,
+      original_report_id: null,
+      current_report_id: null,
+      successor_report_id: null,
+      credit_state: "reserved",
+      safe_error_code: null,
+      last_status: null,
+      last_discord_status: null,
+      retryable: null,
+      discord_user_id: "1197857362942378017",
+      interaction_id: "interaction-id",
+      mode: "same_category_10x",
+      item_count: 10,
+      encrypted_draft: encryptJson(draft, encryptionKey),
+      category_snapshot: [...USER_MESSAGE_REPORT_REASONS],
+      shared_report_type: null,
+      status_dm_message_id: null,
+      dm_blocked: false,
+      encrypted_request: null,
+      ...overrides
+    };
+  }
+
+  function report(overrides: Partial<ReportDetail> = {}): ReportDetail {
+    return {
+      internalReportId: "report-1",
+      country: "DE",
+      flow: "message_urf",
+      reportType: "sub_other_hate_speech",
+      submitterDiscordUserId: "1197857362942378017",
+      pseudonym: "hidden",
+      email: "hidden@example.invalid",
+      locale: "de-DE",
+      timezone: "Europe/Berlin",
+      lifecycleAttempt: 1,
+      retryable: false,
+      retryOfReportId: null,
+      retriedAsReportId: null,
+      retrySequence: 0,
+      failureStage: null,
+      status: "queued",
+      discordReportId: null,
+      discordStatus: null,
+      discordStatusUpdatedAt: null,
+      reviewStatus: null,
+      reviewStatusUpdatedAt: null,
+      reviewError: null,
+      resubmittable: false,
+      error: null,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      updatedAt: "2026-08-09T00:00:00.000Z",
+      reportedDetails: {
+        kind: "message",
+        messageUrl: draft.messageUrl,
+        reportReason: "Distinct explanation.",
+        context: "Distinct final report."
+      },
+      timeline: [],
+      ...overrides
+    };
+  }
+
+  function writerResult(reportReason = "Distinct explanation.") {
+    return {
+      country: "DE",
+      legalResearch: {
+        country: "DE",
+        lawReference: "Germany's Basic Law (Grundgesetz), Article 1",
+        summary: "Relevant law summary.",
+        sources: [],
+        researchedAt: "2026-08-09T00:00:00.000Z",
+        searchRequests: 0
+      },
+      report: "Distinct final report.",
+      reportReason,
+      reportType: "sub_other_hate_speech",
+      conversation: []
+    };
+  }
+
+  function config(): BotConfig {
+    return {
+      dataEncryptionKey: encryptionKey,
+      keyPepper: "test-key-pepper"
+    } as BotConfig;
+  }
+
+  it("runs no more than two item pipelines concurrently", async () => {
+    let active = 0;
+    let peak = 0;
+
+    await runWithConcurrency([1, 2, 3, 4, 5], 2, async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+    });
+
+    expect(peak).toBe(2);
+  });
+
+  it("keeps all ten variants in the seed category with unique create identities", async () => {
+    const items = Array.from({ length: 10 }, (_, index) =>
+      workItem({
+        id: `item-${index + 1}`,
+        ordinal: index + 1,
+        report_type: index === 0 ? null : "sub_other_hate_speech",
+        shared_report_type: index === 0 ? null : "sub_other_hate_speech"
+      })
+    );
+    const chunks = [items.slice(0, 1), ...Array.from({ length: 5 }, (_, index) =>
+      items.slice(index * 2 + 1, index * 2 + 3)
+    )];
+    const claimExperimentalBatchItems = vi.fn(() =>
+      Promise.resolve(chunks.shift() ?? [])
+    );
+    const prepareExperimentalBatchItem = vi.fn(
+      (input: { itemId: string }) => {
+        const ordinal = Number(input.itemId.slice("item-".length));
+        return Promise.resolve({
+          trackingId: `tracking-${ordinal}`,
+          interactionIdentity: `experimental:batch-1:${ordinal}`
+        });
+      }
+    );
+    const seenTypes: Array<string | undefined> = [];
+    const generate = vi.fn((inputDraft: ReportDraft) => {
+      seenTypes.push(inputDraft.reportType);
+      return Promise.resolve(writerResult(`Distinct explanation ${inputDraft.experimentalVariation?.ordinal}.`));
+    });
+    const createdIdentities: string[] = [];
+    const createReport = vi.fn((identity: string) => {
+      createdIdentities.push(identity);
+      return Promise.resolve(report());
+    });
+    const database = {
+      claimExperimentalBatchItems,
+      experimentalBatchView: vi.fn().mockResolvedValue([]),
+      markExperimentalPreparationAttempt: vi.fn().mockResolvedValue(1),
+      acceptedExperimentalReasons: vi.fn().mockResolvedValue([]),
+      prepareExperimentalBatchItem,
+      markExperimentalCreateAttempt: vi.fn().mockResolvedValue(1),
+      markExperimentalSubmissionCreated: vi.fn().mockResolvedValue(undefined)
+    } as unknown as BotDatabase;
+    const worker = new ExperimentalBatchWorker(
+      database,
+      { createReport } as unknown as DsaApi,
+      {} as Client,
+      config(),
+      { generate } as unknown as ReportWriter
+    );
+
+    for (let index = 0; index < 6; index += 1) await worker.tick();
+
+    expect(generate).toHaveBeenCalledTimes(10);
+    expect(seenTypes[0]).toBeUndefined();
+    expect(seenTypes.slice(1)).toEqual(Array(9).fill("sub_other_hate_speech"));
+    expect(new Set(createdIdentities).size).toBe(10);
+  });
+
+  it("retries AI preparation once and then creates the report", async () => {
+    const item = workItem();
+    const claimExperimentalBatchItems = vi
+      .fn()
+      .mockResolvedValueOnce([item])
+      .mockResolvedValueOnce([item]);
+    const rescheduleExperimentalBatchItem = vi.fn().mockResolvedValue(undefined);
+    const failExperimentalBatchItem = vi.fn().mockResolvedValue(undefined);
+    const prepareExperimentalBatchItem = vi.fn().mockResolvedValue({
+      trackingId: "tracking-id",
+      interactionIdentity: "experimental:batch-1:1"
+    });
+    const database = {
+      claimExperimentalBatchItems,
+      experimentalBatchView: vi.fn().mockResolvedValue([]),
+      markExperimentalPreparationAttempt: vi
+        .fn()
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(2),
+      acceptedExperimentalReasons: vi.fn().mockResolvedValue([]),
+      rescheduleExperimentalBatchItem,
+      failExperimentalBatchItem,
+      prepareExperimentalBatchItem,
+      markExperimentalCreateAttempt: vi.fn().mockResolvedValue(1),
+      markExperimentalSubmissionCreated: vi.fn().mockResolvedValue(undefined)
+    } as unknown as BotDatabase;
+    const generate = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary writer failure"))
+      .mockResolvedValueOnce(writerResult());
+    const createReport = vi.fn().mockResolvedValue(report());
+    const worker = new ExperimentalBatchWorker(
+      database,
+      { createReport } as unknown as DsaApi,
+      {} as Client,
+      config(),
+      { generate } as unknown as ReportWriter
+    );
+
+    await worker.tick();
+    await worker.tick();
+
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(rescheduleExperimentalBatchItem).toHaveBeenCalledWith(
+      "item-1",
+      "queued",
+      15,
+      "ai_preparation_failed"
+    );
+    expect(failExperimentalBatchItem).not.toHaveBeenCalled();
+    expect(prepareExperimentalBatchItem).toHaveBeenCalledOnce();
+    expect(createReport).toHaveBeenCalledOnce();
+  });
+
+  it("releases an item after its second AI preparation failure", async () => {
+    const item = workItem({ preparation_attempts: 1 });
+    const failExperimentalBatchItem = vi.fn().mockResolvedValue(undefined);
+    const rescheduleExperimentalBatchItem = vi.fn().mockResolvedValue(undefined);
+    const database = {
+      claimExperimentalBatchItems: vi.fn().mockResolvedValue([item]),
+      experimentalBatchView: vi.fn().mockResolvedValue([]),
+      markExperimentalPreparationAttempt: vi.fn().mockResolvedValue(2),
+      acceptedExperimentalReasons: vi.fn().mockResolvedValue([]),
+      rescheduleExperimentalBatchItem,
+      failExperimentalBatchItem
+    } as unknown as BotDatabase;
+    const worker = new ExperimentalBatchWorker(
+      database,
+      {} as DsaApi,
+      {} as Client,
+      config(),
+      {
+        generate: vi.fn().mockRejectedValue(new Error("writer failed again"))
+      } as unknown as ReportWriter
+    );
+
+    await worker.tick();
+
+    expect(failExperimentalBatchItem).toHaveBeenCalledWith(
+      "item-1",
+      "ai_preparation_failed"
+    );
+    expect(rescheduleExperimentalBatchItem).not.toHaveBeenCalled();
+  });
+
+  it("edits one saved aggregate DM instead of sending per-item messages", async () => {
+    const item = workItem({ preparation_attempts: 1 });
+    const savedRow = { ...item, status_dm_message_id: "dm-1" };
+    const message = {
+      id: "dm-1",
+      edit: vi.fn().mockResolvedValue(undefined)
+    };
+    const send = vi.fn().mockResolvedValue(message);
+    const fetchMessage = vi.fn().mockResolvedValue(message);
+    const database = {
+      claimExperimentalBatchItems: vi.fn().mockResolvedValue([item]),
+      experimentalBatchView: vi
+        .fn()
+        .mockResolvedValueOnce([item])
+        .mockResolvedValueOnce([savedRow]),
+      saveExperimentalBatchDm: vi.fn().mockResolvedValue(undefined),
+      markExperimentalBatchDmBlocked: vi.fn().mockResolvedValue(undefined),
+      markExperimentalPreparationAttempt: vi.fn().mockResolvedValue(2),
+      acceptedExperimentalReasons: vi.fn().mockResolvedValue([]),
+      failExperimentalBatchItem: vi.fn().mockResolvedValue(undefined)
+    } as unknown as BotDatabase;
+    const client = {
+      users: {
+        fetch: vi.fn().mockResolvedValue({
+          send,
+          createDM: vi.fn().mockResolvedValue({ messages: { fetch: fetchMessage } })
+        })
+      }
+    } as unknown as Client;
+    const worker = new ExperimentalBatchWorker(
+      database,
+      {} as DsaApi,
+      client,
+      config(),
+      { generate: vi.fn().mockRejectedValue(new Error("writer failed")) } as unknown as ReportWriter
+    );
+
+    await worker.tick();
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(fetchMessage).toHaveBeenCalledWith("dm-1");
+    expect(message.edit).toHaveBeenCalledOnce();
+  });
+
+  it("releases a definite create rejection", async () => {
+    const request = {
+      flow: "message_urf" as const,
+      country: "DE",
+      reportType: "sub_other_hate_speech",
+      reportReason: "Distinct explanation.",
+      context: "Distinct final report.",
+      submitterDiscordUserId: "1197857362942378017",
+      messageUrl: draft.messageUrl
+    };
+    const item = workItem({
+      state: "creating",
+      tracking_id: "tracking-id",
+      encrypted_request: encryptJson(request, encryptionKey)
+    });
+    const failExperimentalBatchItem = vi.fn().mockResolvedValue(undefined);
+    const rescheduleExperimentalBatchItem = vi.fn().mockResolvedValue(undefined);
+    const database = {
+      claimExperimentalBatchItems: vi.fn().mockResolvedValue([item]),
+      experimentalBatchView: vi.fn().mockResolvedValue([]),
+      markExperimentalCreateAttempt: vi.fn().mockResolvedValue(1),
+      failExperimentalBatchItem,
+      rescheduleExperimentalBatchItem
+    } as unknown as BotDatabase;
+    const worker = new ExperimentalBatchWorker(
+      database,
+      {
+        createReport: vi.fn().mockRejectedValue(
+          new DsaApiError(400, "invalid_request", "Rejected")
+        )
+      } as unknown as DsaApi,
+      {} as Client,
+      config(),
+      {} as ReportWriter
+    );
+
+    await worker.tick();
+
+    expect(failExperimentalBatchItem).toHaveBeenCalledWith(
+      "item-1",
+      "api_create_invalid_request"
+    );
+    expect(rescheduleExperimentalBatchItem).not.toHaveBeenCalled();
+  });
+
+  it("reconciles an ambiguous create with the same stable identity", async () => {
+    const request = {
+      flow: "message_urf" as const,
+      country: "DE",
+      reportType: "sub_other_hate_speech",
+      reportReason: "Distinct explanation.",
+      context: "Distinct final report.",
+      submitterDiscordUserId: "1197857362942378017",
+      messageUrl: draft.messageUrl
+    };
+    const item = workItem({
+      state: "creating",
+      tracking_id: "tracking-id",
+      encrypted_request: encryptJson(request, encryptionKey)
+    });
+    const createReport = vi.fn().mockRejectedValue(new Error("connection lost"));
+    const rescheduleExperimentalBatchItem = vi.fn().mockResolvedValue(undefined);
+    const database = {
+      claimExperimentalBatchItems: vi.fn().mockResolvedValue([item]),
+      experimentalBatchView: vi.fn().mockResolvedValue([]),
+      markExperimentalCreateAttempt: vi.fn().mockResolvedValue(1),
+      rescheduleExperimentalBatchItem
+    } as unknown as BotDatabase;
+    const worker = new ExperimentalBatchWorker(
+      database,
+      { createReport } as unknown as DsaApi,
+      {} as Client,
+      config(),
+      {} as ReportWriter
+    );
+
+    await worker.tick();
+
+    expect(createReport).toHaveBeenCalledWith(
+      "experimental:batch-1:1",
+      request
+    );
+    expect(rescheduleExperimentalBatchItem).toHaveBeenCalledWith(
+      "item-1",
+      "reconciling",
+      60,
+      "api_create_ambiguous"
+    );
+  });
+
+  it("retries one API-declared retryable lifecycle failure without another credit", async () => {
+    const item = workItem({
+      state: "observing",
+      tracking_id: "tracking-id",
+      current_report_id: "report-1",
+      original_report_id: "report-1",
+      encrypted_request: encryptJson(
+        {
+          flow: "message_urf",
+          country: "DE",
+          reportType: "sub_other_hate_speech",
+          reportReason: "Distinct explanation.",
+          context: "Distinct final report.",
+          submitterDiscordUserId: "1197857362942378017",
+          messageUrl: draft.messageUrl
+        },
+        encryptionKey
+      )
+    });
+    const retryReport = vi.fn().mockResolvedValue(
+      report({
+        internalReportId: "report-2",
+        retryOfReportId: "report-1"
+      })
+    );
+    const trackExperimentalRetryReport = vi.fn().mockResolvedValue("tracking-2");
+    const database = {
+      claimExperimentalBatchItems: vi
+        .fn()
+        .mockResolvedValueOnce([item])
+        .mockResolvedValueOnce([]),
+      experimentalBatchView: vi.fn().mockResolvedValue([]),
+      observeExperimentalBatchItem: vi
+        .fn()
+        .mockResolvedValue({ state: "retrying", delaySeconds: 0 }),
+      trackExperimentalRetryReport
+    } as unknown as BotDatabase;
+    const api = {
+      report: vi.fn().mockResolvedValue(
+        report({
+          status: "failed",
+          retryable: true,
+          error: { code: "verification_email_timeout", message: "Timed out." }
+        })
+      ),
+      retryReport
+    } as unknown as DsaApi;
+    const worker = new ExperimentalBatchWorker(
+      database,
+      api,
+      {} as Client,
+      config(),
+      {} as ReportWriter
+    );
+
+    await worker.tick();
+    await worker.tick();
+
+    expect(retryReport).toHaveBeenCalledOnce();
+    expect(trackExperimentalRetryReport).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry an ambiguous final submission", async () => {
+    const item = workItem({
+      state: "observing",
+      tracking_id: "tracking-id",
+      current_report_id: "report-1"
+    });
+    const retryReport = vi.fn();
+    const database = {
+      claimExperimentalBatchItems: vi.fn().mockResolvedValue([item]),
+      experimentalBatchView: vi.fn().mockResolvedValue([]),
+      observeExperimentalBatchItem: vi
+        .fn()
+        .mockResolvedValue({ state: "failed", delaySeconds: null })
+    } as unknown as BotDatabase;
+    const worker = new ExperimentalBatchWorker(
+      database,
+      {
+        report: vi.fn().mockResolvedValue(
+          report({
+            status: "failed",
+            retryable: false,
+            error: {
+              code: "ambiguous_submission_state",
+              message: "Unknown final state."
+            }
+          })
+        ),
+        retryReport
+      } as unknown as DsaApi,
+      {} as Client,
+      config(),
+      {} as ReportWriter
+    );
+
+    await worker.tick();
+
+    expect(retryReport).not.toHaveBeenCalled();
   });
 });

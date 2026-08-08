@@ -717,8 +717,11 @@ unknown or server-side create outcome is reconciled with the same identity and e
 After creation, the bot calls the existing retry endpoint at most once only when the API returns a
 failed report with `retryable: true`; this successor spends no additional credit. It never retries
 `ambiguous_submission_state` or any result where `retryable` is false. Batch-linked lifecycle
-events suppress ordinary per-report DMs and wake the batch worker, which creates or edits one
-aggregate private status card containing all categories, reasons, report IDs, retries, and errors.
+events suppress ordinary per-report DMs and wake the batch worker. The worker fetches authoritative
+report detail and creates or edits one aggregate private status card. The card shows the bounded
+original targeted message once near the top, then each category's reason, report IDs, retry/error
+details, and latest outcome. Latest-outcome precedence is appeal status, Discord report status,
+API report status, then the bot worker state; the card does not grow a separate item history.
 
 The profile `target` accepts only a 15-22 digit raw Discord user ID. Usernames, display names, and
 mentions are rejected. The bot resolves the ID and shows the account for confirmation before

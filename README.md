@@ -179,9 +179,10 @@ credentials, fingerprints, verification tokens, or API keys in source control or
 - Use a stable `Idempotency-Key` for every create or retry request.
 - Resolve semantic report types through the live Discord menu; never persist breadcrumbs.
 - Do not automatically retry an ambiguous final submission.
-- Automatically appeal only an eligible original no-action decision through the API-owned
-  encrypted review-link flow. Never expose or log its link or token, and never repeat an
-  ambiguous review POST.
+- Automatically appeal an original no-action decision through the API-owned encrypted review-link
+  flow. Retry Discord's first explicit ineligibility response once after 10 seconds, then allow
+  owner-triggered retries with idempotency and cooldown protection. Never expose or log the link or
+  token, and never repeat an ambiguous review POST.
 - Keep credentials, verification codes, and raw mail out of logs and source control.
 - Discord lifecycle email updates change `discordStatus`; they do not replace the successful
   API status `submitted`.

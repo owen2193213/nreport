@@ -87,7 +87,8 @@ review and its confirmation controls are sent as an ordinary private bot DM.
     fails the report with `discord_receipt_timeout`, edits the saved card, and offers the existing
     immutable new-report retry.
 12. If Discord closes the original report without action and supplies a review link, the API
-    encrypts the link and automatically submits the appeal with up to three bounded attempts. Each
+    encrypts the link and automatically submits the appeal with bounded attempts. The first
+    explicit Discord `521004` ineligibility response retries once after 10 seconds. Each
     attempt first tests a fresh proxy session in the report's selected country, then uses that same
     session to resolve the link and submit. The original sticky IP and Discord session do not need
     to remain valid; the bot never receives the link, token, or a Discord account authorization
@@ -98,7 +99,12 @@ review and its confirmation controls are sent as an ordinary private bot DM.
     equivalent duplicate protection. After appeal acceptance, the API waits two minutes for the
     review-request confirmation email; a missing email becomes an explicit unconfirmed diagnostic
     and never submits the appeal again.
-14. If Discord denies the appeal, the report card exposes **Resend same report** and
+14. If the second attempt remains explicitly ineligible, the private report card exposes
+    **Retry appeal**. The API verifies ownership, idempotency, retained-job availability, and a
+    30-second cooldown before resetting the same encrypted appeal job for another two-attempt cycle.
+    The button can return after another definitive ineligible result, but is never shown for an
+    ambiguous POST outcome.
+15. If Discord denies the appeal, the report card exposes **Resend same report** and
     **Rewrite & resend**. The rewrite path uses the existing AI drafting workflow, remains
     editable and review-first, enforces 512 characters, creates a fresh linked report, and does
     not reserve another credit.
@@ -373,7 +379,8 @@ transient failures with a bounded exponential delay.
   `review_request_failed`, `review_ineligible`, and `review_request_ambiguous` update the same saved
   card. A missing confirmation explicitly says that the appeal was not sent again. Discord error
   `521004` is shown as **DSA report ineligible for review**, not as a generic automatic-appeal
-  failure, and does not expose resend controls.
+  failure. After the automatic 10-second retry is exhausted, it exposes only the owner-checked
+  **Retry appeal** control; it does not expose new-report resend controls.
 - Pre-submission failures edit the same full report embed and add the retry control when the API
   marks the failure safe to retry.
 - A missing or user-deleted saved status message is replaced only when Discord had already
@@ -600,10 +607,11 @@ same immutable audit relationship as failure retries.
 - Chosen: emit one self-contained, redacted structured record for each appeal boundary and terminal
   result. Raw request/response dumps were rejected because review tokens, account credentials,
   cookies, and proxy credentials must remain unavailable to Railway logs.
-- Chosen: classify exact Discord API code `521004` as the terminal `ineligible` review state. Reusing
-  `request_failed` was rejected because it conflates Discord eligibility with transport/API faults;
-  automatic or user-triggered resubmission was rejected to avoid looping an explicitly ineligible
-  report.
+- Chosen: retry the first exact Discord API code `521004` once after 10 seconds, then classify a
+  second response as the terminal `ineligible` review state. Reusing `request_failed` was rejected
+  because it conflates Discord eligibility with transport/API faults. A private manual retry reuses
+  only the encrypted API job and is protected by ownership, idempotency, one-pending-attempt, and
+  30-second cooldown checks; ambiguous review POSTs remain non-retryable.
 - Chosen: treat Discord API code `521002` as successful appeal convergence and retry transient
   appeal submission failures through a fresh same-country proxy. Initial report submission remains
   non-retryable after its final POST starts because it has no equivalent duplicate guard.

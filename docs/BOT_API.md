@@ -186,6 +186,7 @@ interface ReportSummary {
   reviewStatus: DiscordReviewStatus | null;
   reviewStatusUpdatedAt: string | null;
   reviewError: { code: string; message: string | null } | null;
+  appealRetryable: boolean;
   resubmittable: boolean;
   error: { code: string; message: string | null } | null;
   createdAt: string;
@@ -259,7 +260,7 @@ After submission, `discordStatus` can independently progress from `received` to
 `actioned`, `closed_no_action`, or `review_not_approved`.
 
 When an original `closed_no_action` email includes a valid Discord review link, the API
-automatically queues and submits one appeal. `reviewStatus` exposes that separate lifecycle.
+automatically queues and submits an appeal. `reviewStatus` exposes that separate lifecycle.
 The API resolves the tracked link, reads Discord's token from the trusted
 `https://discord.com/report-review#token=...` fragment, and posts only that token through a fresh
 proxy session in the report's selected country; it does not rely on the original sticky IP or
@@ -275,10 +276,11 @@ resolution can retry with bounded backoff, but a network-ambiguous review POST b
 denied review sets both `discordStatus: "review_not_approved"` and
 `reviewStatus: "not_approved"`.
 
-If Discord rejects the appeal POST with API code `521004`, the API records the first-class terminal
-state `reviewStatus: "ineligible"` and emits `review_ineligible`. This means Discord says the DSA
-report is not eligible for review; it is not treated as a transport failure and the appeal is not
-retried. The state is not resubmittable by default.
+If Discord rejects the first appeal POST with API code `521004`, the API retries it once after 10
+seconds. A second `521004` records the first-class terminal state
+`reviewStatus: "ineligible"`, emits `review_ineligible`, and exposes `appealRetryable: true`. This
+means Discord still says the DSA report is not eligible for review; it is distinct from a transport
+failure and does not make the original report resubmittable.
 
 After Discord returns a report ID, the API waits up to 120 seconds for the first report-update
 email. If no update is correlated in that window, the report moves from `submitted` to a
@@ -463,6 +465,7 @@ characters.
   "reviewStatus": null,
   "reviewStatusUpdatedAt": null,
   "reviewError": null,
+  "appealRetryable": false,
   "resubmittable": false,
   "error": null,
   "createdAt": "2026-07-19T22:34:12.605Z",
@@ -588,6 +591,42 @@ another credit.
 Ambiguous final-submission outcomes are deliberately non-retryable. The explicit
 `discord_receipt_timeout` state is the exception: Discord returned a report ID, but no receipt
 email arrived within two minutes, so the API exposes a user-requested new-lifecycle retry.
+
+### `POST /v1/reports/{internalReportId}/retry-appeal`
+
+Requeues the retained encrypted review job for an existing appeal whose `reviewStatus` is
+`ineligible` and whose `appealRetryable` field is true. It does not create a report, spend a credit,
+or return the review link or token.
+
+```http
+POST /v1/reports/example-report-id/retry-appeal
+Authorization: Bearer <DSA_API_KEY>
+Idempotency-Key: appeal-retry:123456789012345678
+Content-Type: application/json
+```
+
+```json
+{
+  "submitterDiscordUserId": "1197857362942378017"
+}
+```
+
+The backend verifies ownership, requires the current `ineligible` state, requires the retained
+review job to be idle, and enforces a 30-second cooldown between distinct accepted requests. An
+accepted request resets that job for a fresh two-attempt cycle: the first `521004` retries after 10
+seconds and the second restores `ineligible`. Replaying the same idempotency key returns the current
+report without enqueuing again. New retry: HTTP `202`. Idempotent replay: HTTP `200`.
+
+Offer **Retry appeal** only when:
+
+```text
+report.appealRetryable === true
+report.submitterDiscordUserId === interaction.user.id
+```
+
+The button may return after another definitive ineligible result. It must never be shown for
+`request_ambiguous`, `confirmation_timeout`, or another state in which repeating the review POST
+could duplicate an accepted appeal.
 
 ## 7. Current report types
 
@@ -958,8 +997,9 @@ These rules are mandatory because all bot instances share one backend API key:
 1. Always derive `submitterDiscordUserId` from the interaction; never accept it as an option.
 2. Before rendering a single report, compare its owner to the interaction user.
 3. Normal users may list only `/v1/users/{interaction.user.id}/reports`.
-4. Retry only after the owner comparison and when either `retryable` or `resubmittable` is true.
-   Send reason/context overrides only for `resubmittable` denied-review reports.
+4. Retry only after the owner comparison and when `retryable`, `resubmittable`, or
+   `appealRetryable` authorizes the matching endpoint. Send reason/context overrides only for
+   `resubmittable` denied-review reports.
 5. Administrator access must be an explicit bot permission path and should be audited.
 6. Keep report responses ephemeral by default.
 7. Escape or suppress Discord mentions when rendering user-supplied context or errors.
@@ -989,9 +1029,10 @@ These rules are mandatory because all bot instances share one backend API key:
   retains more unless separately maintained.
 - Restarting during code-request work is recoverable. Restarting during verification or
   submission is treated as ambiguous and is not automatically retried.
-- An eligible original no-action review link is encrypted immediately, resolved only through
-  Discord's trusted hosts, and submitted once by the API worker. Review URLs and tokens never
-  enter bot responses or structured logs.
+- An original no-action review link is encrypted immediately and resolved only through Discord's
+  trusted hosts. The first explicit `521004` ineligibility response retries once after 10 seconds;
+  later owner-triggered attempts require API idempotency and cooldown checks. Review URLs and tokens
+  never enter bot responses or structured logs.
 - Missing review-request confirmation after 120 seconds updates `reviewStatus` but does not retry
   the appeal POST. A worker restart or network failure during that POST is recorded as ambiguous.
 
@@ -1006,8 +1047,8 @@ These rules are mandatory because all bot instances share one backend API key:
 - [ ] Enforce owner comparison before showing a single report.
 - [ ] Use only the semantic report types in section 7.
 - [ ] Poll briefly, then rely on `/dsa-status` and `/dsa-reports`.
-- [ ] Show failure retry only when `retryable` is true; show denied-review resend/rewrite only
-      when `resubmittable` is true.
+- [ ] Show failure retry only when `retryable` is true, denied-review resend/rewrite only when
+      `resubmittable` is true, and Retry appeal only when `appealRetryable` is true.
 - [ ] Keep API keys, verification codes, and raw email out of logs.
 - [ ] Handle `429`, transport timeouts, and idempotency replay.
 - [ ] Test against a mock API before running an authorized live report.
@@ -1030,9 +1071,10 @@ These rules are mandatory because all bot instances share one backend API key:
 - Numeric breadcrumbs remain entirely backend-owned and runtime-resolved.
 - Manual retry remains explicit, owner-checked, unlimited for safely retryable failures, and unavailable after unsafe
   submission failures.
-- Eligible original no-action decisions are appealed automatically inside the API. The review
-  link is encrypted at rest, tokens never cross the bot boundary, and no Discord account
-  authorization header is used.
+- Original no-action decisions with a review link are appealed automatically inside the API. The
+  first explicit ineligibility retries once, and a later owner may use the cooldown-protected
+  **Retry appeal** control. The review link is encrypted at rest, tokens never cross the bot
+  boundary, and no Discord account authorization header is used.
 - Missing review-confirmation email is diagnostic only. The successful review POST remains
   authoritative, so timeout and ambiguous POST states never cause an automatic duplicate appeal.
 - A final denied appeal enables one linked successor lifecycle. The owner may resend the same

@@ -1421,7 +1421,9 @@ describe("report component responsiveness", () => {
       "interaction-1",
       "1197857362942378017"
     );
-    const payload = editReply.mock.calls[0]?.[0];
+    const payload = editReply.mock.calls[0]?.[0] as
+      | { content?: string; components?: unknown[]; embeds?: unknown[] }
+      | undefined;
     expect(payload?.content).toBe("Appeal queued for another attempt.");
     expect(JSON.stringify(payload)).not.toContain("reports:retry-appeal");
   });

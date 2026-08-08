@@ -60,7 +60,8 @@ describe("report contracts", () => {
     );
 
     const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(String(url)).toBe(
+    expect(url).toBeInstanceOf(URL);
+    expect(url instanceof URL ? url.href : undefined).toBe(
       "https://api.example.test/v1/reports/report%2Fwith%20spaces/retry-appeal"
     );
     expect(init?.method).toBe("POST");

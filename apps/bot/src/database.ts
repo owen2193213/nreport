@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type {
   DiscordReportStatus,
+  DiscordReviewStatus,
   ReportReason,
   ReportLifecycleEvent,
   ReportStatus,
@@ -232,6 +233,7 @@ CREATE TABLE IF NOT EXISTS experimental_report_batch_items (
   safe_error_code text,
   last_status text,
   last_discord_status text,
+  last_review_status text,
   retryable boolean,
   run_at timestamptz,
   locked_at timestamptz,
@@ -280,6 +282,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS experimental_report_batch_items_reason_idx
   ON experimental_report_batch_items(batch_id, explanation_fingerprint)
   WHERE explanation_fingerprint IS NOT NULL;
 ALTER TABLE credit_ledger ADD COLUMN IF NOT EXISTS experimental_batch_id uuid;
+ALTER TABLE experimental_report_batch_items ADD COLUMN IF NOT EXISTS last_review_status text;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_request_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_input_tokens bigint NOT NULL DEFAULT 0;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_output_tokens bigint NOT NULL DEFAULT 0;
@@ -387,6 +390,7 @@ export interface ExperimentalBatchWorkItemRow extends QueryResultRow {
   safe_error_code: string | null;
   last_status: ReportStatus | null;
   last_discord_status: DiscordReportStatus | null;
+  last_review_status: DiscordReviewStatus | null;
   retryable: boolean | null;
   discord_user_id: string;
   interaction_id: string;
@@ -925,10 +929,10 @@ export class BotDatabase {
              current_report_id = $2,
              credit_state = CASE WHEN credit_state = 'reserved' THEN 'consumed' ELSE credit_state END,
              state = $3, last_status = $4, last_discord_status = $5,
-             retryable = $6,
-             run_at = CASE WHEN $7::integer IS NULL THEN NULL
-                           ELSE now() + ($7::integer * interval '1 second') END,
-             locked_at = NULL, safe_error_code = $8, updated_at = now()
+             last_review_status = $6, retryable = $7,
+             run_at = CASE WHEN $8::integer IS NULL THEN NULL
+                           ELSE now() + ($8::integer * interval '1 second') END,
+             locked_at = NULL, safe_error_code = $9, updated_at = now()
          WHERE id = $1`,
         [
           itemId,
@@ -936,6 +940,7 @@ export class BotDatabase {
           schedule.state,
           report.status,
           report.discordStatus,
+          report.reviewStatus,
           report.retryable,
           schedule.delaySeconds,
           report.error?.code ?? null
@@ -968,10 +973,10 @@ export class BotDatabase {
       await client.query(
         `UPDATE experimental_report_batch_items
          SET current_report_id = $2, state = $3, last_status = $4,
-             last_discord_status = $5, retryable = $6,
-             run_at = CASE WHEN $7::integer IS NULL THEN NULL
-                           ELSE now() + ($7::integer * interval '1 second') END,
-             locked_at = NULL, safe_error_code = $8, updated_at = now()
+             last_discord_status = $5, last_review_status = $6, retryable = $7,
+             run_at = CASE WHEN $8::integer IS NULL THEN NULL
+                           ELSE now() + ($8::integer * interval '1 second') END,
+             locked_at = NULL, safe_error_code = $9, updated_at = now()
          WHERE id = $1`,
         [
           itemId,
@@ -979,6 +984,7 @@ export class BotDatabase {
           schedule.state,
           report.status,
           report.discordStatus,
+          report.reviewStatus,
           report.retryable,
           schedule.delaySeconds,
           report.error?.code ?? null
@@ -1051,10 +1057,11 @@ export class BotDatabase {
         `UPDATE experimental_report_batch_items
          SET tracking_id = $2, successor_report_id = $3, current_report_id = $3,
              lifecycle_retries = lifecycle_retries + 1, state = $4,
-             last_status = $5, last_discord_status = $6, retryable = $7,
-             run_at = CASE WHEN $8::integer IS NULL THEN NULL
-                           ELSE now() + ($8::integer * interval '1 second') END,
-             locked_at = NULL, safe_error_code = $9, updated_at = now()
+             last_status = $5, last_discord_status = $6,
+             last_review_status = $7, retryable = $8,
+             run_at = CASE WHEN $9::integer IS NULL THEN NULL
+                           ELSE now() + ($9::integer * interval '1 second') END,
+             locked_at = NULL, safe_error_code = $10, updated_at = now()
          WHERE id = $1`,
         [
           itemId,
@@ -1063,6 +1070,7 @@ export class BotDatabase {
           schedule.state,
           report.status,
           report.discordStatus,
+          report.reviewStatus,
           report.retryable,
           schedule.delaySeconds,
           report.error?.code ?? null

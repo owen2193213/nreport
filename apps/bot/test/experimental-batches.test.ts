@@ -177,6 +177,78 @@ class ReleasePool {
   });
 }
 
+class LifecyclePool {
+  public readonly batchReviewStatuses: unknown[] = [];
+
+  public connect = () => ({
+    query: (sql: string, values: unknown[] = []) => {
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+        return { rows: [], rowCount: null };
+      }
+      if (sql.includes("SELECT item.* FROM experimental_report_batch_items")) {
+        return {
+          rows: [{ ...this.itemRow(), lifecycle_retries: 0 }],
+          rowCount: 1
+        };
+      }
+      if (sql.includes("SELECT * FROM report_tracking")) {
+        return {
+          rows: [{
+            discord_user_id: "1197857362942378017",
+            flow: "message_urf",
+            encrypted_request: "encrypted",
+            server_snapshot: null,
+            ai_decisions: []
+          }],
+          rowCount: 1
+        };
+      }
+      if (sql.includes("UPDATE experimental_report_batch_items")) {
+        const placeholder = /last_review_status\s*=\s*\$(\d+)/.exec(sql);
+        this.batchReviewStatuses.push(
+          placeholder ? values[Number(placeholder[1]) - 1] : undefined
+        );
+      }
+      return { rows: [], rowCount: 1 };
+    },
+    release: () => undefined
+  });
+
+  private itemRow(): ExperimentalBatchWorkItemRow {
+    return {
+      id: "item-id",
+      batch_id: "batch-id",
+      ordinal: 1,
+      report_type: "sub_other_hate_speech",
+      state: "retrying",
+      preparation_attempts: 1,
+      create_attempts: 1,
+      lifecycle_retries: 0,
+      explanation_fingerprint: null,
+      tracking_id: "tracking-id",
+      original_report_id: "report-1",
+      current_report_id: "report-1",
+      successor_report_id: null,
+      credit_state: "consumed",
+      safe_error_code: null,
+      last_status: "failed",
+      last_discord_status: null,
+      last_review_status: null,
+      retryable: true,
+      discord_user_id: "1197857362942378017",
+      interaction_id: "interaction-id",
+      mode: "same_category_10x",
+      item_count: 10,
+      encrypted_draft: "encrypted",
+      category_snapshot: [...USER_MESSAGE_REPORT_REASONS],
+      shared_report_type: "sub_other_hate_speech",
+      status_dm_message_id: null,
+      dm_blocked: false,
+      encrypted_request: "encrypted"
+    };
+  }
+}
+
 describe("experimental report batch domain", () => {
   it("creates ten blocked same-category items after one Auto seed", () => {
     const items = experimentalBatchDefinitions(
@@ -390,6 +462,46 @@ describe("experimental report batch scheduling", () => {
   });
 });
 
+describe("experimental report batch lifecycle persistence", () => {
+  const lifecycleReport = (
+    reviewStatus: ReportDetail["reviewStatus"]
+  ): ReportDetail => ({
+    internalReportId: "report-2",
+    status: "submitted",
+    discordStatus: "actioned",
+    reviewStatus,
+    retryable: false,
+    error: null,
+    country: "DE",
+    reportType: "sub_other_hate_speech"
+  } as ReportDetail);
+
+  it("persists appeal status on create, observation, and retry transitions", async () => {
+    const pool = new LifecyclePool();
+    const database = new BotDatabase("postgres://test", pool as unknown as Pool);
+
+    await database.markExperimentalSubmissionCreated(
+      "item-id",
+      "tracking-id",
+      lifecycleReport(null)
+    );
+    await database.observeExperimentalBatchItem(
+      "item-id",
+      "tracking-id",
+      lifecycleReport("approved"),
+      0
+    );
+    await database.trackExperimentalRetryReport(
+      "item-id",
+      "tracking-id",
+      "experimental:batch-id:1",
+      lifecycleReport("requested")
+    );
+
+    expect(pool.batchReviewStatuses).toEqual([null, "approved", "requested"]);
+  });
+});
+
 describe("experimental report batch aggregate card", () => {
   it.each([
     [{ state: "submitted", lastStatus: "submitted", lastDiscordStatus: null,
@@ -526,6 +638,7 @@ describe("experimental report batch worker", () => {
       safe_error_code: null,
       last_status: null,
       last_discord_status: null,
+      last_review_status: null,
       retryable: null,
       discord_user_id: "1197857362942378017",
       interaction_id: "interaction-id",

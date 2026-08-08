@@ -23,13 +23,17 @@ import {
   experimentalObservationSchedule,
   experimentalRetryDelaySeconds
 } from "../src/database.js";
-import { experimentalBatchEmbed } from "../src/experimental-batch-ui.js";
+import {
+  experimentalBatchEmbed,
+  experimentalLatestOutcome,
+  experimentalReportedMessage
+} from "../src/experimental-batch-ui.js";
 import {
   ExperimentalBatchWorker,
   runWithConcurrency
 } from "../src/experimental-batch-worker.js";
 import type { ReportWriter } from "../src/report-writer.js";
-import type { ReportDraft } from "../src/types.js";
+import type { MessageSnapshot, ReportDraft } from "../src/types.js";
 import type { ExperimentalBatchWorkItemRow } from "../src/database.js";
 
 class ReservationPool {
@@ -387,14 +391,85 @@ describe("experimental report batch scheduling", () => {
 });
 
 describe("experimental report batch aggregate card", () => {
+  it.each([
+    [{ state: "submitted", lastStatus: "submitted", lastDiscordStatus: null,
+      lastReviewStatus: "approved" }, "Appeal accepted"],
+    [{ state: "submitted", lastStatus: "submitted", lastDiscordStatus: "actioned",
+      lastReviewStatus: null }, "Report accepted"],
+    [{ state: "submitted", lastStatus: "submitted", lastDiscordStatus: "closed_no_action",
+      lastReviewStatus: null }, "Report closed without action"],
+    [{ state: "submitted", lastStatus: "submitted", lastDiscordStatus: "received",
+      lastReviewStatus: null }, "Report received — awaiting decision"],
+    [{ state: "submitted", lastStatus: "submitted", lastDiscordStatus: null,
+      lastReviewStatus: null }, "Submitted — awaiting confirmation"],
+    [{ state: "preparing", lastStatus: null, lastDiscordStatus: null,
+      lastReviewStatus: null }, "Preparing with AI"]
+  ] as const)("selects the authoritative latest outcome", (item, expected) => {
+    expect(experimentalLatestOutcome(item)).toBe(expected);
+  });
+
+  it.each([
+    ["queued", "Appeal preparing"],
+    ["requested", "Appeal submitted — awaiting confirmation"],
+    ["received", "Appeal received — awaiting decision"],
+    ["confirmation_timeout", "Appeal submitted — confirmation not received"],
+    ["request_failed", "Appeal failed"],
+    ["ineligible", "Appeal unavailable"],
+    ["request_ambiguous", "Appeal uncertain"],
+    ["approved", "Appeal accepted"],
+    ["not_approved", "Appeal denied"]
+  ] as const)("renders review status %s", (lastReviewStatus, expected) => {
+    expect(experimentalLatestOutcome({
+      state: "submitted",
+      lastStatus: "submitted",
+      lastDiscordStatus: "actioned",
+      lastReviewStatus
+    })).toBe(expected);
+  });
+
+  it("renders a bounded original message or a content-count fallback", () => {
+    const snapshot: MessageSnapshot = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      channelName: "general",
+      serverId: "server-1",
+      serverName: "Example",
+      authorId: "author-1",
+      authorUsername: "author",
+      authorDisplayName: "Author",
+      authorBot: false,
+      content: `  Original targeted content\r\n${"x".repeat(600)}  `,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      attachments: [],
+      embeds: []
+    };
+
+    const rendered = experimentalReportedMessage(snapshot);
+    expect(rendered).toContain("Original targeted content\n");
+    expect(rendered).toHaveLength(500);
+    expect(experimentalReportedMessage({
+      ...snapshot,
+      content: "",
+      attachments: [
+        { name: "one", url: "https://example.invalid/one", contentType: null },
+        { name: "two", url: "https://example.invalid/two", contentType: null }
+      ],
+      embeds: [{ title: null, description: null, url: null }]
+    })).toBe("No text content · 2 attachments · 1 embed");
+  });
+
   it("fits every current message category in one Discord embed", () => {
     const embed = experimentalBatchEmbed({
       mode: "all_categories",
       itemCount: 18,
+      reportedMessage: "Original targeted content",
       items: USER_MESSAGE_REPORT_REASONS.map((reason, index) => ({
         ordinal: index + 1,
         categoryLabel: reason.label,
         state: "submitted",
+        lastStatus: "submitted",
+        lastDiscordStatus: "actioned",
+        lastReviewStatus: null,
         reportReason: "A".repeat(512),
         originalReportId: `original-report-${index + 1}`,
         currentReportId: `current-report-${index + 1}`,
@@ -404,6 +479,8 @@ describe("experimental report batch aggregate card", () => {
     }).toJSON();
 
     expect(embed.fields).toHaveLength(18);
+    expect(embed.description).toContain("**Reported message**\nOriginal targeted content");
+    expect(embed.fields![0]?.value).toContain("Latest: **Report accepted**");
     expect(embed.fields!.every((field) => field.name.length <= 256)).toBe(true);
     expect(embed.fields!.every((field) => field.value.length <= 1_024)).toBe(true);
     const characters =

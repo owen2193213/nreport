@@ -4,6 +4,7 @@ import { Client, Events, GatewayIntentBits } from "discord.js";
 import { registerGlobalCommands } from "./command-registration.js";
 import { loadBotConfig } from "./config.js";
 import { BotDatabase } from "./database.js";
+import { ExperimentalBatchWorker } from "./experimental-batch-worker.js";
 import { HealthServer } from "./health.js";
 import { InteractionHandler } from "./interactions.js";
 import { MessageResolver } from "./message-resolver.js";
@@ -71,7 +72,15 @@ async function main(): Promise<void> {
   await health.listen(config.port);
   await client.login(config.token);
   const notifier = new NotificationWorker(database, api, client, config, serverResolver);
+  const experimentalBatches = new ExperimentalBatchWorker(
+    database,
+    api,
+    client,
+    config,
+    reportWriter
+  );
   notifier.start();
+  experimentalBatches.start();
 
   let stopping = false;
   const stop = async (signal: string): Promise<void> => {
@@ -79,6 +88,7 @@ async function main(): Promise<void> {
     stopping = true;
     process.stdout.write(`Shutting down after ${signal}.\n`);
     notifier.stop();
+    experimentalBatches.stop();
     await client.destroy();
     await health.close();
     await database.close();

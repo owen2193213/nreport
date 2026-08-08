@@ -12,6 +12,11 @@ export interface ReportDraft {
   aiDisabled?: boolean;
   aiDecisions?: AiDecisionSummary[];
   sendToDms?: boolean;
+  experimentalVariation?: {
+    ordinal: number;
+    total: number;
+    priorReportReasons: string[];
+  };
   reviewDmMessageId?: string;
   createdAt?: string;
   updatedAt?: string;

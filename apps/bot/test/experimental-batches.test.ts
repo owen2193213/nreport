@@ -16,6 +16,7 @@ import {
   experimentalObservationSchedule,
   experimentalRetryDelaySeconds
 } from "../src/database.js";
+import { experimentalBatchEmbed } from "../src/experimental-batch-ui.js";
 
 class ReservationPool {
   public balance: number;
@@ -368,5 +369,36 @@ describe("experimental report batch scheduling", () => {
     expect(pool.creditState).toBe("released");
     expect(pool.state).toBe("failed");
     expect(pool.ledgerEntries).toBe(1);
+  });
+});
+
+describe("experimental report batch aggregate card", () => {
+  it("fits every current message category in one Discord embed", () => {
+    const embed = experimentalBatchEmbed({
+      mode: "all_categories",
+      itemCount: 18,
+      items: USER_MESSAGE_REPORT_REASONS.map((reason, index) => ({
+        ordinal: index + 1,
+        categoryLabel: reason.label,
+        state: "submitted",
+        reportReason: "A".repeat(512),
+        originalReportId: `original-report-${index + 1}`,
+        currentReportId: `current-report-${index + 1}`,
+        successorReportId: null,
+        safeErrorCode: null
+      }))
+    }).toJSON();
+
+    expect(embed.fields).toHaveLength(18);
+    expect(embed.fields!.every((field) => field.name.length <= 256)).toBe(true);
+    expect(embed.fields!.every((field) => field.value.length <= 1_024)).toBe(true);
+    const characters =
+      (embed.title?.length ?? 0) +
+      (embed.description?.length ?? 0) +
+      embed.fields!.reduce(
+        (sum, field) => sum + field.name.length + field.value.length,
+        0
+      );
+    expect(characters).toBeLessThanOrEqual(6_000);
   });
 });

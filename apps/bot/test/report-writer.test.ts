@@ -448,6 +448,36 @@ describe("OpenRouter report writer", () => {
     );
   });
 
+  it("asks experimental variants for distinct factual explanations", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        researchCompletion("DE", "A second distinct explanation.")
+      )
+      .mockResolvedValueOnce(reportCompletion());
+    const draft: ReportDraft = {
+      flow: "message_urf",
+      country: "DE",
+      countrySelection: "override",
+      reportType: "sub_other_hate_speech",
+      messageUrl:
+        "https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+      experimentalVariation: {
+        ordinal: 2,
+        total: 10,
+        priorReportReasons: ["The first accepted explanation."]
+      }
+    };
+
+    await fixedWriter(request).generate(draft, ACTOR);
+
+    const messages = JSON.stringify(requestBody<{ messages: unknown[] }>(request, 0).messages);
+    expect(messages).toContain("Variant 2 of 10");
+    expect(messages).toContain("The first accepted explanation.");
+    expect(messages).toContain("materially different");
+    expect(messages).toContain("Do not invent evidence");
+  });
+
   it("rewrites a denied report instead of fixing its prior reason as the new reason", async () => {
     const request = vi
       .fn()

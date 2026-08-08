@@ -1,3 +1,4 @@
+import type { ReportDetail } from "@discord-dsa/contracts";
 import { USER_MESSAGE_REPORT_REASONS } from "@discord-dsa/contracts";
 import type { Pool } from "pg";
 import { describe, expect, it } from "vitest";
@@ -8,7 +9,13 @@ import {
   experimentalItemIdentity,
   experimentalVariationInstruction
 } from "../src/experimental-batches.js";
-import { batchBalanceAfterReservation, BotDatabase } from "../src/database.js";
+import {
+  batchBalanceAfterReservation,
+  BotDatabase,
+  experimentalClaimLimit,
+  experimentalObservationSchedule,
+  experimentalRetryDelaySeconds
+} from "../src/database.js";
 
 class ReservationPool {
   public balance: number;
@@ -67,6 +74,85 @@ class ReservationPool {
         return { rows: [], rowCount: 1 };
       }
       throw new Error(`Unexpected SQL in reservation test: ${sql}`);
+    },
+    release: () => undefined
+  });
+}
+
+class ClaimPool {
+  public selectedLimit: number | null = null;
+  public lockedIds: string[] = [];
+
+  public connect = async () => ({
+    query: async (sql: string, values: unknown[] = []) => {
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+        return { rows: [], rowCount: null };
+      }
+      if (sql.includes("FROM experimental_report_batch_items AS item")) {
+        this.selectedLimit = Number(values[0]);
+        return {
+          rows: [
+            { id: "item-1", batch_id: "batch-id", ordinal: 1, state: "queued" },
+            { id: "item-2", batch_id: "batch-id", ordinal: 2, state: "queued" }
+          ].slice(0, this.selectedLimit),
+          rowCount: this.selectedLimit
+        };
+      }
+      if (sql.includes("SET locked_at = now()")) {
+        this.lockedIds = values[0] as string[];
+        return { rows: [], rowCount: this.lockedIds.length };
+      }
+      throw new Error(`Unexpected SQL in claim test: ${sql}`);
+    },
+    release: () => undefined
+  });
+}
+
+class ReleasePool {
+  public balance = 4;
+  public creditState = "reserved";
+  public state = "queued";
+  public ledgerEntries = 0;
+
+  public connect = async () => ({
+    query: async (sql: string, values: unknown[] = []) => {
+      if (sql === "BEGIN" || sql === "ROLLBACK") return { rows: [], rowCount: null };
+      if (sql === "COMMIT") return { rows: [], rowCount: null };
+      if (
+        sql.includes("FROM experimental_report_batch_items AS item") &&
+        sql.includes("FOR UPDATE")
+      ) {
+        return {
+          rows: [
+            {
+              id: "item-id",
+              batch_id: "batch-id",
+              discord_user_id: "1197857362942378017",
+              credit_state: this.creditState,
+              state: this.state,
+              tracking_id: null
+            }
+          ],
+          rowCount: 1
+        };
+      }
+      if (sql.includes("SELECT credits") && sql.includes("FROM bot_users")) {
+        return { rows: [{ credits: this.balance }], rowCount: 1 };
+      }
+      if (sql.includes("UPDATE bot_users SET credits")) {
+        this.balance = Number(values[1]);
+        return { rows: [], rowCount: 1 };
+      }
+      if (sql.includes("INSERT INTO credit_ledger")) {
+        this.ledgerEntries += 1;
+        return { rows: [], rowCount: 1 };
+      }
+      if (sql.includes("UPDATE experimental_report_batch_items")) {
+        this.creditState = "released";
+        this.state = "failed";
+        return { rows: [], rowCount: 1 };
+      }
+      throw new Error(`Unexpected SQL in release test: ${sql}`);
     },
     release: () => undefined
   });
@@ -196,5 +282,91 @@ describe("experimental report batch credits", () => {
     expect(pool.ledgerDeltas).toHaveLength(0);
     expect(pool.commits).toBe(0);
     expect(pool.rollbacks).toBe(1);
+  });
+});
+
+describe("experimental report batch scheduling", () => {
+  const report = (overrides: Partial<ReportDetail>): ReportDetail =>
+    ({
+      status: "queued",
+      discordStatus: null,
+      retryable: false,
+      error: null,
+      ...overrides
+    }) as ReportDetail;
+
+  it("caps every database claim at the global concurrency of two", () => {
+    expect(experimentalClaimLimit(100)).toBe(2);
+    expect(experimentalClaimLimit(2)).toBe(2);
+    expect(experimentalClaimLimit(0)).toBe(1);
+  });
+
+  it("uses bounded backoff for the two preparation attempts", () => {
+    expect(experimentalRetryDelaySeconds(1)).toBe(15);
+    expect(experimentalRetryDelaySeconds(2)).toBe(30);
+    expect(experimentalRetryDelaySeconds(8)).toBe(300);
+  });
+
+  it("schedules exactly one safe lifecycle retry", () => {
+    expect(
+      experimentalObservationSchedule(
+        report({ status: "failed", retryable: true }),
+        0
+      )
+    ).toEqual({ state: "retrying", delaySeconds: 0 });
+    expect(
+      experimentalObservationSchedule(
+        report({ status: "failed", retryable: true }),
+        1
+      )
+    ).toEqual({ state: "failed", delaySeconds: null });
+  });
+
+  it("never retries an ambiguous final submission", () => {
+    expect(
+      experimentalObservationSchedule(
+        report({
+          status: "failed",
+          retryable: false,
+          error: { code: "ambiguous_submission_state", message: "Unknown final state." }
+        }),
+        0
+      )
+    ).toEqual({ state: "failed", delaySeconds: null });
+  });
+
+  it("polls active reports but lets submitted reports wait for lifecycle events", () => {
+    expect(experimentalObservationSchedule(report({ status: "verifying" }), 0)).toEqual({
+      state: "observing",
+      delaySeconds: 30
+    });
+    expect(experimentalObservationSchedule(report({ status: "submitted" }), 0)).toEqual({
+      state: "submitted",
+      delaySeconds: null
+    });
+  });
+
+  it("claims no more than two durable items and locks exactly those rows", async () => {
+    const pool = new ClaimPool();
+    const database = new BotDatabase("postgres://test", pool as unknown as Pool);
+
+    const claimed = await database.claimExperimentalBatchItems(99);
+
+    expect(claimed.map((item) => item.id)).toEqual(["item-1", "item-2"]);
+    expect(pool.selectedLimit).toBe(2);
+    expect(pool.lockedIds).toEqual(["item-1", "item-2"]);
+  });
+
+  it("releases one reserved item exactly once", async () => {
+    const pool = new ReleasePool();
+    const database = new BotDatabase("postgres://test", pool as unknown as Pool);
+
+    await database.failExperimentalBatchItem("item-id", "ai_preparation_failed");
+    await database.failExperimentalBatchItem("item-id", "ai_preparation_failed");
+
+    expect(pool.balance).toBe(5);
+    expect(pool.creditState).toBe("released");
+    expect(pool.state).toBe("failed");
+    expect(pool.ledgerEntries).toBe(1);
   });
 });

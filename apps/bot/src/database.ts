@@ -11,6 +11,7 @@ import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
 
 import type {
+  ExperimentalBatchItemState,
   ExperimentalBatchMode,
   AccessView,
   AiDecisionSummary,
@@ -20,7 +21,10 @@ import type {
   SubmissionTracking,
   ServerSnapshot
 } from "./types.js";
-import type { ExperimentalBatchDefinition } from "./experimental-batches.js";
+import {
+  experimentalItemIdentity,
+  type ExperimentalBatchDefinition
+} from "./experimental-batches.js";
 
 export const ACTIVE_REPORT_POLL_SECONDS = 30;
 export const REPORT_TRACKING_RETENTION_DAYS = 60;
@@ -66,6 +70,32 @@ export function batchBalanceAfterReservation(
     );
   }
   return currentCredits - requiredCredits;
+}
+
+export function experimentalClaimLimit(requested: number): number {
+  return Math.min(Math.max(requested, 1), 2);
+}
+
+export function experimentalRetryDelaySeconds(attempt: number): number {
+  return Math.min(15 * 2 ** Math.max(attempt - 1, 0), 300);
+}
+
+export function experimentalObservationSchedule(
+  report: Pick<ReportView, "status" | "retryable" | "error">,
+  lifecycleRetries: number
+): {
+  state: Extract<ExperimentalBatchItemState, "observing" | "retrying" | "submitted" | "failed">;
+  delaySeconds: number | null;
+} {
+  if (report.status === "failed") {
+    return report.retryable && lifecycleRetries < 1
+      ? { state: "retrying", delaySeconds: 0 }
+      : { state: "failed", delaySeconds: null };
+  }
+  if (report.status === "submitted") {
+    return { state: "submitted", delaySeconds: null };
+  }
+  return { state: "observing", delaySeconds: ACTIVE_REPORT_POLL_SECONDS };
 }
 
 export function jsonbParameter(value: unknown): string {
@@ -272,6 +302,7 @@ BEGIN
 END
 $$;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS draft_id uuid;
+ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS experimental_batch_item_id uuid;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS server_snapshot jsonb;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS status_dm_message_id text;
 ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS ai_decisions jsonb NOT NULL DEFAULT '[]'::jsonb;
@@ -287,6 +318,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS report_tracking_draft_idx
   ON report_tracking(draft_id) WHERE draft_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS report_drafts_expiry_idx ON report_drafts(expires_at);
 CREATE INDEX IF NOT EXISTS report_tracking_poll_idx ON report_tracking(poll_at, locked_at);
+CREATE INDEX IF NOT EXISTS report_tracking_experimental_batch_item_idx
+  ON report_tracking(experimental_batch_item_id)
+  WHERE experimental_batch_item_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS report_tracking_expiry_idx
   ON report_tracking(tracking_expires_at);
 CREATE INDEX IF NOT EXISTS notification_outbox_claim_idx
@@ -332,6 +366,38 @@ export interface TrackingRow extends QueryResultRow {
   status_dm_message_id: string | null;
   ai_decisions: AiDecisionSummary[];
   tracking_expires_at: Date;
+}
+
+export interface ExperimentalBatchWorkItemRow extends QueryResultRow {
+  id: string;
+  experimental_batch_item_id: string | null;
+  batch_id: string;
+  ordinal: number;
+  report_type: string | null;
+  state: ExperimentalBatchItemState;
+  preparation_attempts: number;
+  create_attempts: number;
+  lifecycle_retries: number;
+  explanation_fingerprint: string | null;
+  tracking_id: string | null;
+  original_report_id: string | null;
+  current_report_id: string | null;
+  successor_report_id: string | null;
+  credit_state: "none" | "reserved" | "consumed" | "released";
+  safe_error_code: string | null;
+  last_status: ReportStatus | null;
+  last_discord_status: DiscordReportStatus | null;
+  retryable: boolean | null;
+  discord_user_id: string;
+  interaction_id: string;
+  mode: ExperimentalBatchMode;
+  item_count: number;
+  encrypted_draft: string;
+  category_snapshot: ReportReason[];
+  shared_report_type: string | null;
+  status_dm_message_id: string | null;
+  dm_blocked: boolean;
+  encrypted_request: string | null;
 }
 
 export interface AccessKeyView extends QueryResultRow {
@@ -596,6 +662,451 @@ export class BotDatabase {
     } finally {
       client.release();
     }
+  }
+
+  public async claimExperimentalBatchItems(limit = 2): Promise<ExperimentalBatchWorkItemRow[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<ExperimentalBatchWorkItemRow>(
+        `SELECT item.*, batch.discord_user_id, batch.interaction_id, batch.mode,
+                batch.item_count, batch.encrypted_draft, batch.category_snapshot,
+                batch.shared_report_type, batch.status_dm_message_id, batch.dm_blocked,
+                tracking.encrypted_request
+         FROM experimental_report_batch_items AS item
+         JOIN experimental_report_batches AS batch ON batch.id = item.batch_id
+         LEFT JOIN report_tracking AS tracking ON tracking.id = item.tracking_id
+         WHERE item.run_at <= now()
+           AND item.state IN ('queued', 'preparing', 'creating', 'reconciling',
+                              'observing', 'retrying')
+           AND (item.locked_at IS NULL OR item.locked_at < now() - interval '5 minutes')
+         ORDER BY item.run_at, item.created_at
+         FOR UPDATE OF item SKIP LOCKED LIMIT $1`,
+        [experimentalClaimLimit(limit)]
+      );
+      if (result.rows.length > 0) {
+        await client.query(
+          `UPDATE experimental_report_batch_items
+           SET locked_at = now(), updated_at = now()
+           WHERE id = ANY($1::uuid[])`,
+          [result.rows.map((row) => row.id)]
+        );
+      }
+      await client.query("COMMIT");
+      return result.rows;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async failExperimentalBatchItem(itemId: string, safeErrorCode: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<ExperimentalBatchWorkItemRow>(
+        `SELECT item.*, batch.discord_user_id
+         FROM experimental_report_batch_items AS item
+         JOIN experimental_report_batches AS batch ON batch.id = item.batch_id
+         WHERE item.id = $1 FOR UPDATE OF item`,
+        [itemId]
+      );
+      const item = result.rows[0];
+      if (!item) throw new Error("Experimental batch item was not found.");
+      if (item.state === "failed" && item.credit_state === "released") {
+        await client.query("COMMIT");
+        return;
+      }
+
+      let nextCreditState = item.credit_state;
+      if (item.credit_state === "reserved") {
+        const userResult = await client.query<Pick<UserRow, "credits">>(
+          "SELECT credits FROM bot_users WHERE discord_user_id = $1 FOR UPDATE",
+          [item.discord_user_id]
+        );
+        const user = userResult.rows[0];
+        if (!user) throw new Error("Experimental batch user was not found.");
+        const balance = user.credits + 1;
+        await client.query(
+          "UPDATE bot_users SET credits = $2, updated_at = now() WHERE discord_user_id = $1",
+          [item.discord_user_id, balance]
+        );
+        await client.query(
+          `INSERT INTO credit_ledger
+             (discord_user_id, delta, balance_after, reason, experimental_batch_id)
+           VALUES ($1, 1, $2, 'experimental_batch_released', $3)`,
+          [item.discord_user_id, balance, item.batch_id]
+        );
+        nextCreditState = "released";
+        if (item.tracking_id) {
+          await client.query(
+            `UPDATE report_tracking SET credit_state = 'released', poll_at = NULL,
+               locked_at = NULL, updated_at = now() WHERE id = $1`,
+            [item.tracking_id]
+          );
+        }
+      }
+      await client.query(
+        `UPDATE experimental_report_batch_items
+         SET state = 'failed', credit_state = $2, safe_error_code = $3,
+             run_at = NULL, locked_at = NULL, updated_at = now()
+         WHERE id = $1`,
+        [itemId, nextCreditState, safeErrorCode.slice(0, 100)]
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async markExperimentalPreparationAttempt(itemId: string): Promise<number> {
+    const result = await this.pool.query<{ preparation_attempts: number }>(
+      `UPDATE experimental_report_batch_items
+       SET state = 'preparing', preparation_attempts = preparation_attempts + 1,
+           run_at = now() + interval '5 minutes', updated_at = now()
+       WHERE id = $1
+       RETURNING preparation_attempts`,
+      [itemId]
+    );
+    const item = result.rows[0];
+    if (!item) throw new Error("Experimental batch item was not found.");
+    return item.preparation_attempts;
+  }
+
+  public async acceptedExperimentalReasons(batchId: string): Promise<string[]> {
+    const result = await this.pool.query<{ encrypted_request: string }>(
+      `SELECT tracking.encrypted_request
+       FROM experimental_report_batch_items AS item
+       JOIN report_tracking AS tracking ON tracking.id = item.tracking_id
+       WHERE item.batch_id = $1 AND item.explanation_fingerprint IS NOT NULL
+       ORDER BY item.ordinal`,
+      [batchId]
+    );
+    return result.rows.map((row) => row.encrypted_request);
+  }
+
+  public async prepareExperimentalBatchItem(input: {
+    itemId: string;
+    userId: string;
+    country: string;
+    reportType: string;
+    explanationFingerprint: string;
+    encryptedRequest: string;
+    aiDecisions?: AiDecisionSummary[];
+  }): Promise<{ trackingId: string; interactionIdentity: string }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<ExperimentalBatchWorkItemRow>(
+        `SELECT item.*, batch.discord_user_id, batch.mode, batch.shared_report_type
+         FROM experimental_report_batch_items AS item
+         JOIN experimental_report_batches AS batch ON batch.id = item.batch_id
+         WHERE item.id = $1 FOR UPDATE OF item, batch`,
+        [input.itemId]
+      );
+      const item = result.rows[0];
+      if (!item) throw new Error("Experimental batch item was not found.");
+      const interactionIdentity = experimentalItemIdentity(item.batch_id, item.ordinal);
+      if (item.tracking_id) {
+        await client.query("COMMIT");
+        return { trackingId: item.tracking_id, interactionIdentity };
+      }
+      if (item.mode === "same_category_10x") {
+        if (item.shared_report_type && item.shared_report_type !== input.reportType) {
+          throw new Error("Experimental same-category batch changed category.");
+        }
+        await client.query(
+          `UPDATE experimental_report_batches
+           SET shared_report_type = COALESCE(shared_report_type, $2), updated_at = now()
+           WHERE id = $1`,
+          [item.batch_id, input.reportType]
+        );
+        await client.query(
+          `UPDATE experimental_report_batch_items
+           SET report_type = $2, state = 'queued', run_at = now(),
+               locked_at = NULL, updated_at = now()
+           WHERE batch_id = $1 AND state = 'blocked'`,
+          [item.batch_id, input.reportType]
+        );
+      }
+      const trackingId = randomUUID();
+      await client.query(
+        `INSERT INTO report_tracking
+           (id, experimental_batch_item_id, discord_user_id, interaction_id,
+            idempotency_key, flow, country, report_type, encrypted_request,
+            credit_state, dm_enabled, ai_decisions, poll_at)
+         VALUES ($1, $2, $3, $4, $5, 'message_urf', $6, $7, $8,
+                 $9, false, $10, NULL)`,
+        [
+          trackingId,
+          input.itemId,
+          input.userId,
+          interactionIdentity,
+          `create:${interactionIdentity}`,
+          input.country,
+          input.reportType,
+          input.encryptedRequest,
+          item.credit_state,
+          jsonbParameter(input.aiDecisions ?? [])
+        ]
+      );
+      await client.query(
+        `UPDATE experimental_report_batch_items
+         SET report_type = $2, explanation_fingerprint = $3, tracking_id = $4,
+             state = 'creating', run_at = now(), locked_at = NULL,
+             safe_error_code = NULL, updated_at = now()
+         WHERE id = $1`,
+        [input.itemId, input.reportType, input.explanationFingerprint, trackingId]
+      );
+      await client.query("COMMIT");
+      return { trackingId, interactionIdentity };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async markExperimentalCreateAttempt(itemId: string): Promise<number> {
+    const result = await this.pool.query<{ create_attempts: number }>(
+      `UPDATE experimental_report_batch_items
+       SET state = 'creating', create_attempts = create_attempts + 1,
+           run_at = now() + interval '5 minutes', updated_at = now()
+       WHERE id = $1 RETURNING create_attempts`,
+      [itemId]
+    );
+    const item = result.rows[0];
+    if (!item) throw new Error("Experimental batch item was not found.");
+    return item.create_attempts;
+  }
+
+  public async rescheduleExperimentalBatchItem(
+    itemId: string,
+    state: Extract<ExperimentalBatchItemState, "queued" | "creating" | "reconciling" | "observing" | "retrying">,
+    seconds: number,
+    safeErrorCode?: string
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE experimental_report_batch_items
+       SET state = $2, run_at = now() + ($3 * interval '1 second'),
+           locked_at = NULL, safe_error_code = $4, updated_at = now()
+       WHERE id = $1`,
+      [itemId, state, seconds, safeErrorCode?.slice(0, 100) ?? null]
+    );
+  }
+
+  public async markExperimentalSubmissionCreated(
+    itemId: string,
+    trackingId: string,
+    report: ReportView
+  ): Promise<void> {
+    const schedule = experimentalObservationSchedule(report, 0);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE report_tracking
+         SET internal_report_id = $2,
+             credit_state = CASE WHEN credit_state = 'reserved' THEN 'consumed' ELSE credit_state END,
+             last_status = $3, last_discord_status = $4, poll_at = NULL,
+             locked_at = NULL, updated_at = now()
+         WHERE id = $1`,
+        [trackingId, report.internalReportId, report.status, report.discordStatus]
+      );
+      await client.query(
+        `UPDATE experimental_report_batch_items
+         SET original_report_id = COALESCE(original_report_id, $2),
+             current_report_id = $2,
+             credit_state = CASE WHEN credit_state = 'reserved' THEN 'consumed' ELSE credit_state END,
+             state = $3, last_status = $4, last_discord_status = $5,
+             retryable = $6,
+             run_at = CASE WHEN $7::integer IS NULL THEN NULL
+                           ELSE now() + ($7::integer * interval '1 second') END,
+             locked_at = NULL, safe_error_code = $8, updated_at = now()
+         WHERE id = $1`,
+        [
+          itemId,
+          report.internalReportId,
+          schedule.state,
+          report.status,
+          report.discordStatus,
+          report.retryable,
+          schedule.delaySeconds,
+          report.error?.code ?? null
+        ]
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async observeExperimentalBatchItem(
+    itemId: string,
+    trackingId: string,
+    report: ReportView,
+    lifecycleRetries: number
+  ): Promise<ReturnType<typeof experimentalObservationSchedule>> {
+    const schedule = experimentalObservationSchedule(report, lifecycleRetries);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE report_tracking SET last_status = $2, last_discord_status = $3,
+           poll_at = NULL, locked_at = NULL, updated_at = now() WHERE id = $1`,
+        [trackingId, report.status, report.discordStatus]
+      );
+      await client.query(
+        `UPDATE experimental_report_batch_items
+         SET current_report_id = $2, state = $3, last_status = $4,
+             last_discord_status = $5, retryable = $6,
+             run_at = CASE WHEN $7::integer IS NULL THEN NULL
+                           ELSE now() + ($7::integer * interval '1 second') END,
+             locked_at = NULL, safe_error_code = $8, updated_at = now()
+         WHERE id = $1`,
+        [
+          itemId,
+          report.internalReportId,
+          schedule.state,
+          report.status,
+          report.discordStatus,
+          report.retryable,
+          schedule.delaySeconds,
+          report.error?.code ?? null
+        ]
+      );
+      await client.query("COMMIT");
+      return schedule;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async trackExperimentalRetryReport(
+    itemId: string,
+    previousTrackingId: string,
+    interactionIdentity: string,
+    report: ReportView
+  ): Promise<string> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const itemResult = await client.query<ExperimentalBatchWorkItemRow>(
+        `SELECT item.* FROM experimental_report_batch_items AS item
+         WHERE item.id = $1 FOR UPDATE`,
+        [itemId]
+      );
+      const item = itemResult.rows[0];
+      if (!item) throw new Error("Experimental batch item was not found.");
+      if (item.lifecycle_retries >= 1 && item.tracking_id) {
+        await client.query("COMMIT");
+        return item.tracking_id;
+      }
+      const previousResult = await client.query<TrackingRow>(
+        "SELECT * FROM report_tracking WHERE id = $1 FOR UPDATE",
+        [previousTrackingId]
+      );
+      const previous = previousResult.rows[0];
+      if (!previous) throw new Error("Previous experimental tracking was not found.");
+      const trackingId = randomUUID();
+      const schedule = experimentalObservationSchedule(report, 1);
+      await client.query(
+        `INSERT INTO report_tracking
+           (id, experimental_batch_item_id, discord_user_id, interaction_id,
+            idempotency_key, internal_report_id, flow, country, report_type,
+            encrypted_request, credit_state, last_status, last_discord_status,
+            server_snapshot, dm_enabled, ai_decisions, poll_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'none',
+                 $11, $12, $13, false, $14, NULL)`,
+        [
+          trackingId,
+          itemId,
+          previous.discord_user_id,
+          interactionIdentity,
+          `retry:${interactionIdentity}`,
+          report.internalReportId,
+          previous.flow,
+          report.country,
+          report.reportType,
+          previous.encrypted_request,
+          report.status,
+          report.discordStatus,
+          previous.server_snapshot,
+          jsonbParameter(previous.ai_decisions)
+        ]
+      );
+      await client.query(
+        `UPDATE experimental_report_batch_items
+         SET tracking_id = $2, successor_report_id = $3, current_report_id = $3,
+             lifecycle_retries = lifecycle_retries + 1, state = $4,
+             last_status = $5, last_discord_status = $6, retryable = $7,
+             run_at = CASE WHEN $8::integer IS NULL THEN NULL
+                           ELSE now() + ($8::integer * interval '1 second') END,
+             locked_at = NULL, safe_error_code = $9, updated_at = now()
+         WHERE id = $1`,
+        [
+          itemId,
+          trackingId,
+          report.internalReportId,
+          schedule.state,
+          report.status,
+          report.discordStatus,
+          report.retryable,
+          schedule.delaySeconds,
+          report.error?.code ?? null
+        ]
+      );
+      await client.query("COMMIT");
+      return trackingId;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async experimentalBatchView(batchId: string): Promise<ExperimentalBatchWorkItemRow[]> {
+    const result = await this.pool.query<ExperimentalBatchWorkItemRow>(
+      `SELECT item.*, batch.discord_user_id, batch.interaction_id, batch.mode,
+              batch.item_count, batch.encrypted_draft, batch.category_snapshot,
+              batch.shared_report_type, batch.status_dm_message_id, batch.dm_blocked,
+              tracking.encrypted_request
+       FROM experimental_report_batch_items AS item
+       JOIN experimental_report_batches AS batch ON batch.id = item.batch_id
+       LEFT JOIN report_tracking AS tracking ON tracking.id = item.tracking_id
+       WHERE item.batch_id = $1 ORDER BY item.ordinal`,
+      [batchId]
+    );
+    return result.rows;
+  }
+
+  public async saveExperimentalBatchDm(batchId: string, messageId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE experimental_report_batches SET status_dm_message_id = $2,
+         updated_at = now() WHERE id = $1`,
+      [batchId, messageId]
+    );
+  }
+
+  public async markExperimentalBatchDmBlocked(batchId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE experimental_report_batches SET dm_blocked = true,
+         updated_at = now() WHERE id = $1`,
+      [batchId]
+    );
   }
 
   public async setDefaultCountry(userId: string, country: string | null): Promise<AccessView> {
@@ -1315,6 +1826,15 @@ export class BotDatabase {
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (tracking_id, event_key) DO NOTHING`,
           [tracking.id, tracking.discord_user_id, notificationEventKey(event), payload]
+        );
+      }
+      if ((inserted.rowCount ?? 0) > 0 && tracking.experimental_batch_item_id) {
+        await client.query(
+          `UPDATE experimental_report_batch_items
+           SET state = 'observing', run_at = now(), locked_at = NULL,
+               updated_at = now()
+           WHERE id = $1 AND credit_state <> 'released'`,
+          [tracking.experimental_batch_item_id]
         );
       }
       await client.query(

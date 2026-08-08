@@ -877,13 +877,55 @@ describe("experimental report batch worker", () => {
   });
 
   it("edits one saved aggregate DM instead of sending per-item messages", async () => {
-    const item = workItem({ preparation_attempts: 1 });
-    const savedRow = { ...item, status_dm_message_id: "dm-1" };
+    type AggregatePayload = {
+      embeds: Array<{
+        toJSON(): {
+          description?: string;
+          fields?: Array<{ value: string }>;
+        };
+      }>;
+    };
+    const messageSnapshot: MessageSnapshot = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      channelName: "general",
+      serverId: "server-1",
+      serverName: "Example",
+      authorId: "author-1",
+      authorUsername: "author",
+      authorDisplayName: "Author",
+      authorBot: false,
+      content: "Original targeted content",
+      createdAt: "2026-08-09T00:00:00.000Z",
+      attachments: [],
+      embeds: []
+    };
+    const item = workItem({
+      preparation_attempts: 1,
+      encrypted_draft: encryptJson({ ...draft, messageSnapshot }, encryptionKey)
+    });
+    const savedRow = {
+      ...item,
+      state: "submitted" as const,
+      status_dm_message_id: "dm-1",
+      last_status: "submitted" as const,
+      last_discord_status: "actioned" as const,
+      last_review_status: "approved" as const
+    };
+    let sentEmbed: ReturnType<AggregatePayload["embeds"][number]["toJSON"]> | undefined;
+    let editedEmbed: ReturnType<AggregatePayload["embeds"][number]["toJSON"]> | undefined;
+    const edit = vi.fn((payload: AggregatePayload) => {
+      editedEmbed = payload.embeds[0]?.toJSON();
+      return Promise.resolve(undefined);
+    });
     const message = {
       id: "dm-1",
-      edit: vi.fn().mockResolvedValue(undefined)
+      edit
     };
-    const send = vi.fn().mockResolvedValue(message);
+    const send = vi.fn((payload: AggregatePayload) => {
+      sentEmbed = payload.embeds[0]?.toJSON();
+      return Promise.resolve(message);
+    });
     const fetchMessage = vi.fn().mockResolvedValue(message);
     const database = {
       claimExperimentalBatchItems: vi.fn().mockResolvedValue([item]),
@@ -917,7 +959,10 @@ describe("experimental report batch worker", () => {
 
     expect(send).toHaveBeenCalledOnce();
     expect(fetchMessage).toHaveBeenCalledWith("dm-1");
-    expect(message.edit).toHaveBeenCalledOnce();
+    expect(edit).toHaveBeenCalledOnce();
+    expect(sentEmbed?.description).toContain("Original targeted content");
+    expect(editedEmbed?.description).toContain("Original targeted content");
+    expect(editedEmbed?.fields?.[0]?.value).toContain("Appeal accepted");
   });
 
   it("releases a definite create rejection", async () => {

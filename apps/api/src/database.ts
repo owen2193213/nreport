@@ -89,7 +89,6 @@ export interface ReportRow extends QueryResultRow {
   review_confirmation_deadline: Date | null;
   review_error_code: string | null;
   review_error_message: string | null;
-  review_retry_idempotency_key: string | null;
   review_retry_requested_at: Date | null;
   error_code: string | null;
   error_message: string | null;
@@ -227,7 +226,6 @@ CREATE TABLE IF NOT EXISTS reports (
   review_confirmation_deadline timestamptz,
   review_error_code text,
   review_error_message text,
-  review_retry_idempotency_key text,
   review_retry_requested_at timestamptz,
   error_code text,
   error_message text,
@@ -285,6 +283,13 @@ CREATE TABLE IF NOT EXISTS report_retry_requests (
   PRIMARY KEY (report_id, idempotency_key)
 );
 
+CREATE TABLE IF NOT EXISTS review_retry_requests (
+  report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  idempotency_key text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (report_id, idempotency_key)
+);
+
 CREATE TABLE IF NOT EXISTS report_delivery_outbox (
   event_id bigint PRIMARY KEY REFERENCES report_events(id) ON DELETE CASCADE,
   state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'sending', 'sent')),
@@ -306,7 +311,6 @@ ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_status_updated_at timestampt
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_confirmation_deadline timestamptz;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_error_code text;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_error_message text;
-ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_retry_idempotency_key text;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_retry_requested_at timestamptz;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS locale text NOT NULL DEFAULT 'en-US';
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS language text NOT NULL DEFAULT 'en';
@@ -1285,7 +1289,13 @@ export class Database {
       if (report.submitter_discord_user_id !== input.submitterDiscordUserId) {
         throw new ReviewRetryError("report_owner_mismatch");
       }
-      if (report.review_retry_idempotency_key === input.idempotencyKey) {
+      const replayResult = await client.query(
+        `SELECT 1
+         FROM review_retry_requests
+         WHERE report_id = $1 AND idempotency_key = $2`,
+        [report.id, input.idempotencyKey]
+      );
+      if (replayResult.rowCount === 1) {
         await client.query("COMMIT");
         return { replayed: true, report };
       }
@@ -1314,8 +1324,14 @@ export class Database {
         throw new ReviewRetryError("review_retry_unavailable");
       }
       await client.query(
+        `INSERT INTO review_retry_requests (report_id, idempotency_key)
+         VALUES ($1, $2)`,
+        [report.id, input.idempotencyKey]
+      );
+      await client.query(
         `UPDATE report_jobs
          SET state = 'pending', attempts = 0, max_attempts = 3, run_at = now(),
+             payload = payload - 'ineligibleRetryPending',
              locked_at = NULL, last_error = NULL, updated_at = now()
          WHERE id = $1`,
         [job.id]
@@ -1325,11 +1341,10 @@ export class Database {
          SET review_status = 'queued', review_status_updated_at = now(),
              review_confirmation_deadline = NULL,
              review_error_code = NULL, review_error_message = NULL,
-             review_retry_idempotency_key = $2,
              review_retry_requested_at = now(), updated_at = now()
          WHERE id = $1
          RETURNING *`,
-        [report.id, input.idempotencyKey]
+        [report.id]
       );
       const updated = updatedResult.rows[0];
       if (!updated) throw new Error("Review retry update returned no report.");
@@ -1387,6 +1402,26 @@ export class Database {
     await this.pool.query(
       `UPDATE report_jobs
        SET state = 'pending', run_at = now() + ($2 * interval '1 second'),
+           payload = CASE
+             WHEN kind = 'submit_review' THEN payload - 'ineligibleRetryPending'
+             ELSE payload
+           END,
+           locked_at = NULL, last_error = $3, updated_at = now()
+       WHERE id = $1`,
+      [job.id, delaySeconds, message]
+    );
+  }
+
+  public async retryReviewIneligibleJob(
+    job: JobRow,
+    message: string,
+    delaySeconds: number
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE report_jobs
+       SET state = 'pending', run_at = now() + ($2 * interval '1 second'),
+           payload = jsonb_set(payload, '{ineligibleRetryPending}', 'true'::jsonb),
+           max_attempts = GREATEST(max_attempts, attempts + 1),
            locked_at = NULL, last_error = $3, updated_at = now()
        WHERE id = $1`,
       [job.id, delaySeconds, message]

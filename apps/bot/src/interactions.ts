@@ -1599,11 +1599,24 @@ export class InteractionHandler {
           "This appeal is no longer available for retry."
         );
       }
-      const retried = await this.api.retryAppeal(
-        report.internalReportId,
-        interaction.id,
-        interaction.user.id
-      );
+      let retried: ReportDetail;
+      try {
+        retried = await this.api.retryAppeal(
+          report.internalReportId,
+          interaction.id,
+          interaction.user.id
+        );
+      } catch (error) {
+        if (error instanceof DsaApiError && error.code === "review_retry_cooldown") {
+          await interaction.followUp({
+            embeds: [errorEmbed(error.message)],
+            flags: EPHEMERAL,
+            allowedMentions: { parse: [] }
+          });
+          return;
+        }
+        throw error;
+      }
       const snapshot = await this.snapshotFor(retried, interaction.user.id);
       await interaction.editReply({
         content: "Appeal queued for another attempt.",

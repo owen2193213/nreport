@@ -424,7 +424,7 @@ describe("JobRunner proxy rotation", () => {
           discord_report_id: "discord-report-1",
           review_status: "queued"
         })),
-      retryJob: (_job: JobRow, _message: string, delaySeconds: number) => {
+      retryReviewIneligibleJob: (_job: JobRow, _message: string, delaySeconds: number) => {
         retryDelay = delaySeconds;
         return Promise.resolve(undefined);
       },
@@ -440,6 +440,53 @@ describe("JobRunner proxy rotation", () => {
       job({
         kind: "submit_review",
         attempts: 1,
+        payload: {
+          encryptedReviewUrl: encryptJson(
+            { reviewUrl: "https://discord.com/report-review#token=review-token" },
+            config.sessionEncryptionKey
+          )
+        }
+      })
+    );
+
+    expect(retryDelay).toBe(10);
+    expect(markedIneligible).toBe(false);
+  });
+
+  it("retries the first 521004 even after an earlier transient attempt", async () => {
+    clientState.submitReportReviewToken.mockRejectedValue(
+      new DiscordDsaHttpError("ineligible", 400, {
+        responseSummary: "code 521004; DSA_RSL_REPORT_INELIGIBLE"
+      })
+    );
+    let retryDelay: number | undefined;
+    let markedIneligible = false;
+    const database = {
+      getReport: () =>
+        Promise.resolve(report({
+          status: "submitted",
+          discord_report_id: "discord-report-1",
+          review_status: "queued"
+        })),
+      retryReviewIneligibleJob: (
+        _job: JobRow,
+        _message: string,
+        delaySeconds: number
+      ) => {
+        retryDelay = delaySeconds;
+        return Promise.resolve(undefined);
+      },
+      markReviewIneligible: () => {
+        markedIneligible = true;
+        return Promise.resolve(undefined);
+      }
+    } as unknown as Database;
+    const runner = new JobRunner(database, config, logger());
+
+    await (runner as unknown as { processJob(value: JobRow): Promise<void> }).processJob(
+      job({
+        kind: "submit_review",
+        attempts: 2,
         payload: {
           encryptedReviewUrl: encryptJson(
             { reviewUrl: "https://discord.com/report-review#token=review-token" },
@@ -482,6 +529,7 @@ describe("JobRunner proxy rotation", () => {
         kind: "submit_review",
         attempts: 2,
         payload: {
+          ineligibleRetryPending: true,
           encryptedReviewUrl: encryptJson(
             { reviewUrl: "https://discord.com/report-review#token=review-token" },
             config.sessionEncryptionKey

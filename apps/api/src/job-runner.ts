@@ -449,17 +449,35 @@ export class JobRunner {
         return;
       }
       if (job.kind === "submit_review") {
-        const retryIneligible = job.attempts < 2 && isReviewIneligible(failure);
+        const retryIneligible =
+          isReviewIneligible(failure) && job.payload.ineligibleRetryPending !== true;
+        if (retryIneligible) {
+          await this.database.retryReviewIneligibleJob(job, redacted.message, 10);
+          this.logger.info(
+            {
+              event: "review_ineligible_retry_scheduled",
+              jobId: job.id,
+              reportId: job.report_id,
+              jobKind: job.kind,
+              attempt: job.attempts,
+              maxAttempts: job.max_attempts,
+              stage: error instanceof ReviewAttemptError ? error.stage : "submit_report_review",
+              ...errorLogFields(redacted),
+              delaySeconds: 10,
+              durationMs: Date.now() - startedAt
+            },
+            "Discord ineligible response scheduled for one confirmation retry"
+          );
+          return;
+        }
         if (
           job.attempts < job.max_attempts &&
-          (isRetryableDiscordFailure(failure) || retryIneligible)
+          isRetryableDiscordFailure(failure)
         ) {
-          const delaySeconds = retryIneligible
-            ? 10
-            : Math.max(
-                redacted.retryAfter ?? 0,
-                Math.min(60, 2 ** job.attempts * 5)
-              );
+          const delaySeconds = Math.max(
+            redacted.retryAfter ?? 0,
+            Math.min(60, 2 ** job.attempts * 5)
+          );
           await this.database.retryJob(job, redacted.message, delaySeconds);
           this.logger.info(
             {
@@ -816,8 +834,8 @@ export class JobRunner {
         const ineligible = isReviewIneligible(error);
         const retryable = isRetryableDiscordFailure(error);
         if (
-          job.attempts < job.max_attempts &&
-          (retryable || (ineligible && job.attempts < 2))
+          (ineligible && job.payload.ineligibleRetryPending !== true) ||
+          (job.attempts < job.max_attempts && retryable)
         ) {
           throw new ReviewAttemptError("submit_report_review", error);
         }

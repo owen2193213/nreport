@@ -87,7 +87,6 @@ function reviewReport(overrides: Partial<ReportRow> = {}): ReportRow {
     review_confirmation_deadline: null,
     review_error_code: "discord_review_ineligible",
     review_error_message: "Discord says this DSA report is ineligible for review.",
-    review_retry_idempotency_key: null,
     review_retry_requested_at: null,
     error_code: null,
     error_message: null,
@@ -106,10 +105,12 @@ function reviewReport(overrides: Partial<ReportRow> = {}): ReportRow {
 }
 
 function reviewRetryDatabase(input: {
-  report?: ReportRow;
+  report?: ReportRow | null;
   retainedJob?: boolean;
+  jobState?: string;
+  acceptedKeys?: string[];
 } = {}): { database: Database; queries: string[] } {
-  const report = input.report ?? reviewReport();
+  const report = input.report === undefined ? reviewReport() : input.report;
   const queries: string[] = [];
   const client = {
     query: (sql: string, values?: unknown[]) => {
@@ -117,12 +118,16 @@ function reviewRetryDatabase(input: {
       if (sql.includes("SELECT * FROM reports") && sql.includes("FOR UPDATE")) {
         return Promise.resolve({ rows: report ? [report] : [], rowCount: report ? 1 : 0 });
       }
+      if (sql.includes("FROM review_retry_requests")) {
+        const replayed = input.acceptedKeys?.includes(String(values?.[1])) === true;
+        return Promise.resolve({ rows: replayed ? [{ "?column?": 1 }] : [], rowCount: replayed ? 1 : 0 });
+      }
       if (sql.includes("FROM report_jobs") && sql.includes("submit_review")) {
         return Promise.resolve({
           rows:
             input.retainedJob === false
               ? []
-              : [{ id: "job-1", state: "completed", payload: { encryptedReviewUrl: "encrypted" } }],
+              : [{ id: "job-1", state: input.jobState ?? "completed", payload: { encryptedReviewUrl: "encrypted" } }],
           rowCount: input.retainedJob === false ? 0 : 1
         });
       }
@@ -131,7 +136,6 @@ function reviewRetryDatabase(input: {
           rows: [
             reviewReport({
               review_status: "queued",
-              review_retry_idempotency_key: String(values?.[1]),
               review_retry_requested_at: new Date()
             })
           ],
@@ -574,14 +578,31 @@ describe("manual appeal retry", () => {
     const { database, queries } = reviewRetryDatabase({
       report: reviewReport({
         review_status: "queued",
-        review_retry_idempotency_key: retryInput.idempotencyKey,
         review_retry_requested_at: new Date()
-      })
+      }),
+      acceptedKeys: [retryInput.idempotencyKey]
     });
 
     const result = await database.retryIneligibleReview(retryInput);
 
     expect(result).toMatchObject({ replayed: true, report: { id: "report-1" } });
+    expect(queries.some((sql) => sql.includes("UPDATE report_jobs"))).toBe(false);
+  });
+
+  it("recognizes a delayed replay after a newer retry was accepted", async () => {
+    const oldInput = { ...retryInput, idempotencyKey: "appeal-retry:interaction-old" };
+    const { database, queries } = reviewRetryDatabase({
+      report: reviewReport({
+        review_status: "queued",
+        review_retry_requested_at: new Date()
+      }),
+      acceptedKeys: [oldInput.idempotencyKey, "appeal-retry:interaction-new"]
+    });
+
+    await expect(database.retryIneligibleReview(oldInput)).resolves.toMatchObject({
+      replayed: true,
+      report: { id: "report-1" }
+    });
     expect(queries.some((sql) => sql.includes("UPDATE report_jobs"))).toBe(false);
   });
 
@@ -599,7 +620,6 @@ describe("manual appeal retry", () => {
     [
       "review_retry_cooldown",
       reviewReport({
-        review_retry_idempotency_key: "appeal-retry:older-interaction",
         review_retry_requested_at: new Date()
       }),
       retryInput
@@ -620,6 +640,37 @@ describe("manual appeal retry", () => {
     await expect(database.retryIneligibleReview(retryInput)).rejects.toMatchObject({
       name: "ReviewRetryError",
       code: "review_retry_unavailable"
+    } satisfies Partial<ReviewRetryError>);
+  });
+
+  it("rejects a retry while the retained review job is still pending", async () => {
+    const { database } = reviewRetryDatabase({ jobState: "pending" });
+
+    await expect(database.retryIneligibleReview(retryInput)).rejects.toMatchObject({
+      name: "ReviewRetryError",
+      code: "review_retry_unavailable"
+    } satisfies Partial<ReviewRetryError>);
+  });
+
+  it("accepts a retry after the cooldown expires", async () => {
+    const { database } = reviewRetryDatabase({
+      report: reviewReport({
+        review_retry_requested_at: new Date(Date.now() - 31_000)
+      })
+    });
+
+    await expect(database.retryIneligibleReview(retryInput)).resolves.toMatchObject({
+      replayed: false,
+      report: { review_status: "queued" }
+    });
+  });
+
+  it("rejects a missing report", async () => {
+    const { database } = reviewRetryDatabase({ report: null });
+
+    await expect(database.retryIneligibleReview(retryInput)).rejects.toMatchObject({
+      name: "ReviewRetryError",
+      code: "report_not_found"
     } satisfies Partial<ReviewRetryError>);
   });
 });
@@ -680,10 +731,16 @@ describe("manual appeal retry API", () => {
     });
   });
 
-  it("maps appeal ownership failures without leaking the retained link", async () => {
+  it.each([
+    ["report_not_found", 404],
+    ["report_owner_mismatch", 403],
+    ["review_not_ineligible", 409],
+    ["review_retry_unavailable", 409],
+    ["review_retry_cooldown", 409]
+  ] as const)("maps %s without leaking the retained link", async (code, statusCode) => {
     const database = {
       retryIneligibleReview: () =>
-        Promise.reject(new ReviewRetryError("report_owner_mismatch"))
+        Promise.reject(new ReviewRetryError(code))
     } as unknown as Database;
     const server = await buildServer(config, database);
 
@@ -698,13 +755,9 @@ describe("manual appeal retry API", () => {
     });
     await server.close();
 
-    expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({
-      error: {
-        code: "report_owner_mismatch",
-        message: "The Discord user does not own this report."
-      }
-    });
+    expect(response.statusCode).toBe(statusCode);
+    expect(response.json()).toMatchObject({ error: { code } });
+    expect(response.body).not.toContain("encrypted");
   });
 });
 

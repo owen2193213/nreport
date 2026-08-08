@@ -54,7 +54,7 @@ import {
 } from "../src/profile-resolver.js";
 import type { ReportWriter } from "../src/report-writer.js";
 import { ServerResolver } from "../src/server-resolver.js";
-import { USER_MESSAGE_REPORT_REASONS } from "@discord-dsa/contracts";
+import { DsaApiError, USER_MESSAGE_REPORT_REASONS } from "@discord-dsa/contracts";
 import type { DsaApi, ReportDetail } from "@discord-dsa/contracts";
 import {
   buildCountryPicker,
@@ -1426,6 +1426,62 @@ describe("report component responsiveness", () => {
       | undefined;
     expect(payload?.content).toBe("Appeal queued for another attempt.");
     expect(JSON.stringify(payload)).not.toContain("reports:retry-appeal");
+  });
+
+  it("keeps the report card and offers a private cooldown message", async () => {
+    const ineligible = reportFixture();
+    ineligible.discordStatus = "closed_no_action";
+    ineligible.reviewStatus = "ineligible";
+    ineligible.appealRetryable = true;
+    const retryAppeal = vi.fn().mockRejectedValue(
+      new DsaApiError(409, "review_retry_cooldown", "Wait 30 seconds before trying again.")
+    );
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const handler = new InteractionHandler({
+      api: {
+        report: vi.fn().mockResolvedValue(ineligible),
+        retryAppeal
+      } as unknown as DsaApi,
+      config: {
+        adminUserIds: new Set<string>(),
+        whitelistEnabled: false
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database: {} as BotDatabase,
+      messageResolver: {} as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: {} as ReportWriter,
+      serverResolver: {} as ServerResolver
+    });
+    const interaction = {
+      id: "interaction-2",
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => true,
+      isRepliable: () => true,
+      customId: `reports:retry-appeal:${ineligible.internalReportId}`,
+      user: { id: "1197857362942378017" },
+      deferUpdate,
+      editReply,
+      followUp,
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    expect(deferUpdate).toHaveBeenCalledOnce();
+    expect(editReply).not.toHaveBeenCalled();
+    expect(followUp).toHaveBeenCalledOnce();
+    expect(followUp.mock.calls[0]?.[0]).toMatchObject({ flags: MessageFlags.Ephemeral });
+    expect(JSON.stringify(followUp.mock.calls[0]?.[0])).toContain(
+      "Wait 30 seconds before trying again."
+    );
   });
 
   it("keeps report status ephemeral without sending a duplicate DM", async () => {

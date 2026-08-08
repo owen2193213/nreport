@@ -32,6 +32,7 @@ export interface DiscordDsaClientOptions {
   userAgent?: string;
   extraHeaders?: Record<string, string>;
   timeoutMs?: number;
+  fingerprintMaxAttempts?: number;
   fingerprintRetryDelayMs?: number;
   transport?: JsonTransport;
   sessionState?: DiscordDsaSessionState;
@@ -112,12 +113,20 @@ function defaultHeaders(options: DiscordDsaClientOptions): Record<string, string
 
 export class DiscordDsaClient {
   private readonly transport: JsonTransport;
+  private readonly fingerprintMaxAttempts: number;
   private readonly fingerprintRetryDelayMs: number;
   private fingerprint: string | undefined;
   private fingerprintPromise: Promise<string> | undefined;
 
   public constructor(options: DiscordDsaClientOptions) {
+    const fingerprintMaxAttempts = options.fingerprintMaxAttempts ?? 3;
+    if (!Number.isInteger(fingerprintMaxAttempts) || fingerprintMaxAttempts < 1) {
+      throw new PayloadValidationError(
+        "fingerprintMaxAttempts must be a positive integer."
+      );
+    }
     this.fingerprint = options.fingerprint ?? options.sessionState?.fingerprint;
+    this.fingerprintMaxAttempts = fingerprintMaxAttempts;
     this.fingerprintRetryDelayMs = options.fingerprintRetryDelayMs ?? 250;
     this.transport =
       options.transport ??
@@ -147,7 +156,7 @@ export class DiscordDsaClient {
     if (this.fingerprint !== undefined) return this.fingerprint;
     this.fingerprintPromise ??= (async () => {
       let lastError: unknown;
-      for (let attempt = 1; attempt <= 3; attempt += 1) {
+      for (let attempt = 1; attempt <= this.fingerprintMaxAttempts; attempt += 1) {
         try {
           const response = await this.transport.requestJson<FingerprintResponse>({
             method: "GET",
@@ -169,7 +178,7 @@ export class DiscordDsaClient {
             error instanceof DiscordDsaNetworkError ||
             (error instanceof DiscordDsaHttpError &&
               (error.status === 429 || error.status >= 500));
-          if (!retryable || attempt === 3) throw error;
+          if (!retryable || attempt === this.fingerprintMaxAttempts) throw error;
           const retryAfterMs =
             error instanceof DiscordDsaHttpError && error.retryAfterSeconds !== undefined
               ? error.retryAfterSeconds * 1_000

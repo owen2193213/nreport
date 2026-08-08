@@ -147,6 +147,31 @@ describe("DiscordDsaClient", () => {
     ).toHaveLength(3);
   });
 
+  it("honors a single configured fingerprint bootstrap attempt", async () => {
+    const transport = new FlakyFingerprintTransport();
+    const client = new DiscordDsaClient({
+      transport,
+      fingerprintMaxAttempts: 1,
+      fingerprintRetryDelayMs: 0
+    });
+
+    await expect(client.bootstrapFingerprint()).rejects.toThrow(
+      "temporary fingerprint failure"
+    );
+    expect(
+      transport.requests.filter((request) => request.path.includes("/experiments?"))
+    ).toHaveLength(1);
+  });
+
+  it.each([0, -1, 1.5])(
+    "rejects invalid fingerprint attempt limit %s",
+    (fingerprintMaxAttempts) => {
+      expect(
+        () => new DiscordDsaClient({ transport: new FakeTransport(), fingerprintMaxAttempts })
+      ).toThrow("fingerprintMaxAttempts must be a positive integer");
+    }
+  );
+
   it("exports resumable fingerprint and cookie state", async () => {
     const transport = new FakeTransport();
     const client = new DiscordDsaClient({ fingerprint: "persisted-fp", transport });

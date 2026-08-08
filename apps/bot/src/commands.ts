@@ -217,6 +217,18 @@ const quickReportMessage = new ContextMenuCommandBuilder()
   .setIntegrationTypes(ApplicationIntegrationType.UserInstall)
   .setContexts(...contexts);
 
+const experimentalSameCategory = new ContextMenuCommandBuilder()
+  .setName("Experimental 10x Same Category")
+  .setType(ApplicationCommandType.Message)
+  .setIntegrationTypes(ApplicationIntegrationType.UserInstall)
+  .setContexts(...contexts);
+
+const experimentalAllCategories = new ContextMenuCommandBuilder()
+  .setName("Experimental All Categories")
+  .setType(ApplicationCommandType.Message)
+  .setIntegrationTypes(ApplicationIntegrationType.UserInstall)
+  .setContexts(...contexts);
+
 export const COMMANDS: RESTPostAPIApplicationCommandsJSONBody[] = [
   report.toJSON(),
   reports.toJSON(),
@@ -224,5 +236,7 @@ export const COMMANDS: RESTPostAPIApplicationCommandsJSONBody[] = [
   settings.toJSON(),
   admin.toJSON(),
   reportMessage.toJSON(),
-  quickReportMessage.toJSON()
+  quickReportMessage.toJSON(),
+  experimentalSameCategory.toJSON(),
+  experimentalAllCategories.toJSON()
 ];

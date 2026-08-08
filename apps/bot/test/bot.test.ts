@@ -152,7 +152,7 @@ describe("Discord command registration", () => {
   });
 
   it("registers user-installed commands in every requested interaction context", () => {
-    expect(COMMANDS).toHaveLength(7);
+    expect(COMMANDS).toHaveLength(9);
     for (const command of COMMANDS) {
       expect(command.integration_types).toEqual([ApplicationIntegrationType.UserInstall]);
       expect(command.contexts).toEqual([
@@ -171,6 +171,17 @@ describe("Discord command registration", () => {
   it("registers Apps → Quick Report Message as a message context command", () => {
     const command = COMMANDS.find((candidate) => candidate.name === "Quick Report Message");
     expect(command?.type).toBe(ApplicationCommandType.Message);
+  });
+
+  it("registers both experimental batch reports as message context commands", () => {
+    for (const name of [
+      "Experimental 10x Same Category",
+      "Experimental All Categories"
+    ]) {
+      const command = COMMANDS.find((candidate) => candidate.name === name);
+      expect(command?.type).toBe(ApplicationCommandType.Message);
+      expect(name.length).toBeLessThanOrEqual(32);
+    }
   });
 
   it("keeps targets in report commands and moves report preferences into modals", () => {
@@ -2083,4 +2094,124 @@ describe("quick report message context flow", () => {
     expect(reply).toHaveBeenCalledOnce();
     expect(JSON.stringify(reply.mock.calls[0]?.[0])).toContain("suspended");
   });
+});
+
+describe("experimental report batch interaction flow", () => {
+  function experimentalTargetMessage() {
+    return {
+      id: "123456789012345679",
+      channelId: "123456789012345678",
+      channel: { name: "general" },
+      guildId: null,
+      guild: null,
+      member: null,
+      author: { id: "999", username: "reported-user", globalName: null, bot: false },
+      content: "hateful content",
+      createdAt: new Date("2026-08-09T00:00:00.000Z"),
+      attachments: { values: () => [] },
+      embeds: [],
+      url: "https://discord.com/channels/1/123456789012345678/123456789012345679"
+    };
+  }
+
+  it.each([
+    ["Experimental 10x Same Category", "same_category_10x", 10],
+    ["Experimental All Categories", "all_categories", 18]
+  ] as const)(
+    "defers and durably reserves %s without inline AI or API work",
+    async (commandName, mode, requiredCredits) => {
+      const order: string[] = [];
+      const dataEncryptionKey = randomBytes(32);
+      const reserveExperimentalBatch = vi.fn(
+        async (_input: Parameters<BotDatabase["reserveExperimentalBatch"]>[0]) => {
+        order.push("reserve");
+        return {
+          batchId: "batch-id",
+          itemCount: requiredCredits,
+          balanceBefore: 30,
+          balanceAfter: 30 - requiredCredits,
+          replayed: false
+        };
+        }
+      );
+      const database = {
+        getAccess: vi.fn(async () => {
+          order.push("access");
+          return {
+            credits: 30,
+            suspended: false,
+            defaultCountry: "DE"
+          };
+        }),
+        reserveExperimentalBatch
+      } as unknown as BotDatabase;
+      const generate = vi.fn();
+      const createReport = vi.fn();
+      const handler = new InteractionHandler({
+        api: { createReport } as unknown as DsaApi,
+        config: {
+          whitelistEnabled: true,
+          adminUserIds: new Set<string>(),
+          dataEncryptionKey,
+          keyPepper: "test-key-pepper"
+        } as unknown as BotConfig,
+        countries: ["DE"],
+        database,
+        messageResolver: {} as MessageResolver,
+        profileResolver: {} as ProfileResolver,
+        reportWriter: { generate } as unknown as ReportWriter,
+        serverResolver: {} as ServerResolver
+      });
+      const editReply = vi.fn(async (_payload: unknown) => {
+        order.push("edit");
+      });
+      const interaction = {
+        isAutocomplete: () => false,
+        isMessageContextMenuCommand: () => true,
+        isChatInputCommand: () => false,
+        isModalSubmit: () => false,
+        isStringSelectMenu: () => false,
+        isButton: () => false,
+        isRepliable: () => true,
+        commandName,
+        id: "interaction-id",
+        user: { id: "1197857362942378017" },
+        targetMessage: experimentalTargetMessage(),
+        deferReply: vi.fn(async () => {
+          order.push("defer");
+        }),
+        editReply,
+        deferred: false,
+        replied: false
+      } as unknown as Interaction;
+
+      await handler.handle(interaction);
+
+      expect(order[0]).toBe("defer");
+      expect(reserveExperimentalBatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "1197857362942378017",
+          interactionId: "interaction-id",
+          mode,
+          requiredCredits,
+          adminBypass: false
+        })
+      );
+      const reservation = reserveExperimentalBatch.mock.calls[0]?.[0];
+      expect(reservation?.definitions).toHaveLength(requiredCredits);
+      expect(
+        decryptJson(String(reservation?.encryptedDraft), dataEncryptionKey)
+      ).toMatchObject({
+        flow: "message_urf",
+        country: "DE",
+        countrySelection: "default",
+        sendToDms: false
+      });
+      expect(generate).not.toHaveBeenCalled();
+      expect(createReport).not.toHaveBeenCalled();
+      expect(JSON.stringify(editReply.mock.calls.at(-1)?.[0])).toContain(
+        `${requiredCredits} credits reserved`
+      );
+    }
+  );
 });

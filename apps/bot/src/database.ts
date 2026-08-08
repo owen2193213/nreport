@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type {
   DiscordReportStatus,
+  ReportReason,
   ReportLifecycleEvent,
   ReportStatus,
   ReportView
@@ -10,6 +11,7 @@ import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
 
 import type {
+  ExperimentalBatchMode,
   AccessView,
   AiDecisionSummary,
   AiUsage,
@@ -18,6 +20,7 @@ import type {
   SubmissionTracking,
   ServerSnapshot
 } from "./types.js";
+import type { ExperimentalBatchDefinition } from "./experimental-batches.js";
 
 export const ACTIVE_REPORT_POLL_SECONDS = 30;
 export const REPORT_TRACKING_RETENTION_DAYS = 60;
@@ -48,6 +51,21 @@ export function creditBalanceAfterReservation(
   bypassCredits: boolean
 ): number {
   return bypassCredits ? currentCredits : currentCredits - 1;
+}
+
+export function batchBalanceAfterReservation(
+  currentCredits: number,
+  requiredCredits: number,
+  bypassCredits: boolean
+): number {
+  if (bypassCredits) return currentCredits;
+  if (currentCredits < requiredCredits) {
+    throw new AccessError(
+      "no_credits",
+      `You need ${requiredCredits} report credits.`
+    );
+  }
+  return currentCredits - requiredCredits;
 }
 
 export function jsonbParameter(value: unknown): string {
@@ -148,6 +166,50 @@ CREATE TABLE IF NOT EXISTS report_tracking (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS experimental_report_batches (
+  id uuid PRIMARY KEY,
+  discord_user_id text NOT NULL REFERENCES bot_users(discord_user_id),
+  interaction_id text NOT NULL UNIQUE,
+  mode text NOT NULL CHECK (mode IN ('same_category_10x', 'all_categories')),
+  item_count integer NOT NULL CHECK (item_count >= 1),
+  encrypted_draft text NOT NULL,
+  category_snapshot jsonb NOT NULL,
+  shared_report_type text,
+  status_dm_message_id text,
+  dm_blocked boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS experimental_report_batch_items (
+  id uuid PRIMARY KEY,
+  batch_id uuid NOT NULL REFERENCES experimental_report_batches(id) ON DELETE CASCADE,
+  ordinal integer NOT NULL CHECK (ordinal >= 1),
+  report_type text,
+  state text NOT NULL CHECK (state IN (
+    'blocked', 'queued', 'preparing', 'creating', 'reconciling',
+    'observing', 'retrying', 'submitted', 'failed'
+  )),
+  preparation_attempts integer NOT NULL DEFAULT 0 CHECK (preparation_attempts >= 0),
+  create_attempts integer NOT NULL DEFAULT 0 CHECK (create_attempts >= 0),
+  lifecycle_retries integer NOT NULL DEFAULT 0 CHECK (lifecycle_retries >= 0),
+  explanation_fingerprint char(64),
+  tracking_id uuid UNIQUE REFERENCES report_tracking(id),
+  original_report_id text,
+  current_report_id text,
+  successor_report_id text,
+  credit_state text NOT NULL CHECK (credit_state IN ('none', 'reserved', 'consumed', 'released')),
+  safe_error_code text,
+  last_status text,
+  last_discord_status text,
+  retryable boolean,
+  run_at timestamptz,
+  locked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (batch_id, ordinal)
+);
+
 CREATE TABLE IF NOT EXISTS notification_outbox (
   id bigserial PRIMARY KEY,
   tracking_id uuid NOT NULL REFERENCES report_tracking(id) ON DELETE CASCADE,
@@ -180,6 +242,14 @@ CREATE TABLE IF NOT EXISTS bot_state (
 );
 
 CREATE INDEX IF NOT EXISTS access_keys_status_idx ON access_keys(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS experimental_report_batches_user_idx
+  ON experimental_report_batches(discord_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS experimental_report_batch_items_claim_idx
+  ON experimental_report_batch_items(run_at, locked_at);
+CREATE UNIQUE INDEX IF NOT EXISTS experimental_report_batch_items_reason_idx
+  ON experimental_report_batch_items(batch_id, explanation_fingerprint)
+  WHERE explanation_fingerprint IS NOT NULL;
+ALTER TABLE credit_ledger ADD COLUMN IF NOT EXISTS experimental_batch_id uuid;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_request_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_input_tokens bigint NOT NULL DEFAULT 0;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_output_tokens bigint NOT NULL DEFAULT 0;
@@ -238,6 +308,11 @@ interface UserRow extends QueryResultRow {
 
 interface DraftRow extends QueryResultRow {
   encrypted_payload: string;
+}
+
+interface ExperimentalBatchRow extends QueryResultRow {
+  id: string;
+  item_count: number;
 }
 
 export interface TrackingRow extends QueryResultRow {
@@ -357,8 +432,8 @@ function accessView(row: UserRow): AccessView {
 export class BotDatabase {
   private readonly pool: Pool;
 
-  public constructor(databaseUrl: string) {
-    this.pool = new Pool({ connectionString: databaseUrl, max: 10 });
+  public constructor(databaseUrl: string, pool?: Pool) {
+    this.pool = pool ?? new Pool({ connectionString: databaseUrl, max: 10 });
   }
 
   public async migrate(): Promise<void> {
@@ -397,6 +472,124 @@ export class BotDatabase {
       const row = result.rows[0];
       if (!row) throw new Error("User record was not created.");
       return accessView(row);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async reserveExperimentalBatch(input: {
+    userId: string;
+    interactionId: string;
+    mode: ExperimentalBatchMode;
+    requiredCredits: number;
+    encryptedDraft: string;
+    categories: readonly ReportReason[];
+    definitions: readonly ExperimentalBatchDefinition[];
+    adminBypass: boolean;
+  }): Promise<{
+    batchId: string;
+    itemCount: number;
+    balanceBefore: number | null;
+    balanceAfter: number | null;
+    replayed: boolean;
+  }> {
+    if (input.requiredCredits !== input.definitions.length || input.requiredCredits < 1) {
+      throw new Error("Experimental batch credit count does not match its items.");
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const existing = await client.query<ExperimentalBatchRow>(
+        `SELECT id, item_count FROM experimental_report_batches
+         WHERE interaction_id = $1 FOR UPDATE`,
+        [input.interactionId]
+      );
+      const replay = existing.rows[0];
+      if (replay) {
+        await client.query("COMMIT");
+        return {
+          batchId: replay.id,
+          itemCount: replay.item_count,
+          balanceBefore: null,
+          balanceAfter: null,
+          replayed: true
+        };
+      }
+
+      await this.ensureUser(client, input.userId);
+      const userResult = await client.query<UserRow>(
+        `SELECT credits, default_country, suspended, suspension_reason
+         FROM bot_users WHERE discord_user_id = $1 FOR UPDATE`,
+        [input.userId]
+      );
+      const user = userResult.rows[0];
+      if (!user) throw new Error("User record was not created.");
+      if (!input.adminBypass && user.suspended) {
+        throw new AccessError("user_suspended", "This account is suspended.");
+      }
+
+      const batchId = randomUUID();
+      const balanceBefore = user.credits;
+      const balanceAfter = batchBalanceAfterReservation(
+        user.credits,
+        input.requiredCredits,
+        input.adminBypass
+      );
+      await client.query(
+        `INSERT INTO experimental_report_batches
+           (id, discord_user_id, interaction_id, mode, item_count,
+            encrypted_draft, category_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          batchId,
+          input.userId,
+          input.interactionId,
+          input.mode,
+          input.definitions.length,
+          input.encryptedDraft,
+          jsonbParameter(input.categories)
+        ]
+      );
+      const creditState = input.adminBypass ? "none" : "reserved";
+      for (const definition of input.definitions) {
+        await client.query(
+          `INSERT INTO experimental_report_batch_items
+             (id, batch_id, ordinal, report_type, state, credit_state, run_at)
+           VALUES ($1, $2, $3, $4, $5, $6,
+             CASE WHEN $5 = 'queued' THEN now() ELSE NULL END)`,
+          [
+            randomUUID(),
+            batchId,
+            definition.ordinal,
+            definition.reportType,
+            definition.state,
+            creditState
+          ]
+        );
+      }
+      if (!input.adminBypass) {
+        await client.query(
+          "UPDATE bot_users SET credits = $2, updated_at = now() WHERE discord_user_id = $1",
+          [input.userId, balanceAfter]
+        );
+        await client.query(
+          `INSERT INTO credit_ledger
+             (discord_user_id, delta, balance_after, reason, experimental_batch_id)
+           VALUES ($1, $2, $3, 'experimental_batch_reserved', $4)`,
+          [input.userId, -input.requiredCredits, balanceAfter, batchId]
+        );
+      }
+      await client.query("COMMIT");
+      return {
+        batchId,
+        itemCount: input.definitions.length,
+        balanceBefore,
+        balanceAfter,
+        replayed: false
+      };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;

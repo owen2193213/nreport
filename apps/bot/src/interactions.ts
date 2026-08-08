@@ -4,7 +4,8 @@ import {
   DsaApiError,
   GUILD_ELEMENTS,
   PROFILE_ELEMENTS,
-  reportReasonLabel
+  reportReasonLabel,
+  reportReasons
 } from "@discord-dsa/contracts";
 import type {
   DsaApi,
@@ -32,6 +33,7 @@ import { countryDisplay, matchingCountries } from "./countries.js";
 import { decryptJson, encryptJson, generateAccessKey, hashAccessKey } from "./crypto.js";
 import { AccessError } from "./database.js";
 import type { BotDatabase } from "./database.js";
+import { experimentalBatchDefinitions } from "./experimental-batches.js";
 import { snapshotMessage } from "./message-resolver.js";
 import type { MessageResolver } from "./message-resolver.js";
 import { botLog, errorFields, pseudonymousActorKey } from "./observability.js";
@@ -46,7 +48,12 @@ import {
 } from "./report-writer.js";
 import type { ReportWriter, WriterResult } from "./report-writer.js";
 import type { ServerResolver } from "./server-resolver.js";
-import type { AiDecisionSummary, ReportDraft, ServerSnapshot } from "./types.js";
+import type {
+  AiDecisionSummary,
+  ExperimentalBatchMode,
+  ReportDraft,
+  ServerSnapshot
+} from "./types.js";
 import {
   accessEmbed,
   accessKeyEmbed,
@@ -636,6 +643,14 @@ export class InteractionHandler {
   private async handleMessageContext(
     interaction: MessageContextMenuCommandInteraction
   ): Promise<void> {
+    if (interaction.commandName === "Experimental 10x Same Category") {
+      await this.startExperimentalBatch(interaction, "same_category_10x");
+      return;
+    }
+    if (interaction.commandName === "Experimental All Categories") {
+      await this.startExperimentalBatch(interaction, "all_categories");
+      return;
+    }
     if (interaction.commandName === "Quick Report Message") {
       await this.startQuickReport(interaction);
       return;
@@ -645,6 +660,57 @@ export class InteractionHandler {
       flow: "message_urf",
       messageUrl: interaction.targetMessage.url,
       messageSnapshot: snapshotMessage(interaction.targetMessage)
+    });
+  }
+
+  private async startExperimentalBatch(
+    interaction: MessageContextMenuCommandInteraction,
+    mode: ExperimentalBatchMode
+  ): Promise<void> {
+    await interaction.deferReply({ flags: EPHEMERAL });
+    await this.requireReportAccess(interaction.user.id);
+    const access = await this.database.getAccess(interaction.user.id);
+    const draft: ReportDraft = {
+      flow: "message_urf",
+      messageUrl: interaction.targetMessage.url,
+      messageSnapshot: snapshotMessage(interaction.targetMessage),
+      sendToDms: false
+    };
+    this.applyDraftDefaults(draft, access.defaultCountry);
+    const categories = reportReasons("message_urf");
+    const definitions = experimentalBatchDefinitions(mode, categories);
+    const isAdmin = this.isAdmin(interaction.user.id);
+    const adminBypass = shouldBypassReportCredits(isAdmin, this.config.whitelistEnabled);
+    const reservation = await this.database.reserveExperimentalBatch({
+      userId: interaction.user.id,
+      interactionId: interaction.id,
+      mode,
+      requiredCredits: definitions.length,
+      encryptedDraft: encryptJson(draft, this.config.dataEncryptionKey),
+      categories,
+      definitions,
+      adminBypass
+    });
+    botLog("experimental_report_batch_reserved", {
+      batchId: reservation.batchId,
+      mode,
+      itemCount: reservation.itemCount,
+      creditBypassReason: isAdmin
+        ? "administrator"
+        : !this.config.whitelistEnabled
+          ? "whitelist_disabled"
+          : "none",
+      reservationReplayed: reservation.replayed,
+      creditBalanceBefore: reservation.balanceBefore,
+      creditBalanceAfter: reservation.balanceAfter
+    });
+    await interaction.editReply({
+      content: adminBypass
+        ? `Experimental report batch started with ${reservation.itemCount} reports. Credit bypass applied. I will DM you one combined status card.`
+        : `Experimental report batch started. ${reservation.itemCount} credits reserved. I will DM you one combined status card.`,
+      embeds: [],
+      components: [],
+      allowedMentions: { parse: [] }
     });
   }
 

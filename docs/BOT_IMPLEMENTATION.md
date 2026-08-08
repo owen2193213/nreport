@@ -36,6 +36,8 @@ registration script requires only `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_I
 /admin user inspect|suspend|reinstate
 Apps -> Report Message
 Apps -> Quick Report Message
+Apps -> Experimental 10x Same Category
+Apps -> Experimental All Categories
 ```
 
 Admin commands are visible in every supported context but authorize against the exact
@@ -134,6 +136,42 @@ Retry / Change country / Edit details / Cancel recovery controls. A definite pre
 releases the reservation and DMs the same recovery card; an ambiguous failure keeps the reservation
 for reconciliation and DMs the error without retry controls. When DM delivery is blocked, the
 ephemeral interaction becomes the fallback surface for progress and results.
+
+## Experimental report batches
+
+The two experimental message commands are access-key gated like every other report command. The
+interaction immediately snapshots the target message, encrypts the draft, transactionally reserves
+the entire batch, and returns an ephemeral acknowledgement. It performs no inline AI or API work.
+Configured admins and deployments with `WHITELIST_ENABLED=false` keep the existing credit bypass.
+
+- **Apps -> Experimental 10x Same Category** reserves ten credits. The first item uses Auto to
+  choose the category; the other nine inherit that exact category. Every item receives a distinct
+  AI reason, stable create identity, and API report ID.
+- **Apps -> Experimental All Categories** snapshots every current `message_urf` category in catalog
+  order, reserves that full count, and creates exactly one item for each snapshot entry. It is not
+  capped at ten categories.
+
+PostgreSQL owns batch and item state, encrypted request inputs, leases, retry counters, per-item
+credit state, and the aggregate DM ID. The experimental worker claims no more than two item
+pipelines at once and runs every five seconds, making the interaction non-blocking and restart-safe.
+AI preparation receives one retry and compares against previously accepted reasons without treating
+them as evidence; an exact normalized duplicate is rejected by a database uniqueness constraint.
+A definite failure before API creation releases that item's credit once. API creation consumes the
+item reservation after an accepted or idempotently replayed report.
+
+Each create uses `experimental:<batch-id>:<ordinal>` as its stable identity. A 429 is retried once.
+Server and unknown transport outcomes re-enter reconciliation with the same identity and encrypted
+body rather than creating a replacement identity. After a report exists, the worker creates one
+successor only when the API marks the failed report `retryable=true`; this lifecycle retry uses a
+stable retry identity and no additional credit. `ambiguous_submission_state`, other non-retryable
+results, and a failed successor are terminal for the item.
+
+The worker creates one private aggregate embed and edits that same message after meaningful state
+changes. It shows each category, bounded reason preview, original/current report IDs, successor ID,
+and safe failure code. Batch tracking rows set `dm_enabled=false`, so webhook and 15-minute feed
+events wake the owning batch item without creating individual lifecycle DMs. A deleted card is
+replaced once; Discord error 50007 permanently disables further aggregate DM attempts without
+stopping report processing.
 
 ## AI report writing
 
@@ -290,7 +328,9 @@ message evidence instead of failing.
 - Normal users begin with zero credits; configured admins are unlimited.
 - A one-use key grants any positive integer number of credits and may have a redemption deadline.
 - Plaintext key values are displayed once; only a peppered HMAC and safe prefix are stored.
-- Report creation consumes one credit. Status checks and lifecycle retries are free.
+- Report creation consumes one credit. Experimental commands reserve the full item count atomically;
+  each accepted item consumes one reservation and each definite pre-creation failure releases one.
+  Status checks and lifecycle retries are free.
 - Revoking a redeemed key suspends its user, clears every remaining credit, and deletes
   unsubmitted drafts. Existing reports and lifecycle notifications continue.
 - A suspended user cannot redeem a new key. Admin reinstatement returns them with zero credits.

@@ -54,6 +54,7 @@ import {
 } from "../src/profile-resolver.js";
 import type { ReportWriter } from "../src/report-writer.js";
 import { ServerResolver } from "../src/server-resolver.js";
+import { USER_MESSAGE_REPORT_REASONS } from "@discord-dsa/contracts";
 import type { DsaApi, ReportDetail } from "@discord-dsa/contracts";
 import {
   buildCountryPicker,
@@ -2116,7 +2117,11 @@ describe("experimental report batch interaction flow", () => {
 
   it.each([
     ["Experimental 10x Same Category", "same_category_10x", 10],
-    ["Experimental All Categories", "all_categories", 18]
+    [
+      "Experimental All Categories",
+      "all_categories",
+      USER_MESSAGE_REPORT_REASONS.length
+    ]
   ] as const)(
     "defers and durably reserves %s without inline AI or API work",
     async (commandName, mode, requiredCredits) => {

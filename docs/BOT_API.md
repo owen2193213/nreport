@@ -693,7 +693,32 @@ Implemented user-installed app commands:
 /access status
 /settings country country
 Apps -> Report Message
+Apps -> Quick Report Message
+Apps -> Experimental 10x Same Category
+Apps -> Experimental All Categories
 ```
+
+The two experimental message commands use the ordinary single-report API contract repeatedly; the
+API has no batch endpoint and the bot never crosses its service boundary. **Experimental 10x Same
+Category** snapshots the target message, lets the first AI preparation choose one category, and
+creates ten distinct report reasons and report IDs in that category. **Experimental All
+Categories** snapshots the current `message_urf` semantic catalog and creates one report per
+captured category, so its count follows the complete catalog rather than a fixed limit of ten.
+
+The interaction defers and returns as soon as the bot has transactionally reserved the complete
+batch: ten credits for the same-category command or the catalog snapshot count for all-categories.
+Configured administrators and `WHITELIST_ENABLED=false` retain the existing credit bypass. A
+durable bot worker then processes at most two items concurrently. Each AI preparation may be
+attempted twice. Definite failures before API creation release only that item's reservation;
+accepted API reports consume their item reservation.
+
+Every item has its own stable create identity. A rate-limited create gets one retry, while an
+unknown or server-side create outcome is reconciled with the same identity and encrypted input.
+After creation, the bot calls the existing retry endpoint at most once only when the API returns a
+failed report with `retryable: true`; this successor spends no additional credit. It never retries
+`ambiguous_submission_state` or any result where `retryable` is false. Batch-linked lifecycle
+events suppress ordinary per-report DMs and wake the batch worker, which creates or edits one
+aggregate private status card containing all categories, reasons, report IDs, retries, and errors.
 
 The profile `target` accepts only a 15-22 digit raw Discord user ID. Usernames, display names, and
 mentions are rejected. The bot resolves the ID and shows the account for confirmation before
@@ -767,7 +792,7 @@ diagnostics but exclude credentials, verification codes, and raw email.
 
 The app is registered globally with `USER_INSTALL` only. Admin key/user commands are
 documented in [`BOT_IMPLEMENTATION.md`](BOT_IMPLEMENTATION.md). The bot stores access,
-encrypted draft, idempotency-reconciliation, and notification metadata in a separate
+encrypted draft, experimental-batch, idempotency-reconciliation, and notification metadata in a separate
 database, but the API remains the sole authoritative report database.
 
 For `/dsa-status` and `/dsa-retry`, fetch the report first and compare its

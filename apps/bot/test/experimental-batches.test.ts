@@ -678,6 +678,7 @@ describe("experimental report batch worker", () => {
       reviewStatus: null,
       reviewStatusUpdatedAt: null,
       reviewError: null,
+      appealRetryable: false,
       resubmittable: false,
       error: null,
       createdAt: "2026-08-09T00:00:00.000Z",

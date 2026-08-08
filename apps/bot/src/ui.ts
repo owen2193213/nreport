@@ -1229,6 +1229,16 @@ export function reportEmbed(
 export function reportRetryComponents(
   report: ReportView
 ): ActionRowBuilder<ButtonBuilder>[] {
+  if (report.appealRetryable) {
+    return [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`reports:retry-appeal:${report.internalReportId}`)
+          .setLabel("Retry appeal")
+          .setStyle(ButtonStyle.Primary)
+      )
+    ];
+  }
   if (report.resubmittable) {
     return [
       new ActionRowBuilder<ButtonBuilder>().addComponents(

@@ -1589,6 +1589,30 @@ export class InteractionHandler {
 
   private async handleButton(interaction: ButtonInteraction): Promise<void> {
     const parts = customParts(interaction.customId);
+    if (parts[0] === "reports" && parts[1] === "retry-appeal" && parts[2]) {
+      await interaction.deferUpdate();
+      const report = await this.api.report(parts[2]);
+      this.assertOwner(report, interaction.user.id);
+      if (!report.appealRetryable) {
+        throw new AccessError(
+          "appeal_not_retryable",
+          "This appeal is no longer available for retry."
+        );
+      }
+      const retried = await this.api.retryAppeal(
+        report.internalReportId,
+        interaction.id,
+        interaction.user.id
+      );
+      const snapshot = await this.snapshotFor(retried, interaction.user.id);
+      await interaction.editReply({
+        content: "Appeal queued for another attempt.",
+        embeds: [reportEmbed(retried, snapshot, { history: "full" })],
+        components: reportRetryComponents(retried),
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
     if (parts[0] === "reports" && parts[1] === "retry" && parts[2]) {
       await interaction.deferUpdate();
       const retry = await this.retryAsNewReport(parts[2], interaction.id, interaction.user.id);

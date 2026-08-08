@@ -97,6 +97,7 @@ function reportFixture(): ReportDetail {
     reviewStatus: null,
     reviewStatusUpdatedAt: null,
     reviewError: null,
+    appealRetryable: false,
     resubmittable: false,
     error: null,
     createdAt: "2026-07-19T00:00:00.000Z",
@@ -987,6 +988,7 @@ describe("report UI", () => {
       code: "discord_review_ineligible",
       message: "Discord says this DSA report is ineligible for review."
     };
+    report.appealRetryable = true;
     report.timeline = [
       {
         eventId: "1",
@@ -1016,7 +1018,10 @@ describe("report UI", () => {
     expect(json.fields?.find((field) => field.name === "History")?.value).toMatch(
       /\*\*Appeal ineligible\*\*/
     );
-    expect(reportRetryComponents(report)).toEqual([]);
+    expect(reportRetryComponents(report)[0]?.components[0]?.data).toMatchObject({
+      custom_id: `reports:retry-appeal:${report.internalReportId}`,
+      label: "Retry appeal"
+    });
     expect(lifecycleReplyText("review_ineligible", report)).toBe(
       "Report ineligible for review. No appeal sent."
     );
@@ -1364,6 +1369,63 @@ describe("lifecycle notification deduplication", () => {
 });
 
 describe("report component responsiveness", () => {
+  it("retries an owned ineligible appeal and refreshes the private status", async () => {
+    const ineligible = reportFixture();
+    ineligible.discordStatus = "closed_no_action";
+    ineligible.reviewStatus = "ineligible";
+    ineligible.appealRetryable = true;
+    const queued = reportFixture();
+    queued.discordStatus = "closed_no_action";
+    queued.reviewStatus = "queued";
+    queued.appealRetryable = false;
+    const retryAppeal = vi.fn().mockResolvedValue(queued);
+    const report = vi.fn().mockResolvedValue(ineligible);
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const handler = new InteractionHandler({
+      api: { report, retryAppeal } as unknown as DsaApi,
+      config: {
+        adminUserIds: new Set<string>(),
+        whitelistEnabled: false
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database: {} as BotDatabase,
+      messageResolver: {} as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: {} as ReportWriter,
+      serverResolver: {} as ServerResolver
+    });
+    const interaction = {
+      id: "interaction-1",
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => true,
+      isRepliable: () => true,
+      customId: `reports:retry-appeal:${ineligible.internalReportId}`,
+      user: { id: "1197857362942378017" },
+      deferUpdate,
+      editReply,
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    expect(deferUpdate).toHaveBeenCalledOnce();
+    expect(report).toHaveBeenCalledWith(ineligible.internalReportId);
+    expect(retryAppeal).toHaveBeenCalledWith(
+      ineligible.internalReportId,
+      "interaction-1",
+      "1197857362942378017"
+    );
+    const payload = editReply.mock.calls[0]?.[0];
+    expect(payload?.content).toBe("Appeal queued for another attempt.");
+    expect(JSON.stringify(payload)).not.toContain("reports:retry-appeal");
+  });
+
   it("keeps report status ephemeral without sending a duplicate DM", async () => {
     const report = reportFixture();
     const send = vi.fn().mockResolvedValue({ id: "dm-message" });

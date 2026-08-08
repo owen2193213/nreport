@@ -449,14 +449,17 @@ export class JobRunner {
         return;
       }
       if (job.kind === "submit_review") {
+        const retryIneligible = job.attempts < 2 && isReviewIneligible(failure);
         if (
           job.attempts < job.max_attempts &&
-          isRetryableDiscordFailure(failure)
+          (isRetryableDiscordFailure(failure) || retryIneligible)
         ) {
-          const delaySeconds = Math.max(
-            redacted.retryAfter ?? 0,
-            Math.min(60, 2 ** job.attempts * 5)
-          );
+          const delaySeconds = retryIneligible
+            ? 10
+            : Math.max(
+                redacted.retryAfter ?? 0,
+                Math.min(60, 2 ** job.attempts * 5)
+              );
           await this.database.retryJob(job, redacted.message, delaySeconds);
           this.logger.info(
             {
@@ -812,7 +815,10 @@ export class JobRunner {
         const alreadyRequested = isReviewAlreadyRequested(error);
         const ineligible = isReviewIneligible(error);
         const retryable = isRetryableDiscordFailure(error);
-        if (retryable && job.attempts < job.max_attempts) {
+        if (
+          job.attempts < job.max_attempts &&
+          (retryable || (ineligible && job.attempts < 2))
+        ) {
           throw new ReviewAttemptError("submit_report_review", error);
         }
         const ambiguous = !ineligible && isAmbiguousReviewFailure(error);

@@ -409,7 +409,51 @@ describe("JobRunner proxy rotation", () => {
     expect(retryDelay).toBe(17);
   });
 
-  it("preserves Discord code 521004 as an ineligible appeal", async () => {
+  it("retries the first Discord code 521004 response after 10 seconds", async () => {
+    clientState.submitReportReviewToken.mockRejectedValue(
+      new DiscordDsaHttpError("ineligible", 400, {
+        responseSummary: "code 521004; DSA_RSL_REPORT_INELIGIBLE"
+      })
+    );
+    let retryDelay: number | undefined;
+    let markedIneligible = false;
+    const database = {
+      getReport: () =>
+        Promise.resolve(report({
+          status: "submitted",
+          discord_report_id: "discord-report-1",
+          review_status: "queued"
+        })),
+      retryJob: (_job: JobRow, _message: string, delaySeconds: number) => {
+        retryDelay = delaySeconds;
+        return Promise.resolve(undefined);
+      },
+      markReviewIneligible: () => {
+        markedIneligible = true;
+        return Promise.resolve(undefined);
+      },
+      completeJob: () => Promise.resolve(undefined)
+    } as unknown as Database;
+    const runner = new JobRunner(database, config, logger());
+
+    await (runner as unknown as { processJob(value: JobRow): Promise<void> }).processJob(
+      job({
+        kind: "submit_review",
+        attempts: 1,
+        payload: {
+          encryptedReviewUrl: encryptJson(
+            { reviewUrl: "https://discord.com/report-review#token=review-token" },
+            config.sessionEncryptionKey
+          )
+        }
+      })
+    );
+
+    expect(retryDelay).toBe(10);
+    expect(markedIneligible).toBe(false);
+  });
+
+  it("preserves a second Discord code 521004 response as an ineligible appeal", async () => {
     clientState.submitReportReviewToken.mockRejectedValue(
       new DiscordDsaHttpError("ineligible", 400, {
         responseSummary: "code 521004; DSA_RSL_REPORT_INELIGIBLE"
@@ -427,6 +471,8 @@ describe("JobRunner proxy rotation", () => {
         markedIneligible = true;
         return Promise.resolve(undefined);
       },
+      retryJob: (_job: JobRow, message: string) =>
+        Promise.reject(new Error(`unexpected retry: ${message}`)),
       completeJob: () => Promise.resolve(undefined)
     } as unknown as Database;
     const runner = new JobRunner(database, config, logger());
@@ -434,6 +480,7 @@ describe("JobRunner proxy rotation", () => {
     await (runner as unknown as { processJob(value: JobRow): Promise<void> }).processJob(
       job({
         kind: "submit_review",
+        attempts: 2,
         payload: {
           encryptedReviewUrl: encryptJson(
             { reviewUrl: "https://discord.com/report-review#token=review-token" },

@@ -408,6 +408,46 @@ describe("OpenRouter report writer", () => {
     expect(text).toContain("video/mp4");
   });
 
+  it("guides message reports to prioritize content and the reporter explanation", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        researchCompletion("DE", "The message uses a hateful slur.")
+      )
+      .mockResolvedValueOnce(reportCompletion());
+    const draft: ReportDraft = {
+      flow: "message_urf",
+      country: "DE",
+      countrySelection: "override",
+      reportType: "sub_other_hate_speech",
+      reportBrief: "The message uses a hateful slur.",
+      messageUrl:
+        "https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+      messageSnapshot: {
+        messageId: "323456789012345678",
+        channelId: "223456789012345678",
+        channelName: "reports",
+        serverId: "123456789012345678",
+        serverName: "Example",
+        authorId: "423456789012345678",
+        authorUsername: "example",
+        authorDisplayName: null,
+        authorBot: false,
+        content: "A hateful slur",
+        createdAt: "2026-07-20T00:00:00.000Z",
+        attachments: [],
+        embeds: []
+      }
+    };
+
+    await fixedWriter(request).generate(draft, ACTOR);
+
+    const messages = JSON.stringify(requestBody<{ messages: unknown[] }>(request, 1).messages);
+    expect(messages).toContain(
+      "For message reports, lead with the reported message's content or conduct and the reporter explanation"
+    );
+  });
+
   it("rewrites a denied report instead of fixing its prior reason as the new reason", async () => {
     const request = vi
       .fn()

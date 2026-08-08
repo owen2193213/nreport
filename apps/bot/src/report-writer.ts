@@ -396,6 +396,7 @@ export function initialWriterPrompt(): string {
     "Task: Write the final Discord DSA report from the preceding evidence and legal research.",
     "Use this adaptable structure: I am reporting [target or content] because [observed fact or quoted term]. This means or suggests [brief contextual explanation] and may be harmful because [specific impact]. This may conflict with Discord's Community Guidelines and [specific law or provision], which addresses [brief legal relevance]. I request review, removal where appropriate, and suitable enforcement action.",
     "Adapt the structure naturally for any username, profile, message, server, image, attachment, or other reported element. Omit clauses that do not apply and do not copy the template mechanically.",
+    "For message reports, lead with the reported message's content or conduct and the reporter explanation; mention the author's username only when necessary for factual clarity.",
     "Use the adaptable structure as guidance only. Never reuse facts, countries, laws, or conclusions that are not independently supported by the supplied evidence and research.",
     "Write in neutral, factual language and use only the supplied facts.",
     "Write the report entirely in English.",

@@ -23,13 +23,17 @@ import {
   experimentalObservationSchedule,
   experimentalRetryDelaySeconds
 } from "../src/database.js";
-import { experimentalBatchEmbed } from "../src/experimental-batch-ui.js";
+import {
+  experimentalBatchEmbed,
+  experimentalLatestOutcome,
+  experimentalReportedMessage
+} from "../src/experimental-batch-ui.js";
 import {
   ExperimentalBatchWorker,
   runWithConcurrency
 } from "../src/experimental-batch-worker.js";
 import type { ReportWriter } from "../src/report-writer.js";
-import type { ReportDraft } from "../src/types.js";
+import type { MessageSnapshot, ReportDraft } from "../src/types.js";
 import type { ExperimentalBatchWorkItemRow } from "../src/database.js";
 
 class ReservationPool {
@@ -171,6 +175,78 @@ class ReleasePool {
     },
     release: () => undefined
   });
+}
+
+class LifecyclePool {
+  public readonly batchReviewStatuses: unknown[] = [];
+
+  public connect = () => ({
+    query: (sql: string, values: unknown[] = []) => {
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+        return { rows: [], rowCount: null };
+      }
+      if (sql.includes("SELECT item.* FROM experimental_report_batch_items")) {
+        return {
+          rows: [{ ...this.itemRow(), lifecycle_retries: 0 }],
+          rowCount: 1
+        };
+      }
+      if (sql.includes("SELECT * FROM report_tracking")) {
+        return {
+          rows: [{
+            discord_user_id: "1197857362942378017",
+            flow: "message_urf",
+            encrypted_request: "encrypted",
+            server_snapshot: null,
+            ai_decisions: []
+          }],
+          rowCount: 1
+        };
+      }
+      if (sql.includes("UPDATE experimental_report_batch_items")) {
+        const placeholder = /last_review_status\s*=\s*\$(\d+)/.exec(sql);
+        this.batchReviewStatuses.push(
+          placeholder ? values[Number(placeholder[1]) - 1] : undefined
+        );
+      }
+      return { rows: [], rowCount: 1 };
+    },
+    release: () => undefined
+  });
+
+  private itemRow(): ExperimentalBatchWorkItemRow {
+    return {
+      id: "item-id",
+      batch_id: "batch-id",
+      ordinal: 1,
+      report_type: "sub_other_hate_speech",
+      state: "retrying",
+      preparation_attempts: 1,
+      create_attempts: 1,
+      lifecycle_retries: 0,
+      explanation_fingerprint: null,
+      tracking_id: "tracking-id",
+      original_report_id: "report-1",
+      current_report_id: "report-1",
+      successor_report_id: null,
+      credit_state: "consumed",
+      safe_error_code: null,
+      last_status: "failed",
+      last_discord_status: null,
+      last_review_status: null,
+      retryable: true,
+      discord_user_id: "1197857362942378017",
+      interaction_id: "interaction-id",
+      mode: "same_category_10x",
+      item_count: 10,
+      encrypted_draft: "encrypted",
+      category_snapshot: [...USER_MESSAGE_REPORT_REASONS],
+      shared_report_type: "sub_other_hate_speech",
+      status_dm_message_id: null,
+      dm_blocked: false,
+      encrypted_request: "encrypted"
+    };
+  }
 }
 
 describe("experimental report batch domain", () => {
@@ -386,15 +462,126 @@ describe("experimental report batch scheduling", () => {
   });
 });
 
+describe("experimental report batch lifecycle persistence", () => {
+  const lifecycleReport = (
+    reviewStatus: ReportDetail["reviewStatus"]
+  ): ReportDetail => ({
+    internalReportId: "report-2",
+    status: "submitted",
+    discordStatus: "actioned",
+    reviewStatus,
+    retryable: false,
+    error: null,
+    country: "DE",
+    reportType: "sub_other_hate_speech"
+  } as ReportDetail);
+
+  it("persists appeal status on create, observation, and retry transitions", async () => {
+    const pool = new LifecyclePool();
+    const database = new BotDatabase("postgres://test", pool as unknown as Pool);
+
+    await database.markExperimentalSubmissionCreated(
+      "item-id",
+      "tracking-id",
+      lifecycleReport(null)
+    );
+    await database.observeExperimentalBatchItem(
+      "item-id",
+      "tracking-id",
+      lifecycleReport("approved"),
+      0
+    );
+    await database.trackExperimentalRetryReport(
+      "item-id",
+      "tracking-id",
+      "experimental:batch-id:1",
+      lifecycleReport("requested")
+    );
+
+    expect(pool.batchReviewStatuses).toEqual([null, "approved", "requested"]);
+  });
+});
+
 describe("experimental report batch aggregate card", () => {
+  it.each([
+    [{ state: "submitted", lastStatus: "submitted", lastDiscordStatus: null,
+      lastReviewStatus: "approved" }, "Appeal accepted"],
+    [{ state: "submitted", lastStatus: "submitted", lastDiscordStatus: "actioned",
+      lastReviewStatus: null }, "Report accepted"],
+    [{ state: "submitted", lastStatus: "submitted", lastDiscordStatus: "closed_no_action",
+      lastReviewStatus: null }, "Report closed without action"],
+    [{ state: "submitted", lastStatus: "submitted", lastDiscordStatus: "received",
+      lastReviewStatus: null }, "Report received — awaiting decision"],
+    [{ state: "submitted", lastStatus: "submitted", lastDiscordStatus: null,
+      lastReviewStatus: null }, "Submitted — awaiting confirmation"],
+    [{ state: "preparing", lastStatus: null, lastDiscordStatus: null,
+      lastReviewStatus: null }, "Preparing with AI"]
+  ] as const)("selects the authoritative latest outcome", (item, expected) => {
+    expect(experimentalLatestOutcome(item)).toBe(expected);
+  });
+
+  it.each([
+    ["queued", "Appeal preparing"],
+    ["requested", "Appeal submitted — awaiting confirmation"],
+    ["received", "Appeal received — awaiting decision"],
+    ["confirmation_timeout", "Appeal submitted — confirmation not received"],
+    ["request_failed", "Appeal failed"],
+    ["ineligible", "Appeal unavailable"],
+    ["request_ambiguous", "Appeal uncertain"],
+    ["approved", "Appeal accepted"],
+    ["not_approved", "Appeal denied"]
+  ] as const)("renders review status %s", (lastReviewStatus, expected) => {
+    expect(experimentalLatestOutcome({
+      state: "submitted",
+      lastStatus: "submitted",
+      lastDiscordStatus: "actioned",
+      lastReviewStatus
+    })).toBe(expected);
+  });
+
+  it("renders a bounded original message or a content-count fallback", () => {
+    const snapshot: MessageSnapshot = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      channelName: "general",
+      serverId: "server-1",
+      serverName: "Example",
+      authorId: "author-1",
+      authorUsername: "author",
+      authorDisplayName: "Author",
+      authorBot: false,
+      content: `  Original targeted content\r\n${"x".repeat(600)}  `,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      attachments: [],
+      embeds: []
+    };
+
+    const rendered = experimentalReportedMessage(snapshot);
+    expect(rendered).toContain("Original targeted content\n");
+    expect(rendered).toHaveLength(500);
+    expect(experimentalReportedMessage({
+      ...snapshot,
+      content: "",
+      attachments: [
+        { name: "one", url: "https://example.invalid/one", contentType: null },
+        { name: "two", url: "https://example.invalid/two", contentType: null }
+      ],
+      embeds: [{ title: null, description: null, url: null }]
+    })).toBe("No text content · 2 attachments · 1 embed");
+  });
+
   it("fits every current message category in one Discord embed", () => {
     const embed = experimentalBatchEmbed({
       mode: "all_categories",
       itemCount: 18,
+      reportedMessage: "Original targeted content",
       items: USER_MESSAGE_REPORT_REASONS.map((reason, index) => ({
         ordinal: index + 1,
         categoryLabel: reason.label,
         state: "submitted",
+        lastStatus: "submitted",
+        lastDiscordStatus: "actioned",
+        lastReviewStatus: null,
         reportReason: "A".repeat(512),
         originalReportId: `original-report-${index + 1}`,
         currentReportId: `current-report-${index + 1}`,
@@ -404,6 +591,8 @@ describe("experimental report batch aggregate card", () => {
     }).toJSON();
 
     expect(embed.fields).toHaveLength(18);
+    expect(embed.description).toContain("**Reported message**\nOriginal targeted content");
+    expect(embed.fields![0]?.value).toContain("Latest: **Report accepted**");
     expect(embed.fields!.every((field) => field.name.length <= 256)).toBe(true);
     expect(embed.fields!.every((field) => field.value.length <= 1_024)).toBe(true);
     const characters =
@@ -449,6 +638,7 @@ describe("experimental report batch worker", () => {
       safe_error_code: null,
       last_status: null,
       last_discord_status: null,
+      last_review_status: null,
       retryable: null,
       discord_user_id: "1197857362942378017",
       interaction_id: "interaction-id",
@@ -687,13 +877,55 @@ describe("experimental report batch worker", () => {
   });
 
   it("edits one saved aggregate DM instead of sending per-item messages", async () => {
-    const item = workItem({ preparation_attempts: 1 });
-    const savedRow = { ...item, status_dm_message_id: "dm-1" };
+    type AggregatePayload = {
+      embeds: Array<{
+        toJSON(): {
+          description?: string;
+          fields?: Array<{ value: string }>;
+        };
+      }>;
+    };
+    const messageSnapshot: MessageSnapshot = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      channelName: "general",
+      serverId: "server-1",
+      serverName: "Example",
+      authorId: "author-1",
+      authorUsername: "author",
+      authorDisplayName: "Author",
+      authorBot: false,
+      content: "Original targeted content",
+      createdAt: "2026-08-09T00:00:00.000Z",
+      attachments: [],
+      embeds: []
+    };
+    const item = workItem({
+      preparation_attempts: 1,
+      encrypted_draft: encryptJson({ ...draft, messageSnapshot }, encryptionKey)
+    });
+    const savedRow = {
+      ...item,
+      state: "submitted" as const,
+      status_dm_message_id: "dm-1",
+      last_status: "submitted" as const,
+      last_discord_status: "actioned" as const,
+      last_review_status: "approved" as const
+    };
+    let sentEmbed: ReturnType<AggregatePayload["embeds"][number]["toJSON"]> | undefined;
+    let editedEmbed: ReturnType<AggregatePayload["embeds"][number]["toJSON"]> | undefined;
+    const edit = vi.fn((payload: AggregatePayload) => {
+      editedEmbed = payload.embeds[0]?.toJSON();
+      return Promise.resolve(undefined);
+    });
     const message = {
       id: "dm-1",
-      edit: vi.fn().mockResolvedValue(undefined)
+      edit
     };
-    const send = vi.fn().mockResolvedValue(message);
+    const send = vi.fn((payload: AggregatePayload) => {
+      sentEmbed = payload.embeds[0]?.toJSON();
+      return Promise.resolve(message);
+    });
     const fetchMessage = vi.fn().mockResolvedValue(message);
     const database = {
       claimExperimentalBatchItems: vi.fn().mockResolvedValue([item]),
@@ -727,7 +959,10 @@ describe("experimental report batch worker", () => {
 
     expect(send).toHaveBeenCalledOnce();
     expect(fetchMessage).toHaveBeenCalledWith("dm-1");
-    expect(message.edit).toHaveBeenCalledOnce();
+    expect(edit).toHaveBeenCalledOnce();
+    expect(sentEmbed?.description).toContain("Original targeted content");
+    expect(editedEmbed?.description).toContain("Original targeted content");
+    expect(editedEmbed?.fields?.[0]?.value).toContain("Appeal accepted");
   });
 
   it("releases a definite create rejection", async () => {

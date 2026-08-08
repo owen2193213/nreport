@@ -167,11 +167,14 @@ stable retry identity and no additional credit. `ambiguous_submission_state`, ot
 results, and a failed successor are terminal for the item.
 
 The worker creates one private aggregate embed and edits that same message after meaningful state
-changes. It shows each category, bounded reason preview, original/current report IDs, successor ID,
-and safe failure code. Batch tracking rows set `dm_enabled=false`, so webhook and 15-minute feed
-events wake the owning batch item without creating individual lifecycle DMs. A deleted card is
-replaced once; Discord error 50007 permanently disables further aggregate DM attempts without
-stopping report processing.
+changes. Near the top it decrypts and shows a bounded preview of the original targeted message
+once; message content is never copied into a plaintext database column or structured log. Each
+item shows its category, bounded reason preview, original/current report IDs, successor ID, safe
+failure code, and one latest outcome selected in appeal, Discord report, API report, then worker
+state precedence. Batch tracking rows set `dm_enabled=false`, so webhook and 15-minute feed events
+wake the owning batch item, fetch authoritative API detail, and edit the aggregate card without
+creating individual lifecycle DMs. A deleted card is replaced once; Discord error 50007 permanently
+disables further aggregate DM attempts without stopping report processing.
 
 ## AI report writing
 

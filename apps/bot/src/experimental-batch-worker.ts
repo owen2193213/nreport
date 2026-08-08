@@ -12,7 +12,10 @@ import {
   explanationFingerprint,
   experimentalItemIdentity
 } from "./experimental-batches.js";
-import { experimentalBatchEmbed } from "./experimental-batch-ui.js";
+import {
+  experimentalBatchEmbed,
+  experimentalReportedMessage
+} from "./experimental-batch-ui.js";
 import { applyWriterResult } from "./interactions.js";
 import { botLog, errorFields, pseudonymousActorKey } from "./observability.js";
 import type { ReportWriter } from "./report-writer.js";
@@ -347,6 +350,18 @@ export class ExperimentalBatchWorker {
     const rows = await this.database.experimentalBatchView(batchId);
     const first = rows[0];
     if (!first || first.dm_blocked) return;
+    let reportedMessage: string | null = null;
+    try {
+      const draft = decryptJson<ReportDraft>(
+        first.encrypted_draft,
+        this.config.dataEncryptionKey
+      );
+      if (draft.messageSnapshot) {
+        reportedMessage = experimentalReportedMessage(draft.messageSnapshot);
+      }
+    } catch {
+      reportedMessage = null;
+    }
     const items = rows.map((row) => {
       let reportReason: string | null = null;
       if (row.encrypted_request) {
@@ -366,6 +381,9 @@ export class ExperimentalBatchWorker {
             reportReasonLabel("message_urf", row.report_type)
           : "Choosing category",
         state: row.state,
+        lastStatus: row.last_status,
+        lastDiscordStatus: row.last_discord_status,
+        lastReviewStatus: row.last_review_status,
         reportReason,
         originalReportId: row.original_report_id,
         currentReportId: row.current_report_id,
@@ -378,6 +396,7 @@ export class ExperimentalBatchWorker {
         experimentalBatchEmbed({
           mode: first.mode,
           itemCount: first.item_count,
+          reportedMessage,
           items
         })
       ],

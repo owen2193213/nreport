@@ -117,6 +117,52 @@ export interface MessageSnapshot {
   }>;
 }
 
+export type ExperimentalBatchMode = "same_category_10x" | "all_categories";
+
+export type ExperimentalBatchItemState =
+  | "blocked"
+  | "queued"
+  | "preparing"
+  | "creating"
+  | "reconciling"
+  | "observing"
+  | "retrying"
+  | "submitted"
+  | "failed";
+
+export type ExperimentalBatchCreditState = "none" | "reserved" | "consumed" | "released";
+
+export interface ExperimentalBatchRecord {
+  id: string;
+  discordUserId: string;
+  interactionId: string;
+  mode: ExperimentalBatchMode;
+  itemCount: number;
+  encryptedDraft: string;
+  categories: Array<{ label: string; value: string }>;
+  sharedReportType: string | null;
+  statusDmMessageId: string | null;
+  dmBlocked: boolean;
+}
+
+export interface ExperimentalBatchItemRecord {
+  id: string;
+  batchId: string;
+  ordinal: number;
+  reportType: string | null;
+  state: ExperimentalBatchItemState;
+  preparationAttempts: number;
+  createAttempts: number;
+  lifecycleRetries: number;
+  explanationFingerprint: string | null;
+  trackingId: string | null;
+  originalReportId: string | null;
+  currentReportId: string | null;
+  successorReportId: string | null;
+  creditState: ExperimentalBatchCreditState;
+  safeErrorCode: string | null;
+}
+
 export interface AccessView {
   aiCostCredits: number;
   aiInputTokens: number;

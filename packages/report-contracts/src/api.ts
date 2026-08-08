@@ -101,6 +101,24 @@ export class DsaApi {
     });
   }
 
+  public retryAppeal(
+    internalReportId: string,
+    interactionId: string,
+    discordUserId: string
+  ): Promise<ReportDetail> {
+    return this.request(
+      `/v1/reports/${encodeURIComponent(internalReportId)}/retry-appeal`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": `appeal-retry:${interactionId}`
+        },
+        body: JSON.stringify({ submitterDiscordUserId: discordUserId })
+      }
+    );
+  }
+
   public lifecycleEvents(
     afterEventId: string,
     limit = 100

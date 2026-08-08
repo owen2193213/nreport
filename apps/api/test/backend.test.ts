@@ -5,6 +5,7 @@ import { faker } from "@faker-js/faker";
 import { DiscordDsaHttpError, DiscordDsaNetworkError } from "@discord-dsa/client";
 import { describe, expect, it } from "vitest";
 
+import type { AppConfig } from "../src/config.js";
 import {
   extractVerificationCode,
   inspectDiscordEmail,
@@ -46,6 +47,7 @@ import {
   signReportEvent,
   verifyInboundSignature
 } from "../src/security.js";
+import { buildServer } from "../src/server.js";
 import {
   DISCORD_FORM_LANGUAGE,
   parseCreateReportInput,
@@ -55,13 +57,52 @@ import {
 function reviewReport(overrides: Partial<ReportRow> = {}): ReportRow {
   return {
     id: "report-1",
+    idempotency_key: "create:interaction-1",
+    request_hash: "request-hash",
+    flow: "message_urf",
+    country: "DE",
+    report_type: "sub_other_hate_speech",
     submitter_discord_user_id: "123456789012345678",
+    reporter_legal_name: "Test Reporter",
+    reporter_email: "test.reporter@example.org",
+    timezone: "Europe/Berlin",
+    locale: "de-DE",
+    language: "de",
+    proxy_session_id: "123456789012",
+    status: "submitted",
+    input: {
+      country: "DE",
+      flow: "message_urf",
+      messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+      reportReason: "The message contains hateful content.",
+      reportType: "sub_other_hate_speech",
+      submitterDiscordUserId: "123456789012345678"
+    },
+    session_state: null,
+    discord_report_id: "1535782696062816367",
+    discord_status: "closed_no_action",
+    discord_status_updated_at: new Date("2026-08-09T00:00:00.000Z"),
     review_status: "ineligible",
+    review_status_updated_at: new Date("2026-08-09T00:01:00.000Z"),
+    review_confirmation_deadline: null,
+    review_error_code: "discord_review_ineligible",
+    review_error_message: "Discord says this DSA report is ineligible for review.",
     review_retry_idempotency_key: null,
     review_retry_requested_at: null,
+    error_code: null,
+    error_message: null,
     lifecycle_attempt: 1,
+    retryable: false,
+    failure_stage: null,
+    retry_of_report_id: null,
+    retried_as_report_id: null,
+    retry_sequence: 0,
+    verification_deadline: null,
+    receipt_deadline: null,
+    created_at: new Date("2026-08-09T00:00:00.000Z"),
+    updated_at: new Date("2026-08-09T00:01:00.000Z"),
     ...overrides
-  } as ReportRow;
+  };
 }
 
 function reviewRetryDatabase(input: {
@@ -580,6 +621,90 @@ describe("manual appeal retry", () => {
       name: "ReviewRetryError",
       code: "review_retry_unavailable"
     } satisfies Partial<ReviewRetryError>);
+  });
+});
+
+describe("manual appeal retry API", () => {
+  const config: AppConfig = {
+    apiKey: "a".repeat(32),
+    databaseUrl: "postgres://unused",
+    emailDomain: "reports.example.org",
+    environment: "test",
+    port: 3000,
+    proxyUrlTemplate: "http://proxy.example/{country}/{session}",
+    sessionEncryptionKey: Buffer.alloc(32, 7),
+    webhookSecret: "w".repeat(32),
+    workerEnabled: false
+  };
+
+  it.each([
+    [false, 202],
+    [true, 200]
+  ])("returns the queued report when replayed is %s", async (replayed, statusCode) => {
+    let acceptedInput: unknown;
+    const queued = reviewReport({
+      review_status: "queued",
+      review_error_code: null,
+      review_error_message: null
+    });
+    const database = {
+      retryIneligibleReview: (input: unknown) => {
+        acceptedInput = input;
+        return Promise.resolve({ replayed, report: queued });
+      },
+      getReportEvents: () => Promise.resolve([])
+    } as unknown as Database;
+    const server = await buildServer(config, database);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/reports/report-1/retry-appeal",
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        "idempotency-key": "appeal-retry:interaction-1"
+      },
+      payload: { submitterDiscordUserId: "123456789012345678" }
+    });
+    await server.close();
+
+    expect(response.statusCode).toBe(statusCode);
+    expect(response.json()).toMatchObject({
+      internalReportId: "report-1",
+      reviewStatus: "queued",
+      appealRetryable: false
+    });
+    expect(acceptedInput).toEqual({
+      reportId: "report-1",
+      submitterDiscordUserId: "123456789012345678",
+      idempotencyKey: "appeal-retry:interaction-1"
+    });
+  });
+
+  it("maps appeal ownership failures without leaking the retained link", async () => {
+    const database = {
+      retryIneligibleReview: () =>
+        Promise.reject(new ReviewRetryError("report_owner_mismatch"))
+    } as unknown as Database;
+    const server = await buildServer(config, database);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/reports/report-1/retry-appeal",
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        "idempotency-key": "appeal-retry:interaction-1"
+      },
+      payload: { submitterDiscordUserId: "999999999999999999" }
+    });
+    await server.close();
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({
+      error: {
+        code: "report_owner_mismatch",
+        message: "The Discord user does not own this report."
+      }
+    });
   });
 });
 

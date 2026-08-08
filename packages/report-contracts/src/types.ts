@@ -116,6 +116,7 @@ export interface ReportSummary {
   reviewStatus: DiscordReviewStatus | null;
   reviewStatusUpdatedAt: string | null;
   reviewError: { code: string; message: string | null } | null;
+  appealRetryable: boolean;
   resubmittable: boolean;
   error: { code: string; message: string | null } | null;
   createdAt: string;

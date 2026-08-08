@@ -12,7 +12,11 @@ import Fastify from "fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 import type { AppConfig } from "./config.js";
-import { IdempotencyConflictError, ReportRetryError } from "./database.js";
+import {
+  IdempotencyConflictError,
+  ReportRetryError,
+  ReviewRetryError
+} from "./database.js";
 import type { Database, ReportEventRow, ReportRow } from "./database.js";
 import { inspectDiscordEmail } from "./email.js";
 import {
@@ -55,6 +59,7 @@ function publicReportSummary(report: ReportRow): ReportSummary {
       report.review_error_code === null
         ? null
         : { code: report.review_error_code, message: report.review_error_message },
+    appealRetryable: report.review_status === "ineligible",
     resubmittable:
       report.discord_status === "review_not_approved" &&
       report.retried_as_report_id === null,
@@ -330,6 +335,54 @@ export async function buildServer(config: AppConfig, database: Database) {
         if (error instanceof IdempotencyConflictError) {
           return reply.code(409).send({
             error: { code: "idempotency_conflict", message: error.message }
+          });
+        }
+        throw error;
+      }
+    }
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/v1/reports/:id/retry-appeal",
+    { preHandler: authorize, config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const idempotencyKey = header(request, "idempotency-key")?.trim();
+      if (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 200) {
+        return reply.code(400).send({
+          error: {
+            code: "invalid_idempotency_key",
+            message: "Idempotency-Key must contain between 8 and 200 characters."
+          }
+        });
+      }
+      let input: ReturnType<typeof parseRetryReportInput>;
+      try {
+        input = parseRetryReportInput(request.body);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Invalid appeal retry request.";
+        return reply.code(400).send({ error: { code: "invalid_request", message } });
+      }
+      try {
+        const result = await database.retryIneligibleReview({
+          reportId: request.params.id,
+          submitterDiscordUserId: input.submitterDiscordUserId,
+          idempotencyKey
+        });
+        request.log.info(
+          {
+            event: "appeal_retry_accepted",
+            reportId: result.report.id,
+            replayed: result.replayed
+          },
+          "Appeal retry accepted"
+        );
+        return reply
+          .code(result.replayed ? 200 : 202)
+          .send(await publicReportDetail(database, result.report));
+      } catch (error) {
+        if (error instanceof ReviewRetryError) {
+          return reply.code(error.statusCode).send({
+            error: { code: error.code, message: error.message }
           });
         }
         throw error;

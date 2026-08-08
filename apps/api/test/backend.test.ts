@@ -11,15 +11,18 @@ import {
   parseDiscordEmail
 } from "../src/email.js";
 import {
+  Database,
   DISCORD_RECEIPT_TIMEOUT_SECONDS,
   DISCORD_REVIEW_CONFIRMATION_TIMEOUT_SECONDS,
   isRetryableFailure,
+  ReviewRetryError,
   shouldExpireDiscordReceipt,
   statusAfterSessionPersistence,
   shouldResendVerification,
   shouldApplyDiscordStatus,
   VERIFICATION_EMAIL_RESEND_DELAYS_SECONDS,
-  VERIFICATION_EMAIL_TIMEOUT_SECONDS
+  VERIFICATION_EMAIL_TIMEOUT_SECONDS,
+  type ReportRow
 } from "../src/database.js";
 import {
   discordErrorCode,
@@ -48,6 +51,71 @@ import {
   parseCreateReportInput,
   parseRetryReportInput
 } from "../src/validation.js";
+
+function reviewReport(overrides: Partial<ReportRow> = {}): ReportRow {
+  return {
+    id: "report-1",
+    submitter_discord_user_id: "123456789012345678",
+    review_status: "ineligible",
+    review_retry_idempotency_key: null,
+    review_retry_requested_at: null,
+    lifecycle_attempt: 1,
+    ...overrides
+  } as ReportRow;
+}
+
+function reviewRetryDatabase(input: {
+  report?: ReportRow;
+  retainedJob?: boolean;
+} = {}): { database: Database; queries: string[] } {
+  const report = input.report ?? reviewReport();
+  const queries: string[] = [];
+  const client = {
+    query: (sql: string, values?: unknown[]) => {
+      queries.push(sql);
+      if (sql.includes("SELECT * FROM reports") && sql.includes("FOR UPDATE")) {
+        return Promise.resolve({ rows: report ? [report] : [], rowCount: report ? 1 : 0 });
+      }
+      if (sql.includes("FROM report_jobs") && sql.includes("submit_review")) {
+        return Promise.resolve({
+          rows:
+            input.retainedJob === false
+              ? []
+              : [{ id: "job-1", state: "completed", payload: { encryptedReviewUrl: "encrypted" } }],
+          rowCount: input.retainedJob === false ? 0 : 1
+        });
+      }
+      if (sql.includes("UPDATE reports") && sql.includes("RETURNING *")) {
+        return Promise.resolve({
+          rows: [
+            reviewReport({
+              review_status: "queued",
+              review_retry_idempotency_key: String(values?.[1]),
+              review_retry_requested_at: new Date()
+            })
+          ],
+          rowCount: 1
+        });
+      }
+      if (sql.includes("SELECT lifecycle_attempt")) {
+        return Promise.resolve({ rows: [{ lifecycle_attempt: 1 }], rowCount: 1 });
+      }
+      if (sql.includes("INSERT INTO report_events")) {
+        return Promise.resolve({
+          rows: [{ id: "1", report_id: "report-1", event_type: "review_queued", metadata: {} }],
+          rowCount: 1
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 1 });
+    },
+    release: () => undefined
+  };
+  const database = new Database("postgres://unused");
+  (database as unknown as { pool: unknown }).pool = {
+    connect: () => Promise.resolve(client)
+  };
+  return { database, queries };
+}
 
 describe("backend identity and validation", () => {
   it("extracts only safe diagnostics from a wrapped Discord network failure", () => {
@@ -438,6 +506,80 @@ describe("backend identity and validation", () => {
         deadline
       )
     ).toBe(false);
+  });
+});
+
+describe("manual appeal retry", () => {
+  const retryInput = {
+    reportId: "report-1",
+    submitterDiscordUserId: "123456789012345678",
+    idempotencyKey: "appeal-retry:interaction-1"
+  };
+
+  it("requeues the retained encrypted review job without exposing its payload", async () => {
+    const { database, queries } = reviewRetryDatabase();
+
+    const result = await database.retryIneligibleReview(retryInput);
+
+    expect(result.replayed).toBe(false);
+    expect(result.report.review_status).toBe("queued");
+    expect(JSON.stringify(result)).not.toContain("encrypted");
+    expect(queries.some((sql) => sql.includes("SET state = 'pending'") && sql.includes("attempts = 0")))
+      .toBe(true);
+    expect(queries.some((sql) => sql.includes("INSERT INTO report_events"))).toBe(true);
+  });
+
+  it("returns an idempotent replay without requeueing the job again", async () => {
+    const { database, queries } = reviewRetryDatabase({
+      report: reviewReport({
+        review_status: "queued",
+        review_retry_idempotency_key: retryInput.idempotencyKey,
+        review_retry_requested_at: new Date()
+      })
+    });
+
+    const result = await database.retryIneligibleReview(retryInput);
+
+    expect(result).toMatchObject({ replayed: true, report: { id: "report-1" } });
+    expect(queries.some((sql) => sql.includes("UPDATE report_jobs"))).toBe(false);
+  });
+
+  it.each([
+    [
+      "report_owner_mismatch",
+      reviewReport({ submitter_discord_user_id: "999999999999999999" }),
+      retryInput
+    ],
+    [
+      "review_not_ineligible",
+      reviewReport({ review_status: "request_ambiguous" }),
+      retryInput
+    ],
+    [
+      "review_retry_cooldown",
+      reviewReport({
+        review_retry_idempotency_key: "appeal-retry:older-interaction",
+        review_retry_requested_at: new Date()
+      }),
+      retryInput
+    ]
+  ] as const)("rejects %s without mutating the job", async (code, report, input) => {
+    const { database, queries } = reviewRetryDatabase({ report });
+
+    await expect(database.retryIneligibleReview(input)).rejects.toMatchObject({
+      name: "ReviewRetryError",
+      code
+    } satisfies Partial<ReviewRetryError>);
+    expect(queries.some((sql) => sql.includes("UPDATE report_jobs"))).toBe(false);
+  });
+
+  it("rejects an ineligible report whose encrypted review job is unavailable", async () => {
+    const { database } = reviewRetryDatabase({ retainedJob: false });
+
+    await expect(database.retryIneligibleReview(retryInput)).rejects.toMatchObject({
+      name: "ReviewRetryError",
+      code: "review_retry_unavailable"
+    } satisfies Partial<ReviewRetryError>);
   });
 });
 

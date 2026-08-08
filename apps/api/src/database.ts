@@ -22,6 +22,7 @@ export const VERIFICATION_EMAIL_TIMEOUT_SECONDS = 60;
 export const VERIFICATION_EMAIL_RESEND_DELAYS_SECONDS = [20, 40] as const;
 export const DISCORD_RECEIPT_TIMEOUT_SECONDS = 120;
 export const DISCORD_REVIEW_CONFIRMATION_TIMEOUT_SECONDS = 120;
+export const REVIEW_RETRY_COOLDOWN_SECONDS = 30;
 
 export function statusAfterSessionPersistence(current: ReportStatus): ReportStatus {
   return current === "verification_received" ? current : "awaiting_verification";
@@ -88,6 +89,8 @@ export interface ReportRow extends QueryResultRow {
   review_confirmation_deadline: Date | null;
   review_error_code: string | null;
   review_error_message: string | null;
+  review_retry_idempotency_key: string | null;
+  review_retry_requested_at: Date | null;
   error_code: string | null;
   error_message: string | null;
   lifecycle_attempt: number;
@@ -168,6 +171,17 @@ export interface RetryReportResult {
   report: ReportRow;
 }
 
+export interface RetryIneligibleReviewInput {
+  reportId: string;
+  submitterDiscordUserId: string;
+  idempotencyKey: string;
+}
+
+export interface RetryIneligibleReviewResult {
+  replayed: boolean;
+  report: ReportRow;
+}
+
 export type ReportRetryErrorCode =
   | "report_not_found"
   | "report_owner_mismatch"
@@ -213,6 +227,8 @@ CREATE TABLE IF NOT EXISTS reports (
   review_confirmation_deadline timestamptz,
   review_error_code text,
   review_error_message text,
+  review_retry_idempotency_key text,
+  review_retry_requested_at timestamptz,
   error_code text,
   error_message text,
   lifecycle_attempt integer NOT NULL DEFAULT 1,
@@ -290,6 +306,8 @@ ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_status_updated_at timestampt
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_confirmation_deadline timestamptz;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_error_code text;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_error_message text;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_retry_idempotency_key text;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_retry_requested_at timestamptz;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS locale text NOT NULL DEFAULT 'en-US';
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS language text NOT NULL DEFAULT 'en';
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS submitter_discord_user_id text;
@@ -1252,6 +1270,80 @@ export class Database {
     }
   }
 
+  public async retryIneligibleReview(
+    input: RetryIneligibleReviewInput
+  ): Promise<RetryIneligibleReviewResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const reportResult = await client.query<ReportRow>(
+        "SELECT * FROM reports WHERE id = $1 FOR UPDATE",
+        [input.reportId]
+      );
+      const report = reportResult.rows[0];
+      if (!report) throw new ReviewRetryError("report_not_found");
+      if (report.submitter_discord_user_id !== input.submitterDiscordUserId) {
+        throw new ReviewRetryError("report_owner_mismatch");
+      }
+      if (report.review_retry_idempotency_key === input.idempotencyKey) {
+        await client.query("COMMIT");
+        return { replayed: true, report };
+      }
+      if (report.review_status !== "ineligible") {
+        throw new ReviewRetryError("review_not_ineligible");
+      }
+      if (
+        report.review_retry_requested_at !== null &&
+        report.review_retry_requested_at.getTime() >
+          Date.now() - REVIEW_RETRY_COOLDOWN_SECONDS * 1_000
+      ) {
+        throw new ReviewRetryError("review_retry_cooldown");
+      }
+      const jobResult = await client.query<{
+        id: string;
+        state: string;
+      }>(
+        `SELECT id::text, state
+         FROM report_jobs
+         WHERE report_id = $1 AND kind = 'submit_review'
+         FOR UPDATE`,
+        [report.id]
+      );
+      const job = jobResult.rows[0];
+      if (!job || (job.state !== "completed" && job.state !== "failed")) {
+        throw new ReviewRetryError("review_retry_unavailable");
+      }
+      await client.query(
+        `UPDATE report_jobs
+         SET state = 'pending', attempts = 0, max_attempts = 3, run_at = now(),
+             locked_at = NULL, last_error = NULL, updated_at = now()
+         WHERE id = $1`,
+        [job.id]
+      );
+      const updatedResult = await client.query<ReportRow>(
+        `UPDATE reports
+         SET review_status = 'queued', review_status_updated_at = now(),
+             review_confirmation_deadline = NULL,
+             review_error_code = NULL, review_error_message = NULL,
+             review_retry_idempotency_key = $2,
+             review_retry_requested_at = now(), updated_at = now()
+         WHERE id = $1
+         RETURNING *`,
+        [report.id, input.idempotencyKey]
+      );
+      const updated = updatedResult.rows[0];
+      if (!updated) throw new Error("Review retry update returned no report.");
+      await this.event(client, report.id, "review_queued", { manual: true });
+      await client.query("COMMIT");
+      return { replayed: false, report: updated };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   public async claimJob(): Promise<JobRow | undefined> {
     const client = await this.pool.connect();
     try {
@@ -1532,6 +1624,33 @@ export class ReportRetryError extends Error {
   public constructor(code: ReportRetryErrorCode) {
     super(RETRY_ERROR_MESSAGES[code]);
     this.name = "ReportRetryError";
+    this.code = code;
+    this.statusCode = code === "report_not_found" ? 404 : code === "report_owner_mismatch" ? 403 : 409;
+  }
+}
+
+export type ReviewRetryErrorCode =
+  | "report_not_found"
+  | "report_owner_mismatch"
+  | "review_not_ineligible"
+  | "review_retry_unavailable"
+  | "review_retry_cooldown";
+
+const REVIEW_RETRY_ERROR_MESSAGES: Record<ReviewRetryErrorCode, string> = {
+  report_not_found: "Report was not found.",
+  report_owner_mismatch: "The Discord user does not own this report.",
+  review_not_ineligible: "Only a definitively ineligible appeal can be retried.",
+  review_retry_unavailable: "This appeal is already pending or cannot be retried safely.",
+  review_retry_cooldown: "Wait 30 seconds before retrying this appeal again."
+};
+
+export class ReviewRetryError extends Error {
+  public readonly code: ReviewRetryErrorCode;
+  public readonly statusCode: number;
+
+  public constructor(code: ReviewRetryErrorCode) {
+    super(REVIEW_RETRY_ERROR_MESSAGES[code]);
+    this.name = "ReviewRetryError";
     this.code = code;
     this.statusCode = code === "report_not_found" ? 404 : code === "report_owner_mismatch" ? 403 : 409;
   }

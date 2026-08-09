@@ -422,7 +422,10 @@ describe("Groq and Brave report writer", () => {
 
     await writer(request).generate(messageDraft, ACTOR);
     const serialized = request.mock.calls
-      .map((call) => String((call[1] as RequestInit | undefined)?.body ?? ""))
+      .map((call) => {
+        const body = (call[1] as RequestInit | undefined)?.body;
+        return typeof body === "string" ? body : "";
+      })
       .join("\n");
     expect(serialized).toContain("evidence.png");
     expect(serialized).not.toContain("private-evidence.png");

@@ -173,6 +173,11 @@ function snippets(values: unknown[]): string[] {
     .slice(0, MAX_SNIPPETS_PER_SOURCE);
 }
 
+function unknownArray(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item: unknown) => item);
+}
+
 function compactWeb(payload: BraveWebResponse): ResearchSource[] {
   const seen = new Set<string>();
   const sources: ResearchSource[] = [];
@@ -181,7 +186,7 @@ function compactWeb(payload: BraveWebResponse): ResearchSource[] {
     if (!url || seen.has(url.toString())) continue;
     const resultSnippets = snippets([
       result.description,
-      ...(Array.isArray(result.extra_snippets) ? result.extra_snippets : [])
+      ...unknownArray(result.extra_snippets)
     ]);
     if (resultSnippets.length === 0) continue;
     seen.add(url.toString());

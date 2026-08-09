@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   GroqClient,
-  GroqClientError,
+  type GroqClientError,
   type AiRequestContext
 } from "../src/groq-client.js";
 

@@ -40,8 +40,8 @@ async function main(): Promise<void> {
   const profileResolver = new ProfileResolver(client);
   const messageResolver = new MessageResolver(client);
   const reportWriter = new ReportWriter(
-    config.openRouterApiKey,
-    config.openRouterModel,
+    config.groqApiKey,
+    config.groqModel,
     countries,
     {
       recordUsage: (userId, usage) => database.recordAiUsage(userId, usage)

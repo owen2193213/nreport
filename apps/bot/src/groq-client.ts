@@ -79,79 +79,87 @@ export class GroqClient {
     actor: AiRequestContext,
     stage: GroqStage
   ): Promise<GroqCompletion> {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      this.logFailure(actor, stage, 0, "timeout");
-      throw new GroqClientError("timeout", "The AI workflow deadline was exceeded.");
-    }
-
     const requestBody = {
       ...body,
       model: this.model,
       reasoning_effort: "low",
       stream: false
     };
-    const startedAt = Date.now();
-    let response: Response;
-    try {
-      response = await this.request(GROQ_CHAT_COMPLETIONS_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining))
+    let attempts = 0;
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        this.logFailure(actor, stage, 0, "timeout");
+        throw new GroqClientError("timeout", "The AI workflow deadline was exceeded.");
+      }
+
+      attempts += 1;
+      const startedAt = Date.now();
+      let response: Response;
+      try {
+        response = await this.request(GROQ_CHAT_COMPLETIONS_URL, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(requestBody),
+          signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining))
+        });
+      } catch {
+        this.logFailure(actor, stage, Date.now() - startedAt, "network");
+        if (attempts === 1 && deadline > Date.now()) continue;
+        throw new GroqClientError("network", "Groq could not be reached.");
+      }
+
+      if (!response.ok) {
+        const kind = response.status === 429 ? "rate_limited" : "provider";
+        this.logFailure(actor, stage, Date.now() - startedAt, kind, response.status);
+        const retryable = response.status === 429 || response.status >= 500;
+        if (attempts === 1 && retryable && deadline > Date.now()) continue;
+        throw new GroqClientError(
+          kind,
+          response.status === 429 ? "Groq is rate limited." : "Groq is unavailable."
+        );
+      }
+
+      let payload: GroqResponse;
+      try {
+        payload = (await response.json()) as GroqResponse;
+      } catch {
+        this.logFailure(actor, stage, Date.now() - startedAt, "malformed");
+        throw new GroqClientError("malformed", "Groq returned malformed JSON.");
+      }
+
+      const choice = payload.choices?.[0];
+      if (choice?.message?.refusal) {
+        this.logFailure(actor, stage, Date.now() - startedAt, "refusal");
+        throw new GroqClientError("refusal", "The model declined the request.");
+      }
+      if (typeof choice?.message?.content !== "string" || !choice.message.content.trim()) {
+        this.logFailure(actor, stage, Date.now() - startedAt, "malformed");
+        throw new GroqClientError("malformed", "Groq returned no completion.");
+      }
+
+      const usage = usageFrom(payload.usage);
+      const finishReason =
+        typeof choice.finish_reason === "string" ? choice.finish_reason : "unknown";
+      botLog("ai_request_completed", {
+        actorKey: actor.actorKey,
+        attempts,
+        costCredits: 0,
+        finishReason,
+        inputTokens: usage.inputTokens,
+        latencyMs: Date.now() - startedAt,
+        model: this.model,
+        outputTokens: usage.outputTokens,
+        reasoningTokens: usage.reasoningTokens,
+        responseLength: choice.message.content.length,
+        searchRequests: 0,
+        stage
       });
-    } catch {
-      this.logFailure(actor, stage, Date.now() - startedAt, "network");
-      throw new GroqClientError("network", "Groq could not be reached.");
+      return { content: choice.message.content, finishReason, usage };
     }
-
-    if (!response.ok) {
-      const kind = response.status === 429 ? "rate_limited" : "provider";
-      this.logFailure(actor, stage, Date.now() - startedAt, kind, response.status);
-      throw new GroqClientError(
-        kind,
-        response.status === 429 ? "Groq is rate limited." : "Groq is unavailable."
-      );
-    }
-
-    let payload: GroqResponse;
-    try {
-      payload = (await response.json()) as GroqResponse;
-    } catch {
-      this.logFailure(actor, stage, Date.now() - startedAt, "malformed");
-      throw new GroqClientError("malformed", "Groq returned malformed JSON.");
-    }
-
-    const choice = payload.choices?.[0];
-    if (choice?.message?.refusal) {
-      this.logFailure(actor, stage, Date.now() - startedAt, "refusal");
-      throw new GroqClientError("refusal", "The model declined the request.");
-    }
-    if (typeof choice?.message?.content !== "string" || !choice.message.content.trim()) {
-      this.logFailure(actor, stage, Date.now() - startedAt, "malformed");
-      throw new GroqClientError("malformed", "Groq returned no completion.");
-    }
-
-    const usage = usageFrom(payload.usage);
-    const finishReason =
-      typeof choice.finish_reason === "string" ? choice.finish_reason : "unknown";
-    botLog("ai_request_completed", {
-      actorKey: actor.actorKey,
-      costCredits: 0,
-      finishReason,
-      inputTokens: usage.inputTokens,
-      latencyMs: Date.now() - startedAt,
-      model: this.model,
-      outputTokens: usage.outputTokens,
-      reasoningTokens: usage.reasoningTokens,
-      responseLength: choice.message.content.length,
-      searchRequests: 0,
-      stage
-    });
-    return { content: choice.message.content, finishReason, usage };
   }
 
   private logFailure(

@@ -803,8 +803,9 @@ reference, and legal summary. It does not receive the supported-country list, ca
 search instructions, or raw research transcript. Refine sends the compact completed result and the
 reporter's instruction to Groq without searching. Repair also uses Groq without search and receives
 one attempt. Regenerate starts a fresh plan, and changing country clears the retained AI context.
-Every Groq call uses strict JSON and low reasoning effort; final report text remains limited to 512
-characters.
+Every Groq call uses strict JSON and low reasoning effort. A network error, rate limit, or server
+error is retried once within the existing workflow deadline; refusals and malformed completions are
+not retried. Final report text remains limited to 512 characters.
 
 The combined report modal places report category, flow-specific elements, and report details before
 country and the default-on Use AI and Send review to DMs preferences; no setup embed is shown.

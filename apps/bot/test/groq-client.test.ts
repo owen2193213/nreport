@@ -138,6 +138,32 @@ describe("GroqClient", () => {
     ).rejects.toMatchObject({ kind });
   });
 
+  it.each([429, 500])("retries transient HTTP %s failures once", async (status) => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("temporary", { status }))
+      .mockResolvedValueOnce(success());
+    const result = await new GroqClient("key", "model", {
+      request: request as unknown as typeof fetch
+    }).complete({ messages: [] }, Date.now() + 5_000, ACTOR, "synthesize");
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(result.content).toBe('{"ok":true}');
+  });
+
+  it("retries a transient network failure once", async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary network failure"))
+      .mockResolvedValueOnce(success());
+    const result = await new GroqClient("key", "model", {
+      request: request as unknown as typeof fetch
+    }).complete({ messages: [] }, Date.now() + 5_000, ACTOR, "synthesize");
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(result.content).toBe('{"ok":true}');
+  });
+
   it("rejects malformed and missing completion payloads", async () => {
     const malformed = vi.fn().mockResolvedValue(
       new Response("not-json", { status: 200, headers: { "Content-Type": "text/plain" } })

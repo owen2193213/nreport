@@ -598,7 +598,9 @@ same immutable audit relationship as failure retries.
   appeal submission failures through a fresh same-country proxy. Initial report submission remains
   non-retryable after its final POST starts because it has no equivalent duplicate guard.
 - Chosen: call Groq directly with configurable `openai/gpt-oss-120b` for planning, synthesis,
-  refinement, and repair. Account-level ZDR covers model calls, and no model fallback is used.
+  refinement, and repair. Account-level ZDR covers model calls, and no model fallback is used. One
+  retry handles network errors, rate limits, and server failures within the workflow deadline;
+  refusals and malformed completions remain terminal.
 - Chosen: use Brave Web Search for terminology and Brave LLM Context for law. The planner can skip
   either request, both initial requests run concurrently when needed, and synthesis may request one
   bounded follow-up.

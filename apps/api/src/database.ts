@@ -1402,10 +1402,6 @@ export class Database {
     await this.pool.query(
       `UPDATE report_jobs
        SET state = 'pending', run_at = now() + ($2 * interval '1 second'),
-           payload = CASE
-             WHEN kind = 'submit_review' THEN payload - 'ineligibleRetryPending'
-             ELSE payload
-           END,
            locked_at = NULL, last_error = $3, updated_at = now()
        WHERE id = $1`,
       [job.id, delaySeconds, message]

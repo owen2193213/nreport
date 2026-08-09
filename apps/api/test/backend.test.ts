@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 
 import { faker } from "@faker-js/faker";
 import { DiscordDsaHttpError, DiscordDsaNetworkError } from "@discord-dsa/client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AppConfig } from "../src/config.js";
 import {
@@ -672,6 +672,28 @@ describe("manual appeal retry", () => {
       name: "ReviewRetryError",
       code: "report_not_found"
     } satisfies Partial<ReviewRetryError>);
+  });
+
+  it("preserves the ineligibility retry marker across unrelated transient retries", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 });
+    const database = new Database("postgres://unused");
+    (database as unknown as { pool: unknown }).pool = { query };
+
+    await database.retryJob(
+      {
+        id: "job-1",
+        report_id: "report-1",
+        kind: "submit_review",
+        payload: { ineligibleRetryPending: true },
+        attempts: 2,
+        max_attempts: 3
+      },
+      "Temporary connection to Discord failed.",
+      20
+    );
+
+    const sql = String(query.mock.calls[0]?.[0]);
+    expect(sql).not.toContain("ineligibleRetryPending");
   });
 });
 

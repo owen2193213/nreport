@@ -61,16 +61,16 @@ review and its confirmation controls are sent as an ordinary private bot DM.
    confirmation before collecting the report details; unresolved IDs can be retried or cancelled.
    The profile's optional observed server and the server report's optional server/invite remain
    slash-command parameters. A server report without either a slash target or current server is rejected.
-4. Encrypt the draft and its OpenRouter conversation at rest with a 30-minute expiry.
-5. Run an adaptive OpenRouter research completion. It conditionally searches unfamiliar evidence
-   terminology first, resolves only omitted Auto fields after the meaning is clear, then searches
-   for and confirms the country-specific law. Invalid structured data causes one fresh research
-   attempt from the original evidence. The final writer receives only compact resolved evidence and
-   research context. When DM delivery is selected, the Researching stage creates one structured
+4. Encrypt the draft and its compact AI context at rest with a 30-minute expiry.
+5. Ask Groq for a strict-JSON plan that resolves omitted Auto fields and decides whether term and
+   law research are necessary. Run only the selected Brave searches, concurrently when both are
+   needed, then synthesize a completed result. Groq may request one bounded follow-up search. The
+   final writer receives only compact resolved evidence and research context. When DM delivery is
+   selected, the Researching stage creates one structured
    report card in DMs; Writing, Refining, Regenerating, review, submission, and resubmission edit
    that same message. The ephemeral interaction points to the DM and remains the fallback if DM
-   delivery fails. When DM delivery is cleared, the same cards remain ephemeral. Then ask
-   `minimax/minimax-m2.7` to write a factual report of at most 512 characters that naturally names
+   delivery fails. When DM delivery is cleared, the same cards remain ephemeral. Then ask the
+   configured Groq model to write a factual report of at most 512 characters that naturally names
    the researched law or provision.
 6. Atomically reserve one credit and create the API report with the interaction ID.
 7. Consume the reservation after HTTP 202 or idempotent HTTP 200.
@@ -184,51 +184,37 @@ disables further aggregate DM attempts without stopping report processing.
 
 ## AI report writing
 
-The bot calls OpenRouter directly; the API and low-level Discord client never receive the
-reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KEY` is required and
-`OPENROUTER_MODEL` defaults to `minimax/minimax-m2.7`. The same configured model handles adaptive
-research, writing, refinement, and repair. Provider routing requires zero data retention,
-denies provider data collection, and requires support for every requested parameter. Research and
-report calls use strict JSON Schemas, and the bot also validates returned values locally. The complete generation workflow is
-capped at 90 seconds.
+The bot calls Groq and Brave directly; the API and low-level Discord client never receive the
+reporter's brief or AI context. `GROQ_API_KEY` and `BRAVE_SEARCH_API_KEY` are required, and
+`GROQ_MODEL` defaults to `openai/gpt-oss-120b`. Groq handles planning, synthesis, refinement, and
+repair. Zero Data Retention is enabled at the Groq account level. There is no OpenRouter or model
+fallback. Model calls use strict JSON Schemas and the bot validates every returned value locally.
+The complete generation workflow is capped at 90 seconds.
 
-Generation normally starts with one adaptive interpretation-and-research completion. Its output schema is
-dynamic: fixed country, category, and reason values remain application-owned and are not requested
-from the model; only missing Auto fields are returned alongside the law reference and summary. This
-prevents AI echoes from changing supplied values. A case-insensitive literal `Auto` in the reason
+Generation starts with a strict-JSON plan. Fixed country, category, and reason values remain
+application-owned and must be returned unchanged; only missing Auto fields may be selected. This
+prevents the model from changing supplied values. A case-insensitive literal `Auto` in the reason
 field is normalized to omitted. The active flow's category catalog is supplied only when category
 is Auto. Auto country results accept an exact supported code or defensively normalize a supported
-English country name before validation.
+English country name before validation. The plan has independent `termResearchRequired` and
+`lawResearchRequired` decisions with nullable queries, so an explicit case can skip either search.
 The internal law reference has no length limit; validation distinguishes an invalid country,
 missing reference, and missing research summary.
-The prompt asks for only the essential legal relevance in a concise research summary without
-hard-capping research output tokens. OpenRouter's web plugin performs one Parallel search with at
-most two results. The model uses that search to clarify an unfamiliar, coded, ambiguous, or
-context-dependent evidence term only when its meaning could materially affect classification or
-legal relevance, and to confirm the relevant current law and provision. With explicit evidence it
-focuses directly on the law. Category-catalog labels and unrelated categories are forbidden as
-search terms. No domain filter is imposed. URL annotations are retained when available but remain
-optional.
-The plugin receives a custom search-results prompt that treats results as untrusted source material,
-aligns them with the terminology-and-law workflow, and forbids Markdown citations in the JSON. This
-replaces OpenRouter's default results prompt and avoids injecting unrelated formatting instructions.
-The request does not send the beta `openrouter:web_search` server tool, `tool_choice`, or
-`max_tool_calls`: repeated production requests reached OpenRouter's `server_tools` pipeline and
-returned HTTP 404 before any provider completion. Research still denies provider data collection and
-enables required-parameter routing so OpenRouter selects an endpoint compatible with the strict schema
-and plugin request. The plugin runs once by request contract, while
-`usage.server_tool_use.web_search_requests` belongs to server-tool accounting and may be absent from
-plugin responses. The bot records that value when present but never treats its absence as a research
-failure. If completed research is malformed, the bot makes exactly one fresh research request from
-the original evidence with a short failure reason. It never includes the failed model response in
-that retry. No fallback model is used.
-Writing, refinement, and repair retain ZDR, denied data collection, and
-required-parameter routing because they do not use the web-search plugin.
+Terminology research uses Brave Web Search with at most three results. Legal research uses Brave
+LLM Context with at most five source candidates, three returned URLs, and a 2,048-token context
+budget; official EU legal domains receive an inline ranking boost. If both searches are needed they
+start together. Each query is capped at 400 characters and 50 words and is rejected if it contains
+a URL, email address, Discord snowflake, or known sensitive draft value. Search results are untrusted
+source material. The model receives only compact titles, HTTPS URLs, and excerpts, not full pages.
 
-The AI integration intentionally remains bot-local and single-model. It assumes normal interactive
-bot traffic, keeps the existing 90-second workflow budget, records the cost of every attempted
-OpenRouter request, and adds no fallback model, local search executor, queue, database table, or
-background worker or separate search API key. Media processing remains disabled.
+Synthesis either returns the completed structured result or requests one additional term or law
+search. The bot executes at most one such follow-up and synthesizes once more; a second request is
+an error. Brave retries one transient network, rate-limit, or server failure. Groq and Brave have no
+cross-provider fallback.
+
+The AI integration remains bot-local and single-model. It assumes normal interactive bot traffic,
+keeps the existing 90-second workflow budget, and adds no fallback model, local search index, queue,
+database table, or background worker. Media processing remains disabled.
 
 The research prompt contains the supplied or Auto-selectable semantic reason, reporter brief, and
 only useful resolved target data. Message reports include the accessible message content, author, timestamp,
@@ -237,22 +223,21 @@ back to the link and brief when Discord does not allow the bot to fetch the mess
 reports include the ID, username, global display name, and bot status. A supplied server ID remains
 report context, but a user-installed-only bot does not attempt to resolve server-member profiles
 from it. Selecting profile photos or server media records the selected report element, but no media
-or media URL is sent to OpenRouter while processing is disabled. Discord's supported bot API does not expose profile About Me text,
+or media URL is sent to Groq or Brave while processing is disabled. Discord's supported bot API does not expose profile About Me text,
 so the bot does not claim or attempt to retrieve it.
 
 AI media processing is temporarily disabled for every report category. No images, GIFs, videos,
 avatars, banners, server art, or attachment/embed media URLs are attached or included in
-OpenRouter requests. This prevents child-safety media, gore, and other potentially prohibited
+Groq or Brave requests. This prevents child-safety media, gore, and other potentially prohibited
 media from reaching the provider. Attachment names and content types may remain as factual text
-metadata. This is intentionally conservative even though OpenRouter supports multimodal inputs
-for compatible models.
+metadata.
 
 The shared combined report modal enables Use AI and Send review to DMs by default and lets the
 reporter use Auto, their saved/current country, or the paginated country picker. Report category,
 flow-specific elements, and report details appear before country and preferences. Category and
 details are optional, use the placeholder `Auto`, and explain that AI fills a blank field when Use
 AI is enabled. When Use AI is cleared, interaction validation requires both category and
-final report text and performs no OpenRouter
+final report text and performs no Groq or Brave
 request, and shows the normal review with Submit, Edit manually, Change country, and Cancel.
 Refine and Regenerate are omitted. Because Auto country selection requires AI, a manual report
 with no saved country must select a country before review. The message context-menu command opens
@@ -284,25 +269,24 @@ different country. Manual edits become the current assistant answer so a later r
 continues from that text. Repair also
 continues the same conversation, performs no search, and is attempted only once.
 
-MiniMax M2.7 requires reasoning but does not advertise effort-level or reasoning-budget controls,
-so every stage enables reasoning without an effort override and excludes reasoning text from
-responses. Report-producing calls have a 4,096-token completion budget; the reviewed report itself
-remains limited to 512 characters. Provider routing explicitly prefers SambaNova Dedicated,
-MARA, Fireworks, Groq, then SambaNova; other endpoints remain availability fallbacks. The model is told
-to return raw JSON without Markdown, and OpenRouter receives a strict JSON Schema containing only
-the fields that stage owns. The parser also accepts one whole-response `json` code fence defensively
-before applying local semantic and 512-character validation.
-Reasoning, input/output tokens, search requests, request counts, and OpenRouter-reported cost are
-accumulated per user in `bot_users` and displayed by `/access status`. Safe logs use a keyed
-pseudonymous actor value plus stage, model, latency, usage, cost, and failure category.
+Groq calls use low reasoning effort. Planning and synthesis each have a 2,048-token completion
+budget; refinement and repair use 1,024 tokens. The reviewed report itself remains limited to 512
+characters. The model is told to return raw JSON without Markdown and receives a strict JSON Schema
+containing only the fields that stage owns. The parser also accepts one whole-response `json` code
+fence defensively before applying local semantic and length validation.
+Reasoning, input/output tokens, Groq request counts, and actual Brave request counts are accumulated
+per user in `bot_users` and displayed by `/access status`. The former provider-cost field remains in
+the database for compatibility but is not estimated or shown. Safe logs use a keyed pseudonymous
+actor value plus stage, model, latency, usage, and failure category.
 
 If a report-writing result is empty, malformed, or exceeds 512 characters, the bot asks once for a repair.
 If the repaired result is still invalid, the encrypted draft retains the latest AI text and
 conversation. The manual-edit modal shows the AI draft in a copyable read-only text display and
 provides a separate required 512-character input. Drafts already within the limit prefill that
 input; overlength drafts leave it blank for the user to shorten and paste. Insufficient
-OpenRouter balance, rate limits, timeouts, malformed output, unsupported Auto countries, and
-unusable legal research use the safe AI failure screen. Errors identify legal research, writing,
+Groq or Brave rate limits, timeouts, malformed output, unsupported Auto countries, and unusable
+legal research use the safe AI failure screen. Errors identify planning, term research, legal
+research, writing,
 refinement, or repair as the failed stage. Retry, country override, detail editing,
 manual editing when candidate text is available, and cancel remain available. The bot asks AI
 to include the researched law but does not reject reviewed text for omitting it or attempt to
@@ -313,11 +297,9 @@ normal expiry. Logs include pseudonymous actor keys, report flow/category, count
 element names, evidence/image/attachment counts or lengths, request/response lengths, usage, cost,
 latency, media-allowed status, and failure category. They never contain raw user IDs, queries,
 sources, evidence, images, prompts, research, reports, AI responses, or secrets.
-Failed OpenRouter requests opt into router metadata and log only an allowlisted diagnostic summary:
-error type/code, categorized message, provider code, retry delay, routing strategy/attempt, endpoint
-counts, provider names, per-provider attempt statuses, server-tool pipeline stage names, and the
-OpenRouter generation ID needed for a provider-side post-mortem. Raw error messages, pipeline data,
-summaries, and response bodies are never logged.
+Failed provider requests log only an allowlisted diagnostic summary: provider, stage or research
+kind, categorized failure, HTTP status, latency, and attempt count. Raw queries, search results,
+response bodies, evidence, and provider messages are never logged.
 
 The initial writer prompt contains one generalized report structure plus two style examples. They
 appear once in the retained conversation and are explicitly examples of tone and organization,
@@ -615,26 +597,21 @@ same immutable audit relationship as failure retries.
 - Chosen: treat Discord API code `521002` as successful appeal convergence and retry transient
   appeal submission failures through a fresh same-country proxy. Initial report submission remains
   non-retryable after its final POST starts because it has no equivalent duplicate guard.
-- Chosen: use `minimax/minimax-m2.7` for research, writing, refinement, and repair. A single
-  configurable model keeps prompts, usage accounting, deployment configuration, and failure
-  behavior consistent.
-- Chosen: use OpenRouter's web plugin with the Parallel engine and require its one search, with two
-  results and bounded retrieval context. Strict JSON Schema and required-parameter routing prevent
-  a provider from silently ignoring the search or structured-output contract.
-- Chosen: keep supplied country/category/reason values application-owned and omit them from dynamic
-  model output schemas. One adaptive research completion conditionally clarifies terminology,
-  resolves only missing fields, and confirms the law. This avoids a separate classification call
-  and lets terminology inform Auto classification.
+- Chosen: call Groq directly with configurable `openai/gpt-oss-120b` for planning, synthesis,
+  refinement, and repair. Account-level ZDR covers model calls, and no model fallback is used.
+- Chosen: use Brave Web Search for terminology and Brave LLM Context for law. The planner can skip
+  either request, both initial requests run concurrently when needed, and synthesis may request one
+  bounded follow-up.
+- Chosen: keep supplied country/category/reason values application-owned and require the planner to
+  echo them unchanged. Local validation rejects any mutation while allowing the same schema for
+  fixed and Auto reports.
 - Chosen: hand the writer a compact resolved context instead of replaying the research prompt and
   response. This avoids resending country lists, category catalogs, and tool instructions.
-- Chosen: retry completed research exactly once when its structured output is invalid. Missing
-  server-tool search accounting remains telemetry only because plugin-backed search runs by request
-  contract. The retry starts from the original evidence and a categorical failure reason, never the
-  failed response body.
-- Rejected: OpenRouter's beta `openrouter:web_search` server-tool pipeline after repeated production
-  HTTP 404 responses before provider completion. Also rejected direct Parallel or Exa integration,
-  a Perplexity fallback, provider pinning, and an unbounded client-side tool loop; they add keys,
-  cost, or operational state without being required for this report workflow.
+- Chosen: count actual Brave request attempts and retry only one transient search failure. Search
+  query validation prevents sensitive identifiers or full evidence URLs from reaching Brave.
+- Rejected: OpenRouter search plugins, Brave Answers, Exa, provider fallback, and an unbounded
+  client-side tool loop. They add routing uncertainty, cost, or operational state without improving
+  this bounded report workflow.
 - Chosen: validate only the Cloudflare envelope domain (`discord.com` or a true subdomain) and the
   generated recipient shape in the email worker. The API remains the sole MIME parser and exact
   visible-sender validator, avoiding duplicated checks for Discord's changing bounce formats.

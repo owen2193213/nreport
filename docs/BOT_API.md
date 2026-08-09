@@ -76,12 +76,11 @@ The bot needs only these reporting-service variables:
 ```text
 DSA_API_BASE_URL=https://discord-dsa-production.up.railway.app
 DSA_API_KEY=<same API_KEY configured on the Railway API service>
-GROQ_API_KEY=<bot-only Groq key>
-GROQ_MODEL=openai/gpt-oss-120b
-BRAVE_SEARCH_API_KEY=<bot-only Brave Search key>
+OPENROUTER_API_KEY=<bot-only OpenRouter key>
+OPENROUTER_MODEL=minimax/minimax-m2.7
 ```
 
-Keep all API keys in the bot host's secret manager. Never place them in slash-command
+Keep both API keys in the bot host's secret manager. Never place them in slash-command
 options, embeds, exception messages, source control, or browser-delivered code.
 
 ## 4. HTTP conventions
@@ -773,20 +772,23 @@ picker. A missing or `NULL` saved default means Auto. Auto uses AI to select one
 based on conduct and legal relevance, never guessed location.
 
 The combined modal allows category and explanation to be omitted as `Auto`. A case-insensitive
-literal `Auto` reason is also treated as omitted while AI is enabled. A strict-JSON Groq planning
-call resolves only omitted fields and independently decides whether terminology research and legal
-research are required. Supplied country, category, and reason values remain application-owned and
-must be echoed unchanged. When category is Auto, only the active flow's catalog is supplied.
-
-The bot makes zero, one, or two initial Brave requests. Terminology research uses Brave Web Search;
-legal research uses Brave LLM Context with a small retrieval budget and official EU legal domains
-boosted. When both are requested they run concurrently. Search queries are length-limited and
-rejected if they contain report URLs, Discord IDs, email addresses, or known sensitive draft values.
-Only compact titles, URLs, and excerpts enter the next Groq call. That synthesis call may request
-one additional term or law search; a second follow-up request stops the workflow. There is no model
-or OpenRouter fallback.
+literal `Auto` reason is also treated as omitted while AI is enabled. Normally one adaptive research
+completion resolves only omitted fields and always returns the law reference and summary. Supplied
+country, category, and reason values stay application-owned and are omitted from the model's output
+schema. The schema is strict and contains only the dynamically required fields. When category is
+Auto, only the active flow's catalog is supplied for selection.
+OpenRouter's web plugin performs one Parallel search with at most two results. When unfamiliar,
+coded, ambiguous, or context-dependent terminology could affect classification or legal relevance,
+the model uses the search to clarify the exact evidence wording and confirm the relevant current
+law and provision. With explicit evidence it focuses directly on the law. Category-catalog labels
+and unrelated categories are forbidden as search terms. OpenRouter must choose a provider that
+supports the requested strict schema and plugin parameters. If a completed research response is
+malformed, the bot retries the research once from the original evidence without replaying the failed
+response. A missing `server_tool_use.web_search_requests` value is retained as telemetry and does not
+invalidate plugin-backed research. A second malformed response stops the workflow with the safe AI
+error response.
 The writing prompt asks the final maximum-512-character text to naturally name the structured
-research result's specific law or provision. Brackets, URLs, footnotes, source annotations,
+research result's specific law or provision. Brackets, URLs, footnotes, OpenRouter URL annotations,
 and a separate sources section are not required. Bot validation requires only non-empty text of at
 most 512 characters; it does not verify that the law exists or require the final text to retain
 the law reference.
@@ -794,23 +796,23 @@ The law reference includes its country, clear full law title, and relevant provi
 abbreviation, such as `Germany's Criminal Code (StGB), §86a` rather than `§86a StGB`.
 
 AI media processing is temporarily disabled for all categories. The bot does not attach images,
-GIFs, videos, avatars, banners, server art, or media URLs to Groq or Brave. It removes profile/server
+GIFs, videos, avatars, banners, server art, or media URLs to OpenRouter. It removes profile/server
 media URLs plus message attachment/embed URLs from AI evidence. Attachment names and content types
 may remain as text metadata.
 
 The writing completion receives a compact context containing evidence, resolved values, law
 reference, and legal summary. It does not receive the supported-country list, category catalog,
-search instructions, or raw research transcript. Refine sends the compact completed result and the
-reporter's instruction to Groq without searching. Repair also uses Groq without search and receives
-one attempt. Regenerate starts a fresh plan, and changing country clears the retained AI context.
-Every Groq call uses strict JSON and low reasoning effort. A network error, rate limit, or server
-error is retried once within the existing workflow deadline; refusals and malformed completions are
-not retried. Final report text remains limited to 512 characters.
+search instructions, or raw research transcript. Refine continues this encrypted compact
+conversation and reuses the existing research without searching.
+Repair continues the same conversation without search and receives one attempt. Regenerate reruns
+adaptive research, and changing country clears the conversation. MiniMax M2.7 uses mandatory
+reasoning without an effort-level override. Report-producing calls have a 4,096-token completion
+budget while final report text remains limited to 512 characters.
 
 The combined report modal places report category, flow-specific elements, and report details before
 country and the default-on Use AI and Send review to DMs preferences; no setup embed is shown.
 Blank category/details help text explains that AI fills the field when Use AI is enabled. Clearing Use AI requires the
-reporter to supply the final maximum-512-character text, makes no Groq or Brave call, and omits
+reporter to supply the final maximum-512-character text, makes no OpenRouter call, and omits
 AI-only review controls. Auto cannot resolve a country without AI, so the bot requires a saved or
 selected country before showing the manual review. When DM delivery is enabled, the first drafting
 status creates one structured report card in DMs. Research, writing, refinement, review, submission,
@@ -827,8 +829,7 @@ DMs for that report. The bot-to-API request shape remains unchanged.
 Only the resolved ISO country, exact semantic category, concise report reason, and final reviewed
 text cross the bot-to-API boundary. Message content, author details, embed summaries,
 attachments, country-selection reasoning, sources, research, and conversation remain in the
-encrypted, expiring bot draft. Groq token/request usage and Brave request counts are accumulated per
-bot user; logs include operational
+encrypted, expiring bot draft. OpenRouter usage is accumulated per bot user; logs include operational
 diagnostics but exclude credentials, verification codes, and raw email.
 
 The app is registered globally with `USER_INSTALL` only. Admin key/user commands are

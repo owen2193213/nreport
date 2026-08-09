@@ -42,6 +42,7 @@ async function main(): Promise<void> {
   const reportWriter = new ReportWriter(
     config.groqApiKey,
     config.groqModel,
+    config.braveSearchApiKey,
     countries,
     {
       recordUsage: (userId, usage) => database.recordAiUsage(userId, usage)

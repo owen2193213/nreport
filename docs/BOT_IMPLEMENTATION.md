@@ -62,15 +62,15 @@ review and its confirmation controls are sent as an ordinary private bot DM.
    The profile's optional observed server and the server report's optional server/invite remain
    slash-command parameters. A server report without either a slash target or current server is rejected.
 4. Encrypt the draft and its compact AI context at rest with a 30-minute expiry.
-5. Ask Groq for a strict-JSON plan that resolves omitted Auto fields and decides whether term and
+5. Ask Fireworks DeepSeek for a JSON plan that resolves omitted Auto fields and decides whether term and
    law research are necessary. Run only the selected Brave searches, concurrently when both are
-   needed, then synthesize a completed result. Groq may request one bounded follow-up search. The
+   needed, then synthesize a completed result. DeepSeek may request one bounded follow-up search. The
    final writer receives only compact resolved evidence and research context. When DM delivery is
    selected, the Researching stage creates one structured
    report card in DMs; Writing, Refining, Regenerating, review, submission, and resubmission edit
    that same message. The ephemeral interaction points to the DM and remains the fallback if DM
    delivery fails. When DM delivery is cleared, the same cards remain ephemeral. Then ask the
-   configured Groq model to write a factual report of at most 512 characters that naturally names
+   configured Fireworks model to write a factual report of at most 512 characters that naturally names
    the researched law or provision.
 6. Atomically reserve one credit and create the API report with the interaction ID.
 7. Consume the reservation after HTTP 202 or idempotent HTTP 200.
@@ -184,12 +184,12 @@ disables further aggregate DM attempts without stopping report processing.
 
 ## AI report writing
 
-The bot calls Groq and Brave directly; the API and low-level Discord client never receive the
-reporter's brief or AI context. `GROQ_API_KEY` and `BRAVE_SEARCH_API_KEY` are required, and
-`GROQ_MODEL` defaults to `openai/gpt-oss-120b`. Groq handles planning, synthesis, refinement, and
-repair. Zero Data Retention is enabled at the Groq account level. There is no OpenRouter or model
-fallback. Model calls use strict JSON Schemas and the bot validates every returned value locally.
-The complete generation workflow is capped at 90 seconds.
+The bot calls Fireworks and Brave directly; the API and low-level Discord client never receive the
+reporter's brief or AI context. `FIREWORKS_API_KEY` and `BRAVE_SEARCH_API_KEY` are required, and
+`FIREWORKS_MODEL` defaults to `accounts/fireworks/models/deepseek-v4-flash`. Fireworks-hosted
+DeepSeek handles planning, synthesis, refinement, and repair. There is no OpenRouter or model
+fallback. The bot validates every returned value locally. The complete generation workflow is
+capped at 90 seconds.
 
 Generation starts with a strict-JSON plan. Fixed country, category, and reason values remain
 application-owned and must be returned unchanged; only missing Auto fields may be selected. This
@@ -209,7 +209,7 @@ source material. The model receives only compact titles, HTTPS URLs, and excerpt
 
 Synthesis either returns the completed structured result or requests one additional term or law
 search. The bot executes at most one such follow-up and synthesizes once more; a second request is
-an error. Brave retries one transient network, rate-limit, or server failure. Groq and Brave have no
+an error. Brave retries one transient network, rate-limit, or server failure. Fireworks and Brave have no
 cross-provider fallback.
 
 The AI integration remains bot-local and single-model. It assumes normal interactive bot traffic,
@@ -223,12 +223,12 @@ back to the link and brief when Discord does not allow the bot to fetch the mess
 reports include the ID, username, global display name, and bot status. A supplied server ID remains
 report context, but a user-installed-only bot does not attempt to resolve server-member profiles
 from it. Selecting profile photos or server media records the selected report element, but no media
-or media URL is sent to Groq or Brave while processing is disabled. Discord's supported bot API does not expose profile About Me text,
+or media URL is sent to Fireworks or Brave while processing is disabled. Discord's supported bot API does not expose profile About Me text,
 so the bot does not claim or attempt to retrieve it.
 
 AI media processing is temporarily disabled for every report category. No images, GIFs, videos,
 avatars, banners, server art, or attachment/embed media URLs are attached or included in
-Groq or Brave requests. This prevents child-safety media, gore, and other potentially prohibited
+Fireworks or Brave requests. This prevents child-safety media, gore, and other potentially prohibited
 media from reaching the provider. Attachment names and content types may remain as factual text
 metadata.
 
@@ -237,7 +237,7 @@ reporter use Auto, their saved/current country, or the paginated country picker.
 flow-specific elements, and report details appear before country and preferences. Category and
 details are optional, use the placeholder `Auto`, and explain that AI fills a blank field when Use
 AI is enabled. When Use AI is cleared, interaction validation requires both category and
-final report text and performs no Groq or Brave
+final report text and performs no Fireworks or Brave
 request, and shows the normal review with Submit, Edit manually, Change country, and Cancel.
 Refine and Regenerate are omitted. Because Auto country selection requires AI, a manual report
 with no saved country must select a country before review. The message context-menu command opens
@@ -269,12 +269,14 @@ different country. Manual edits become the current assistant answer so a later r
 continues from that text. Repair also
 continues the same conversation, performs no search, and is attempted only once.
 
-Groq calls use low reasoning effort. Planning and synthesis each have a 2,048-token completion
-budget; refinement and repair use 1,024 tokens. The reviewed report itself remains limited to 512
-characters. The model is told to return raw JSON without Markdown and receives a strict JSON Schema
-containing only the fields that stage owns. The parser also accepts one whole-response `json` code
-fence defensively before applying local semantic and length validation.
-Reasoning, input/output tokens, Groq request counts, and actual Brave request counts are accumulated
+Planning uses DeepSeek's high reasoning mode and an 8,192-token completion budget. Synthesis uses
+high reasoning with 12,288 tokens only when Brave research must be interpreted. No-research
+synthesis, refinement, and repair disable reasoning and use 4,096 tokens. These limits include
+thinking and visible JSON. Reasoning calls receive the complete JSON Schema in the prompt;
+non-reasoning calls use Fireworks-enforced JSON Schema. The model is told to keep the report
+naturally concise without counting characters or optimizing the exact count, while local validation
+still enforces the 512-character limit.
+Reasoning, input/output tokens, Fireworks request counts, and actual Brave request counts are accumulated
 per user in `bot_users` and displayed by `/access status`. The former provider-cost field remains in
 the database for compatibility but is not estimated or shown. Safe logs use a keyed pseudonymous
 actor value plus stage, model, latency, usage, and failure category.
@@ -284,7 +286,7 @@ If the repaired result is still invalid, the encrypted draft retains the latest 
 conversation. The manual-edit modal shows the AI draft in a copyable read-only text display and
 provides a separate required 512-character input. Drafts already within the limit prefill that
 input; overlength drafts leave it blank for the user to shorten and paste. Insufficient
-Groq or Brave rate limits, timeouts, malformed output, unsupported Auto countries, and unusable
+Fireworks or Brave rate limits, timeouts, malformed output, unsupported Auto countries, and unusable
 legal research use the safe AI failure screen. Errors identify planning, term research, legal
 research, writing,
 refinement, or repair as the failed stage. Retry, country override, detail editing,
@@ -597,10 +599,12 @@ same immutable audit relationship as failure retries.
 - Chosen: treat Discord API code `521002` as successful appeal convergence and retry transient
   appeal submission failures through a fresh same-country proxy. Initial report submission remains
   non-retryable after its final POST starts because it has no equivalent duplicate guard.
-- Chosen: call Groq directly with configurable `openai/gpt-oss-120b` for planning, synthesis,
-  refinement, and repair. Account-level ZDR covers model calls, and no model fallback is used. One
+- Chosen: call Fireworks directly with configurable
+  `accounts/fireworks/models/deepseek-v4-flash` for planning, synthesis, refinement, and repair. No
+  model fallback is used. One
   retry handles network errors, rate limits, and server failures within the workflow deadline;
-  refusals and malformed completions remain terminal.
+  refusals, malformed provider payloads, and token-limit completions remain terminal. Malformed or
+  oversized synthesis JSON receives one non-reasoning repair attempt after transport succeeds.
 - Chosen: use Brave Web Search for terminology and Brave LLM Context for law. The planner can skip
   either request, both initial requests run concurrently when needed, and synthesis may request one
   bounded follow-up.

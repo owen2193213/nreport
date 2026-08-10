@@ -76,8 +76,8 @@ The bot needs only these reporting-service variables:
 ```text
 DSA_API_BASE_URL=https://discord-dsa-production.up.railway.app
 DSA_API_KEY=<same API_KEY configured on the Railway API service>
-GROQ_API_KEY=<bot-only Groq key>
-GROQ_MODEL=openai/gpt-oss-120b
+FIREWORKS_API_KEY=<bot-only Fireworks key>
+FIREWORKS_MODEL=accounts/fireworks/models/deepseek-v4-flash
 BRAVE_SEARCH_API_KEY=<bot-only Brave Search key>
 ```
 
@@ -773,7 +773,7 @@ picker. A missing or `NULL` saved default means Auto. Auto uses AI to select one
 based on conduct and legal relevance, never guessed location.
 
 The combined modal allows category and explanation to be omitted as `Auto`. A case-insensitive
-literal `Auto` reason is also treated as omitted while AI is enabled. A strict-JSON Groq planning
+literal `Auto` reason is also treated as omitted while AI is enabled. A Fireworks DeepSeek planning
 call resolves only omitted fields and independently decides whether terminology research and legal
 research are required. Supplied country, category, and reason values remain application-owned and
 must be echoed unchanged. When category is Auto, only the active flow's catalog is supplied.
@@ -782,7 +782,7 @@ The bot makes zero, one, or two initial Brave requests. Terminology research use
 legal research uses Brave LLM Context with a small retrieval budget and official EU legal domains
 boosted. When both are requested they run concurrently. Search queries are length-limited and
 rejected if they contain report URLs, Discord IDs, email addresses, or known sensitive draft values.
-Only compact titles, URLs, and excerpts enter the next Groq call. That synthesis call may request
+Only compact titles, URLs, and excerpts enter the next Fireworks call. That synthesis call may request
 one additional term or law search; a second follow-up request stops the workflow. There is no model
 or OpenRouter fallback.
 The writing prompt asks the final maximum-512-character text to naturally name the structured
@@ -794,23 +794,29 @@ The law reference includes its country, clear full law title, and relevant provi
 abbreviation, such as `Germany's Criminal Code (StGB), §86a` rather than `§86a StGB`.
 
 AI media processing is temporarily disabled for all categories. The bot does not attach images,
-GIFs, videos, avatars, banners, server art, or media URLs to Groq or Brave. It removes profile/server
+GIFs, videos, avatars, banners, server art, or media URLs to Fireworks or Brave. It removes profile/server
 media URLs plus message attachment/embed URLs from AI evidence. Attachment names and content types
 may remain as text metadata.
 
 The writing completion receives a compact context containing evidence, resolved values, law
 reference, and legal summary. It does not receive the supported-country list, category catalog,
 search instructions, or raw research transcript. Refine sends the compact completed result and the
-reporter's instruction to Groq without searching. Repair also uses Groq without search and receives
-one attempt. Regenerate starts a fresh plan, and changing country clears the retained AI context.
-Every Groq call uses strict JSON and low reasoning effort. A network error, rate limit, or server
-error is retried once within the existing workflow deadline; refusals and malformed completions are
-not retried. Final report text remains limited to 512 characters.
+reporter's instruction to Fireworks without searching. Repair also uses Fireworks without search
+and receives one attempt. Regenerate starts a fresh plan, and changing country clears the retained
+AI context. Planning uses high reasoning with an 8,192-token completion budget. Synthesis uses high
+reasoning and 12,288 tokens only when Brave research must be interpreted; no-research synthesis,
+refinement, and repair disable reasoning and use 4,096 tokens. Reasoning calls receive their JSON
+schema in the prompt, while non-reasoning calls use Fireworks-enforced JSON Schema. A network error,
+rate limit, or server error is retried once within the existing workflow deadline; refusals,
+malformed provider payloads, and token-limit completions are not transport-retried. Final report
+text remains limited to 512 characters. The prompt asks for naturally concise writing and tells the
+model not to count characters step by step or optimize the exact count; application validation and
+one repair attempt enforce the real limit.
 
 The combined report modal places report category, flow-specific elements, and report details before
 country and the default-on Use AI and Send review to DMs preferences; no setup embed is shown.
 Blank category/details help text explains that AI fills the field when Use AI is enabled. Clearing Use AI requires the
-reporter to supply the final maximum-512-character text, makes no Groq or Brave call, and omits
+reporter to supply the final maximum-512-character text, makes no Fireworks or Brave call, and omits
 AI-only review controls. Auto cannot resolve a country without AI, so the bot requires a saved or
 selected country before showing the manual review. When DM delivery is enabled, the first drafting
 status creates one structured report card in DMs. Research, writing, refinement, review, submission,
@@ -827,7 +833,7 @@ DMs for that report. The bot-to-API request shape remains unchanged.
 Only the resolved ISO country, exact semantic category, concise report reason, and final reviewed
 text cross the bot-to-API boundary. Message content, author details, embed summaries,
 attachments, country-selection reasoning, sources, research, and conversation remain in the
-encrypted, expiring bot draft. Groq token/request usage and Brave request counts are accumulated per
+encrypted, expiring bot draft. Fireworks token/request usage and Brave request counts are accumulated per
 bot user; logs include operational
 diagnostics but exclude credentials, verification codes, and raw email.
 

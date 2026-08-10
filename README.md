@@ -93,16 +93,17 @@ application creates or updates its database schema idempotently during startup.
 Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. The bot
 uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
-the global commands automatically. Set `GROQ_API_KEY` and `BRAVE_SEARCH_API_KEY` for the bot-side
-report writer; `GROQ_MODEL` defaults to `openai/gpt-oss-120b`. Enable Groq's account-level Zero Data
-Retention setting for model calls.
+the global commands automatically. Set `FIREWORKS_API_KEY` and `BRAVE_SEARCH_API_KEY` for the
+bot-side report writer; `FIREWORKS_MODEL` defaults to
+`accounts/fireworks/models/deepseek-v4-flash`.
 
-The first strict-JSON Groq call resolves omitted Auto fields and decides independently whether the
-evidence needs terminology research, legal research, both, or neither. The bot runs only the chosen
-Brave requests: Web Search for unfamiliar terms and LLM Context for country-specific law. If both
-are needed, they run together. Groq then writes the report from compact search excerpts and may ask
-for one additional bounded search before producing the final result. There is no OpenRouter or model
-fallback. Fixed reporter values remain application-owned and are validated after every model call.
+The first Fireworks DeepSeek call resolves omitted Auto fields and decides independently whether
+the evidence needs terminology research, legal research, both, or neither. The bot runs only the
+chosen Brave requests: Web Search for unfamiliar terms and LLM Context for country-specific law.
+If both are needed, they run together. DeepSeek then writes the report from compact search excerpts
+and may ask for one additional bounded search before producing the final result. There is no
+OpenRouter or model fallback. Fixed reporter values remain application-owned and are validated
+after every model call.
 The bot records per-user request/token/reasoning/search totals and operational workflow metadata
 such as flow, category, country mode, selected elements, counts, lengths, latency, and validation
 failures. Logs are intended to support development diagnostics and may include report and lifecycle
@@ -111,11 +112,11 @@ email. To synchronize commands manually, set only the
 Discord token and application ID and run:
 
 AI media processing is temporarily disabled for every report category. The bot never attaches
-images, GIFs, videos, avatars, banners, server art, or attachment/embed media URLs to Groq or Brave.
+images, GIFs, videos, avatars, banners, server art, or attachment/embed media URLs to Fireworks or Brave.
 Attachment names and content types may remain as text metadata.
 
 Every `/report` subcommand also accepts optional `dont-use-ai:true`. It defaults to AI when
-omitted. Manual mode sends nothing to Groq or Brave, limits the reporter's final text to 512
+omitted. Manual mode sends nothing to Fireworks or Brave, limits the reporter's final text to 512
 characters, and requires a saved or explicit country because Auto normally depends on AI.
 
 ```powershell

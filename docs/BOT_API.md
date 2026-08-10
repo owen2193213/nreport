@@ -776,7 +776,8 @@ The combined modal allows category and explanation to be omitted as `Auto`. A ca
 literal `Auto` reason is also treated as omitted while AI is enabled. A Fireworks DeepSeek planning
 call resolves only omitted fields and independently decides whether terminology research and legal
 research are required. Supplied country, category, and reason values remain application-owned and
-must be echoed unchanged. When category is Auto, only the active flow's catalog is supplied.
+are omitted from the planner's output schema. When category is Auto, only the active flow's catalog
+is supplied and the selected value is merged into application-owned resolved state.
 
 The bot makes zero, one, or two initial Brave requests. Terminology research uses Brave Web Search;
 legal research uses Brave LLM Context with a small retrieval budget and official EU legal domains
@@ -784,7 +785,9 @@ boosted. When both are requested they run concurrently. Search queries are lengt
 rejected if they contain report URLs, Discord IDs, email addresses, or known sensitive draft values.
 Only compact titles, URLs, and excerpts enter the next Fireworks call. That synthesis call may request
 one additional term or law search; a second follow-up request stops the workflow. There is no model
-or OpenRouter fallback.
+or OpenRouter fallback. Synthesis outputs only its status, optional follow-up request, law reference,
+research summary, and final report. Resolved country, category, and reporter explanation are context
+only and do not exist in the synthesis output schema.
 The writing prompt asks the final maximum-512-character text to naturally name the structured
 research result's specific law or provision. Brackets, URLs, footnotes, source annotations,
 and a separate sources section are not required. Bot validation requires only non-empty text of at

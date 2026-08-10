@@ -102,8 +102,8 @@ the evidence needs terminology research, legal research, both, or neither. The b
 chosen Brave requests: Web Search for unfamiliar terms and LLM Context for country-specific law.
 If both are needed, they run together. DeepSeek then writes the report from compact search excerpts
 and may ask for one additional bounded search before producing the final result. There is no
-OpenRouter or model fallback. Fixed reporter values remain application-owned and are validated
-after every model call.
+OpenRouter or model fallback. Fixed reporter values remain application-owned and are omitted from
+AI output contracts. Once Auto values are resolved, synthesis cannot return or change them.
 The bot records per-user request/token/reasoning/search totals and operational workflow metadata
 such as flow, category, country mode, selected elements, counts, lengths, latency, and validation
 failures. Logs are intended to support development diagnostics and may include report and lifecycle

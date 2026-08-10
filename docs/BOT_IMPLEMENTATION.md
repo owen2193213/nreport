@@ -192,12 +192,13 @@ fallback. The bot validates every returned value locally. The complete generatio
 capped at 90 seconds.
 
 Generation starts with a strict-JSON plan. Fixed country, category, and reason values remain
-application-owned and must be returned unchanged; only missing Auto fields may be selected. This
-prevents the model from changing supplied values. A case-insensitive literal `Auto` in the reason
-field is normalized to omitted. The active flow's category catalog is supplied only when category
-is Auto. Auto country results accept an exact supported code or defensively normalize a supported
-English country name before validation. The plan has independent `termResearchRequired` and
-`lawResearchRequired` decisions with nullable queries, so an explicit case can skip either search.
+application-owned and are omitted from the planner output schema; only missing Auto fields may be
+selected. The bot merges those selections with fixed inputs into immutable resolved state. A
+case-insensitive literal `Auto` in the reason field is normalized to omitted. The active flow's
+category catalog is supplied only when category is Auto. Auto country results accept an exact
+supported code or defensively normalize a supported English country name before validation. The
+plan has independent `termResearchRequired` and `lawResearchRequired` decisions with nullable
+queries, so an explicit case can skip either search.
 The internal law reference has no length limit; validation distinguishes an invalid country,
 missing reference, and missing research summary.
 Terminology research uses Brave Web Search with at most three results. Legal research uses Brave
@@ -260,8 +261,10 @@ draft and copied into bot-owned report tracking so later lifecycle DM edits can 
 latest three entries after draft deletion. Manual reports explicitly say that AI was disabled.
 After research, the writer receives a compact context containing only evidence, resolved category,
 reason, country, law reference, and legal summary. It does not receive the supported-country list,
-category catalog, search instructions, or raw research transcript. This compact context is retained
-for refinement. Changing country clears the AI conversation and research before running both again. Refine appends
+category catalog, search instructions, or raw research transcript. Country, category, and reason
+are context only: synthesis cannot return them and the bot attaches the immutable resolved values
+to its result. Synthesis owns only follow-up requests, law reference, research summary, and report
+text. This compact context is retained for refinement. Changing country clears the AI conversation and research before running both again. Refine appends
 the instruction and report-only result to the same encrypted conversation and reuses the existing
 research without web search or country changes. Regenerate starts a new conversation, resolves any
 missing Auto fields, and reruns research; Auto may choose a
@@ -608,9 +611,9 @@ same immutable audit relationship as failure retries.
 - Chosen: use Brave Web Search for terminology and Brave LLM Context for law. The planner can skip
   either request, both initial requests run concurrently when needed, and synthesis may request one
   bounded follow-up.
-- Chosen: keep supplied country/category/reason values application-owned and require the planner to
-  echo them unchanged. Local validation rejects any mutation while allowing the same schema for
-  fixed and Auto reports.
+- Chosen: give every AI field one owner. Fixed country/category/reason values are omitted from the
+  planner output schema; only missing Auto fields are returned and merged into immutable bot state.
+  Synthesis cannot output those resolved fields, eliminating mutation errors by construction.
 - Chosen: hand the writer a compact resolved context instead of replaying the research prompt and
   response. This avoids resending country lists, category catalogs, and tool instructions.
 - Chosen: count actual Brave request attempts and retry only one transient search failure. Search

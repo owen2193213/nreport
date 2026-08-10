@@ -1,5 +1,5 @@
 import { botLog } from "./observability.js";
-import type { AiRequestContext } from "./groq-client.js";
+import type { AiRequestContext } from "./fireworks-client.js";
 import type { ReportDraft } from "./types.js";
 
 const BRAVE_WEB_URL = "https://api.search.brave.com/res/v1/web/search";

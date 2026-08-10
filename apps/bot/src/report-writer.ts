@@ -10,11 +10,11 @@ import {
 import { countryChoice } from "./countries.js";
 import { experimentalVariationInstruction } from "./experimental-batches.js";
 import {
-  GroqClient,
-  GroqClientError,
+  FireworksClient,
+  FireworksClientError,
   type AiRequestContext,
-  type GroqStage
-} from "./groq-client.js";
+  type FireworksStage
+} from "./fireworks-client.js";
 import { botLog } from "./observability.js";
 import type {
   AiUsage,
@@ -24,11 +24,12 @@ import type {
   WriterConversationMessage
 } from "./types.js";
 
-export type { AiRequestContext } from "./groq-client.js";
+export type { AiRequestContext } from "./fireworks-client.js";
 
 const MAX_REPORT_LENGTH = 512;
-const REPORT_COMPLETION_TOKEN_LIMIT = 4_096;
-const PLAN_COMPLETION_TOKEN_LIMIT = 2_048;
+const MECHANICAL_COMPLETION_TOKEN_LIMIT = 4_096;
+const PLAN_COMPLETION_TOKEN_LIMIT = 8_192;
+const RESEARCH_SYNTHESIS_COMPLETION_TOKEN_LIMIT = 12_288;
 const WORKFLOW_TIMEOUT_MS = 90_000;
 
 const WRITER_SYSTEM_PROMPT = [
@@ -319,7 +320,6 @@ function plannerResponseFormat(countries: readonly string[], draft: ReportDraft)
     type: "json_schema",
     json_schema: {
       name: "discord_dsa_research_plan",
-      strict: true,
       schema: {
         type: "object",
         properties,
@@ -349,7 +349,6 @@ function synthesisResponseFormat(countries: readonly string[], draft: ReportDraf
     type: "json_schema",
     json_schema: {
       name: "discord_dsa_report_synthesis",
-      strict: true,
       schema: {
         type: "object",
         properties,
@@ -365,7 +364,6 @@ function reportResponseFormat() {
     type: "json_schema",
     json_schema: {
       name: "discord_dsa_report",
-      strict: true,
       schema: {
         type: "object",
         properties: {
@@ -376,6 +374,17 @@ function reportResponseFormat() {
       }
     }
   };
+}
+
+function schemaPrompt(
+  prompt: string,
+  responseFormat: { json_schema: { schema: unknown } }
+): string {
+  return [
+    prompt,
+    "Return raw JSON only, matching this JSON Schema exactly:",
+    JSON.stringify(responseFormat.json_schema.schema)
+  ].join("\n");
 }
 
 function parseObject(content: string, message: string): Record<string, unknown> {
@@ -606,7 +615,8 @@ function parsedReport(content: string): string {
 
 export function initialWriterPrompt(): string {
   return [
-    "Write a concise, neutral, factual report of no more than 512 characters.",
+    "Write a concise, neutral, factual report that comfortably fits within 512 characters.",
+    "Do not count characters step by step or spend time optimizing the exact character count.",
     "Lead with the reported content or conduct and explain its concrete significance.",
     "Naturally name the supplied country, full law title, and article or section.",
     "Mention Discord's Community Guidelines when useful and request review and suitable action.",
@@ -631,21 +641,39 @@ function repairPrompt(problem: string): string {
   ].join("\n");
 }
 
+function synthesisRepairPrompt(problem: string): string {
+  return [
+    "Repair the preceding synthesis response without changing its evidence, country, category, reporter explanation, or legal conclusions.",
+    `Validation problem: ${problem}`,
+    "Return the complete synthesis JSON object, not only the report field.",
+    "Keep the report naturally concise and comfortably within 512 characters.",
+    "Do not count characters step by step or spend time optimizing the exact character count."
+  ].join("\n");
+}
+
+function repairableSynthesisError(error: unknown): error is ReportWriterError {
+  return (
+    error instanceof ReportWriterError &&
+    (error.message === "AI report synthesis returned malformed structured data." ||
+      error.message === "The AI report exceeded 512 characters.")
+  );
+}
+
 export class ReportWriter {
   private readonly brave: BraveResearchClient;
-  private readonly groq: GroqClient;
+  private readonly fireworks: FireworksClient;
   private readonly recordUsage: UsageRecorder;
 
   public constructor(
-    groqApiKey: string,
-    groqModel: string,
+    fireworksApiKey: string,
+    fireworksModel: string,
     braveSearchApiKey: string,
     private readonly supportedCountries: readonly string[],
     options: ReportWriterOptions = {}
   ) {
     this.recordUsage = options.recordUsage ?? (() => Promise.resolve());
     const clientOptions = options.request ? { request: options.request } : {};
-    this.groq = new GroqClient(groqApiKey, groqModel, clientOptions);
+    this.fireworks = new FireworksClient(fireworksApiKey, fireworksModel, clientOptions);
     this.brave = new BraveResearchClient(braveSearchApiKey, clientOptions);
   }
 
@@ -664,7 +692,8 @@ export class ReportWriter {
       reportType: draft.reportType ? reportReasonLabel(draft.flow, draft.reportType) : "Auto"
     });
 
-    const planned = await this.completeGroq(
+    const planFormat = plannerResponseFormat(this.supportedCountries, draft);
+    const planned = await this.completeFireworks(
       {
         messages: [
           {
@@ -672,10 +701,16 @@ export class ReportWriter {
             content:
               "Plan an authorized legal-reporting workflow. Classify harmful evidence without endorsing it or providing harmful instructions. Return only the strict JSON object."
           },
-          { role: "user", content: plannerPrompt(draft, this.supportedCountries) }
+          {
+            role: "user",
+            content: schemaPrompt(
+              plannerPrompt(draft, this.supportedCountries),
+              planFormat
+            )
+          }
         ],
         max_completion_tokens: PLAN_COMPLETION_TOKEN_LIMIT,
-        response_format: plannerResponseFormat(this.supportedCountries, draft)
+        reasoning_effort: "high"
       },
       deadline,
       actor,
@@ -784,10 +819,11 @@ export class ReportWriter {
       ...draft.writerConversation,
       { role: "user", content: refinementPrompt(instruction) }
     ];
-    const first = await this.completeGroq(
+    const first = await this.completeFireworks(
       {
         messages: [{ role: "system", content: WRITER_SYSTEM_PROMPT }, ...conversation],
-        max_completion_tokens: REPORT_COMPLETION_TOKEN_LIMIT,
+        max_completion_tokens: MECHANICAL_COMPLETION_TOKEN_LIMIT,
+        reasoning_effort: "none",
         response_format: reportResponseFormat()
       },
       deadline,
@@ -805,13 +841,14 @@ export class ReportWriter {
         { role: "assistant", content: first },
         { role: "user", content: repairPrompt(problem) }
       ];
-      const repaired = await this.completeGroq(
+      const repaired = await this.completeFireworks(
         {
           messages: [
             { role: "system", content: WRITER_SYSTEM_PROMPT },
             ...repairConversation
           ],
-          max_completion_tokens: REPORT_COMPLETION_TOKEN_LIMIT,
+          max_completion_tokens: MECHANICAL_COMPLETION_TOKEN_LIMIT,
+          reasoning_effort: "none",
           response_format: reportResponseFormat()
         },
         deadline,
@@ -857,22 +894,65 @@ export class ReportWriter {
     deadline: number,
     actor: AiRequestContext
   ): Promise<SynthesisCompletion> {
+    const responseFormat = synthesisResponseFormat(this.supportedCountries, draft);
+    const reasoningRequired = materials.length > 0;
+    const prompt = synthesisPrompt(draft, plan, materials);
     let content: string;
     try {
-      content = await this.completeGroq(
-        {
-          messages: [
-            { role: "system", content: WRITER_SYSTEM_PROMPT },
-            { role: "user", content: synthesisPrompt(draft, plan, materials) }
-          ],
-          max_completion_tokens: REPORT_COMPLETION_TOKEN_LIMIT,
-          response_format: synthesisResponseFormat(this.supportedCountries, draft)
-        },
+      content = await this.completeFireworks(
+        reasoningRequired
+          ? {
+              messages: [
+                { role: "system", content: WRITER_SYSTEM_PROMPT },
+                { role: "user", content: schemaPrompt(prompt, responseFormat) }
+              ],
+              max_completion_tokens: RESEARCH_SYNTHESIS_COMPLETION_TOKEN_LIMIT,
+              reasoning_effort: "high"
+            }
+          : {
+              messages: [
+                { role: "system", content: WRITER_SYSTEM_PROMPT },
+                { role: "user", content: prompt }
+              ],
+              max_completion_tokens: MECHANICAL_COMPLETION_TOKEN_LIMIT,
+              reasoning_effort: "none",
+              response_format: responseFormat
+            },
         deadline,
         actor,
         "synthesize"
       );
-      return parseSynthesis(content);
+      try {
+        return parseSynthesis(content);
+      } catch (error) {
+        if (!repairableSynthesisError(error)) throw error;
+        const repaired = await this.completeFireworks(
+          {
+            messages: [
+              { role: "system", content: WRITER_SYSTEM_PROMPT },
+              { role: "user", content: prompt },
+              { role: "assistant", content },
+              { role: "user", content: synthesisRepairPrompt(error.message) }
+            ],
+            max_completion_tokens: MECHANICAL_COMPLETION_TOKEN_LIMIT,
+            reasoning_effort: "none",
+            response_format: responseFormat
+          },
+          deadline,
+          actor,
+          "synthesize"
+        );
+        try {
+          return parseSynthesis(repaired);
+        } catch (repairError) {
+          throw new ReportWriterError(
+            "AI report synthesis remained invalid after one repair.",
+            repairError instanceof ReportWriterError && repairError.candidateReport
+              ? { candidateReport: repairError.candidateReport }
+              : {}
+          );
+        }
+      }
     } catch (error) {
       if (error instanceof ReportWriterError) {
         error.country = plan.country;
@@ -929,18 +1009,18 @@ export class ReportWriter {
     }
   }
 
-  private async completeGroq(
+  private async completeFireworks(
     body: Record<string, unknown>,
     deadline: number,
     actor: AiRequestContext,
-    stage: GroqStage
+    stage: FireworksStage
   ): Promise<string> {
     try {
-      const completion = await this.groq.complete(body, deadline, actor, stage);
+      const completion = await this.fireworks.complete(body, deadline, actor, stage);
       await this.record(actor.userId, completion.usage, stage, actor);
       return completion.content;
     } catch (error) {
-      if (error instanceof GroqClientError) {
+      if (error instanceof FireworksClientError) {
         if (error.kind === "refusal") {
           throw new ReportWriterError("The AI declined to process this evidence.");
         }

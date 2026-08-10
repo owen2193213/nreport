@@ -73,7 +73,7 @@ function moreResearch(kind: "term" | "law", query: string): Record<string, unkno
   };
 }
 
-function groq(value: Record<string, unknown>, usage: Partial<AiUsage> = {}): Response {
+function fireworks(value: Record<string, unknown>, usage: Partial<AiUsage> = {}): Response {
   return new Response(
     JSON.stringify({
       choices: [
@@ -138,8 +138,8 @@ function writer(
   recordUsage: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined)
 ): ReportWriter {
   return new ReportWriter(
-    "groq-secret",
-    "openai/gpt-oss-120b",
+    "fireworks-secret",
+    "accounts/fireworks/models/deepseek-v4-flash",
     "brave-secret",
     COUNTRIES,
     {
@@ -159,12 +159,12 @@ function bodyAt<T>(request: ReturnType<typeof vi.fn>, index: number): T {
   return JSON.parse(body) as T;
 }
 
-describe("Groq and Brave report writer", () => {
+describe("Fireworks and Brave report writer", () => {
   it("skips Brave when the strict planner requires no research", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(groq(plan()))
-      .mockResolvedValueOnce(groq(completed()));
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(fireworks(completed()));
     const recordUsage = vi.fn().mockResolvedValue(undefined);
 
     const result = await writer(request, recordUsage).generate(draft(), ACTOR);
@@ -174,24 +174,46 @@ describe("Groq and Brave report writer", () => {
     expect(result.legalResearch.sources).toEqual([]);
     expect(result.report.length).toBeLessThanOrEqual(512);
     expect(request).toHaveBeenCalledTimes(2);
-    expect(urlAt(request, 0)).toBe("https://api.groq.com/openai/v1/chat/completions");
-    expect(urlAt(request, 1)).toBe("https://api.groq.com/openai/v1/chat/completions");
+    expect(urlAt(request, 0)).toBe(
+      "https://api.fireworks.ai/inference/v1/chat/completions"
+    );
+    expect(urlAt(request, 1)).toBe(
+      "https://api.fireworks.ai/inference/v1/chat/completions"
+    );
     expect(recordUsage).toHaveBeenCalledTimes(2);
 
     const planning = bodyAt<{
       plugins?: unknown;
       tools?: unknown;
       provider?: unknown;
-      response_format: {
-        json_schema: { strict: boolean; schema: { properties: object; required: string[] } };
-      };
+      max_completion_tokens: number;
+      messages: Array<{ content: string }>;
+      reasoning_effort: string;
+      response_format?: unknown;
     }>(request, 0);
     expect(planning.plugins).toBeUndefined();
     expect(planning.tools).toBeUndefined();
     expect(planning.provider).toBeUndefined();
-    expect(planning.response_format.json_schema.strict).toBe(true);
-    expect(planning.response_format.json_schema.schema.required.sort()).toEqual(
-      Object.keys(planning.response_format.json_schema.schema.properties).sort()
+    expect(planning.reasoning_effort).toBe("high");
+    expect(planning.max_completion_tokens).toBe(8_192);
+    expect(planning.response_format).toBeUndefined();
+    expect(JSON.stringify(planning.messages)).toContain("provisionalLawReference");
+
+    const synthesis = bodyAt<{
+      max_completion_tokens: number;
+      messages: Array<{ content: string }>;
+      reasoning_effort: string;
+      response_format: {
+        type: string;
+        json_schema: { schema: object; strict?: unknown };
+      };
+    }>(request, 1);
+    expect(synthesis.reasoning_effort).toBe("none");
+    expect(synthesis.max_completion_tokens).toBe(4_096);
+    expect(synthesis.response_format.type).toBe("json_schema");
+    expect(synthesis.response_format.json_schema.strict).toBeUndefined();
+    expect(JSON.stringify(synthesis.messages)).toContain(
+      "Do not count characters step by step or spend time optimizing the exact character count."
     );
   });
 
@@ -199,7 +221,7 @@ describe("Groq and Brave report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        groq(
+        fireworks(
           plan({
             termResearchRequired: true,
             termSearchQuery: "coded term meaning hateful language"
@@ -207,7 +229,7 @@ describe("Groq and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(braveTerm())
-      .mockResolvedValueOnce(groq(completed()));
+      .mockResolvedValueOnce(fireworks(completed()));
 
     const result = await writer(request).generate(draft(), ACTOR);
 
@@ -219,13 +241,23 @@ describe("Groq and Brave report writer", () => {
     expect(result.legalResearch.sources[0]?.url).toBe(
       "https://dictionary.example/coded-term"
     );
+    const synthesis = bodyAt<{
+      max_completion_tokens: number;
+      messages: Array<{ content: string }>;
+      reasoning_effort: string;
+      response_format?: unknown;
+    }>(request, 2);
+    expect(synthesis.reasoning_effort).toBe("high");
+    expect(synthesis.max_completion_tokens).toBe(12_288);
+    expect(synthesis.response_format).toBeUndefined();
+    expect(JSON.stringify(synthesis.messages)).toContain("researchSummary");
   });
 
   it("performs only law research when requested", async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        groq(
+        fireworks(
           plan({
             lawResearchRequired: true,
             lawSearchQuery: "Germany official Basic Law Article 1",
@@ -234,7 +266,7 @@ describe("Groq and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(braveLaw())
-      .mockResolvedValueOnce(groq(completed()));
+      .mockResolvedValueOnce(fireworks(completed()));
 
     const result = await writer(request).generate(draft(), ACTOR);
 
@@ -252,8 +284,8 @@ describe("Groq and Brave report writer", () => {
       resolveLaw = resolve;
     });
     const request = vi.fn(async (url: string) => {
-      if (url.includes("api.groq.com") && request.mock.calls.length === 1) {
-        return groq(
+      if (url.includes("api.fireworks.ai") && request.mock.calls.length === 1) {
+        return fireworks(
           plan({
             termResearchRequired: true,
             termSearchQuery: "coded term meaning hateful language",
@@ -265,7 +297,7 @@ describe("Groq and Brave report writer", () => {
       }
       if (url.includes("/web/search")) return termPending;
       if (url.includes("/llm/context")) return lawPending;
-      return groq(completed());
+      return fireworks(completed());
     });
 
     const generation = writer(request).generate(draft(), ACTOR);
@@ -280,14 +312,14 @@ describe("Groq and Brave report writer", () => {
 
   it("rejects inconsistent plans and changes to fixed fields before searching", async () => {
     const inconsistent = vi.fn().mockResolvedValue(
-      groq(plan({ termResearchRequired: true, termSearchQuery: null }))
+      fireworks(plan({ termResearchRequired: true, termSearchQuery: null }))
     );
     await expect(writer(inconsistent).generate(draft(), ACTOR)).rejects.toThrow(
       /terminology research query/
     );
     expect(inconsistent).toHaveBeenCalledTimes(1);
 
-    const changed = vi.fn().mockResolvedValue(groq(plan({ country: "AT" })));
+    const changed = vi.fn().mockResolvedValue(fireworks(plan({ country: "AT" })));
     await expect(writer(changed).generate(draft(), ACTOR)).rejects.toThrow(
       /fixed country/
     );
@@ -303,7 +335,7 @@ describe("Groq and Brave report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        groq(
+        fireworks(
           plan({
             country: "AT",
             reportType: "sub_other_threats",
@@ -314,7 +346,7 @@ describe("Groq and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(
-        groq(
+        fireworks(
           completed({
             country: "AT",
             reportType: "sub_other_threats",
@@ -335,43 +367,68 @@ describe("Groq and Brave report writer", () => {
   it("performs one targeted follow-up and rejects a second request", async () => {
     const successRequest = vi
       .fn()
-      .mockResolvedValueOnce(groq(plan()))
+      .mockResolvedValueOnce(fireworks(plan()))
       .mockResolvedValueOnce(
-        groq(moreResearch("law", "Germany official Basic Law Article 1 text"))
+        fireworks(moreResearch("law", "Germany official Basic Law Article 1 text"))
       )
       .mockResolvedValueOnce(braveLaw())
-      .mockResolvedValueOnce(groq(completed()));
+      .mockResolvedValueOnce(fireworks(completed()));
     const result = await writer(successRequest).generate(draft(), ACTOR);
     expect(result.legalResearch.searchRequests).toBe(1);
     expect(successRequest).toHaveBeenCalledTimes(4);
 
     const repeated = vi
       .fn()
-      .mockResolvedValueOnce(groq(plan()))
+      .mockResolvedValueOnce(fireworks(plan()))
       .mockResolvedValueOnce(
-        groq(moreResearch("law", "Germany official Basic Law Article 1 text"))
+        fireworks(moreResearch("law", "Germany official Basic Law Article 1 text"))
       )
       .mockResolvedValueOnce(braveLaw())
       .mockResolvedValueOnce(
-        groq(moreResearch("law", "Germany official Basic Law Article 1 current text"))
+        fireworks(moreResearch("law", "Germany official Basic Law Article 1 current text"))
       );
     await expect(writer(repeated).generate(draft(), ACTOR)).rejects.toThrow(
       /allowed follow-up/
     );
   });
 
-  it("rejects an invalid completed report independently of strict JSON", async () => {
+  it("repairs an oversized completed report once with reasoning disabled", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(groq(plan()))
-      .mockResolvedValueOnce(groq(completed({ report: "x".repeat(513) })));
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(fireworks(completed({ report: "x".repeat(513) })))
+      .mockResolvedValueOnce(fireworks(completed()));
 
-    await expect(writer(request).generate(draft(), ACTOR)).rejects.toThrow(
-      /exceeded 512 characters/
-    );
+    const result = await writer(request).generate(draft(), ACTOR);
+
+    expect(result.report).toContain("profile imagery");
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(bodyAt<{ reasoning_effort: string; max_completion_tokens: number }>(request, 2)).toMatchObject({
+      reasoning_effort: "none",
+      max_completion_tokens: 4_096
+    });
   });
 
-  it("maps a Groq refusal to a specific safe error", async () => {
+  it("repairs malformed synthesis JSON once", async () => {
+    const malformed = new Response(
+      JSON.stringify({
+        choices: [{ finish_reason: "stop", message: { content: "not-json" } }]
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(malformed)
+      .mockResolvedValueOnce(fireworks(completed()));
+
+    await expect(writer(request).generate(draft(), ACTOR)).resolves.toMatchObject({
+      reportType: "sub_other_hate_speech"
+    });
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it("maps a Fireworks refusal to a specific safe error", async () => {
     const request = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -417,8 +474,8 @@ describe("Groq and Brave report writer", () => {
     };
     const request = vi
       .fn()
-      .mockResolvedValueOnce(groq(plan()))
-      .mockResolvedValueOnce(groq(completed()));
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(fireworks(completed()));
 
     await writer(request).generate(messageDraft, ACTOR);
     const serialized = request.mock.calls
@@ -431,7 +488,7 @@ describe("Groq and Brave report writer", () => {
     expect(serialized).not.toContain("private-evidence.png");
   });
 
-  it("refines through Groq without searching or changing research", async () => {
+  it("refines through Fireworks without searching or changing research", async () => {
     const reportDraft = draft();
     reportDraft.legalResearch = {
       country: "DE",
@@ -447,7 +504,7 @@ describe("Groq and Brave report writer", () => {
       { role: "assistant", content: JSON.stringify({ report: "Original report." }) }
     ];
     const request = vi.fn().mockResolvedValue(
-      groq({ report: `Refined report under ${LAW}.` })
+      fireworks({ report: `Refined report under ${LAW}.` })
     );
 
     const result = await writer(request).refine(reportDraft, "Make it clearer", ACTOR);
@@ -455,20 +512,29 @@ describe("Groq and Brave report writer", () => {
     expect(result.report).toContain("Refined report");
     expect(result.legalResearch).toEqual(reportDraft.legalResearch);
     expect(request).toHaveBeenCalledTimes(1);
-    expect(urlAt(request, 0)).toBe("https://api.groq.com/openai/v1/chat/completions");
+    expect(urlAt(request, 0)).toBe(
+      "https://api.fireworks.ai/inference/v1/chat/completions"
+    );
+    expect(bodyAt<{ reasoning_effort: string; max_completion_tokens: number }>(request, 0)).toMatchObject({
+      reasoning_effort: "none",
+      max_completion_tokens: 4_096
+    });
   });
 
   it("retains a candidate report when synthesis validation fails", async () => {
-    const candidate = "x".repeat(513);
+    const firstCandidate = "x".repeat(513);
+    const repairedCandidate = "y".repeat(514);
     const request = vi
       .fn()
-      .mockResolvedValueOnce(groq(plan()))
-      .mockResolvedValueOnce(groq(completed({ report: candidate })));
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(fireworks(completed({ report: firstCandidate })))
+      .mockResolvedValueOnce(fireworks(completed({ report: repairedCandidate })));
 
     const failure = await writer(request)
       .generate(draft(), ACTOR)
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(ReportWriterError);
-    expect((failure as ReportWriterError).candidateReport).toBe(candidate);
+    expect((failure as ReportWriterError).candidateReport).toBe(repairedCandidate);
+    expect(request).toHaveBeenCalledTimes(3);
   });
 });

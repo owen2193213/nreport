@@ -64,9 +64,6 @@ interface CompletedSynthesis {
   status: "completed";
   followUpType: null;
   followUpQuery: null;
-  country: string;
-  reportType: string;
-  reportReason: string;
   lawReference: string;
   researchSummary: string;
   report: string;
@@ -76,9 +73,6 @@ interface FollowUpSynthesis {
   status: "more_research_required";
   followUpType: ResearchKind;
   followUpQuery: string;
-  country: null;
-  reportType: null;
-  reportReason: null;
   lawReference: null;
   researchSummary: null;
   report: null;
@@ -264,16 +258,20 @@ function plannerPrompt(draft: ReportDraft, countries: readonly string[]): string
             .map((code) => `${countryChoice(code).name} (${code})`)
             .join(", ")}`
         ]
-      : [`Fixed country: ${draft.country}. Echo it exactly.`]),
+      : [`Fixed country context: ${draft.country}. Do not return a country field.`]),
     ...(draft.reportType
-      ? [`Fixed report category: ${draft.reportType}. Echo it exactly.`]
+      ? [
+          `Fixed report category context: ${draft.reportType}. Do not return a reportType field.`
+        ]
       : [
           `Choose one report category: ${reportReasons(draft.flow)
             .map((reason) => `${reason.label} (${reason.value})`)
             .join(", ")}`
         ]),
     ...(draft.reportBrief
-      ? [`Fixed reporter explanation: ${draft.reportBrief}. Echo it exactly.`]
+      ? [
+          `Fixed reporter explanation context: ${draft.reportBrief}. Do not return a reportReason field.`
+        ]
       : draft.rewriteRequest
         ? [
             `Rewrite the prior explanation from evidence using this goal: ${draft.rewriteRequest.instruction}`,
@@ -303,19 +301,25 @@ function nullableString(): Record<string, unknown> {
 }
 
 function plannerResponseFormat(countries: readonly string[], draft: ReportDraft) {
-  const properties = {
-    country: { type: "string", enum: [...countries] },
-    reportType: {
-      type: "string",
-      enum: reportReasons(draft.flow).map((reason) => reason.value)
-    },
-    reportReason: { type: "string", minLength: 1, maxLength: 512 },
+  const properties: Record<string, unknown> = {
     termResearchRequired: { type: "boolean" },
     termSearchQuery: nullableString(),
     lawResearchRequired: { type: "boolean" },
     lawSearchQuery: nullableString(),
     provisionalLawReference: nullableString()
   };
+  if (!draft.country) {
+    properties.country = { type: "string", enum: [...countries] };
+  }
+  if (!draft.reportType) {
+    properties.reportType = {
+      type: "string",
+      enum: reportReasons(draft.flow).map((reason) => reason.value)
+    };
+  }
+  if (!draft.reportBrief) {
+    properties.reportReason = { type: "string", minLength: 1, maxLength: 512 };
+  }
   return {
     type: "json_schema",
     json_schema: {
@@ -330,17 +334,11 @@ function plannerResponseFormat(countries: readonly string[], draft: ReportDraft)
   };
 }
 
-function synthesisResponseFormat(countries: readonly string[], draft: ReportDraft) {
+function synthesisResponseFormat() {
   const properties = {
     status: { type: "string", enum: ["completed", "more_research_required"] },
     followUpType: { type: ["string", "null"], enum: ["term", "law", null] },
     followUpQuery: nullableString(),
-    country: { type: ["string", "null"], enum: [...countries, null] },
-    reportType: {
-      type: ["string", "null"],
-      enum: [...reportReasons(draft.flow).map((reason) => reason.value), null]
-    },
-    reportReason: nullableString(),
     lawReference: nullableString(),
     researchSummary: nullableString(),
     report: { type: ["string", "null"], maxLength: MAX_REPORT_LENGTH }
@@ -405,10 +403,15 @@ function parsePlan(
   countries: readonly string[]
 ): ResearchPlan {
   const value = parseObject(content, "AI planning returned malformed structured data.");
-  const country = typeof value.country === "string" ? value.country.trim().toUpperCase() : "";
-  const reportType = typeof value.reportType === "string" ? value.reportType.trim() : "";
-  const reportReason =
+  const selectedCountry =
+    typeof value.country === "string" ? value.country.trim().toUpperCase() : "";
+  const selectedReportType =
+    typeof value.reportType === "string" ? value.reportType.trim() : "";
+  const selectedReportReason =
     typeof value.reportReason === "string" ? value.reportReason.trim() : "";
+  const country = draft.country ?? selectedCountry;
+  const reportType = draft.reportType ?? selectedReportType;
+  const reportReason = draft.reportBrief ?? selectedReportReason;
   const termResearchRequired = value.termResearchRequired === true;
   const lawResearchRequired = value.lawResearchRequired === true;
   const termSearchQuery =
@@ -423,21 +426,12 @@ function parsePlan(
   if (!countries.includes(country)) {
     throw new ReportWriterError("AI planning returned an unsupported country.");
   }
-  if (draft.country && country !== draft.country) {
-    throw new ReportWriterError("AI planning attempted to change the fixed country.");
-  }
   const allowedTypes = reportReasons(draft.flow).map((reason) => reason.value);
   if (!allowedTypes.includes(reportType)) {
     throw new ReportWriterError("AI planning returned an unsupported report category.");
   }
-  if (draft.reportType && reportType !== draft.reportType) {
-    throw new ReportWriterError("AI planning attempted to change the fixed report category.");
-  }
   if (!reportReason || reportReason.length > 512) {
     throw new ReportWriterError("AI planning returned an invalid reporter explanation.");
-  }
-  if (draft.reportBrief && reportReason !== draft.reportBrief) {
-    throw new ReportWriterError("AI planning attempted to change the fixed reporter explanation.");
   }
   if (termResearchRequired !== Boolean(termSearchQuery)) {
     throw new ReportWriterError("AI planning returned an inconsistent terminology research query.");
@@ -495,7 +489,7 @@ function synthesisPrompt(
     compactResearch(materials),
     initialWriterPrompt(),
     "Use sources only for factual grounding. If the supplied material is insufficient, request exactly one sanitized term or law follow-up instead of guessing.",
-    "On completion, echo the resolved country, category, and reporter explanation exactly."
+    "The country, category, and reporter explanation are immutable context. Do not return them."
   ].join("\n");
 }
 
@@ -507,9 +501,6 @@ function parseSynthesis(content: string): SynthesisCompletion {
       typeof value.followUpQuery !== "string" ||
       !value.followUpQuery.trim() ||
       [
-        value.country,
-        value.reportType,
-        value.reportReason,
         value.lawReference,
         value.researchSummary,
         value.report
@@ -521,9 +512,6 @@ function parseSynthesis(content: string): SynthesisCompletion {
       status: "more_research_required",
       followUpType: value.followUpType,
       followUpQuery: value.followUpQuery.trim(),
-      country: null,
-      reportType: null,
-      reportReason: null,
       lawReference: null,
       researchSummary: null,
       report: null
@@ -536,9 +524,6 @@ function parseSynthesis(content: string): SynthesisCompletion {
     throw new ReportWriterError("AI completed a report with invalid follow-up fields.");
   }
   const fields = [
-    "country",
-    "reportType",
-    "reportReason",
     "lawReference",
     "researchSummary",
     "report"
@@ -562,32 +547,10 @@ function parseSynthesis(content: string): SynthesisCompletion {
     status: "completed",
     followUpType: null,
     followUpQuery: null,
-    country: strings.country,
-    reportType: strings.reportType,
-    reportReason: strings.reportReason,
     lawReference: strings.lawReference,
     researchSummary: strings.researchSummary,
     report: strings.report
   };
-}
-
-function validateCompleted(
-  completion: CompletedSynthesis,
-  plan: ResearchPlan,
-  draft: ReportDraft
-): void {
-  if (completion.country !== plan.country) {
-    throw new ReportWriterError("AI synthesis changed the resolved country.");
-  }
-  if (completion.reportType !== plan.reportType) {
-    throw new ReportWriterError("AI synthesis changed the resolved report category.");
-  }
-  if (completion.reportReason !== plan.reportReason) {
-    throw new ReportWriterError("AI synthesis changed the resolved reporter explanation.");
-  }
-  if (!reportReasons(draft.flow).some((reason) => reason.value === completion.reportType)) {
-    throw new ReportWriterError("AI synthesis returned an unsupported report category.");
-  }
 }
 
 function sourcesFrom(materials: ResearchMaterial[]): LegalSource[] {
@@ -643,7 +606,7 @@ function repairPrompt(problem: string): string {
 
 function synthesisRepairPrompt(problem: string): string {
   return [
-    "Repair the preceding synthesis response without changing its evidence, country, category, reporter explanation, or legal conclusions.",
+    "Repair only the model-owned fields in the preceding synthesis response without changing its evidence or legal conclusions.",
     `Validation problem: ${problem}`,
     "Return the complete synthesis JSON object, not only the report field.",
     "Keep the report naturally concise and comfortably within 512 characters.",
@@ -771,13 +734,12 @@ export class ReportWriter {
         );
       }
     }
-    validateCompleted(completion, plan, draft);
     const searchRequests = materials.reduce(
       (total, material) => total + material.searchRequests,
       0
     );
     const legalResearch: LegalResearch = {
-      country: completion.country,
+      country: plan.country,
       lawReference: completion.lawReference,
       summary: completion.researchSummary,
       sources: sourcesFrom(materials),
@@ -791,11 +753,11 @@ export class ReportWriter {
     ];
     return {
       conversation,
-      country: completion.country,
+      country: plan.country,
       legalResearch,
       report: completion.report,
-      reportReason: completion.reportReason,
-      reportType: completion.reportType
+      reportReason: plan.reportReason,
+      reportType: plan.reportType
     };
   }
 
@@ -894,7 +856,7 @@ export class ReportWriter {
     deadline: number,
     actor: AiRequestContext
   ): Promise<SynthesisCompletion> {
-    const responseFormat = synthesisResponseFormat(this.supportedCountries, draft);
+    const responseFormat = synthesisResponseFormat();
     const reasoningRequired = materials.length > 0;
     const prompt = synthesisPrompt(draft, plan, materials);
     let content: string;

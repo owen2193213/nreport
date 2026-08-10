@@ -264,16 +264,20 @@ function plannerPrompt(draft: ReportDraft, countries: readonly string[]): string
             .map((code) => `${countryChoice(code).name} (${code})`)
             .join(", ")}`
         ]
-      : [`Fixed country: ${draft.country}. Echo it exactly.`]),
+      : [`Fixed country context: ${draft.country}. Do not return a country field.`]),
     ...(draft.reportType
-      ? [`Fixed report category: ${draft.reportType}. Echo it exactly.`]
+      ? [
+          `Fixed report category context: ${draft.reportType}. Do not return a reportType field.`
+        ]
       : [
           `Choose one report category: ${reportReasons(draft.flow)
             .map((reason) => `${reason.label} (${reason.value})`)
             .join(", ")}`
         ]),
     ...(draft.reportBrief
-      ? [`Fixed reporter explanation: ${draft.reportBrief}. Echo it exactly.`]
+      ? [
+          `Fixed reporter explanation context: ${draft.reportBrief}. Do not return a reportReason field.`
+        ]
       : draft.rewriteRequest
         ? [
             `Rewrite the prior explanation from evidence using this goal: ${draft.rewriteRequest.instruction}`,
@@ -303,19 +307,25 @@ function nullableString(): Record<string, unknown> {
 }
 
 function plannerResponseFormat(countries: readonly string[], draft: ReportDraft) {
-  const properties = {
-    country: { type: "string", enum: [...countries] },
-    reportType: {
-      type: "string",
-      enum: reportReasons(draft.flow).map((reason) => reason.value)
-    },
-    reportReason: { type: "string", minLength: 1, maxLength: 512 },
+  const properties: Record<string, unknown> = {
     termResearchRequired: { type: "boolean" },
     termSearchQuery: nullableString(),
     lawResearchRequired: { type: "boolean" },
     lawSearchQuery: nullableString(),
     provisionalLawReference: nullableString()
   };
+  if (!draft.country) {
+    properties.country = { type: "string", enum: [...countries] };
+  }
+  if (!draft.reportType) {
+    properties.reportType = {
+      type: "string",
+      enum: reportReasons(draft.flow).map((reason) => reason.value)
+    };
+  }
+  if (!draft.reportBrief) {
+    properties.reportReason = { type: "string", minLength: 1, maxLength: 512 };
+  }
   return {
     type: "json_schema",
     json_schema: {
@@ -405,10 +415,15 @@ function parsePlan(
   countries: readonly string[]
 ): ResearchPlan {
   const value = parseObject(content, "AI planning returned malformed structured data.");
-  const country = typeof value.country === "string" ? value.country.trim().toUpperCase() : "";
-  const reportType = typeof value.reportType === "string" ? value.reportType.trim() : "";
-  const reportReason =
+  const selectedCountry =
+    typeof value.country === "string" ? value.country.trim().toUpperCase() : "";
+  const selectedReportType =
+    typeof value.reportType === "string" ? value.reportType.trim() : "";
+  const selectedReportReason =
     typeof value.reportReason === "string" ? value.reportReason.trim() : "";
+  const country = draft.country ?? selectedCountry;
+  const reportType = draft.reportType ?? selectedReportType;
+  const reportReason = draft.reportBrief ?? selectedReportReason;
   const termResearchRequired = value.termResearchRequired === true;
   const lawResearchRequired = value.lawResearchRequired === true;
   const termSearchQuery =
@@ -423,21 +438,12 @@ function parsePlan(
   if (!countries.includes(country)) {
     throw new ReportWriterError("AI planning returned an unsupported country.");
   }
-  if (draft.country && country !== draft.country) {
-    throw new ReportWriterError("AI planning attempted to change the fixed country.");
-  }
   const allowedTypes = reportReasons(draft.flow).map((reason) => reason.value);
   if (!allowedTypes.includes(reportType)) {
     throw new ReportWriterError("AI planning returned an unsupported report category.");
   }
-  if (draft.reportType && reportType !== draft.reportType) {
-    throw new ReportWriterError("AI planning attempted to change the fixed report category.");
-  }
   if (!reportReason || reportReason.length > 512) {
     throw new ReportWriterError("AI planning returned an invalid reporter explanation.");
-  }
-  if (draft.reportBrief && reportReason !== draft.reportBrief) {
-    throw new ReportWriterError("AI planning attempted to change the fixed reporter explanation.");
   }
   if (termResearchRequired !== Boolean(termSearchQuery)) {
     throw new ReportWriterError("AI planning returned an inconsistent terminology research query.");

@@ -159,6 +159,15 @@ function bodyAt<T>(request: ReturnType<typeof vi.fn>, index: number): T {
   return JSON.parse(body) as T;
 }
 
+function embeddedSchema(message: string): { properties: Record<string, unknown> } {
+  const marker = "Return raw JSON only, matching this JSON Schema exactly:\n";
+  const index = message.lastIndexOf(marker);
+  if (index < 0) throw new Error("Expected an embedded JSON Schema.");
+  return JSON.parse(message.slice(index + marker.length)) as {
+    properties: Record<string, unknown>;
+  };
+}
+
 describe("Fireworks and Brave report writer", () => {
   it("skips Brave when the strict planner requires no research", async () => {
     const request = vi
@@ -198,6 +207,10 @@ describe("Fireworks and Brave report writer", () => {
     expect(planning.max_completion_tokens).toBe(8_192);
     expect(planning.response_format).toBeUndefined();
     expect(JSON.stringify(planning.messages)).toContain("provisionalLawReference");
+    const planningSchema = embeddedSchema(planning.messages[1]!.content);
+    expect(planningSchema.properties).not.toHaveProperty("country");
+    expect(planningSchema.properties).not.toHaveProperty("reportType");
+    expect(planningSchema.properties).not.toHaveProperty("reportReason");
 
     const synthesis = bodyAt<{
       max_completion_tokens: number;
@@ -310,7 +323,7 @@ describe("Fireworks and Brave report writer", () => {
     expect(result.legalResearch.sources).toHaveLength(2);
   });
 
-  it("rejects inconsistent plans and changes to fixed fields before searching", async () => {
+  it("rejects inconsistent plans before searching", async () => {
     const inconsistent = vi.fn().mockResolvedValue(
       fireworks(plan({ termResearchRequired: true, termSearchQuery: null }))
     );
@@ -318,12 +331,29 @@ describe("Fireworks and Brave report writer", () => {
       /terminology research query/
     );
     expect(inconsistent).toHaveBeenCalledTimes(1);
+  });
 
-    const changed = vi.fn().mockResolvedValue(fireworks(plan({ country: "AT" })));
-    await expect(writer(changed).generate(draft(), ACTOR)).rejects.toThrow(
-      /fixed country/
-    );
-    expect(changed).toHaveBeenCalledTimes(1);
+  it("does not let unavailable planner fields override fixed application state", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        fireworks(
+          plan({
+            country: "AT",
+            reportType: "sub_other_threats",
+            reportReason: "A different explanation."
+          })
+        )
+      )
+      .mockResolvedValueOnce(fireworks(completed()));
+
+    const result = await writer(request).generate(draft(), ACTOR);
+
+    expect(result).toMatchObject({
+      country: "DE",
+      reportType: "sub_other_hate_speech",
+      reportReason: "The profile imagery contains hateful material."
+    });
   });
 
   it("resolves Auto country, category, and explanation", async () => {
@@ -357,6 +387,11 @@ describe("Fireworks and Brave report writer", () => {
       );
 
     const result = await writer(request).generate(auto, ACTOR);
+    const planning = bodyAt<{ messages: Array<{ content: string }> }>(request, 0);
+    const planningSchema = embeddedSchema(planning.messages[1]!.content);
+    expect(planningSchema.properties).toHaveProperty("country");
+    expect(planningSchema.properties).toHaveProperty("reportType");
+    expect(planningSchema.properties).toHaveProperty("reportReason");
     expect(result).toMatchObject({
       country: "AT",
       reportType: "sub_other_threats",

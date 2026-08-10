@@ -67,6 +67,7 @@ import {
   buildReview,
   buildWriterProgress,
   buildWriterFailure,
+  discordUserMention,
   draftToCreateInput,
   errorEmbed,
   generatedKeysEmbed,
@@ -1192,7 +1193,7 @@ export class InteractionHandler {
       await interaction.reply({
         embeds: [accessEmbed(access, this.isAdmin(userId), userId)],
         flags: EPHEMERAL,
-        allowedMentions: { parse: [] }
+        allowedMentions: { users: [userId] }
       });
       return;
     }
@@ -1200,15 +1201,17 @@ export class InteractionHandler {
       const reason = interaction.options.getString("reason")?.trim() || "Suspended by administrator";
       await this.database.suspendUser(userId, interaction.user.id, reason);
       await interaction.reply({
-        embeds: [successEmbed("User suspended", `User \`${userId}\` is suspended and their remaining credits were cleared.`)],
-        flags: EPHEMERAL
+        embeds: [successEmbed("User suspended", `User ${discordUserMention(userId)} is suspended and their remaining credits were cleared.`)],
+        flags: EPHEMERAL,
+        allowedMentions: { users: [userId] }
       });
       return;
     }
     await this.database.reinstateUser(userId, interaction.user.id);
     await interaction.reply({
-      embeds: [successEmbed("User reinstated", `User \`${userId}\` is active with **0 credits**.`)],
-      flags: EPHEMERAL
+      embeds: [successEmbed("User reinstated", `User ${discordUserMention(userId)} is active with **0 credits**.`)],
+      flags: EPHEMERAL,
+      allowedMentions: { users: [userId] }
     });
   }
 

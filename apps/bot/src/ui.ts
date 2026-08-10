@@ -888,9 +888,13 @@ export function accessEmbed(access: AccessView, admin: boolean, userId?: string)
         ].join("\n")
       }
     );
-  if (userId) embed.setDescription(`Discord user: \`${userId}\``);
+  if (userId) embed.setDescription(`Discord user: ${discordUserMention(userId)}`);
   if (access.suspensionReason) embed.addFields({ name: "Suspension reason", value: access.suspensionReason });
   return embed;
+}
+
+export function discordUserMention(userId: string): string {
+  return `<@${userId}>`;
 }
 
 function reportElements(report: ReportView): readonly string[] {
@@ -1296,7 +1300,7 @@ export function accessKeysEmbed(keys: readonly AccessKeyView[]): EmbedBuilder {
         `ID: \`${key.id}\``,
         `Credits granted: **${key.credits_total}** • Expires: ${key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never"}`,
         key.redeemed_by
-          ? `Redeemed by: \`${key.redeemed_by}\`${key.redeemed_at ? ` • ${discordTimestamp(key.redeemed_at.toISOString())}` : ""}`
+          ? `Redeemed by: ${discordUserMention(key.redeemed_by)}${key.redeemed_at ? ` • ${discordTimestamp(key.redeemed_at.toISOString())}` : ""}`
           : "Redeemed by: Nobody"
       ].join("\n"),
       inline: true
@@ -1315,7 +1319,7 @@ export function accessKeyEmbed(key: AccessKeyView): EmbedBuilder {
       { name: "Credits granted", value: key.credits_total.toString(), inline: true },
       { name: "Status", value: statusLabel(key.status), inline: true },
       { name: "Expires", value: key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never", inline: true },
-      { name: "Redeemed by", value: key.redeemed_by ? `\`${key.redeemed_by}\`` : "Nobody", inline: true },
+      { name: "Redeemed by", value: key.redeemed_by ? discordUserMention(key.redeemed_by) : "Nobody", inline: true },
       { name: "Revoked", value: key.revoked_at ? discordTimestamp(key.revoked_at.toISOString()) : "No", inline: true }
     );
 }

@@ -309,11 +309,11 @@ describe("access key administration views", () => {
     expect(json).not.toContain("internal-key-id");
   });
 
-  it("identifies the redeemer in key list and inspection output", () => {
+  it("mentions the redeemer in key list and inspection output", () => {
     const list = JSON.stringify(accessKeysEmbed([redeemedKey]).toJSON());
     const detail = JSON.stringify(accessKeyEmbed(redeemedKey).toJSON());
     for (const output of [list, detail]) {
-      expect(output).toContain("100000000000000002");
+      expect(output).toContain("<@100000000000000002>");
       expect(output).toContain("Redeemed");
     }
   });
@@ -454,6 +454,29 @@ describe("report UI", () => {
     expect(text).toContain("1,000");
     expect(text).toContain("200");
     expect(text).toContain("0.012345 credits");
+  });
+
+  it("mentions the selected user in the administrator access view", () => {
+    const text = JSON.stringify(
+      accessEmbed(
+        {
+          aiCostCredits: 0,
+          aiInputTokens: 0,
+          aiOutputTokens: 0,
+          aiReasoningTokens: 0,
+          aiRequestCount: 0,
+          aiSearchRequests: 0,
+          credits: 3,
+          defaultCountry: null,
+          suspended: false,
+          suspensionReason: null
+        },
+        false,
+        "100000000000000002"
+      ).toJSON()
+    );
+
+    expect(text).toContain("Discord user: <@100000000000000002>");
   });
 
   it("searches full country names and returns flags with ISO values", () => {

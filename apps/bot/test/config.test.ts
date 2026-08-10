@@ -19,9 +19,9 @@ function environment(): NodeJS.ProcessEnv {
 }
 
 describe("bot configuration", () => {
-  it("requires an OpenRouter key and defaults to Gemma 4 31B", () => {
+  it("requires an OpenRouter key and defaults to DeepSeek V4 Flash", () => {
     const config = loadBotConfig(environment());
-    expect(config.openRouterModel).toBe("google/gemma-4-31b-it");
+    expect(config.openRouterModel).toBe("deepseek/deepseek-v4-flash");
     const missing = environment();
     delete missing.OPENROUTER_API_KEY;
     expect(() => loadBotConfig(missing)).toThrow(/OPENROUTER_API_KEY is required/);

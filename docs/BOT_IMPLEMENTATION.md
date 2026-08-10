@@ -70,7 +70,7 @@ review and its confirmation controls are sent as an ordinary private bot DM.
    report card in DMs; Writing, Refining, Regenerating, review, submission, and resubmission edit
    that same message. The ephemeral interaction points to the DM and remains the fallback if DM
    delivery fails. When DM delivery is cleared, the same cards remain ephemeral. Then ask
-   `google/gemma-4-31b-it` to write a factual report of at most 512 characters that naturally names
+   `deepseek/deepseek-v4-flash` to write a factual report of at most 512 characters that naturally names
    the researched law or provision.
 6. Atomically reserve one credit and create the API report with the interaction ID.
 7. Consume the reservation after HTTP 202 or idempotent HTTP 200.
@@ -186,7 +186,7 @@ disables further aggregate DM attempts without stopping report processing.
 
 The bot calls OpenRouter directly; the API and low-level Discord client never receive the
 reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KEY` is required and
-`OPENROUTER_MODEL` defaults to `google/gemma-4-31b-it`. The same configured model handles adaptive
+`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-flash`. The same configured model handles adaptive
 research, writing, refinement, and repair. Provider routing requires zero data retention,
 denies provider data collection, and requires support for every requested parameter. Research and
 report calls use strict JSON Schemas, and the bot also validates returned values locally. The complete generation workflow is
@@ -284,7 +284,7 @@ different country. Manual edits become the current assistant answer so a later r
 continues from that text. Repair also
 continues the same conversation, performs no search, and is attempted only once.
 
-Gemma 4 31B uses reasoning without an application-selected effort level, and every stage excludes
+DeepSeek V4 Flash uses reasoning without an application-selected effort level, and every stage excludes
 reasoning text from responses. Report-producing calls have a 4,096-token completion budget; the
 reviewed report itself remains limited to 512 characters. OpenRouter selects a compatible provider
 under the retained privacy and required-parameter constraints. The model is told
@@ -614,7 +614,7 @@ same immutable audit relationship as failure retries.
 - Chosen: treat Discord API code `521002` as successful appeal convergence and retry transient
   appeal submission failures through a fresh same-country proxy. Initial report submission remains
   non-retryable after its final POST starts because it has no equivalent duplicate guard.
-- Chosen: use `google/gemma-4-31b-it` for research, writing, refinement, and repair. A single
+- Chosen: use `deepseek/deepseek-v4-flash` for research, writing, refinement, and repair. A single
   configurable model keeps prompts, usage accounting, deployment configuration, and failure
   behavior consistent.
 - Chosen: use OpenRouter's web plugin with the Parallel engine and require its one search, with two

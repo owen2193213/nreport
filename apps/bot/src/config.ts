@@ -10,8 +10,8 @@ export interface BotConfig {
   environment: string;
   keyPepper: string;
   braveSearchApiKey: string;
-  groqApiKey: string;
-  groqModel: string;
+  fireworksApiKey: string;
+  fireworksModel: string;
   port: number;
   token: string;
   whitelistEnabled: boolean;
@@ -76,8 +76,9 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     environment: env.NODE_ENV?.trim() || "development",
     keyPepper: secret(env, "ACCESS_KEY_PEPPER"),
     braveSearchApiKey: required(env, "BRAVE_SEARCH_API_KEY"),
-    groqApiKey: required(env, "GROQ_API_KEY"),
-    groqModel: env.GROQ_MODEL?.trim() || "openai/gpt-oss-120b",
+    fireworksApiKey: required(env, "FIREWORKS_API_KEY"),
+    fireworksModel:
+      env.FIREWORKS_MODEL?.trim() || "accounts/fireworks/models/deepseek-v4-flash",
     port: port(env.PORT),
     token: required(env, "DISCORD_BOT_TOKEN"),
     whitelistEnabled: env.WHITELIST_ENABLED !== "false",

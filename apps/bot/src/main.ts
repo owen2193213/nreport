@@ -40,8 +40,8 @@ async function main(): Promise<void> {
   const profileResolver = new ProfileResolver(client);
   const messageResolver = new MessageResolver(client);
   const reportWriter = new ReportWriter(
-    config.groqApiKey,
-    config.groqModel,
+    config.fireworksApiKey,
+    config.fireworksModel,
     config.braveSearchApiKey,
     countries,
     {

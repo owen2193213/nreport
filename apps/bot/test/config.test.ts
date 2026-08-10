@@ -14,28 +14,42 @@ function environment(): NodeJS.ProcessEnv {
     BOT_DATABASE_URL: "postgresql://localhost/bot",
     DSA_API_BASE_URL: "https://api.example.test",
     DSA_API_KEY: "a".repeat(32),
-    GROQ_API_KEY: "groq-secret",
+    FIREWORKS_API_KEY: "fireworks-secret",
     BRAVE_SEARCH_API_KEY: "brave-secret"
   };
 }
 
 describe("bot configuration", () => {
-  it("requires Groq and Brave keys and defaults to GPT-OSS 120B", () => {
+  it("requires Fireworks and Brave keys and defaults to DeepSeek V4 Flash", () => {
     const config = loadBotConfig(environment());
-    expect(config.groqModel).toBe("openai/gpt-oss-120b");
+    expect(config.fireworksModel).toBe("accounts/fireworks/models/deepseek-v4-flash");
 
-    const withoutGroq = environment();
-    delete withoutGroq.GROQ_API_KEY;
-    expect(() => loadBotConfig(withoutGroq)).toThrow(/GROQ_API_KEY is required/);
+    const withoutFireworks = environment();
+    delete withoutFireworks.FIREWORKS_API_KEY;
+    expect(() => loadBotConfig(withoutFireworks)).toThrow(/FIREWORKS_API_KEY is required/);
 
     const withoutBrave = environment();
     delete withoutBrave.BRAVE_SEARCH_API_KEY;
     expect(() => loadBotConfig(withoutBrave)).toThrow(/BRAVE_SEARCH_API_KEY is required/);
   });
 
-  it("allows the Groq model to be configured", () => {
+  it("allows the Fireworks model to be configured", () => {
     expect(
-      loadBotConfig({ ...environment(), GROQ_MODEL: "openai/gpt-oss-20b" }).groqModel
-    ).toBe("openai/gpt-oss-20b");
+      loadBotConfig({
+        ...environment(),
+        FIREWORKS_MODEL: "accounts/fireworks/models/deepseek-v4-pro"
+      }).fireworksModel
+    ).toBe("accounts/fireworks/models/deepseek-v4-pro");
+  });
+
+  it("does not require obsolete Groq or OpenRouter configuration", () => {
+    const config = loadBotConfig({
+      ...environment(),
+      GROQ_API_KEY: "obsolete",
+      OPENROUTER_API_KEY: "obsolete"
+    });
+
+    expect(config).not.toHaveProperty("groqApiKey");
+    expect(config).not.toHaveProperty("openRouterApiKey");
   });
 });

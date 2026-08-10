@@ -1161,28 +1161,14 @@ export class ReportWriter {
     return {
       zdr: true,
       data_collection: "deny",
-      require_parameters: true,
-      order: [
-        "sambanova/minimax-m2.7-dedicated",
-        "mara",
-        "fireworks",
-        "groq",
-        "sambanova"
-      ]
+      require_parameters: true
     };
   }
 
   private researchProvider() {
     return {
       data_collection: "deny",
-      require_parameters: true,
-      order: [
-        "sambanova/minimax-m2.7-dedicated",
-        "mara",
-        "fireworks",
-        "groq",
-        "sambanova"
-      ]
+      require_parameters: true
     };
   }
 

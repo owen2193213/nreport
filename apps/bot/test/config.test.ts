@@ -19,9 +19,9 @@ function environment(): NodeJS.ProcessEnv {
 }
 
 describe("bot configuration", () => {
-  it("requires an OpenRouter key and defaults to MiniMax M2.7", () => {
+  it("requires an OpenRouter key and defaults to Gemma 4 31B", () => {
     const config = loadBotConfig(environment());
-    expect(config.openRouterModel).toBe("minimax/minimax-m2.7");
+    expect(config.openRouterModel).toBe("google/gemma-4-31b-it");
     const missing = environment();
     delete missing.OPENROUTER_API_KEY;
     expect(() => loadBotConfig(missing)).toThrow(/OPENROUTER_API_KEY is required/);

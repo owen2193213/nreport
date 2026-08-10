@@ -77,7 +77,7 @@ The bot needs only these reporting-service variables:
 DSA_API_BASE_URL=https://discord-dsa-production.up.railway.app
 DSA_API_KEY=<same API_KEY configured on the Railway API service>
 OPENROUTER_API_KEY=<bot-only OpenRouter key>
-OPENROUTER_MODEL=minimax/minimax-m2.7
+OPENROUTER_MODEL=google/gemma-4-31b-it
 ```
 
 Keep both API keys in the bot host's secret manager. Never place them in slash-command
@@ -805,8 +805,8 @@ reference, and legal summary. It does not receive the supported-country list, ca
 search instructions, or raw research transcript. Refine continues this encrypted compact
 conversation and reuses the existing research without searching.
 Repair continues the same conversation without search and receives one attempt. Regenerate reruns
-adaptive research, and changing country clears the conversation. MiniMax M2.7 uses mandatory
-reasoning without an effort-level override. Report-producing calls have a 4,096-token completion
+adaptive research, and changing country clears the conversation. Gemma 4 31B uses mandatory
+reasoning without an application-selected effort level. Report-producing calls have a 4,096-token completion
 budget while final report text remains limited to 512 characters.
 
 The combined report modal places report category, flow-specific elements, and report details before

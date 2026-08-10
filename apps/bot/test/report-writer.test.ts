@@ -112,7 +112,7 @@ function fixedWriter(
   request: ReturnType<typeof vi.fn>,
   recordUsage: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined)
 ): ReportWriter {
-  return new ReportWriter("secret", "minimax/minimax-m2.7", COUNTRIES, {
+  return new ReportWriter("secret", "google/gemma-4-31b-it", COUNTRIES, {
     recordUsage: recordUsage as unknown as (userId: string, usage: AiUsage) => Promise<void>,
     request: request as unknown as typeof globalThis.fetch
   });
@@ -268,14 +268,7 @@ describe("OpenRouter report writer", () => {
     });
     expect(research.provider).toEqual({
       require_parameters: true,
-      data_collection: "deny",
-      order: [
-        "sambanova/minimax-m2.7-dedicated",
-        "mara",
-        "fireworks",
-        "groq",
-        "sambanova"
-      ]
+      data_collection: "deny"
     });
     expect(prompt).toContain("reportReason");
     expect(prompt).toContain("reportType");
@@ -542,14 +535,7 @@ describe("OpenRouter report writer", () => {
     expect(body.stream).toBe(false);
     expect(body.provider).toEqual({
       require_parameters: true,
-      data_collection: "deny",
-      order: [
-        "sambanova/minimax-m2.7-dedicated",
-        "mara",
-        "fireworks",
-        "groq",
-        "sambanova"
-      ]
+      data_collection: "deny"
     });
     expect(body.response_format.json_schema.schema.required).toEqual([
       "lawReference",
@@ -692,14 +678,7 @@ describe("OpenRouter report writer", () => {
     expect(writing.provider).toEqual({
       zdr: true,
       require_parameters: true,
-      data_collection: "deny",
-      order: [
-        "sambanova/minimax-m2.7-dedicated",
-        "mara",
-        "fireworks",
-        "groq",
-        "sambanova"
-      ]
+      data_collection: "deny"
     });
     expect(JSON.stringify(writing.response_format)).not.toContain("lawCitation");
     const messages = JSON.stringify(

@@ -94,14 +94,14 @@ Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. 
 uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
 the global commands automatically. Set `OPENROUTER_API_KEY` for the bot-side report writer;
-`OPENROUTER_MODEL` defaults to `minimax/minimax-m2.7`.
+`OPENROUTER_MODEL` defaults to `google/gemma-4-31b-it`.
 One adaptive research completion resolves only omitted Auto fields and researches the law. Fixed
 values remain application-owned and are not included in model output schemas. OpenRouter's web
 plugin performs one Parallel search with at most two results. The model uses that search to clarify
 unfamiliar or coded evidence terminology only when materially necessary and to confirm the
 country-specific law; with explicit evidence it focuses directly on the law.
-OpenRouter is required to route to a provider that supports the requested strict JSON schema and
-plugin parameters. If research returns malformed structured data, the bot starts the research once
+OpenRouter selects a compatible provider that supports the requested strict JSON schema and plugin
+parameters. If research returns malformed structured data, the bot starts the research once
 more from the original evidence; a second failure is returned to the reporter. Missing server-tool
 usage metadata is retained as telemetry and does not invalidate plugin-backed research. The final writer receives a compact
 resolved context rather than the country list, category catalog, tool instructions, failed response,

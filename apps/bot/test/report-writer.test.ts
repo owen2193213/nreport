@@ -32,9 +32,6 @@ function draft(): ReportDraft {
 
 function plan(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    country: "DE",
-    reportType: "sub_other_hate_speech",
-    reportReason: "The profile imagery contains hateful material.",
     termResearchRequired: false,
     termSearchQuery: null,
     lawResearchRequired: false,
@@ -49,9 +46,6 @@ function completed(overrides: Record<string, unknown> = {}): Record<string, unkn
     status: "completed",
     followUpType: null,
     followUpQuery: null,
-    country: "DE",
-    reportType: "sub_other_hate_speech",
-    reportReason: "The profile imagery contains hateful material.",
     lawReference: LAW,
     researchSummary: "Article 1 protects human dignity; applicability requires review.",
     report: `The profile imagery may contain hateful material affecting dignity under ${LAW}.`,
@@ -64,9 +58,6 @@ function moreResearch(kind: "term" | "law", query: string): Record<string, unkno
     status: "more_research_required",
     followUpType: kind,
     followUpQuery: query,
-    country: null,
-    reportType: null,
-    reportReason: null,
     lawReference: null,
     researchSummary: null,
     report: null
@@ -230,6 +221,42 @@ describe("Fireworks and Brave report writer", () => {
     );
   });
 
+  it("keeps resolved fields out of the synthesis output contract", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(
+        fireworks({
+          status: "completed",
+          followUpType: null,
+          followUpQuery: null,
+          lawReference: LAW,
+          researchSummary: "Article 1 protects human dignity; applicability requires review.",
+          report: `The profile imagery may contain hateful material affecting dignity under ${LAW}.`
+        })
+      );
+
+    const result = await writer(request).generate(draft(), ACTOR);
+    const synthesis = bodyAt<{
+      response_format: { json_schema: { schema: { properties: Record<string, unknown> } } };
+    }>(request, 1);
+
+    expect(synthesis.response_format.json_schema.schema.properties).not.toHaveProperty(
+      "country"
+    );
+    expect(synthesis.response_format.json_schema.schema.properties).not.toHaveProperty(
+      "reportType"
+    );
+    expect(synthesis.response_format.json_schema.schema.properties).not.toHaveProperty(
+      "reportReason"
+    );
+    expect(result).toMatchObject({
+      country: "DE",
+      reportType: "sub_other_hate_speech",
+      reportReason: "The profile imagery contains hateful material."
+    });
+  });
+
   it("performs only terminology research when requested", async () => {
     const request = vi
       .fn()
@@ -264,6 +291,10 @@ describe("Fireworks and Brave report writer", () => {
     expect(synthesis.max_completion_tokens).toBe(12_288);
     expect(synthesis.response_format).toBeUndefined();
     expect(JSON.stringify(synthesis.messages)).toContain("researchSummary");
+    const synthesisSchema = embeddedSchema(synthesis.messages[1]!.content);
+    expect(synthesisSchema.properties).not.toHaveProperty("country");
+    expect(synthesisSchema.properties).not.toHaveProperty("reportType");
+    expect(synthesisSchema.properties).not.toHaveProperty("reportReason");
   });
 
   it("performs only law research when requested", async () => {
@@ -378,9 +409,6 @@ describe("Fireworks and Brave report writer", () => {
       .mockResolvedValueOnce(
         fireworks(
           completed({
-            country: "AT",
-            reportType: "sub_other_threats",
-            reportReason: "The profile contains a threatening statement.",
             lawReference: "Austria's Criminal Code (Strafgesetzbuch), Section 107"
           })
         )

@@ -64,9 +64,6 @@ interface CompletedSynthesis {
   status: "completed";
   followUpType: null;
   followUpQuery: null;
-  country: string;
-  reportType: string;
-  reportReason: string;
   lawReference: string;
   researchSummary: string;
   report: string;
@@ -76,9 +73,6 @@ interface FollowUpSynthesis {
   status: "more_research_required";
   followUpType: ResearchKind;
   followUpQuery: string;
-  country: null;
-  reportType: null;
-  reportReason: null;
   lawReference: null;
   researchSummary: null;
   report: null;
@@ -340,17 +334,11 @@ function plannerResponseFormat(countries: readonly string[], draft: ReportDraft)
   };
 }
 
-function synthesisResponseFormat(countries: readonly string[], draft: ReportDraft) {
+function synthesisResponseFormat() {
   const properties = {
     status: { type: "string", enum: ["completed", "more_research_required"] },
     followUpType: { type: ["string", "null"], enum: ["term", "law", null] },
     followUpQuery: nullableString(),
-    country: { type: ["string", "null"], enum: [...countries, null] },
-    reportType: {
-      type: ["string", "null"],
-      enum: [...reportReasons(draft.flow).map((reason) => reason.value), null]
-    },
-    reportReason: nullableString(),
     lawReference: nullableString(),
     researchSummary: nullableString(),
     report: { type: ["string", "null"], maxLength: MAX_REPORT_LENGTH }
@@ -501,7 +489,7 @@ function synthesisPrompt(
     compactResearch(materials),
     initialWriterPrompt(),
     "Use sources only for factual grounding. If the supplied material is insufficient, request exactly one sanitized term or law follow-up instead of guessing.",
-    "On completion, echo the resolved country, category, and reporter explanation exactly."
+    "The country, category, and reporter explanation are immutable context. Do not return them."
   ].join("\n");
 }
 
@@ -513,9 +501,6 @@ function parseSynthesis(content: string): SynthesisCompletion {
       typeof value.followUpQuery !== "string" ||
       !value.followUpQuery.trim() ||
       [
-        value.country,
-        value.reportType,
-        value.reportReason,
         value.lawReference,
         value.researchSummary,
         value.report
@@ -527,9 +512,6 @@ function parseSynthesis(content: string): SynthesisCompletion {
       status: "more_research_required",
       followUpType: value.followUpType,
       followUpQuery: value.followUpQuery.trim(),
-      country: null,
-      reportType: null,
-      reportReason: null,
       lawReference: null,
       researchSummary: null,
       report: null
@@ -542,9 +524,6 @@ function parseSynthesis(content: string): SynthesisCompletion {
     throw new ReportWriterError("AI completed a report with invalid follow-up fields.");
   }
   const fields = [
-    "country",
-    "reportType",
-    "reportReason",
     "lawReference",
     "researchSummary",
     "report"
@@ -568,32 +547,10 @@ function parseSynthesis(content: string): SynthesisCompletion {
     status: "completed",
     followUpType: null,
     followUpQuery: null,
-    country: strings.country,
-    reportType: strings.reportType,
-    reportReason: strings.reportReason,
     lawReference: strings.lawReference,
     researchSummary: strings.researchSummary,
     report: strings.report
   };
-}
-
-function validateCompleted(
-  completion: CompletedSynthesis,
-  plan: ResearchPlan,
-  draft: ReportDraft
-): void {
-  if (completion.country !== plan.country) {
-    throw new ReportWriterError("AI synthesis changed the resolved country.");
-  }
-  if (completion.reportType !== plan.reportType) {
-    throw new ReportWriterError("AI synthesis changed the resolved report category.");
-  }
-  if (completion.reportReason !== plan.reportReason) {
-    throw new ReportWriterError("AI synthesis changed the resolved reporter explanation.");
-  }
-  if (!reportReasons(draft.flow).some((reason) => reason.value === completion.reportType)) {
-    throw new ReportWriterError("AI synthesis returned an unsupported report category.");
-  }
 }
 
 function sourcesFrom(materials: ResearchMaterial[]): LegalSource[] {
@@ -649,7 +606,7 @@ function repairPrompt(problem: string): string {
 
 function synthesisRepairPrompt(problem: string): string {
   return [
-    "Repair the preceding synthesis response without changing its evidence, country, category, reporter explanation, or legal conclusions.",
+    "Repair only the model-owned fields in the preceding synthesis response without changing its evidence or legal conclusions.",
     `Validation problem: ${problem}`,
     "Return the complete synthesis JSON object, not only the report field.",
     "Keep the report naturally concise and comfortably within 512 characters.",
@@ -777,13 +734,12 @@ export class ReportWriter {
         );
       }
     }
-    validateCompleted(completion, plan, draft);
     const searchRequests = materials.reduce(
       (total, material) => total + material.searchRequests,
       0
     );
     const legalResearch: LegalResearch = {
-      country: completion.country,
+      country: plan.country,
       lawReference: completion.lawReference,
       summary: completion.researchSummary,
       sources: sourcesFrom(materials),
@@ -797,11 +753,11 @@ export class ReportWriter {
     ];
     return {
       conversation,
-      country: completion.country,
+      country: plan.country,
       legalResearch,
       report: completion.report,
-      reportReason: completion.reportReason,
-      reportType: completion.reportType
+      reportReason: plan.reportReason,
+      reportType: plan.reportType
     };
   }
 
@@ -900,7 +856,7 @@ export class ReportWriter {
     deadline: number,
     actor: AiRequestContext
   ): Promise<SynthesisCompletion> {
-    const responseFormat = synthesisResponseFormat(this.supportedCountries, draft);
+    const responseFormat = synthesisResponseFormat();
     const reasoningRequired = materials.length > 0;
     const prompt = synthesisPrompt(draft, plan, materials);
     let content: string;

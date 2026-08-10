@@ -883,8 +883,7 @@ export function accessEmbed(access: AccessView, admin: boolean, userId?: string)
           `Input tokens: **${access.aiInputTokens.toLocaleString("en")}**`,
           `Output tokens: **${access.aiOutputTokens.toLocaleString("en")}**`,
           `Reasoning tokens: **${access.aiReasoningTokens.toLocaleString("en")}**`,
-          `Web searches: **${access.aiSearchRequests.toLocaleString("en")}**`,
-          `OpenRouter cost: **${access.aiCostCredits.toFixed(6)} credits**`
+          `Web searches: **${access.aiSearchRequests.toLocaleString("en")}**`
         ].join("\n")
       }
     );

@@ -190,7 +190,9 @@ reporter's brief, model conversation, or selected image URLs. `OPENROUTER_API_KE
 research, writing, refinement, and repair. Provider routing requires zero data retention,
 denies provider data collection, and requires support for every requested parameter. Research and
 report calls use strict JSON Schemas, and the bot also validates returned values locally. The complete generation workflow is
-capped at 90 seconds.
+capped at five minutes. Each OpenRouter request is capped at 150 seconds and never exceeds the
+remaining workflow time. This accommodates provider routing, web search, reasoning, and strict
+structured-output generation while keeping interactions bounded.
 
 Generation normally starts with one adaptive interpretation-and-research completion. Its output schema is
 dynamic: fixed country, category, and reason values remain application-owned and are not requested
@@ -226,7 +228,7 @@ Writing, refinement, and repair retain ZDR, denied data collection, and
 required-parameter routing because they do not use the web-search plugin.
 
 The AI integration intentionally remains bot-local and single-model. It assumes normal interactive
-bot traffic, keeps the existing 90-second workflow budget, records the cost of every attempted
+bot traffic, keeps a five-minute workflow budget with a 150-second per-request cap, records the cost of every attempted
 OpenRouter request, and adds no fallback model, local search executor, queue, database table, or
 background worker or separate search API key. Media processing remains disabled.
 

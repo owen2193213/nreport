@@ -1008,4 +1008,15 @@ describe("OpenRouter report writer", () => {
       /AI report writing returned no completion/
     );
   });
+
+  it("reports an aborted response-body read as an AI request timeout", async () => {
+    const abortedResponse = {
+      ok: true,
+      json: vi.fn().mockRejectedValue(new DOMException("The operation was aborted.", "AbortError"))
+    } as unknown as Response;
+
+    await expect(
+      fixedWriter(vi.fn().mockResolvedValue(abortedResponse)).generate(profileDraft(), ACTOR)
+    ).rejects.toThrow(/AI legal research timed out or could not be reached/);
+  });
 });

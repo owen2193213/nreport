@@ -19,9 +19,9 @@ function environment(): NodeJS.ProcessEnv {
 }
 
 describe("bot configuration", () => {
-  it("requires an OpenRouter key and defaults to DeepSeek V4 Flash", () => {
+  it("requires an OpenRouter key and defaults to the latest DeepSeek V4 Flash", () => {
     const config = loadBotConfig(environment());
-    expect(config.openRouterModel).toBe("deepseek/deepseek-v4-flash");
+    expect(config.openRouterModel).toBe("~deepseek/deepseek-v4-flash-latest");
     const missing = environment();
     delete missing.OPENROUTER_API_KEY;
     expect(() => loadBotConfig(missing)).toThrow(/OPENROUTER_API_KEY is required/);

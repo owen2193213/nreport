@@ -77,7 +77,7 @@ The bot needs only these reporting-service variables:
 DSA_API_BASE_URL=https://discord-dsa-production.up.railway.app
 DSA_API_KEY=<same API_KEY configured on the Railway API service>
 OPENROUTER_API_KEY=<bot-only OpenRouter key>
-OPENROUTER_MODEL=deepseek/deepseek-v4-flash
+OPENROUTER_MODEL=~deepseek/deepseek-v4-flash-latest
 ```
 
 Keep both API keys in the bot host's secret manager. Never place them in slash-command

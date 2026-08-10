@@ -75,7 +75,7 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     environment: env.NODE_ENV?.trim() || "development",
     keyPepper: secret(env, "ACCESS_KEY_PEPPER"),
     openRouterApiKey: required(env, "OPENROUTER_API_KEY"),
-    openRouterModel: env.OPENROUTER_MODEL?.trim() || "deepseek/deepseek-v4-flash",
+    openRouterModel: env.OPENROUTER_MODEL?.trim() || "~deepseek/deepseek-v4-flash-latest",
     port: port(env.PORT),
     token: required(env, "DISCORD_BOT_TOKEN"),
     whitelistEnabled: env.WHITELIST_ENABLED !== "false",

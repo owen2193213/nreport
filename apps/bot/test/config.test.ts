@@ -14,22 +14,42 @@ function environment(): NodeJS.ProcessEnv {
     BOT_DATABASE_URL: "postgresql://localhost/bot",
     DSA_API_BASE_URL: "https://api.example.test",
     DSA_API_KEY: "a".repeat(32),
-    OPENROUTER_API_KEY: "openrouter-secret"
+    FIREWORKS_API_KEY: "fireworks-secret",
+    BRAVE_SEARCH_API_KEY: "brave-secret"
   };
 }
 
 describe("bot configuration", () => {
-  it("requires an OpenRouter key and defaults to the latest DeepSeek V4 Flash", () => {
+  it("requires Fireworks and Brave keys and defaults to DeepSeek V4 Flash", () => {
     const config = loadBotConfig(environment());
-    expect(config.openRouterModel).toBe("~deepseek/deepseek-v4-flash-latest");
-    const missing = environment();
-    delete missing.OPENROUTER_API_KEY;
-    expect(() => loadBotConfig(missing)).toThrow(/OPENROUTER_API_KEY is required/);
+    expect(config.fireworksModel).toBe("accounts/fireworks/models/deepseek-v4-flash");
+
+    const withoutFireworks = environment();
+    delete withoutFireworks.FIREWORKS_API_KEY;
+    expect(() => loadBotConfig(withoutFireworks)).toThrow(/FIREWORKS_API_KEY is required/);
+
+    const withoutBrave = environment();
+    delete withoutBrave.BRAVE_SEARCH_API_KEY;
+    expect(() => loadBotConfig(withoutBrave)).toThrow(/BRAVE_SEARCH_API_KEY is required/);
   });
 
-  it("allows the OpenRouter model to be configured", () => {
+  it("allows the Fireworks model to be configured", () => {
     expect(
-      loadBotConfig({ ...environment(), OPENROUTER_MODEL: "qwen/qwen-custom" }).openRouterModel
-    ).toBe("qwen/qwen-custom");
+      loadBotConfig({
+        ...environment(),
+        FIREWORKS_MODEL: "accounts/fireworks/models/deepseek-v4-pro"
+      }).fireworksModel
+    ).toBe("accounts/fireworks/models/deepseek-v4-pro");
+  });
+
+  it("does not require obsolete Groq or OpenRouter configuration", () => {
+    const config = loadBotConfig({
+      ...environment(),
+      GROQ_API_KEY: "obsolete",
+      OPENROUTER_API_KEY: "obsolete"
+    });
+
+    expect(config).not.toHaveProperty("groqApiKey");
+    expect(config).not.toHaveProperty("openRouterApiKey");
   });
 });

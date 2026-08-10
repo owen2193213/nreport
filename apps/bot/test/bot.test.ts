@@ -433,7 +433,7 @@ describe("profile resolution", () => {
 });
 
 describe("report UI", () => {
-  it("shows cumulative AI usage without exposing AI content", () => {
+  it("shows cumulative AI usage without an estimated provider cost", () => {
     const embed = accessEmbed(
       {
         aiCostCredits: 0.012345,
@@ -453,7 +453,8 @@ describe("report UI", () => {
     expect(text).toContain("AI usage");
     expect(text).toContain("1,000");
     expect(text).toContain("200");
-    expect(text).toContain("0.012345 credits");
+    expect(text).not.toContain("OpenRouter cost");
+    expect(text).not.toContain("0.012345 credits");
   });
 
   it("mentions the selected user in the administrator access view", () => {
@@ -1857,7 +1858,7 @@ describe("report interaction country precedence", () => {
     expect(showModal).toHaveBeenCalledOnce();
   });
 
-  it("skips OpenRouter when a manual report modal is submitted", async () => {
+  it("skips AI providers when a manual report modal is submitted", async () => {
     const dataEncryptionKey = randomBytes(32);
     const draft = {
       aiDisabled: true,

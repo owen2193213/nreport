@@ -9,8 +9,9 @@ export interface BotConfig {
   dataEncryptionKey: Buffer;
   environment: string;
   keyPepper: string;
-  openRouterApiKey: string;
-  openRouterModel: string;
+  braveSearchApiKey: string;
+  fireworksApiKey: string;
+  fireworksModel: string;
   port: number;
   token: string;
   whitelistEnabled: boolean;
@@ -74,8 +75,10 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     dataEncryptionKey: encryptionKey(env),
     environment: env.NODE_ENV?.trim() || "development",
     keyPepper: secret(env, "ACCESS_KEY_PEPPER"),
-    openRouterApiKey: required(env, "OPENROUTER_API_KEY"),
-    openRouterModel: env.OPENROUTER_MODEL?.trim() || "~deepseek/deepseek-v4-flash-latest",
+    braveSearchApiKey: required(env, "BRAVE_SEARCH_API_KEY"),
+    fireworksApiKey: required(env, "FIREWORKS_API_KEY"),
+    fireworksModel:
+      env.FIREWORKS_MODEL?.trim() || "accounts/fireworks/models/deepseek-v4-flash",
     port: port(env.PORT),
     token: required(env, "DISCORD_BOT_TOKEN"),
     whitelistEnabled: env.WHITELIST_ENABLED !== "false",

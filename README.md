@@ -93,20 +93,18 @@ application creates or updates its database schema idempotently during startup.
 Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. The bot
 uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
-the global commands automatically. Set `OPENROUTER_API_KEY` for the bot-side report writer;
-`OPENROUTER_MODEL` defaults to OpenRouter's `~deepseek/deepseek-v4-flash-latest` alias.
-One adaptive research completion resolves only omitted Auto fields and researches the law. Fixed
-values remain application-owned and are not included in model output schemas. OpenRouter's web
-plugin performs one Parallel search with at most two results. The model uses that search to clarify
-unfamiliar or coded evidence terminology only when materially necessary and to confirm the
-country-specific law; with explicit evidence it focuses directly on the law.
-OpenRouter selects a compatible provider that supports the requested strict JSON schema and plugin
-parameters. If research returns malformed structured data, the bot starts the research once
-more from the original evidence; a second failure is returned to the reporter. Missing server-tool
-usage metadata is retained as telemetry and does not invalidate plugin-backed research. The final writer receives a compact
-resolved context rather than the country list, category catalog, tool instructions, failed response,
-or raw research transcript. HTTPS source annotations remain optional.
-The bot records per-user request/token/reasoning/search/cost totals and operational workflow metadata
+the global commands automatically. Set `FIREWORKS_API_KEY` and `BRAVE_SEARCH_API_KEY` for the
+bot-side report writer; `FIREWORKS_MODEL` defaults to
+`accounts/fireworks/models/deepseek-v4-flash`.
+
+The first Fireworks DeepSeek call resolves omitted Auto fields and decides independently whether
+the evidence needs terminology research, legal research, both, or neither. The bot runs only the
+chosen Brave requests: Web Search for unfamiliar terms and LLM Context for country-specific law.
+If both are needed, they run together. DeepSeek then writes the report from compact search excerpts
+and may ask for one additional bounded search before producing the final result. There is no
+OpenRouter or model fallback. Fixed reporter values remain application-owned and are validated
+after every model call.
+The bot records per-user request/token/reasoning/search totals and operational workflow metadata
 such as flow, category, country mode, selected elements, counts, lengths, latency, and validation
 failures. Logs are intended to support development diagnostics and may include report and lifecycle
 identifiers, state transitions, and error codes. Do not log credentials, verification codes, or raw
@@ -114,11 +112,11 @@ email. To synchronize commands manually, set only the
 Discord token and application ID and run:
 
 AI media processing is temporarily disabled for every report category. The bot never attaches
-images, GIFs, videos, avatars, banners, server art, or attachment/embed media URLs to OpenRouter.
+images, GIFs, videos, avatars, banners, server art, or attachment/embed media URLs to Fireworks or Brave.
 Attachment names and content types may remain as text metadata.
 
 Every `/report` subcommand also accepts optional `dont-use-ai:true`. It defaults to AI when
-omitted. Manual mode sends nothing to OpenRouter, limits the reporter's final text to 512
+omitted. Manual mode sends nothing to Fireworks or Brave, limits the reporter's final text to 512
 characters, and requires a saved or explicit country because Auto normally depends on AI.
 
 ```powershell

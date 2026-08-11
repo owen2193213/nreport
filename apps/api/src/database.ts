@@ -862,6 +862,12 @@ export class Database {
                    AND earlier.metadata->>'discordStatus' = 'closed_no_action'
                    AND (earlier.created_at, earlier.id) < (event.created_at, event.id)
                )
+               AND EXISTS (
+                 SELECT 1 FROM report_events AS review
+                 WHERE review.report_id = event.report_id
+                   AND review.event_type = 'review_requested'
+                   AND (review.created_at, review.id) < (event.created_at, event.id)
+               )
            )::text AS appeal_actioned,
            count(*) FILTER (WHERE event.metadata->>'discordStatus' = 'review_not_approved')::text
              AS appeal_denied

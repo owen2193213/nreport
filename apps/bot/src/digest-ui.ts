@@ -15,6 +15,13 @@ function duration(value: number | null): string {
   return `${Math.round(value / 8_640) / 10} days`;
 }
 
+export function digestChartAnalytics(
+  personal: ReportAnalytics,
+  community: ReportAnalytics | null
+): ReportAnalytics {
+  return community?.availability === "available" ? community : personal;
+}
+
 export async function digestMessage(input: {
   frequency: Exclude<DigestFrequency, "off">;
   activity: DigestActivity;
@@ -49,9 +56,10 @@ export async function digestMessage(input: {
 
   const files: AttachmentBuilder[] = [];
   try {
+    const chartAnalytics = digestChartAnalytics(input.personal, input.community);
     const [volume, reply] = await Promise.all([
-      renderAnalyticsChart("volume", input.personal),
-      renderAnalyticsChart("reply_time", input.personal)
+      renderAnalyticsChart("volume", chartAnalytics),
+      renderAnalyticsChart("reply_time", chartAnalytics)
     ]);
     files.push(
       new AttachmentBuilder(volume, { name: "report-volume.png" }),

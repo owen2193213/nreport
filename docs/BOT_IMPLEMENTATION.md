@@ -87,6 +87,22 @@ is disabled. A report's own `dm_enabled` value remains an additional restriction
 confirmation interactions are ephemeral with mentions disabled, and suppressed notification logs
 contain only the notification ID and semantic category.
 
+Digests cover the most recently closed UTC period: the previous calendar day, Monday-to-Monday
+week, or previous calendar month. They are sent only when that user created at least three new root
+reports or had at least three qualifying outcome changes during the period. Qualifying changes are
+direct Actioned, closed without action, appeal then Actioned, and appeal denied. Community activity
+never makes a user eligible; when the API privacy thresholds are met, anonymized Community totals,
+breakdowns, and trend charts enrich an otherwise eligible personal digest.
+
+The scheduler stores one durable job for each user, frequency, and closed period. It creates only
+the latest closed period rather than backfilling missed historical digests, rechecks the user's
+current frequency immediately before delivery, and retries temporary failures up to five times.
+Discord errors that mean the user cannot receive DMs end that job permanently. Digest messages
+contain aggregate metrics and locally rendered charts only—never submitted explanations, message
+links, recurring phrases, or Action History entries. If chart rendering fails, the textual totals
+are still delivered. Structured digest logs contain only safe job, frequency, result, and error
+classification fields.
+
 ## Report lifecycle
 
 1. Enforce access or configured-admin bypass.

@@ -430,6 +430,7 @@ export function aggregateAnalyticsRows(input: AggregateAnalyticsInput): ReportAn
     ),
     patterns: recurringPatterns(latestCaseReports
       .filter((report) => {
+        if (scope === "community" && report.submitterDiscordUserId === null) return false;
         const chain = reportsByRoot.get(report.rootId) ?? [report];
         return ["direct_actioned", "appeal_actioned"].includes(classifyCaseOutcome(
           chain.flatMap((item) => eventsByReport.get(item.id) ?? [])

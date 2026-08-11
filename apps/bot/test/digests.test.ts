@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { closedDigestPeriod } from "../src/digest-periods.js";
 import { BotDatabase } from "../src/database.js";
 import type { DigestActivity } from "@discord-dsa/contracts";
-import { digestMessage } from "../src/digest-ui.js";
+import { digestChartAnalytics, digestMessage } from "../src/digest-ui.js";
 import { analyticsFixture, communityFixture } from "./analytics-fixtures.js";
 import { DigestWorker } from "../src/digest-worker.js";
 import type { DsaApi } from "@discord-dsa/contracts";
@@ -80,6 +80,18 @@ describe("closed digest periods", () => {
       community: communityFixture({ availability: "insufficient_community_data" })
     });
     expect(JSON.stringify(payload)).not.toContain("Community snapshot");
+  });
+
+  it("charts publishable Community trends and otherwise falls back to personal trends", () => {
+    const personal = analyticsFixture();
+    const community = communityFixture();
+
+    expect(digestChartAnalytics(personal, community)).toBe(community);
+    expect(digestChartAnalytics(
+      personal,
+      communityFixture({ availability: "insufficient_community_data" })
+    )).toBe(personal);
+    expect(digestChartAnalytics(personal, null)).toBe(personal);
   });
 
   it.each([

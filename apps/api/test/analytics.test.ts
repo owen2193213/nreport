@@ -145,6 +145,38 @@ describe("analytics rules", () => {
     expect(result.breakdowns.flows).toEqual([]);
   });
 
+  it("does not let unowned reports satisfy recurring-pattern user privacy", () => {
+    const reports = Array.from({ length: 10 }, (_, index) => ({
+      id: `root-${index}`,
+      rootId: `root-${index}`,
+      retryOfReportId: null,
+      createdAt: "2026-08-05T00:00:00.000Z",
+      status: "submitted" as const,
+      discordReportId: `discord-${index}`,
+      flow: "message_urf" as const,
+      category: "illegal_content",
+      country: "DE",
+      submitterDiscordUserId: index < 3 ? null : `user-${index - 3}`,
+      submittedText: index < 5 ? "coordinated hateful threat" : `unrelated report ${index}`
+    }));
+    const result = aggregateAnalyticsRows({
+      scope: "community",
+      reports,
+      events: reports.map((report) => ({
+        reportId: report.id,
+        type: "discord_status_updated",
+        occurredAt: "2026-08-06T00:00:00.000Z",
+        discordStatus: "actioned"
+      }))
+    });
+
+    expect(result.availability).toBe("available");
+    expect(result.patterns).not.toContainEqual({
+      phrase: "coordinated hateful threat",
+      reportCount: 5
+    });
+  });
+
   it("round-trips an opaque action-history cursor and rejects malformed cursors", () => {
     const cursor = {
       actionedAt: "2026-08-05T00:00:00.000Z",

@@ -840,6 +840,39 @@ describe("analytics API", () => {
     }));
   });
 
+  it("serves exact-range analytics and personal digest activity", async () => {
+    const reportAnalyticsForInterval = vi.fn().mockResolvedValue(available);
+    const digestActivity = vi.fn().mockResolvedValue({ eligible: true });
+    const database = { reportAnalyticsForInterval, digestActivity } as unknown as Database;
+    const server = await buildServer(config, database);
+    const range = "startAt=2026-08-03T00%3A00%3A00.000Z&endAt=2026-08-10T00%3A00%3A00.000Z";
+    const headers = { authorization: `Bearer ${config.apiKey}` };
+
+    const analytics = await server.inject({
+      method: "GET",
+      url: `/v1/users/1197857362942378017/analytics?${range}`,
+      headers
+    });
+    const activity = await server.inject({
+      method: "GET",
+      url: `/v1/users/1197857362942378017/digest-activity?${range}`,
+      headers
+    });
+    await server.close();
+
+    expect(analytics.statusCode).toBe(200);
+    expect(activity.statusCode).toBe(200);
+    expect(reportAnalyticsForInterval).toHaveBeenCalledWith(
+      "1197857362942378017",
+      expect.objectContaining({ period: "custom" })
+    );
+    expect(digestActivity).toHaveBeenCalledWith(
+      "1197857362942378017",
+      new Date("2026-08-03T00:00:00.000Z"),
+      new Date("2026-08-10T00:00:00.000Z")
+    );
+  });
+
   it.each([
     "/v1/users/not-a-snowflake/action-history?period=7d",
     "/v1/users/1197857362942378017/analytics?period=quarter",

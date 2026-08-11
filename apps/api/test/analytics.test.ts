@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   aggregateAnalyticsRows,
   classifyCaseOutcome,
+  digestEligible,
   durationMetric,
   rateMetric,
   recurringPatterns,
@@ -16,6 +17,11 @@ import {
 } from "../src/database.js";
 
 describe("analytics rules", () => {
+  it.each([
+    [2, 2, false], [3, 0, true], [0, 3, true]
+  ])("uses only personal digest thresholds (%s reports, %s changes)", (reports, changes, eligible) => {
+    expect(digestEligible(reports, changes)).toBe(eligible);
+  });
   it("counts a retry chain as one case while retaining attempt reliability", () => {
     expect(aggregateAnalyticsRows({
       reports: [

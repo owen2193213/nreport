@@ -198,6 +198,22 @@ function actionHistoryInterval(query: AnalyticsQuery): AnalyticsInterval | null 
   return period === null ? null : resolveAnalyticsInterval(period);
 }
 
+function exactAnalyticsInterval(query: AnalyticsQuery, maximumDays = 3_660): AnalyticsInterval | null {
+  if (
+    query.period !== undefined || query.startAt === undefined || query.endAt === undefined ||
+    !exactUtcTimestamp(query.startAt) || !exactUtcTimestamp(query.endAt) ||
+    Date.parse(query.startAt) >= Date.parse(query.endAt) ||
+    Date.parse(query.endAt) - Date.parse(query.startAt) > maximumDays * 24 * 60 * 60 * 1_000
+  ) return null;
+  return {
+    period: "custom",
+    startAt: query.startAt,
+    endAt: query.endAt,
+    asOf: new Date().toISOString(),
+    timezone: "UTC"
+  };
+}
+
 function invalidAnalyticsQuery(reply: FastifyReply) {
   return reply.code(400).send({
     error: { code: "invalid_analytics_query", message: "Invalid analytics query." }
@@ -465,8 +481,14 @@ export async function buildServer(config: AppConfig, database: Database) {
       if (!/^\d{15,22}$/.test(request.params.discordUserId)) {
         return invalidAnalyticsQuery(reply);
       }
+      if (request.query.startAt !== undefined || request.query.endAt !== undefined) {
+        const interval = exactAnalyticsInterval(request.query);
+        return interval === null
+          ? invalidAnalyticsQuery(reply)
+          : reply.send(await database.reportAnalyticsForInterval(request.params.discordUserId, interval));
+      }
       const period = analyticsPeriod(request.query.period);
-      if (period === null || request.query.startAt !== undefined || request.query.endAt !== undefined) {
+      if (period === null) {
         return invalidAnalyticsQuery(reply);
       }
       return reply.send(await database.reportAnalytics(request.params.discordUserId, period));
@@ -477,11 +499,34 @@ export async function buildServer(config: AppConfig, database: Database) {
     "/v1/analytics/community",
     { preHandler: authorize },
     async (request, reply) => {
+      if (request.query.startAt !== undefined || request.query.endAt !== undefined) {
+        const interval = exactAnalyticsInterval(request.query);
+        return interval === null
+          ? invalidAnalyticsQuery(reply)
+          : reply.send(await database.communityAnalyticsForInterval(interval));
+      }
       const period = analyticsPeriod(request.query.period);
-      if (period === null || request.query.startAt !== undefined || request.query.endAt !== undefined) {
+      if (period === null) {
         return invalidAnalyticsQuery(reply);
       }
       return reply.send(await database.communityAnalytics(period));
+    }
+  );
+
+  app.get<{ Params: { discordUserId: string }; Querystring: AnalyticsQuery }>(
+    "/v1/users/:discordUserId/digest-activity",
+    { preHandler: authorize },
+    async (request, reply) => {
+      const interval = exactAnalyticsInterval(request.query, 366);
+      if (!/^\d{15,22}$/.test(request.params.discordUserId) || interval === null ||
+        interval.startAt === null) {
+        return invalidAnalyticsQuery(reply);
+      }
+      return reply.send(await database.digestActivity(
+        request.params.discordUserId,
+        new Date(interval.startAt),
+        new Date(interval.endAt)
+      ));
     }
   );
 

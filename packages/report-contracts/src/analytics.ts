@@ -100,3 +100,16 @@ export interface ActionHistoryPage {
   items: ActionHistoryItem[];
   nextCursor: string | null;
 }
+
+export interface DigestActivity {
+  interval: AnalyticsInterval;
+  newReports: number;
+  outcomeChanges: {
+    total: number;
+    actioned: number;
+    closedNoAction: number;
+    appealActioned: number;
+    appealDenied: number;
+  };
+  eligible: boolean;
+}

@@ -129,6 +129,10 @@ export function rateMetric(numerator: number, denominator: number): RateMetric {
   };
 }
 
+export function digestEligible(newReports: number, outcomeChanges: number): boolean {
+  return newReports >= 3 || outcomeChanges >= 3;
+}
+
 export function durationMetric(seconds: readonly number[]): DurationMetric {
   if (seconds.length === 0) return { sampleSize: 0, medianSeconds: null, p90Seconds: null };
   const sorted = [...seconds].sort((left, right) => left - right);

@@ -6,6 +6,7 @@ import type {
   ActionHistoryPage,
   AnalyticsInterval,
   AnalyticsPeriod,
+  DigestActivity,
   DiscordReportStatus,
   DiscordReviewStatus,
   ReportAnalytics,
@@ -13,6 +14,7 @@ import type {
 } from "@discord-dsa/contracts";
 import {
   aggregateAnalyticsRows,
+  digestEligible,
   resolveAnalyticsInterval,
   type AnalyticsSourceEvent,
   type AnalyticsSourceReport
@@ -730,10 +732,9 @@ export class Database {
 
   private async analyticsForScope(
     scope: "personal" | "community",
-    period: AnalyticsPeriod,
+    interval: AnalyticsInterval,
     discordUserId: string | null
   ): Promise<ReportAnalytics> {
-    const interval = resolveAnalyticsInterval(period);
     const reportResult = await this.pool.query<AnalyticsReportQueryRow>(
       `WITH RECURSIVE rooted AS (
          SELECT reports.*, reports.id AS root_id, reports.created_at AS root_created_at
@@ -802,11 +803,96 @@ export class Database {
     discordUserId: string,
     period: AnalyticsPeriod
   ): Promise<ReportAnalytics> {
-    return this.analyticsForScope("personal", period, discordUserId);
+    return this.analyticsForScope("personal", resolveAnalyticsInterval(period), discordUserId);
   }
 
   public async communityAnalytics(period: AnalyticsPeriod): Promise<ReportAnalytics> {
-    return this.analyticsForScope("community", period, null);
+    return this.analyticsForScope("community", resolveAnalyticsInterval(period), null);
+  }
+
+  public async reportAnalyticsForInterval(
+    discordUserId: string,
+    interval: AnalyticsInterval
+  ): Promise<ReportAnalytics> {
+    return this.analyticsForScope("personal", interval, discordUserId);
+  }
+
+  public async communityAnalyticsForInterval(interval: AnalyticsInterval): Promise<ReportAnalytics> {
+    return this.analyticsForScope("community", interval, null);
+  }
+
+  public async digestActivity(
+    discordUserId: string,
+    startAt: Date,
+    endAt: Date
+  ): Promise<DigestActivity> {
+    const [reportResult, eventResult] = await Promise.all([
+      this.pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM reports
+         WHERE submitter_discord_user_id = $1
+           AND retry_of_report_id IS NULL
+           AND created_at >= $2 AND created_at < $3`,
+        [discordUserId, startAt, endAt]
+      ),
+      this.pool.query<{
+        actioned: string;
+        closed_no_action: string;
+        appeal_actioned: string;
+        appeal_denied: string;
+      }>(
+        `SELECT
+           count(*) FILTER (
+             WHERE event.metadata->>'discordStatus' = 'actioned'
+               AND NOT EXISTS (
+                 SELECT 1 FROM report_events AS earlier
+                 WHERE earlier.report_id = event.report_id
+                   AND earlier.event_type = 'discord_status_updated'
+                   AND earlier.metadata->>'discordStatus' = 'closed_no_action'
+                   AND (earlier.created_at, earlier.id) < (event.created_at, event.id)
+               )
+           )::text AS actioned,
+           count(*) FILTER (WHERE event.metadata->>'discordStatus' = 'closed_no_action')::text
+             AS closed_no_action,
+           count(*) FILTER (
+             WHERE event.metadata->>'discordStatus' = 'actioned'
+               AND EXISTS (
+                 SELECT 1 FROM report_events AS earlier
+                 WHERE earlier.report_id = event.report_id
+                   AND earlier.event_type = 'discord_status_updated'
+                   AND earlier.metadata->>'discordStatus' = 'closed_no_action'
+                   AND (earlier.created_at, earlier.id) < (event.created_at, event.id)
+               )
+           )::text AS appeal_actioned,
+           count(*) FILTER (WHERE event.metadata->>'discordStatus' = 'review_not_approved')::text
+             AS appeal_denied
+         FROM report_events AS event
+         JOIN reports ON reports.id = event.report_id
+         WHERE reports.submitter_discord_user_id = $1
+           AND event.event_type = 'discord_status_updated'
+           AND event.created_at >= $2 AND event.created_at < $3`,
+        [discordUserId, startAt, endAt]
+      )
+    ]);
+    const newReports = Number(reportResult.rows[0]?.count ?? 0);
+    const row = eventResult.rows[0];
+    const actioned = Number(row?.actioned ?? 0);
+    const closedNoAction = Number(row?.closed_no_action ?? 0);
+    const appealActioned = Number(row?.appeal_actioned ?? 0);
+    const appealDenied = Number(row?.appeal_denied ?? 0);
+    const total = actioned + closedNoAction + appealActioned + appealDenied;
+    const interval: AnalyticsInterval = {
+      period: "custom",
+      startAt: startAt.toISOString(),
+      endAt: endAt.toISOString(),
+      asOf: new Date().toISOString(),
+      timezone: "UTC"
+    };
+    return {
+      interval,
+      newReports,
+      outcomeChanges: { total, actioned, closedNoAction, appealActioned, appealDenied },
+      eligible: digestEligible(newReports, total)
+    };
   }
 
   public async actionHistory(input: {

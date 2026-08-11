@@ -524,6 +524,7 @@ authorization.
 GET /v1/users/{discordUserId}/analytics?period=7d
 GET /v1/analytics/community?period=30d
 GET /v1/users/{discordUserId}/action-history?period=7d&after=&limit=10
+GET /v1/users/{discordUserId}/digest-activity?startAt=<UTC-ISO>&endAt=<UTC-ISO>
 ```
 
 Analytics periods are `24h`, `7d`, `30d`, `ytd`, `365d`, and `all`. Responses use UTC and return
@@ -543,6 +544,13 @@ the service does not retain a separate copy of the original message. Pages are o
 by action time and report ID. `nextCursor` is opaque and must be returned unchanged as `after`.
 Limits are 1–25. Supplying both UTC `startAt` and `endAt` gives a custom interval; otherwise the
 period defaults to `7d`.
+
+The personal and Community analytics endpoints also accept an exact `startAt`/`endAt` pair instead
+of `period`; callers must not combine both forms. Digest activity accepts a UTC range of at most
+366 days. `newReports` counts owned root reports created in that half-open event period.
+`outcomeChanges` counts Actioned, closed without action, appeal-then-Actioned, and appeal denied
+transitions by event time. `eligible` is true only when `newReports >= 3` or
+`outcomeChanges.total >= 3`; Community activity never affects eligibility.
 
 Invalid periods, ranges, cursors, IDs, or limits return HTTP 400 with
 `error.code = "invalid_analytics_query"`.

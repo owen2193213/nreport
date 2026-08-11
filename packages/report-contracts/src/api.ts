@@ -4,7 +4,12 @@ import type {
   ReportLifecycleEvent,
   ReportSummary
 } from "./types.js";
-import type { ActionHistoryPage, AnalyticsPeriod, ReportAnalytics } from "./analytics.js";
+import type {
+  ActionHistoryPage,
+  AnalyticsPeriod,
+  DigestActivity,
+  ReportAnalytics
+} from "./analytics.js";
 
 interface ApiErrorBody {
   error?: { code?: string; message?: string };
@@ -96,6 +101,31 @@ export class DsaApi {
   public communityAnalytics(period: AnalyticsPeriod): Promise<ReportAnalytics> {
     const query = new URLSearchParams({ period });
     return this.request(`/v1/analytics/community?${query.toString()}`);
+  }
+
+  public analyticsForRange(
+    discordUserId: string,
+    startAt: string,
+    endAt: string
+  ): Promise<ReportAnalytics> {
+    const query = new URLSearchParams({ startAt, endAt });
+    return this.request(`/v1/users/${encodeURIComponent(discordUserId)}/analytics?${query.toString()}`);
+  }
+
+  public communityAnalyticsForRange(startAt: string, endAt: string): Promise<ReportAnalytics> {
+    const query = new URLSearchParams({ startAt, endAt });
+    return this.request(`/v1/analytics/community?${query.toString()}`);
+  }
+
+  public digestActivity(
+    discordUserId: string,
+    startAt: string,
+    endAt: string
+  ): Promise<DigestActivity> {
+    const query = new URLSearchParams({ startAt, endAt });
+    return this.request(
+      `/v1/users/${encodeURIComponent(discordUserId)}/digest-activity?${query.toString()}`
+    );
   }
 
   public actionHistory(

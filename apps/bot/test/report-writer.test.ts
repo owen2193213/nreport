@@ -204,6 +204,13 @@ describe("Fireworks and Brave report writer", () => {
     expect(planning.max_completion_tokens).toBe(8_192);
     expect(planning.response_format).toBeUndefined();
     expect(JSON.stringify(planning.messages)).toContain("provisionalLawReference");
+    expect(JSON.stringify(planning.messages)).not.toContain("without Markdown or a code fence");
+    expect(planning.messages[1]!.content).toContain("## Task");
+    expect(planning.messages[1]!.content).toContain("## Rules");
+    expect(planning.messages[1]!.content).toContain("## Input");
+    expect(planning.messages[1]!.content).toContain("## Output");
+    expect(planning.messages[1]!.content).toContain("## Examples");
+    expect(planning.messages[1]!.content).not.toContain("hedging");
     const planningSchema = embeddedSchema(planning.messages[1]!.content);
     expect(planningSchema.properties).not.toHaveProperty("country");
     expect(planningSchema.properties).not.toHaveProperty("reportType");
@@ -225,6 +232,12 @@ describe("Fireworks and Brave report writer", () => {
     expect(JSON.stringify(synthesis.messages)).toContain(
       "Do not count characters step by step or spend time optimizing the exact character count."
     );
+    expect(synthesis.messages[1]!.content).toContain("## Task");
+    expect(synthesis.messages[1]!.content).toContain("## Input");
+    expect(synthesis.messages[1]!.content).toContain("## Research");
+    expect(synthesis.messages[1]!.content).toContain("## Writing");
+    expect(synthesis.messages[1]!.content).toContain("## Output");
+    expect(synthesis.messages[1]!.content).toContain("## Examples");
   });
 
   it("keeps resolved fields out of the synthesis output contract", async () => {

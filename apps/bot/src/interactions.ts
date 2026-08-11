@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
+  ANALYTICS_PERIODS,
   DsaApiError,
   GUILD_ELEMENTS,
   PROFILE_ELEMENTS,
@@ -8,6 +9,8 @@ import {
   reportReasons
 } from "@discord-dsa/contracts";
 import type {
+  AnalyticsPeriod,
+  AnalyticsScope,
   DsaApi,
   GuildElement,
   ReportDetail,
@@ -29,6 +32,12 @@ import {
 } from "discord.js";
 
 import type { BotConfig } from "./config.js";
+import {
+  actionHistoryModal,
+  actionHistoryView,
+  analyticsViewWithChart,
+  type AnalyticsView
+} from "./analytics-ui.js";
 import { countryDisplay, matchingCountries } from "./countries.js";
 import { decryptJson, encryptJson, generateAccessKey, hashAccessKey } from "./crypto.js";
 import { AccessError } from "./database.js";
@@ -180,6 +189,48 @@ function parseExpiry(value: string | null): Date | null {
     throw new AccessError("invalid_expiry", "Expiry cannot be more than one year away.");
   }
   return date;
+}
+
+export function inclusiveAnalyticsRange(startDate: string, endDate: string): {
+  startAt: string;
+  endAt: string;
+} {
+  const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+  if (!datePattern.test(startDate) || !datePattern.test(endDate)) {
+    throw new AccessError("invalid_analytics_dates", "Use YYYY-MM-DD dates.");
+  }
+  const start = new Date(`${startDate}T00:00:00.000Z`);
+  const inclusiveEnd = new Date(`${endDate}T00:00:00.000Z`);
+  if (
+    !Number.isFinite(start.getTime()) || !Number.isFinite(inclusiveEnd.getTime()) ||
+    start.toISOString().slice(0, 10) !== startDate ||
+    inclusiveEnd.toISOString().slice(0, 10) !== endDate ||
+    inclusiveEnd.getTime() < start.getTime()
+  ) {
+    throw new AccessError("invalid_analytics_dates", "Choose a valid date range.");
+  }
+  const end = new Date(inclusiveEnd.getTime() + 24 * 60 * 60 * 1_000);
+  if (end.getTime() - start.getTime() > 3_660 * 24 * 60 * 60 * 1_000) {
+    throw new AccessError("invalid_analytics_dates", "The date range cannot exceed 3,660 days.");
+  }
+  return { startAt: start.toISOString(), endAt: end.toISOString() };
+}
+
+function approvedAnalyticsPeriod(value: string | null | undefined): AnalyticsPeriod {
+  const candidate = value ?? "7d";
+  return (ANALYTICS_PERIODS as readonly string[]).includes(candidate)
+    ? candidate as AnalyticsPeriod
+    : "7d";
+}
+
+function approvedAnalyticsView(value: string | undefined): AnalyticsView {
+  return (["overview", "trends", "outcomes", "history"] as const).includes(value as AnalyticsView)
+    ? value as AnalyticsView
+    : "overview";
+}
+
+function approvedAnalyticsScope(value: string | undefined): AnalyticsScope {
+  return value === "community" ? "community" : "personal";
 }
 
 function customParts(customId: string): string[] {
@@ -956,10 +1007,23 @@ export class InteractionHandler {
       case "settings":
         await this.handleSettingsCommand(interaction);
         break;
+      case "analytics":
+        await this.handleAnalyticsCommand(interaction);
+        break;
       case "admin":
         await this.handleAdminCommand(interaction);
         break;
     }
+  }
+
+  private async handleAnalyticsCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    const period = approvedAnalyticsPeriod(interaction.options.getString("period"));
+    await interaction.deferReply({ flags: EPHEMERAL });
+    const analytics = await this.api.analyticsFor(interaction.user.id, period);
+    await interaction.editReply({
+      ...(await analyticsViewWithChart(analytics, "overview")),
+      allowedMentions: { parse: [] }
+    });
   }
 
   private async handleReportCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1223,6 +1287,19 @@ export class InteractionHandler {
   }
 
   private async handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+    if (interaction.customId === "analytics:history-range") {
+      const range = inclusiveAnalyticsRange(
+        interaction.fields.getTextInputValue("start_date").trim(),
+        interaction.fields.getTextInputValue("end_date").trim()
+      );
+      await interaction.deferReply({ flags: EPHEMERAL });
+      const page = await this.api.actionHistory(interaction.user.id, { ...range, limit: 10 });
+      await interaction.editReply({
+        ...actionHistoryView(page, "7d"),
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
     const [scope, action, draftId] = customParts(interaction.customId);
     if (!draftId) return;
     if (scope === "reports" && action === "rewrite") {
@@ -1520,6 +1597,19 @@ export class InteractionHandler {
 
   private async handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
     const [scope, action, draftId] = customParts(interaction.customId);
+    if (scope === "analytics" && action === "period") {
+      const analyticsScope = approvedAnalyticsScope(draftId);
+      const period = approvedAnalyticsPeriod(interaction.values[0]);
+      await interaction.deferUpdate();
+      const analytics = analyticsScope === "community"
+        ? await this.api.communityAnalytics(period)
+        : await this.api.analyticsFor(interaction.user.id, period);
+      await interaction.editReply({
+        ...(await analyticsViewWithChart(analytics, "overview")),
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
     if (scope !== "country" || action !== "select" || !draftId) {
       return;
     }
@@ -1592,6 +1682,38 @@ export class InteractionHandler {
 
   private async handleButton(interaction: ButtonInteraction): Promise<void> {
     const parts = customParts(interaction.customId);
+    if (parts[0] === "analytics") {
+      if (parts[1] === "history-range") {
+        await interaction.showModal(actionHistoryModal());
+        return;
+      }
+      const view = approvedAnalyticsView(parts[1]);
+      const scope = approvedAnalyticsScope(parts[2]);
+      const period = approvedAnalyticsPeriod(parts[3]);
+      await interaction.deferUpdate();
+      if (view === "history") {
+        const page = await this.api.actionHistory(interaction.user.id, {
+          period,
+          ...(parts[4] ? { after: parts[4] } : {}),
+          limit: 10
+        });
+        await interaction.editReply({
+          ...actionHistoryView(page, period),
+          attachments: [],
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+      const analytics = scope === "community"
+        ? await this.api.communityAnalytics(period)
+        : await this.api.analyticsFor(interaction.user.id, period);
+      await interaction.editReply({
+        ...(await analyticsViewWithChart(analytics, view)),
+        attachments: [],
+        allowedMentions: { parse: [] }
+      });
+      return;
+    }
     if (parts[0] === "reports" && parts[1] === "retry-appeal" && parts[2]) {
       await interaction.deferUpdate();
       const report = await this.api.report(parts[2]);

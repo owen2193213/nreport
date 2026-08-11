@@ -166,12 +166,19 @@ export interface ActionHistoryCursor {
 }
 
 export function encodeActionHistoryCursor(cursor: ActionHistoryCursor): string {
-  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+  return Buffer.from(JSON.stringify([Date.parse(cursor.actionedAt), cursor.id])).toString("base64url");
 }
 
 export function decodeActionHistoryCursor(value: string): ActionHistoryCursor {
   try {
     const decoded: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (
+      Array.isArray(decoded) && decoded.length === 2 &&
+      typeof decoded[0] === "number" && Number.isFinite(decoded[0]) &&
+      typeof decoded[1] === "string" && decoded[1].length > 0
+    ) {
+      return { actionedAt: new Date(decoded[0]).toISOString(), id: decoded[1] };
+    }
     if (
       typeof decoded !== "object" || decoded === null ||
       typeof (decoded as { actionedAt?: unknown }).actionedAt !== "string" ||

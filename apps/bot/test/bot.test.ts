@@ -154,7 +154,7 @@ describe("Discord command registration", () => {
   });
 
   it("registers user-installed commands in every requested interaction context", () => {
-    expect(COMMANDS).toHaveLength(9);
+    expect(COMMANDS).toHaveLength(10);
     for (const command of COMMANDS) {
       expect(command.integration_types).toEqual([ApplicationIntegrationType.UserInstall]);
       expect(command.contexts).toEqual([

@@ -6,6 +6,7 @@ import {
   SlashCommandBuilder
 } from "discord.js";
 import type { RESTPostAPIApplicationCommandsJSONBody } from "discord.js";
+import { ANALYTICS_PERIODS } from "@discord-dsa/contracts";
 
 const contexts = [
   InteractionContextType.Guild,
@@ -119,6 +120,22 @@ const settings = userInstalled()
             .setAutocomplete(true)
         )
     );
+
+const analytics = userInstalled()
+  .setName("analytics")
+  .setDescription("View your private report analytics")
+  .addStringOption((option) =>
+    option.setName("period").setDescription("Analytics time period").setRequired(false)
+      .addChoices(...ANALYTICS_PERIODS.map((period) => ({
+        name: period === "24h" ? "Last 24 hours"
+          : period === "7d" ? "Last 7 days"
+            : period === "30d" ? "Last 30 days"
+              : period === "ytd" ? "Year to date"
+                : period === "365d" ? "Last 365 days"
+                  : "All time",
+        value: period
+      })))
+  );
 
 const admin = userInstalled()
     .setName("admin")
@@ -234,6 +251,7 @@ export const COMMANDS: RESTPostAPIApplicationCommandsJSONBody[] = [
   reports.toJSON(),
   access.toJSON(),
   settings.toJSON(),
+  analytics.toJSON(),
   admin.toJSON(),
   reportMessage.toJSON(),
   quickReportMessage.toJSON(),

@@ -72,7 +72,8 @@ export function analyticsComponents(
     new ButtonBuilder().setCustomId(`analytics:${view}:personal:${period}`).setLabel("Personal")
       .setStyle(scope === "personal" ? ButtonStyle.Primary : ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`analytics:${view}:community:${period}`).setLabel("Community")
-      .setStyle(scope === "community" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+      .setStyle(scope === "community" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+      .setDisabled(view === "history"),
     new ButtonBuilder().setCustomId("analytics:history-range").setLabel("Custom history dates")
       .setStyle(ButtonStyle.Secondary)
   );

@@ -32,6 +32,7 @@ registration script requires only `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_I
 /access redeem key
 /access status
 /settings country country
+/analytics [period]
 /admin key create|list|inspect|revoke
 /admin user inspect|suspend|reinstate
 Apps -> Report Message
@@ -44,6 +45,28 @@ Admin commands are visible in every supported context but authorize against the 
 IDs in `DISCORD_ADMIN_USER_IDS`. All command responses, errors, forms, and administrative
 results are ephemeral. A report review is ephemeral when DM delivery is cleared; otherwise the
 review and its confirmation controls are sent as an ordinary private bot DM.
+
+### Analytics hub
+
+`/analytics` opens one ephemeral hub and defaults to the user's Personal results for the last seven
+days. The available periods are 24 hours, 7 days, 30 days, year to date, 365 days, and all time.
+The hub has four consolidated views: Overview, Trends, Outcomes, and Action History. Navigation is
+stateless; component IDs contain only approved view, scope, period, and opaque pagination values,
+never a user ID. Every personal API call derives ownership from `interaction.user.id`.
+
+Personal analytics distinguish new root cases from retry attempts and show submission reliability,
+Actioned and closed-without-action outcomes, appeal outcomes, and Discord response and decision
+times. Community analytics contain only API-filtered aggregates: at least 10 reports from 5 users
+overall, 3 reports from 3 users per breakdown bucket, and 5 reports from 3 users per recurring
+phrase. The bot never receives suppressed raw community rows.
+
+Action History is personal-only and shows the explanation the user submitted, plus the submitted
+message link for message reports. It does not claim to retain the original reported message.
+Users can filter it by the standard periods or enter inclusive `YYYY-MM-DD` dates; the bot converts
+the inclusive end date to the following UTC midnight and limits a range to 3,660 days. All charts
+are rendered locally as PNGs from numeric aggregates. If chart rendering fails, the same textual
+totals remain available. User-facing outcome language says “Actioned” or “Action taken,” never
+claims that Discord imposed a ban.
 
 ## Report lifecycle
 

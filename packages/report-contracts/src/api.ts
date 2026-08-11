@@ -4,6 +4,7 @@ import type {
   ReportLifecycleEvent,
   ReportSummary
 } from "./types.js";
+import type { ActionHistoryPage, AnalyticsPeriod, ReportAnalytics } from "./analytics.js";
 
 interface ApiErrorBody {
   error?: { code?: string; message?: string };
@@ -83,6 +84,40 @@ export class DsaApi {
 
   public reportsFor(discordUserId: string): Promise<{ reports: ReportSummary[] }> {
     return this.request(`/v1/users/${encodeURIComponent(discordUserId)}/reports`);
+  }
+
+  public analyticsFor(discordUserId: string, period: AnalyticsPeriod): Promise<ReportAnalytics> {
+    const query = new URLSearchParams({ period });
+    return this.request(
+      `/v1/users/${encodeURIComponent(discordUserId)}/analytics?${query.toString()}`
+    );
+  }
+
+  public communityAnalytics(period: AnalyticsPeriod): Promise<ReportAnalytics> {
+    const query = new URLSearchParams({ period });
+    return this.request(`/v1/analytics/community?${query.toString()}`);
+  }
+
+  public actionHistory(
+    discordUserId: string,
+    query: {
+      period?: AnalyticsPeriod;
+      startAt?: string;
+      endAt?: string;
+      after?: string;
+      limit?: number;
+    }
+  ): Promise<ActionHistoryPage> {
+    const search = new URLSearchParams();
+    if (query.period !== undefined) search.set("period", query.period);
+    if (query.startAt !== undefined) search.set("startAt", query.startAt);
+    if (query.endAt !== undefined) search.set("endAt", query.endAt);
+    if (query.after !== undefined) search.set("after", query.after);
+    if (query.limit !== undefined) search.set("limit", query.limit.toString());
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    return this.request(
+      `/v1/users/${encodeURIComponent(discordUserId)}/action-history${suffix}`
+    );
   }
 
   public retryReport(

@@ -31,6 +31,7 @@ import type {
   NotificationPreferenceKey,
   NotificationPreferences
 } from "./notification-preferences.js";
+import type { DigestPeriod } from "./digest-periods.js";
 
 export const ACTIVE_REPORT_POLL_SECONDS = 30;
 export const REPORT_TRACKING_RETENTION_DAYS = 60;
@@ -151,6 +152,24 @@ CREATE TABLE IF NOT EXISTS access_keys (
   revoked_by text,
   revoked_at timestamptz,
   revoke_reason text
+);
+
+CREATE TABLE IF NOT EXISTS digest_jobs (
+  id bigserial PRIMARY KEY,
+  discord_user_id text NOT NULL REFERENCES bot_users(discord_user_id) ON DELETE CASCADE,
+  frequency text NOT NULL CHECK (frequency IN ('daily', 'weekly', 'monthly')),
+  period_start timestamptz NOT NULL,
+  period_end timestamptz NOT NULL,
+  state text NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending', 'sending', 'sent', 'skipped', 'failed')),
+  attempts integer NOT NULL DEFAULT 0,
+  run_at timestamptz NOT NULL DEFAULT now(),
+  locked_at timestamptz,
+  last_error text,
+  discord_message_id text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (discord_user_id, frequency, period_start)
 );
 
 CREATE TABLE IF NOT EXISTS credit_ledger (
@@ -357,6 +376,8 @@ CREATE INDEX IF NOT EXISTS report_tracking_expiry_idx
   ON report_tracking(tracking_expires_at);
 CREATE INDEX IF NOT EXISTS notification_outbox_claim_idx
   ON notification_outbox(state, run_at, locked_at);
+CREATE INDEX IF NOT EXISTS digest_jobs_claim_idx
+  ON digest_jobs(state, run_at, locked_at);
 `;
 
 interface UserRow extends QueryResultRow {
@@ -465,6 +486,24 @@ interface NotificationPreferencesRow extends QueryResultRow {
   digest_frequency: DigestFrequency;
 }
 
+interface DigestJobRow extends QueryResultRow {
+  id: string;
+  discord_user_id: string;
+  frequency: Exclude<DigestFrequency, "off">;
+  period_start: Date;
+  period_end: Date;
+  attempts: number;
+}
+
+export interface DigestJob {
+  id: string;
+  discordUserId: string;
+  frequency: Exclude<DigestFrequency, "off">;
+  periodStart: Date;
+  periodEnd: Date;
+  attempts: number;
+}
+
 const STATE_NOTIFICATION_TYPES = new Set([
   "report_submitted",
   "report_failed",
@@ -544,6 +583,17 @@ function notificationPreferences(row: NotificationPreferencesRow): NotificationP
     declined: row.notify_declined,
     appealProgress: row.notify_appeal_progress,
     digestFrequency: row.digest_frequency
+  };
+}
+
+function digestJob(row: DigestJobRow): DigestJob {
+  return {
+    id: row.id,
+    discordUserId: row.discord_user_id,
+    frequency: row.frequency,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    attempts: row.attempts
   };
 }
 
@@ -668,6 +718,96 @@ export class BotDatabase {
     const row = result.rows[0];
     if (!row) throw new Error("Digest frequency was not updated.");
     return notificationPreferences(row);
+  }
+
+  public async listDigestUsers(): Promise<Array<{
+    discordUserId: string;
+    frequency: Exclude<DigestFrequency, "off">;
+  }>> {
+    const result = await this.pool.query<{
+      discord_user_id: string;
+      digest_frequency: Exclude<DigestFrequency, "off">;
+    }>(
+      `SELECT discord_user_id, digest_frequency FROM bot_users
+       WHERE suspended = false AND digest_frequency <> 'off'`
+    );
+    return result.rows.map((row) => ({
+      discordUserId: row.discord_user_id,
+      frequency: row.digest_frequency
+    }));
+  }
+
+  public async ensureDigestJob(
+    userId: string,
+    frequency: Exclude<DigestFrequency, "off">,
+    period: DigestPeriod
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO digest_jobs (discord_user_id, frequency, period_start, period_end)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (discord_user_id, frequency, period_start) DO NOTHING`,
+      [userId, frequency, period.startAt, period.endAt]
+    );
+  }
+
+  public async claimDigestJobs(limit = 20): Promise<DigestJob[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<DigestJobRow>(
+        `SELECT * FROM digest_jobs
+         WHERE state IN ('pending', 'sending') AND run_at <= now()
+           AND (locked_at IS NULL OR locked_at < now() - interval '5 minutes')
+         ORDER BY run_at, id
+         FOR UPDATE SKIP LOCKED LIMIT $1`,
+        [Math.min(Math.max(limit, 1), 100)]
+      );
+      if (result.rows.length > 0) {
+        await client.query(
+          `UPDATE digest_jobs SET state = 'sending', locked_at = now(),
+             attempts = attempts + 1, updated_at = now()
+           WHERE id = ANY($1::bigint[])`,
+          [result.rows.map((row) => row.id)]
+        );
+      }
+      await client.query("COMMIT");
+      return result.rows.map((row) => digestJob({ ...row, attempts: row.attempts + 1 }));
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async completeDigestJob(
+    id: string,
+    state: "sent" | "skipped",
+    messageId?: string
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE digest_jobs SET state = $2, locked_at = NULL,
+         discord_message_id = $3, updated_at = now() WHERE id = $1`,
+      [id, state, messageId ?? null]
+    );
+  }
+
+  public async failDigestJob(job: DigestJob, message: string, permanent: boolean): Promise<void> {
+    if (permanent || job.attempts >= 5) {
+      await this.pool.query(
+        `UPDATE digest_jobs SET state = 'failed', locked_at = NULL,
+           last_error = $2, updated_at = now() WHERE id = $1`,
+        [job.id, message.slice(0, 500)]
+      );
+      return;
+    }
+    const delaySeconds = Math.min(60 * 2 ** Math.max(job.attempts - 1, 0), 3_600);
+    await this.pool.query(
+      `UPDATE digest_jobs SET state = 'pending', locked_at = NULL,
+         run_at = now() + ($2 * interval '1 second'), last_error = $3,
+         updated_at = now() WHERE id = $1`,
+      [job.id, delaySeconds, message.slice(0, 500)]
+    );
   }
 
   public async reserveExperimentalBatch(input: {

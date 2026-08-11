@@ -57,6 +57,12 @@ import {
 } from "./report-writer.js";
 import type { ReportWriter, WriterResult } from "./report-writer.js";
 import type { ServerResolver } from "./server-resolver.js";
+import {
+  DIGEST_FREQUENCIES,
+  type DigestFrequency,
+  type NotificationPreferenceKey
+} from "./notification-preferences.js";
+import { notificationSettingsView } from "./settings-ui.js";
 import type {
   AiDecisionSummary,
   ExperimentalBatchMode,
@@ -1161,6 +1167,15 @@ export class InteractionHandler {
   }
 
   private async handleSettingsCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    const subcommand = interaction.options.getSubcommand(true);
+    if (subcommand === "notifications") {
+      const preferences = await this.database.getNotificationPreferences(interaction.user.id);
+      await interaction.reply({
+        ...notificationSettingsView(preferences),
+        flags: EPHEMERAL
+      });
+      return;
+    }
     const country = interaction.options.getString("country", true).trim().toUpperCase();
     if (country !== "AUTO" && !this.countries.includes(country)) {
       throw new AccessError("invalid_country", "Choose a country returned by autocomplete.");
@@ -1175,7 +1190,8 @@ export class InteractionHandler {
             : `New reports will default to **${countryDisplay(country)}**. You can still override it per report.`
         )
       ],
-      flags: EPHEMERAL
+      flags: EPHEMERAL,
+      allowedMentions: { parse: [] }
     });
   }
 
@@ -1597,6 +1613,17 @@ export class InteractionHandler {
 
   private async handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
     const [scope, action, draftId] = customParts(interaction.customId);
+    if (scope === "settings" && action === "notifications" && draftId === "digest") {
+      const frequency = interaction.values[0];
+      if (!(DIGEST_FREQUENCIES as readonly string[]).includes(frequency ?? "")) return;
+      await interaction.deferUpdate();
+      const preferences = await this.database.setDigestFrequency(
+        interaction.user.id,
+        frequency as DigestFrequency
+      );
+      await interaction.editReply(notificationSettingsView(preferences));
+      return;
+    }
     if (scope === "analytics" && action === "period") {
       const analyticsScope = approvedAnalyticsScope(draftId);
       const period = approvedAnalyticsPeriod(interaction.values[0]);
@@ -1682,6 +1709,22 @@ export class InteractionHandler {
 
   private async handleButton(interaction: ButtonInteraction): Promise<void> {
     const parts = customParts(interaction.customId);
+    if (parts[0] === "settings" && parts[1] === "notifications") {
+      const keys: readonly NotificationPreferenceKey[] = [
+        "submission_results", "actioned", "declined", "appeal_progress"
+      ];
+      const key = parts[3] as NotificationPreferenceKey | undefined;
+      if (parts[2] !== "toggle" || key === undefined || !keys.includes(key) ||
+        (parts[4] !== "true" && parts[4] !== "false")) return;
+      await interaction.deferUpdate();
+      const preferences = await this.database.setNotificationPreference(
+        interaction.user.id,
+        key,
+        parts[4] === "true"
+      );
+      await interaction.editReply(notificationSettingsView(preferences));
+      return;
+    }
     if (parts[0] === "analytics") {
       if (parts[1] === "history-range") {
         await interaction.showModal(actionHistoryModal());

@@ -32,6 +32,7 @@ registration script requires only `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_I
 /access redeem key
 /access status
 /settings country country
+/settings notifications
 /analytics [period]
 /admin key create|list|inspect|revoke
 /admin user inspect|suspend|reinstate
@@ -67,6 +68,24 @@ the inclusive end date to the following UTC midnight and limits a range to 3,660
 are rendered locally as PNGs from numeric aggregates. If chart rendering fails, the same textual
 totals remain available. User-facing outcome language says “Actioned” or “Action taken,” never
 claims that Discord imposed a ban.
+
+### Notification preferences
+
+`/settings notifications` opens an ephemeral settings card with four lifecycle-DM toggles and a
+digest frequency selector. All lifecycle categories default to Enabled for new and migrated users:
+
+- Submission results: `report_submitted`, `report_failed`, and `discord:received`.
+- Actioned: `discord:actioned`.
+- Declined: `discord:closed_no_action` and `discord:review_not_approved`.
+- Appeal progress: requested, received, confirmation timeout, request failed, ineligible, and
+  ambiguous appeal events.
+
+Digest choices are Off, Daily, Weekly, and Monthly; Weekly is the default. Preferences are evaluated
+immediately before delivery, so changing a toggle also affects already queued but unsent DMs. The
+bot continues to ingest, deduplicate, reconcile, and retain authorized lifecycle events when a DM
+is disabled. A report's own `dm_enabled` value remains an additional restriction. Settings and
+confirmation interactions are ephemeral with mentions disabled, and suppressed notification logs
+contain only the notification ID and semantic category.
 
 ## Report lifecycle
 

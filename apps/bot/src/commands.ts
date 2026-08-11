@@ -119,7 +119,9 @@ const settings = userInstalled()
             .setRequired(true)
             .setAutocomplete(true)
         )
-    );
+    )
+    .addSubcommand((command) => command.setName("notifications")
+      .setDescription("Configure private lifecycle alerts and digests"));
 
 const analytics = userInstalled()
   .setName("analytics")

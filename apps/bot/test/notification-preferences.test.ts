@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Client } from "discord.js";
+import type { DsaApi } from "@discord-dsa/contracts";
 
 import {
   allowsLifecycleNotification,
@@ -6,6 +8,9 @@ import {
   type NotificationPreferences
 } from "../src/notification-preferences.js";
 import { BotDatabase } from "../src/database.js";
+import type { BotConfig } from "../src/config.js";
+import { NotificationWorker } from "../src/notifier.js";
+import type { ServerResolver } from "../src/server-resolver.js";
 
 const preferences: NotificationPreferences = {
   submissionResults: true,
@@ -48,5 +53,43 @@ describe("notification preferences", () => {
     });
     expect(String(query.mock.calls[1]?.[0])).toContain("SET notify_actioned = $2");
     expect(query.mock.calls[1]?.[1]).toEqual(["user-1", false]);
+  });
+
+  it("suppresses a disabled category before any Discord or report fetch", async () => {
+    const completeNotification = vi.fn().mockResolvedValue(undefined);
+    const database = {
+      claimDueTrackings: vi.fn().mockResolvedValue([]),
+      reconciliationCursor: vi.fn().mockResolvedValue("0"),
+      setReconciliationCursor: vi.fn(),
+      claimNotifications: vi.fn().mockResolvedValue([{
+        id: "41",
+        tracking_id: "tracking-1",
+        discord_user_id: "1197857362942378017",
+        payload: {
+          eventId: "42",
+          eventType: "discord:actioned",
+          internalReportId: "report-1",
+          occurredAt: "2026-08-11T00:00:00.000Z"
+        },
+        attempts: 1,
+        preferences
+      }]),
+      completeNotification
+    } as unknown as BotDatabase;
+    const report = vi.fn();
+    const fetch = vi.fn();
+    const worker = new NotificationWorker(
+      database,
+      { lifecycleEvents: vi.fn().mockResolvedValue({ events: [] }), report } as unknown as DsaApi,
+      { users: { fetch } } as unknown as Client,
+      {} as BotConfig,
+      {} as ServerResolver
+    );
+
+    await worker.tick();
+
+    expect(completeNotification).toHaveBeenCalledWith("41");
+    expect(report).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

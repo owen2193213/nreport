@@ -1209,7 +1209,11 @@ describe("lifecycle notification deduplication", () => {
             internalReportId: report.internalReportId,
             occurredAt: report.updatedAt
           },
-          attempts: 0
+          attempts: 0,
+          preferences: {
+            submissionResults: true, actioned: true, declined: true,
+            appealProgress: true, digestFrequency: "weekly"
+          }
         }
       ]),
       statusDmMessageId: vi.fn().mockResolvedValue("dm-message-1"),
@@ -1266,7 +1270,11 @@ describe("lifecycle notification deduplication", () => {
             internalReportId: report.internalReportId,
             occurredAt: report.updatedAt
           },
-          attempts: 0
+          attempts: 0,
+          preferences: {
+            submissionResults: true, actioned: true, declined: true,
+            appealProgress: true, digestFrequency: "weekly"
+          }
         }
       ]),
       statusDmMessageId: vi.fn().mockResolvedValue(null),

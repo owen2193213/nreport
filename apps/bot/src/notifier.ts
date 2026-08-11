@@ -8,6 +8,10 @@ import type { BotConfig } from "./config.js";
 import { decryptJson } from "./crypto.js";
 import { shouldNotifyLifecycleType, type BotDatabase } from "./database.js";
 import { botLog, errorFields } from "./observability.js";
+import {
+  allowsLifecycleNotification,
+  notificationCategory
+} from "./notification-preferences.js";
 import type { ServerResolver } from "./server-resolver.js";
 import type { AiDecisionSummary, ServerSnapshot } from "./types.js";
 import { reportEmbed, reportRetryComponents } from "./ui.js";
@@ -243,6 +247,12 @@ export class NotificationWorker {
             eventType: job.payload.eventType,
             reason: "non_status_lifecycle_event"
           });
+          continue;
+        }
+        const category = notificationCategory(job.payload.eventType);
+        if (category === null || !allowsLifecycleNotification(job.payload.eventType, job.preferences)) {
+          await this.database.completeNotification(job.id);
+          botLog("notification_send_suppressed", { notificationId: job.id, category });
           continue;
         }
         botLog("notification_send_started", {

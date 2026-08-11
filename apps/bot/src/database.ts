@@ -454,6 +454,7 @@ export interface NotificationJob extends QueryResultRow {
   discord_user_id: string;
   payload: NotificationPayload;
   attempts: number;
+  preferences: NotificationPreferences;
 }
 
 interface NotificationPreferencesRow extends QueryResultRow {
@@ -2006,9 +2007,12 @@ export class BotDatabase {
            AND tracking.tracking_expires_at <= now()
            AND outbox.state IN ('pending', 'sending')`
       );
-      const result = await client.query<NotificationJob>(
-        `SELECT outbox.* FROM notification_outbox AS outbox
+      const result = await client.query<NotificationJob & NotificationPreferencesRow>(
+        `SELECT outbox.*, users.notify_submission_results, users.notify_actioned,
+                users.notify_declined, users.notify_appeal_progress, users.digest_frequency
+         FROM notification_outbox AS outbox
          JOIN report_tracking AS tracking ON tracking.id = outbox.tracking_id
+         JOIN bot_users AS users ON users.discord_user_id = outbox.discord_user_id
          WHERE outbox.state IN ('pending', 'sending') AND outbox.run_at <= now()
            AND (outbox.locked_at IS NULL OR outbox.locked_at < now() - interval '5 minutes')
            AND tracking.dm_enabled = true
@@ -2027,7 +2031,11 @@ export class BotDatabase {
         );
       }
       await client.query("COMMIT");
-      return result.rows.map((row) => ({ ...row, attempts: row.attempts + 1 }));
+      return result.rows.map((row) => ({
+        ...row,
+        attempts: row.attempts + 1,
+        preferences: notificationPreferences(row)
+      }));
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;

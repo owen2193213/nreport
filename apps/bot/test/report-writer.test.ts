@@ -53,14 +53,19 @@ function completed(overrides: Record<string, unknown> = {}): Record<string, unkn
   };
 }
 
-function moreResearch(kind: "term" | "law", query: string): Record<string, unknown> {
+function moreResearch(
+  kind: "term" | "law",
+  query: string,
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
   return {
     status: "more_research_required",
     followUpType: kind,
     followUpQuery: query,
     lawReference: null,
     researchSummary: null,
-    report: null
+    report: null,
+    ...overrides
   };
 }
 
@@ -154,7 +159,8 @@ function embeddedSchema(message: string): { properties: Record<string, unknown> 
   const marker = "Return raw JSON only, matching this JSON Schema exactly:\n";
   const index = message.lastIndexOf(marker);
   if (index < 0) throw new Error("Expected an embedded JSON Schema.");
-  return JSON.parse(message.slice(index + marker.length)) as {
+  const schemaLine = message.slice(index + marker.length).split("\n")[0]!;
+  return JSON.parse(schemaLine) as {
     properties: Record<string, unknown>;
   };
 }
@@ -304,8 +310,7 @@ describe("Fireworks and Brave report writer", () => {
         fireworks(
           plan({
             lawResearchRequired: true,
-            lawSearchQuery: "Germany official Basic Law Article 1",
-            provisionalLawReference: null
+            lawSearchQuery: "Germany official Basic Law Article 1"
           })
         )
       )
@@ -334,8 +339,7 @@ describe("Fireworks and Brave report writer", () => {
             termResearchRequired: true,
             termSearchQuery: "coded term meaning hateful language",
             lawResearchRequired: true,
-            lawSearchQuery: "Germany official Basic Law Article 1",
-            provisionalLawReference: null
+            lawSearchQuery: "Germany official Basic Law Article 1"
           })
         );
       }
@@ -354,14 +358,24 @@ describe("Fireworks and Brave report writer", () => {
     expect(result.legalResearch.sources).toHaveLength(2);
   });
 
-  it("rejects inconsistent plans before searching", async () => {
-    const inconsistent = vi.fn().mockResolvedValue(
-      fireworks(plan({ termResearchRequired: true, termSearchQuery: null }))
+  it("rejects inconsistent plans after one repair attempt", async () => {
+    const inconsistent = vi.fn().mockImplementation(() =>
+      Promise.resolve(fireworks(plan({ termResearchRequired: true, termSearchQuery: null })))
     );
     await expect(writer(inconsistent).generate(draft(), ACTOR)).rejects.toThrow(
       /terminology research query/
     );
-    expect(inconsistent).toHaveBeenCalledTimes(1);
+    expect(inconsistent).toHaveBeenCalledTimes(2);
+    const repair = bodyAt<{
+      reasoning_effort: string;
+      max_completion_tokens: number;
+      response_format?: unknown;
+    }>(inconsistent, 1);
+    expect(repair).toMatchObject({
+      reasoning_effort: "none",
+      max_completion_tokens: 4_096
+    });
+    expect(repair.response_format).toBeDefined();
   });
 
   it("does not let unavailable planner fields override fixed application state", async () => {
@@ -599,5 +613,173 @@ describe("Fireworks and Brave report writer", () => {
     expect(failure).toBeInstanceOf(ReportWriterError);
     expect((failure as ReportWriterError).candidateReport).toBe(repairedCandidate);
     expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it("repairs a synthesis response that is missing its law reference", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(fireworks(completed({ lawReference: null })))
+      .mockResolvedValueOnce(fireworks(completed()));
+
+    const result = await writer(request).generate(draft(), ACTOR);
+
+    expect(result.legalResearch.lawReference).toBe(LAW);
+    expect(request).toHaveBeenCalledTimes(3);
+    const repair = bodyAt<{
+      reasoning_effort: string;
+      max_completion_tokens: number;
+      response_format?: unknown;
+    }>(request, 2);
+    expect(repair).toMatchObject({
+      reasoning_effort: "none",
+      max_completion_tokens: 4_096
+    });
+    expect(repair.response_format).toBeDefined();
+  });
+
+  it("repairs an invalid follow-up request once", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(
+        fireworks(
+          moreResearch("law", "Germany official Basic Law Article 1", {
+            followUpType: "legal"
+          })
+        )
+      )
+      .mockResolvedValueOnce(fireworks(completed()));
+
+    const result = await writer(request).generate(draft(), ACTOR);
+
+    expect(result.report.length).toBeGreaterThan(0);
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops after one failed synthesis repair", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(fireworks(completed({ lawReference: null })))
+      .mockResolvedValueOnce(fireworks(completed({ researchSummary: null })));
+
+    await expect(writer(request).generate(draft(), ACTOR)).rejects.toThrow(
+      /remained invalid after one repair/
+    );
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it("normalizes near-miss follow-up responses instead of rejecting them", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(
+        fireworks(
+          moreResearch("law", "Germany official Basic Law Article 1 text", {
+            lawReference: "",
+            report: "pending further research"
+          })
+        )
+      )
+      .mockResolvedValueOnce(braveLaw())
+      .mockResolvedValueOnce(fireworks(completed()));
+
+    const result = await writer(request).generate(draft(), ACTOR);
+
+    expect(result.legalResearch.searchRequests).toBe(1);
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  it("accepts a completed synthesis with stray follow-up values", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(
+        fireworks(completed({ followUpType: "law", followUpQuery: "stray query" }))
+      );
+
+    const result = await writer(request).generate(draft(), ACTOR);
+
+    expect(result.legalResearch.lawReference).toBe(LAW);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("repairs an unsupported planner country once", async () => {
+    const auto = draft();
+    delete auto.country;
+    auto.countrySelection = "auto";
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        fireworks(
+          plan({
+            country: "UK",
+            reportType: "sub_other_hate_speech",
+            reportReason: "The profile imagery contains hateful material."
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        fireworks(
+          plan({
+            country: "DE",
+            reportType: "sub_other_hate_speech",
+            reportReason: "The profile imagery contains hateful material."
+          })
+        )
+      )
+      .mockResolvedValueOnce(fireworks(completed()));
+
+    const result = await writer(request).generate(auto, ACTOR);
+
+    expect(result.country).toBe("DE");
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it("repairs a planner whose search query breaks the sanitization rules", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        fireworks(
+          plan({
+            termResearchRequired: true,
+            termSearchQuery: "meaning of coded term, see https://example.com"
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        fireworks(
+          plan({
+            termResearchRequired: true,
+            termSearchQuery: "coded term meaning hateful language"
+          })
+        )
+      )
+      .mockResolvedValueOnce(braveTerm())
+      .mockResolvedValueOnce(fireworks(completed()));
+
+    const result = await writer(request).generate(draft(), ACTOR);
+
+    expect(result.legalResearch.searchRequests).toBe(1);
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  it("skips a follow-up search whose query breaks the sanitization rules", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(
+        fireworks(moreResearch("law", "Germany Basic Law text https://example.com"))
+      )
+      .mockResolvedValueOnce(fireworks(completed()));
+
+    const result = await writer(request).generate(draft(), ACTOR);
+
+    expect(result.legalResearch.searchRequests).toBe(0);
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(
+      request.mock.calls.some((call) => String(call[0]).includes("api.search.brave.com"))
+    ).toBe(false);
   });
 });

@@ -127,6 +127,20 @@ describe("analytics rules", () => {
     ]);
   });
 
+  it("removes a bare domain query suffix before tokenization", () => {
+    expect(sanitizePatternText("ordinary example.test?secret=token harmless")).toEqual([
+      "ordinary",
+      "harmless"
+    ]);
+  });
+
+  it("removes a bare domain fragment suffix before tokenization", () => {
+    expect(sanitizePatternText("ordinary example.test#secret-fragment harmless")).toEqual([
+      "ordinary",
+      "harmless"
+    ]);
+  });
+
   it("requires three distinct users for a community pattern", () => {
     expect(recurringPatterns([
       { userId: "u1", text: "coordinated threat" },

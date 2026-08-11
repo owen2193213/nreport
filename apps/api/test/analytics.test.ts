@@ -50,6 +50,15 @@ describe("analytics rules", () => {
     ])).toBe("direct_actioned");
   });
 
+  it("uses a later appeal denial as the current terminal outcome", () => {
+    expect(classifyCaseOutcome([
+      { type: "discord_status_updated", discordStatus: "closed_no_action" },
+      { type: "review_requested", discordStatus: null },
+      { type: "discord_status_updated", discordStatus: "actioned" },
+      { type: "discord_status_updated", discordStatus: "review_not_approved" }
+    ])).toBe("appeal_denied");
+  });
+
   it("does not turn an empty denominator into zero percent", () => {
     expect(rateMetric(0, 0)).toEqual({ numerator: 0, denominator: 0, percentage: null });
   });
@@ -104,6 +113,17 @@ describe("analytics rules", () => {
     expect(sanitizePatternText("ordinary www.example.test/path ftp://files.example.test/item harmless")).toEqual([
       "ordinary",
       "harmless"
+    ]);
+  });
+
+  it("removes a bare domain with a path while preserving ordinary dotted punctuation", () => {
+    expect(sanitizePatternText("ordinary example.test/path harmless. e.g., still here")).toEqual([
+      "ordinary",
+      "harmless",
+      "e",
+      "g",
+      "still",
+      "here"
     ]);
   });
 

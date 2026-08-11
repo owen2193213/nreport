@@ -83,9 +83,9 @@ export function classifyCaseOutcome(events: readonly AnalyticsEvent[]): CaseOutc
     }
   }
 
+  if (finalStatus === "review_not_approved") return "appeal_denied";
   if (appealActioned) return "appeal_actioned";
   if (finalStatus === "actioned") return "direct_actioned";
-  if (finalStatus === "review_not_approved") return "appeal_denied";
   if (reviewAfterClosure) return "appeal_pending";
   if (finalStatus === "closed_no_action") return "closed_no_action";
   return finalStatus === "received" ? "awaiting_decision" : "awaiting_response";
@@ -117,6 +117,7 @@ export function sanitizePatternText(value: string): string[] {
   const withoutSensitiveValues = value
     .replace(/\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)\S+/giu, " ")
     .replace(/\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b/giu, " ")
+    .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,63}(?:\/\S*)?/giu, " ")
     .replace(/<@!?\d+>|<@&\d+>|<#\d+>/gu, " ")
     .replace(/\b\d{15,22}\b/gu, " ")
     .replace(/\b\d+\b/gu, " ");

@@ -5,6 +5,9 @@ import { BotDatabase } from "../src/database.js";
 import type { DigestActivity } from "@discord-dsa/contracts";
 import { digestMessage } from "../src/digest-ui.js";
 import { analyticsFixture, communityFixture } from "./analytics-fixtures.js";
+import { DigestWorker } from "../src/digest-worker.js";
+import type { DsaApi } from "@discord-dsa/contracts";
+import type { Client } from "discord.js";
 
 function activityFixture(newReports: number, outcomeChanges: number): DigestActivity {
   return {
@@ -77,5 +80,70 @@ describe("closed digest periods", () => {
       community: communityFixture({ availability: "insufficient_community_data" })
     });
     expect(JSON.stringify(payload)).not.toContain("Community snapshot");
+  });
+
+  it.each([
+    [2, 2, false], [3, 0, true], [0, 3, true]
+  ])("delivers only at a personal threshold (%s reports, %s changes)", async (
+    newReports,
+    outcomeChanges,
+    sends
+  ) => {
+    const completeDigestJob = vi.fn().mockResolvedValue(undefined);
+    const database = {
+      listDigestUsers: vi.fn().mockResolvedValue([]),
+      claimDigestJobs: vi.fn().mockResolvedValue([{
+        id: "job-1", discordUserId: "1197857362942378017", frequency: "weekly",
+        periodStart: new Date("2026-08-03T00:00:00.000Z"),
+        periodEnd: new Date("2026-08-10T00:00:00.000Z"), attempts: 1
+      }]),
+      getNotificationPreferences: vi.fn().mockResolvedValue({ digestFrequency: "weekly" }),
+      completeDigestJob,
+      failDigestJob: vi.fn()
+    } as unknown as BotDatabase;
+    const digestActivity = vi.fn().mockResolvedValue(activityFixture(newReports, outcomeChanges));
+    const analyticsForRange = vi.fn().mockResolvedValue(analyticsFixture());
+    const communityAnalyticsForRange = vi.fn().mockResolvedValue(communityFixture());
+    const send = vi.fn().mockResolvedValue({ id: "message-1" });
+    const fetch = vi.fn().mockResolvedValue({ send });
+    const worker = new DigestWorker(
+      database,
+      { digestActivity, analyticsForRange, communityAnalyticsForRange } as unknown as DsaApi,
+      { users: { fetch } } as unknown as Client
+    );
+
+    await worker.runOnce(new Date("2026-08-11T12:00:00Z"));
+
+    expect(send).toHaveBeenCalledTimes(sends ? 1 : 0);
+    if (!sends) {
+      expect(analyticsForRange).not.toHaveBeenCalled();
+      expect(communityAnalyticsForRange).not.toHaveBeenCalled();
+      expect(completeDigestJob).toHaveBeenCalledWith("job-1", "skipped");
+    }
+  });
+
+  it("skips a claimed job after the user changes digests to Off", async () => {
+    const completeDigestJob = vi.fn().mockResolvedValue(undefined);
+    const digestActivity = vi.fn();
+    const database = {
+      listDigestUsers: vi.fn().mockResolvedValue([]),
+      claimDigestJobs: vi.fn().mockResolvedValue([{
+        id: "job-1", discordUserId: "user-1", frequency: "weekly",
+        periodStart: new Date("2026-08-03T00:00:00.000Z"),
+        periodEnd: new Date("2026-08-10T00:00:00.000Z"), attempts: 1
+      }]),
+      getNotificationPreferences: vi.fn().mockResolvedValue({ digestFrequency: "off" }),
+      completeDigestJob
+    } as unknown as BotDatabase;
+    const worker = new DigestWorker(
+      database,
+      { digestActivity } as unknown as DsaApi,
+      { users: { fetch: vi.fn() } } as unknown as Client
+    );
+
+    await worker.runOnce();
+
+    expect(completeDigestJob).toHaveBeenCalledWith("job-1", "skipped");
+    expect(digestActivity).not.toHaveBeenCalled();
   });
 });

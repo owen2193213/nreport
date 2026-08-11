@@ -5,7 +5,9 @@ import type {
   AnalyticsPeriod,
   AnalyticsScope,
   DurationMetric,
-  RateMetric
+  RateMetric,
+  ReportAnalytics,
+  ReportFlow
 } from "@discord-dsa/contracts";
 
 export interface AnalyticsEvent {
@@ -32,6 +34,34 @@ export interface RawBreakdown {
   label: string;
   reportCount: number;
   userCount: number;
+}
+
+export interface AnalyticsSourceReport {
+  id: string;
+  rootId: string;
+  retryOfReportId: string | null;
+  createdAt: string;
+  status: string;
+  discordReportId: string | null;
+  flow: ReportFlow;
+  category: string;
+  country: string;
+  submitterDiscordUserId: string | null;
+  submittedText: string;
+  inCaseCohort?: boolean;
+  inAttemptWindow?: boolean;
+}
+
+export interface AnalyticsSourceEvent extends AnalyticsEvent {
+  reportId: string;
+  occurredAt: string;
+}
+
+export interface AggregateAnalyticsInput {
+  reports: readonly AnalyticsSourceReport[];
+  events: readonly AnalyticsSourceEvent[];
+  scope?: AnalyticsScope;
+  interval?: AnalyticsInterval;
 }
 
 const PERIOD_MILLISECONDS: Partial<Record<AnalyticsPeriod, number>> = {
@@ -177,4 +207,231 @@ export function suppressCommunityBreakdown(rows: readonly RawBreakdown[]): Analy
     count: row.reportCount,
     percentage: denominator === 0 ? 0 : Math.round((row.reportCount / denominator) * 1000) / 10
   }));
+}
+
+function labelForKey(value: string): string {
+  return value.replaceAll("_", " ").replace(/\b\p{L}/gu, (letter) => letter.toLocaleUpperCase("en-US"));
+}
+
+function personalBreakdown(rows: readonly RawBreakdown[]): AnalyticsBreakdownItem[] {
+  const denominator = rows.reduce((total, row) => total + row.reportCount, 0);
+  return rows.map((row) => ({
+    key: row.key,
+    label: row.label,
+    count: row.reportCount,
+    percentage: denominator === 0 ? 0 : Math.round((row.reportCount / denominator) * 1000) / 10
+  }));
+}
+
+function breakdownRows(
+  reports: readonly AnalyticsSourceReport[],
+  select: (report: AnalyticsSourceReport) => string
+): RawBreakdown[] {
+  const values = new Map<string, { reports: number; users: Set<string> }>();
+  for (const report of reports) {
+    const key = select(report);
+    const value = values.get(key) ?? { reports: 0, users: new Set<string>() };
+    value.reports += 1;
+    if (report.submitterDiscordUserId !== null) value.users.add(report.submitterDiscordUserId);
+    values.set(key, value);
+  }
+  return [...values.entries()]
+    .map(([key, value]) => ({
+      key,
+      label: labelForKey(key),
+      reportCount: value.reports,
+      userCount: value.users.size
+    }))
+    .sort((left, right) => right.reportCount - left.reportCount || left.key.localeCompare(right.key));
+}
+
+function secondsBetween(start: AnalyticsSourceEvent | undefined, end: AnalyticsSourceEvent | undefined): number | null {
+  if (start === undefined || end === undefined) return null;
+  const seconds = (Date.parse(end.occurredAt) - Date.parse(start.occurredAt)) / 1_000;
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+}
+
+function emptyAnalytics(scope: AnalyticsScope, interval: AnalyticsInterval): ReportAnalytics {
+  const emptyDuration = durationMetric([]);
+  return {
+    availability: scope === "community" ? "insufficient_community_data" : "available",
+    scope,
+    interval,
+    volume: {
+      newCases: 0, attempts: 0, retries: 0, sentAttempts: 0, pendingAttempts: 0, failedAttempts: 0
+    },
+    outcomes: {
+      awaitingResponse: 0, awaitingDecision: 0, directActioned: 0, closedNoAction: 0,
+      appealsStarted: 0, appealActioned: 0, appealsDenied: 0
+    },
+    rates: {
+      submission: rateMetric(0, 0), action: rateMetric(0, 0), appealAction: rateMetric(0, 0)
+    },
+    timing: { reply: emptyDuration, decision: emptyDuration, appealDecision: emptyDuration },
+    breakdowns: { flows: [], categories: [], countries: [] },
+    series: [],
+    patterns: []
+  };
+}
+
+export function aggregateAnalyticsRows(input: AggregateAnalyticsInput): ReportAnalytics {
+  const scope = input.scope ?? "personal";
+  const interval = input.interval ?? resolveAnalyticsInterval("all");
+  const cohortReports = input.reports.filter((report) =>
+    (report.inCaseCohort ?? report.retryOfReportId === null)
+  );
+  const attemptReports = input.reports.filter((report) => report.inAttemptWindow ?? true);
+  const communityUsers = new Set(cohortReports.flatMap((report) =>
+    report.submitterDiscordUserId === null ? [] : [report.submitterDiscordUserId]
+  ));
+  if (scope === "community" && (cohortReports.length < 10 || communityUsers.size < 5)) {
+    return emptyAnalytics(scope, interval);
+  }
+
+  const reportsByRoot = new Map<string, AnalyticsSourceReport[]>();
+  for (const report of input.reports) {
+    const reports = reportsByRoot.get(report.rootId) ?? [];
+    reports.push(report);
+    reportsByRoot.set(report.rootId, reports);
+  }
+  const eventsByReport = new Map<string, AnalyticsSourceEvent[]>();
+  for (const event of input.events) {
+    const events = eventsByReport.get(event.reportId) ?? [];
+    events.push(event);
+    eventsByReport.set(event.reportId, events);
+  }
+  for (const events of eventsByReport.values()) {
+    events.sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
+  }
+
+  const outcomeCounts: Record<CaseOutcome, number> = {
+    awaiting_response: 0, awaiting_decision: 0, direct_actioned: 0, closed_no_action: 0,
+    appeal_pending: 0, appeal_actioned: 0, appeal_denied: 0
+  };
+  let appealsStarted = 0;
+  const replySeconds: number[] = [];
+  const decisionSeconds: number[] = [];
+  const appealDecisionSeconds: number[] = [];
+  const replySecondsByRoot = new Map<string, number[]>();
+
+  for (const cohortReport of cohortReports) {
+    const chain = reportsByRoot.get(cohortReport.rootId) ?? [cohortReport];
+    const events = chain.flatMap((report) => eventsByReport.get(report.id) ?? [])
+      .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
+    const outcome = classifyCaseOutcome(events);
+    outcomeCounts[outcome] += 1;
+    if (events.some((event) => event.type === "review_requested")) appealsStarted += 1;
+
+    const submitted = events.find((event) => event.type === "report_submitted");
+    const reply = events.find((event) =>
+      event.type === "discord_status_updated" && submitted !== undefined &&
+      Date.parse(event.occurredAt) >= Date.parse(submitted.occurredAt)
+    );
+    const decision = events.find((event) =>
+      event.type === "discord_status_updated" &&
+      ["actioned", "closed_no_action", "review_not_approved"].includes(event.discordStatus ?? "") &&
+      submitted !== undefined && Date.parse(event.occurredAt) >= Date.parse(submitted.occurredAt)
+    );
+    const reviewRequested = events.find((event) => event.type === "review_requested");
+    const appealDecision = events.find((event) =>
+      event.type === "discord_status_updated" &&
+      ["actioned", "review_not_approved"].includes(event.discordStatus ?? "") &&
+      reviewRequested !== undefined && Date.parse(event.occurredAt) >= Date.parse(reviewRequested.occurredAt)
+    );
+    const replyValue = secondsBetween(submitted, reply);
+    const decisionValue = secondsBetween(submitted, decision);
+    const appealDecisionValue = secondsBetween(reviewRequested, appealDecision);
+    if (replyValue !== null) {
+      replySeconds.push(replyValue);
+      replySecondsByRoot.set(cohortReport.rootId, [replyValue]);
+    }
+    if (decisionValue !== null) decisionSeconds.push(decisionValue);
+    if (appealDecisionValue !== null) appealDecisionSeconds.push(appealDecisionValue);
+  }
+
+  const sentAttempts = attemptReports.filter((report) =>
+    report.discordReportId !== null || (eventsByReport.get(report.id) ?? []).some((event) => event.type === "report_submitted")
+  ).length;
+  const failedAttempts = attemptReports.filter((report) => report.status === "failed").length;
+  const pendingAttempts = attemptReports.length - new Set(attemptReports.filter((report) =>
+    report.status === "failed" || report.discordReportId !== null ||
+    (eventsByReport.get(report.id) ?? []).some((event) => event.type === "report_submitted")
+  ).map((report) => report.id)).size;
+  const latestCaseReports = cohortReports.map((cohortReport) =>
+    [...(reportsByRoot.get(cohortReport.rootId) ?? [cohortReport])]
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] ?? cohortReport
+  );
+  const buildBreakdown = (select: (report: AnalyticsSourceReport) => string): AnalyticsBreakdownItem[] => {
+    const rows = breakdownRows(latestCaseReports, select);
+    return scope === "community" ? suppressCommunityBreakdown(rows) : personalBreakdown(rows);
+  };
+  const actioned = outcomeCounts.direct_actioned + outcomeCounts.appeal_actioned;
+  const resolved = actioned + outcomeCounts.closed_no_action + outcomeCounts.appeal_denied;
+  const decidedAppeals = outcomeCounts.appeal_actioned + outcomeCounts.appeal_denied;
+  const seriesGroups = new Map<string, { reports: number; replies: number[] }>();
+  for (const report of cohortReports) {
+    const bucketStart = new Date(report.createdAt);
+    bucketStart.setUTCHours(0, 0, 0, 0);
+    const key = bucketStart.toISOString();
+    const group = seriesGroups.get(key) ?? { reports: 0, replies: [] };
+    group.reports += 1;
+    group.replies.push(...(replySecondsByRoot.get(report.rootId) ?? []));
+    seriesGroups.set(key, group);
+  }
+
+  return {
+    availability: "available",
+    scope,
+    interval,
+    volume: {
+      newCases: cohortReports.length,
+      attempts: attemptReports.length,
+      retries: attemptReports.filter((report) => report.retryOfReportId !== null).length,
+      sentAttempts,
+      pendingAttempts,
+      failedAttempts
+    },
+    outcomes: {
+      awaitingResponse: outcomeCounts.awaiting_response,
+      awaitingDecision: outcomeCounts.awaiting_decision,
+      directActioned: outcomeCounts.direct_actioned,
+      closedNoAction: outcomeCounts.closed_no_action + outcomeCounts.appeal_pending,
+      appealsStarted,
+      appealActioned: outcomeCounts.appeal_actioned,
+      appealsDenied: outcomeCounts.appeal_denied
+    },
+    rates: {
+      submission: rateMetric(sentAttempts, sentAttempts + attemptReports.filter((report) =>
+        report.status === "failed" && report.discordReportId === null
+      ).length),
+      action: rateMetric(actioned, resolved),
+      appealAction: rateMetric(outcomeCounts.appeal_actioned, decidedAppeals)
+    },
+    timing: {
+      reply: durationMetric(replySeconds),
+      decision: durationMetric(decisionSeconds),
+      appealDecision: durationMetric(appealDecisionSeconds)
+    },
+    breakdowns: {
+      flows: buildBreakdown((report) => report.flow),
+      categories: buildBreakdown((report) => report.category),
+      countries: buildBreakdown((report) => report.country)
+    },
+    series: [...seriesGroups.entries()].sort(([left], [right]) => left.localeCompare(right)).map(
+      ([bucketStart, group]) => ({
+        bucketStart,
+        reportCount: group.reports,
+        medianReplySeconds: durationMetric(group.replies).medianSeconds
+      })
+    ),
+    patterns: recurringPatterns(latestCaseReports
+      .filter((report) => {
+        const chain = reportsByRoot.get(report.rootId) ?? [report];
+        return ["direct_actioned", "appeal_actioned"].includes(classifyCaseOutcome(
+          chain.flatMap((item) => eventsByReport.get(item.id) ?? [])
+            .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt))
+        ));
+      })
+      .map((report) => ({ userId: report.submitterDiscordUserId ?? "unknown", text: report.submittedText })), scope)
+  };
 }

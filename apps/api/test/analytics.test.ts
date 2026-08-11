@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  aggregateAnalyticsRows,
   classifyCaseOutcome,
   durationMetric,
   rateMetric,
@@ -9,8 +10,145 @@ import {
   sanitizePatternText,
   suppressCommunityBreakdown
 } from "../src/analytics.js";
+import {
+  decodeActionHistoryCursor,
+  encodeActionHistoryCursor
+} from "../src/database.js";
 
 describe("analytics rules", () => {
+  it("counts a retry chain as one case while retaining attempt reliability", () => {
+    expect(aggregateAnalyticsRows({
+      reports: [
+        {
+          id: "root-1",
+          rootId: "root-1",
+          retryOfReportId: null,
+          createdAt: "2026-08-05T00:00:00.000Z",
+          status: "failed",
+          discordReportId: null,
+          flow: "message_urf",
+          category: "illegal_content",
+          country: "DE",
+          submitterDiscordUserId: "user-1",
+          submittedText: "first attempt"
+        },
+        {
+          id: "retry-1",
+          rootId: "root-1",
+          retryOfReportId: "root-1",
+          createdAt: "2026-08-05T01:00:00.000Z",
+          status: "submitted",
+          discordReportId: "discord-1",
+          flow: "message_urf",
+          category: "illegal_content",
+          country: "DE",
+          submitterDiscordUserId: "user-1",
+          submittedText: "second attempt"
+        }
+      ],
+      events: [
+        {
+          reportId: "retry-1",
+          type: "report_submitted",
+          occurredAt: "2026-08-05T01:02:00.000Z",
+          discordStatus: null
+        },
+        {
+          reportId: "retry-1",
+          type: "discord_status_updated",
+          occurredAt: "2026-08-06T01:02:00.000Z",
+          discordStatus: "actioned"
+        }
+      ]
+    })).toMatchObject({
+      volume: { newCases: 1, attempts: 2, retries: 1, sentAttempts: 1 },
+      outcomes: { directActioned: 1, appealActioned: 0 }
+    });
+  });
+
+  it("counts action after closure and review request as an appeal action", () => {
+    expect(aggregateAnalyticsRows({
+      reports: [
+        {
+          id: "root-1",
+          rootId: "root-1",
+          retryOfReportId: null,
+          createdAt: "2026-08-05T00:00:00.000Z",
+          status: "submitted",
+          discordReportId: "discord-1",
+          flow: "message_urf",
+          category: "illegal_content",
+          country: "DE",
+          submitterDiscordUserId: "user-1",
+          submittedText: "submitted explanation"
+        }
+      ],
+      events: [
+        {
+          reportId: "root-1",
+          type: "report_submitted",
+          occurredAt: "2026-08-05T00:02:00.000Z",
+          discordStatus: null
+        },
+        {
+          reportId: "root-1",
+          type: "discord_status_updated",
+          occurredAt: "2026-08-06T00:02:00.000Z",
+          discordStatus: "closed_no_action"
+        },
+        {
+          reportId: "root-1",
+          type: "review_requested",
+          occurredAt: "2026-08-06T01:02:00.000Z",
+          discordStatus: null
+        },
+        {
+          reportId: "root-1",
+          type: "discord_status_updated",
+          occurredAt: "2026-08-07T01:02:00.000Z",
+          discordStatus: "actioned"
+        }
+      ]
+    })).toMatchObject({
+      volume: { newCases: 1, attempts: 1, retries: 0, sentAttempts: 1 },
+      outcomes: { directActioned: 0, appealActioned: 1 }
+    });
+  });
+
+  it("withholds community analytics until the publication cohort is large enough", () => {
+    const result = aggregateAnalyticsRows({
+      scope: "community",
+      reports: Array.from({ length: 9 }, (_, index) => ({
+        id: `root-${index}`,
+        rootId: `root-${index}`,
+        retryOfReportId: null,
+        createdAt: "2026-08-05T00:00:00.000Z",
+        status: "submitted",
+        discordReportId: `discord-${index}`,
+        flow: "message_urf" as const,
+        category: "illegal_content",
+        country: "DE",
+        submitterDiscordUserId: `user-${index % 5}`,
+        submittedText: "repeated threat"
+      })),
+      events: []
+    });
+
+    expect(result.availability).toBe("insufficient_community_data");
+    expect(result.volume.newCases).toBe(0);
+    expect(result.breakdowns.flows).toEqual([]);
+  });
+
+  it("round-trips an opaque action-history cursor and rejects malformed cursors", () => {
+    const cursor = {
+      actionedAt: "2026-08-05T00:00:00.000Z",
+      id: "report-1"
+    };
+
+    expect(decodeActionHistoryCursor(encodeActionHistoryCursor(cursor))).toEqual(cursor);
+    expect(() => decodeActionHistoryCursor("not-a-cursor")).toThrow(/Invalid action history cursor/);
+  });
+
   it("resolves a seven-day interval in UTC", () => {
     const interval = resolveAnalyticsInterval("7d", new Date("2026-08-11T12:00:00.000Z"));
 

@@ -1,11 +1,22 @@
+import { Buffer } from "node:buffer";
 import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
 
 import type {
+  ActionHistoryPage,
+  AnalyticsInterval,
+  AnalyticsPeriod,
   DiscordReportStatus,
   DiscordReviewStatus,
+  ReportAnalytics,
   ReportFlow
 } from "@discord-dsa/contracts";
+import {
+  aggregateAnalyticsRows,
+  resolveAnalyticsInterval,
+  type AnalyticsSourceEvent,
+  type AnalyticsSourceReport
+} from "./analytics.js";
 import type { CreateReportInput } from "./validation.js";
 
 export type ReportStatus =
@@ -119,6 +130,61 @@ export interface ReportEventRow extends QueryResultRow {
   event_type: string;
   metadata: Record<string, unknown>;
   created_at: Date;
+}
+
+interface AnalyticsReportQueryRow extends QueryResultRow {
+  id: string;
+  root_id: string;
+  retry_of_report_id: string | null;
+  created_at: Date;
+  status: ReportStatus;
+  discord_report_id: string | null;
+  flow: ReportFlow;
+  report_type: string;
+  country: string;
+  submitter_discord_user_id: string | null;
+  input: CreateReportInput;
+  in_case_cohort: boolean;
+  in_attempt_window: boolean;
+}
+
+interface ActionHistoryQueryRow extends QueryResultRow {
+  id: string;
+  discord_report_id: string | null;
+  flow: ReportFlow;
+  report_type: string;
+  country: string;
+  input: CreateReportInput;
+  submitted_at: Date;
+  discord_status_updated_at: Date;
+  action_source: "direct" | "appeal";
+}
+
+export interface ActionHistoryCursor {
+  actionedAt: string;
+  id: string;
+}
+
+export function encodeActionHistoryCursor(cursor: ActionHistoryCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+export function decodeActionHistoryCursor(value: string): ActionHistoryCursor {
+  try {
+    const decoded: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (
+      typeof decoded !== "object" || decoded === null ||
+      typeof (decoded as { actionedAt?: unknown }).actionedAt !== "string" ||
+      typeof (decoded as { id?: unknown }).id !== "string" ||
+      (decoded as { id: string }).id.length === 0 ||
+      !Number.isFinite(Date.parse((decoded as { actionedAt: string }).actionedAt))
+    ) {
+      throw new Error("invalid");
+    }
+    return decoded as ActionHistoryCursor;
+  } catch {
+    throw new Error("Invalid action history cursor.");
+  }
 }
 
 export interface DeliveryEventRow extends ReportEventRow {
@@ -332,6 +398,9 @@ ALTER TABLE report_jobs
 
 CREATE INDEX IF NOT EXISTS report_jobs_claim_idx ON report_jobs(state, run_at, id);
 CREATE INDEX IF NOT EXISTS report_events_report_idx ON report_events(report_id, created_at);
+CREATE INDEX IF NOT EXISTS reports_created_at_idx ON reports(created_at, id);
+CREATE INDEX IF NOT EXISTS report_events_type_created_idx
+  ON report_events(event_type, created_at, report_id);
 CREATE INDEX IF NOT EXISTS reports_email_status_idx ON reports(reporter_email, status);
 CREATE INDEX IF NOT EXISTS reports_submitter_idx
   ON reports(submitter_discord_user_id, created_at DESC);
@@ -650,6 +719,155 @@ export class Database {
       [discordUserId]
     );
     return result.rows;
+  }
+
+  private async analyticsForScope(
+    scope: "personal" | "community",
+    period: AnalyticsPeriod,
+    discordUserId: string | null
+  ): Promise<ReportAnalytics> {
+    const interval = resolveAnalyticsInterval(period);
+    const reportResult = await this.pool.query<AnalyticsReportQueryRow>(
+      `WITH RECURSIVE rooted AS (
+         SELECT reports.*, reports.id AS root_id, reports.created_at AS root_created_at
+         FROM reports
+         WHERE reports.retry_of_report_id IS NULL
+         UNION ALL
+         SELECT child.*, rooted.root_id, rooted.root_created_at
+         FROM reports AS child
+         JOIN rooted ON child.retry_of_report_id = rooted.id
+       )
+       SELECT id, root_id, retry_of_report_id, created_at, status, discord_report_id,
+              flow, report_type, country, submitter_discord_user_id, input,
+              (id = root_id
+                AND ($1::timestamptz IS NULL OR root_created_at >= $1::timestamptz)
+                AND root_created_at < $2::timestamptz) AS in_case_cohort,
+              (($1::timestamptz IS NULL OR created_at >= $1::timestamptz)
+                AND created_at < $2::timestamptz) AS in_attempt_window
+       FROM rooted
+       WHERE ($3::text IS NULL OR submitter_discord_user_id = $3)
+         AND (
+           (($1::timestamptz IS NULL OR root_created_at >= $1::timestamptz)
+             AND root_created_at < $2::timestamptz)
+           OR (($1::timestamptz IS NULL OR created_at >= $1::timestamptz)
+             AND created_at < $2::timestamptz)
+         )
+       ORDER BY root_created_at, retry_sequence, created_at, id`,
+      [interval.startAt, interval.endAt, discordUserId]
+    );
+
+    const reportIds = reportResult.rows.map((row) => row.id);
+    const eventResult = reportIds.length === 0
+      ? { rows: [] as ReportEventRow[] }
+      : await this.pool.query<ReportEventRow>(
+        `SELECT * FROM report_events
+         WHERE report_id = ANY($1::text[]) AND created_at < $2::timestamptz
+         ORDER BY created_at, id`,
+        [reportIds, interval.endAt]
+      );
+    const reports: AnalyticsSourceReport[] = reportResult.rows.map((row) => ({
+      id: row.id,
+      rootId: row.root_id,
+      retryOfReportId: row.retry_of_report_id,
+      createdAt: row.created_at.toISOString(),
+      status: row.status,
+      discordReportId: row.discord_report_id,
+      flow: row.flow,
+      category: row.report_type,
+      country: row.country,
+      submitterDiscordUserId: row.submitter_discord_user_id,
+      submittedText: row.input.context ?? row.input.reportReason,
+      inCaseCohort: row.in_case_cohort,
+      inAttemptWindow: row.in_attempt_window
+    }));
+    const events: AnalyticsSourceEvent[] = eventResult.rows.map((row) => ({
+      reportId: row.report_id,
+      type: row.event_type,
+      occurredAt: row.created_at.toISOString(),
+      discordStatus: typeof row.metadata.discordStatus === "string"
+        ? row.metadata.discordStatus
+        : null
+    }));
+    return aggregateAnalyticsRows({ reports, events, scope, interval });
+  }
+
+  public async reportAnalytics(
+    discordUserId: string,
+    period: AnalyticsPeriod
+  ): Promise<ReportAnalytics> {
+    return this.analyticsForScope("personal", period, discordUserId);
+  }
+
+  public async communityAnalytics(period: AnalyticsPeriod): Promise<ReportAnalytics> {
+    return this.analyticsForScope("community", period, null);
+  }
+
+  public async actionHistory(input: {
+    discordUserId: string;
+    interval: AnalyticsInterval;
+    after: string | null;
+    limit: number;
+  }): Promise<ActionHistoryPage> {
+    const cursor = input.after === null ? null : decodeActionHistoryCursor(input.after);
+    const limit = Math.min(Math.max(input.limit, 1), 100);
+    const result = await this.pool.query<ActionHistoryQueryRow>(
+      `SELECT reports.id, reports.discord_report_id, reports.flow, reports.report_type,
+              reports.country, reports.input,
+              COALESCE(submitted.created_at, reports.created_at) AS submitted_at,
+              reports.discord_status_updated_at,
+              CASE WHEN reports.review_status = 'approved' THEN 'appeal' ELSE 'direct' END
+                AS action_source
+       FROM reports
+       LEFT JOIN LATERAL (
+         SELECT report_events.created_at
+         FROM report_events
+         WHERE report_events.report_id = reports.id
+           AND report_events.event_type = 'report_submitted'
+         ORDER BY report_events.created_at, report_events.id
+         LIMIT 1
+       ) AS submitted ON true
+       WHERE reports.submitter_discord_user_id = $1
+         AND reports.discord_status = 'actioned'
+         AND reports.discord_status_updated_at IS NOT NULL
+         AND ($2::timestamptz IS NULL OR reports.discord_status_updated_at >= $2::timestamptz)
+         AND reports.discord_status_updated_at < $3::timestamptz
+         AND ($4::timestamptz IS NULL OR
+           (reports.discord_status_updated_at, reports.id) < ($4::timestamptz, $5::text))
+       ORDER BY reports.discord_status_updated_at DESC, reports.id DESC
+       LIMIT $6`,
+      [
+        input.discordUserId,
+        input.interval.startAt,
+        input.interval.endAt,
+        cursor?.actionedAt ?? null,
+        cursor?.id ?? null,
+        limit + 1
+      ]
+    );
+    const hasMore = result.rows.length > limit;
+    const rows = result.rows.slice(0, limit);
+    const last = rows.at(-1);
+    return {
+      interval: input.interval,
+      items: rows.map((row) => ({
+        internalReportId: row.id,
+        discordReportId: row.discord_report_id,
+        flow: row.flow,
+        category: row.report_type,
+        country: row.country,
+        submittedText: row.input.context ?? row.input.reportReason,
+        messageUrl: row.input.flow === "message_urf" ? row.input.messageUrl : null,
+        submittedAt: row.submitted_at.toISOString(),
+        actionedAt: row.discord_status_updated_at.toISOString(),
+        actionSource: row.action_source
+      })),
+      nextCursor: hasMore && last !== undefined
+        ? encodeActionHistoryCursor({
+          actionedAt: last.discord_status_updated_at.toISOString(),
+          id: last.id
+        })
+        : null
+    };
   }
 
   public async getReportByEmail(email: string): Promise<ReportRow | undefined> {

@@ -26,6 +26,11 @@ import {
   experimentalItemIdentity,
   type ExperimentalBatchDefinition
 } from "./experimental-batches.js";
+import type {
+  DigestFrequency,
+  NotificationPreferenceKey,
+  NotificationPreferences
+} from "./notification-preferences.js";
 
 export const ACTIVE_REPORT_POLL_SECONDS = 30;
 export const REPORT_TRACKING_RETENTION_DAYS = 60;
@@ -121,6 +126,13 @@ CREATE TABLE IF NOT EXISTS bot_users (
   suspension_reason text,
   suspended_at timestamptz,
   suspended_by text,
+  notify_submission_results boolean NOT NULL DEFAULT true,
+  notify_actioned boolean NOT NULL DEFAULT true,
+  notify_declined boolean NOT NULL DEFAULT true,
+  notify_appeal_progress boolean NOT NULL DEFAULT true,
+  digest_frequency text NOT NULL DEFAULT 'weekly'
+    CONSTRAINT bot_users_digest_frequency_check
+    CHECK (digest_frequency IN ('off', 'daily', 'weekly', 'monthly')),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -290,6 +302,23 @@ ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_reasoning_tokens bigint NOT NU
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_search_requests bigint NOT NULL DEFAULT 0;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_cost_credits double precision NOT NULL DEFAULT 0;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_last_used_at timestamptz;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_submission_results boolean NOT NULL DEFAULT true;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_actioned boolean NOT NULL DEFAULT true;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_declined boolean NOT NULL DEFAULT true;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_appeal_progress boolean NOT NULL DEFAULT true;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS digest_frequency text NOT NULL DEFAULT 'weekly';
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'bot_users_digest_frequency_check'
+      AND conrelid = 'bot_users'::regclass
+  ) THEN
+    ALTER TABLE bot_users ADD CONSTRAINT bot_users_digest_frequency_check
+      CHECK (digest_frequency IN ('off', 'daily', 'weekly', 'monthly'));
+  END IF;
+END
+$$;
 ALTER TABLE access_keys DROP CONSTRAINT IF EXISTS access_keys_credits_total_check;
 DO $$
 BEGIN
@@ -427,6 +456,14 @@ export interface NotificationJob extends QueryResultRow {
   attempts: number;
 }
 
+interface NotificationPreferencesRow extends QueryResultRow {
+  notify_submission_results: boolean;
+  notify_actioned: boolean;
+  notify_declined: boolean;
+  notify_appeal_progress: boolean;
+  digest_frequency: DigestFrequency;
+}
+
 const STATE_NOTIFICATION_TYPES = new Set([
   "report_submitted",
   "report_failed",
@@ -499,6 +536,16 @@ function accessView(row: UserRow): AccessView {
   };
 }
 
+function notificationPreferences(row: NotificationPreferencesRow): NotificationPreferences {
+  return {
+    submissionResults: row.notify_submission_results,
+    actioned: row.notify_actioned,
+    declined: row.notify_declined,
+    appealProgress: row.notify_appeal_progress,
+    digestFrequency: row.digest_frequency
+  };
+}
+
 export class BotDatabase {
   private readonly pool: Pool;
 
@@ -548,6 +595,78 @@ export class BotDatabase {
     } finally {
       client.release();
     }
+  }
+
+  public async getNotificationPreferences(userId: string): Promise<NotificationPreferences> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await this.ensureUser(client, userId);
+      const result = await client.query<NotificationPreferencesRow>(
+        `SELECT notify_submission_results, notify_actioned, notify_declined,
+                notify_appeal_progress, digest_frequency
+         FROM bot_users WHERE discord_user_id = $1`,
+        [userId]
+      );
+      await client.query("COMMIT");
+      const row = result.rows[0];
+      if (!row) throw new Error("User record was not created.");
+      return notificationPreferences(row);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async setNotificationPreference(
+    userId: string,
+    key: NotificationPreferenceKey,
+    enabled: boolean
+  ): Promise<NotificationPreferences> {
+    const column = (() => {
+      switch (key) {
+        case "submission_results": return "notify_submission_results";
+        case "actioned": return "notify_actioned";
+        case "declined": return "notify_declined";
+        case "appeal_progress": return "notify_appeal_progress";
+      }
+    })();
+    await this.pool.query(
+      "INSERT INTO bot_users (discord_user_id) VALUES ($1) ON CONFLICT DO NOTHING",
+      [userId]
+    );
+    const result = await this.pool.query<NotificationPreferencesRow>(
+      `UPDATE bot_users SET ${column} = $2, updated_at = now()
+       WHERE discord_user_id = $1
+       RETURNING notify_submission_results, notify_actioned, notify_declined,
+                 notify_appeal_progress, digest_frequency`,
+      [userId, enabled]
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("Notification preference was not updated.");
+    return notificationPreferences(row);
+  }
+
+  public async setDigestFrequency(
+    userId: string,
+    frequency: DigestFrequency
+  ): Promise<NotificationPreferences> {
+    await this.pool.query(
+      "INSERT INTO bot_users (discord_user_id) VALUES ($1) ON CONFLICT DO NOTHING",
+      [userId]
+    );
+    const result = await this.pool.query<NotificationPreferencesRow>(
+      `UPDATE bot_users SET digest_frequency = $2, updated_at = now()
+       WHERE discord_user_id = $1
+       RETURNING notify_submission_results, notify_actioned, notify_declined,
+                 notify_appeal_progress, digest_frequency`,
+      [userId, frequency]
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("Digest frequency was not updated.");
+    return notificationPreferences(row);
   }
 
   public async reserveExperimentalBatch(input: {

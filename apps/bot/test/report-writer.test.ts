@@ -238,6 +238,9 @@ describe("Fireworks and Brave report writer", () => {
     expect(synthesis.messages[1]!.content).toContain("## Writing");
     expect(synthesis.messages[1]!.content).toContain("## Output");
     expect(synthesis.messages[1]!.content).toContain("## Examples");
+    expect(synthesis.messages[1]!.content).toContain(
+      "briefly explain what the wording means, then connect that meaning to the law"
+    );
   });
 
   it("keeps resolved fields out of the synthesis output contract", async () => {
@@ -466,6 +469,18 @@ describe("Fireworks and Brave report writer", () => {
     const result = await writer(successRequest).generate(draft(), ACTOR);
     expect(result.legalResearch.searchRequests).toBe(1);
     expect(successRequest).toHaveBeenCalledTimes(4);
+
+    const firstSynthesis = bodyAt<{ messages: Array<{ content: string }> }>(successRequest, 1);
+    expect(firstSynthesis.messages[1]!.content).toContain(
+      "this is your only research opportunity and you cannot request more research after it"
+    );
+    expect(firstSynthesis.messages[1]!.content).not.toContain(
+      "Do not request more research"
+    );
+    const finalSynthesis = bodyAt<{ messages: Array<{ content: string }> }>(successRequest, 3);
+    expect(finalSynthesis.messages[1]!.content).toContain(
+      "You have already used the allowed follow-up search. Do not request more research."
+    );
 
     const repeated = vi
       .fn()

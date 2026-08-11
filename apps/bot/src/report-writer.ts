@@ -527,7 +527,8 @@ function compactResearch(materials: ResearchMaterial[]): string {
 function synthesisPrompt(
   draft: ReportDraft,
   plan: ResearchPlan,
-  materials: ResearchMaterial[]
+  materials: ResearchMaterial[],
+  followUpUsed = false
 ): string {
   return [
     "## Task",
@@ -543,7 +544,9 @@ function synthesisPrompt(
     compactResearch(materials),
     "## Writing",
     initialWriterPrompt(),
-    "Use the supplied research to confirm or replace the provisional law reference. If the research is genuinely missing a fact you need, request exactly one sanitized term or law follow-up search instead of guessing."
+    followUpUsed
+      ? "You have already used the allowed follow-up search. Do not request more research. Complete the report now using the best available law reference from the supplied research and the provisional reference."
+      : "Use the supplied research to confirm or replace the provisional law reference. Prefer completing the report with the material you already have. You may request at most one sanitized term or law follow-up search; this is your only research opportunity and you cannot request more research after it."
   ].join("\n");
 }
 
@@ -625,6 +628,7 @@ export function initialWriterPrompt(): string {
     "Write a report that comfortably fits within 512 characters.",
     "Do not count characters step by step or spend time optimizing the exact character count.",
     "Examine the evidence for every reason the content is inappropriate; you may quote only the relevant parts of the message and read them in the strongest applicable sense.",
+    "When the content uses slang, abbreviations, or coded wording, briefly explain what the wording means, then connect that meaning to the law and why it breaks it.",
     "Write with certainty: state that the content violates the named law provision and Discord's Community Guidelines.",
     "Do not use hedging words such as \"may\", \"might\", or \"appears to\".",
     "Lead with the reported content or conduct, quote the decisive wording where useful, and name the country, the full law title, and the article or section.",
@@ -802,8 +806,10 @@ export class ReportWriter {
       reportReason: plan.reportReason,
       reportType: reportReasonLabel(draft.flow, plan.reportType)
     });
-    let completion = await this.synthesize(draft, plan, materials, deadline, actor);
+    let completion = await this.synthesize(draft, plan, materials, deadline, actor, false);
+    let followUpUsed = false;
     if (completion.status === "more_research_required") {
+      followUpUsed = true;
       try {
         const query = validateResearchQuery(completion.followUpQuery, draft);
         materials.push(
@@ -825,7 +831,7 @@ export class ReportWriter {
           followUpType: completion.followUpType
         });
       }
-      completion = await this.synthesize(draft, plan, materials, deadline, actor);
+      completion = await this.synthesize(draft, plan, materials, deadline, actor, true);
       if (completion.status === "more_research_required") {
         throw new ReportWriterError(
           "The AI requested more research after the allowed follow-up. Retry or edit manually."
@@ -844,7 +850,7 @@ export class ReportWriter {
       researchedAt: new Date().toISOString(),
       searchRequests
     };
-    const context = synthesisPrompt(draft, plan, materials);
+    const context = synthesisPrompt(draft, plan, materials, followUpUsed);
     const conversation: WriterConversationMessage[] = [
       { role: "user", content: context },
       { role: "assistant", content: JSON.stringify({ report: completion.report }) }
@@ -952,11 +958,12 @@ export class ReportWriter {
     plan: ResearchPlan,
     materials: ResearchMaterial[],
     deadline: number,
-    actor: AiRequestContext
+    actor: AiRequestContext,
+    followUpUsed: boolean
   ): Promise<SynthesisCompletion> {
     const responseFormat = synthesisResponseFormat();
     const reasoningRequired = materials.length > 0;
-    const prompt = synthesisPrompt(draft, plan, materials);
+    const prompt = synthesisPrompt(draft, plan, materials, followUpUsed);
     let content: string;
     try {
       content = await this.completeFireworks(

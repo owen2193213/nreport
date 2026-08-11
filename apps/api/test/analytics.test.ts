@@ -36,6 +36,20 @@ describe("analytics rules", () => {
     ])).toBe("appeal_actioned");
   });
 
+  it("does not classify an action without an earlier closure as appeal actioned", () => {
+    expect(classifyCaseOutcome([
+      { type: "review_requested", discordStatus: null },
+      { type: "discord_status_updated", discordStatus: "actioned" }
+    ])).toBe("direct_actioned");
+  });
+
+  it("does not let an out-of-order review request rewrite a direct action", () => {
+    expect(classifyCaseOutcome([
+      { type: "discord_status_updated", discordStatus: "actioned" },
+      { type: "review_requested", discordStatus: null }
+    ])).toBe("direct_actioned");
+  });
+
   it("does not turn an empty denominator into zero percent", () => {
     expect(rateMetric(0, 0)).toEqual({ numerator: 0, denominator: 0, percentage: null });
   });
@@ -48,11 +62,22 @@ describe("analytics rules", () => {
     });
   });
 
+  it("uses the mean of both middle duration samples", () => {
+    expect(durationMetric([10, 20])).toMatchObject({ medianSeconds: 15 });
+  });
+
   it("suppresses a community bucket represented by too few users", () => {
     expect(suppressCommunityBreakdown([
       { key: "message_urf", label: "Message", reportCount: 8, userCount: 5 },
       { key: "guild_urf", label: "Server", reportCount: 2, userCount: 2 }
     ])).toEqual([{ key: "message_urf", label: "Message", count: 8, percentage: 100 }]);
+  });
+
+  it("keeps a community bucket at the three-report and three-user boundary", () => {
+    expect(suppressCommunityBreakdown([
+      { key: "message_urf", label: "Message", reportCount: 3, userCount: 3 },
+      { key: "guild_urf", label: "Server", reportCount: 2, userCount: 3 }
+    ])).toEqual([{ key: "message_urf", label: "Message", count: 3, percentage: 100 }]);
   });
 
   it("removes links, snowflakes, mentions, and rare phrases", () => {
@@ -72,6 +97,13 @@ describe("analytics rules", () => {
     expect(sanitizePatternText("The !!! user@example.test 42 repeated threats")).toEqual([
       "repeated",
       "threats"
+    ]);
+  });
+
+  it("removes bare-domain and non-HTTP URLs without removing ordinary words", () => {
+    expect(sanitizePatternText("ordinary www.example.test/path ftp://files.example.test/item harmless")).toEqual([
+      "ordinary",
+      "harmless"
     ]);
   });
 

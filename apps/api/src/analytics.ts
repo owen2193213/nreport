@@ -61,15 +61,32 @@ export function resolveAnalyticsInterval(period: AnalyticsPeriod, now = new Date
 }
 
 export function classifyCaseOutcome(events: readonly AnalyticsEvent[]): CaseOutcome {
-  const reviewRequested = events.some((event) => event.type === "review_requested");
   const statuses = events
     .filter((event) => event.type === "discord_status_updated")
     .map((event) => event.discordStatus);
   const finalStatus = statuses.at(-1);
+  let closedBeforeReview = false;
+  let reviewAfterClosure = false;
+  let appealActioned = false;
 
-  if (finalStatus === "actioned") return reviewRequested ? "appeal_actioned" : "direct_actioned";
+  for (const event of events) {
+    if (event.type === "discord_status_updated" && event.discordStatus === "closed_no_action") {
+      closedBeforeReview = true;
+    } else if (event.type === "review_requested" && closedBeforeReview) {
+      reviewAfterClosure = true;
+    } else if (
+      event.type === "discord_status_updated" &&
+      event.discordStatus === "actioned" &&
+      reviewAfterClosure
+    ) {
+      appealActioned = true;
+    }
+  }
+
+  if (appealActioned) return "appeal_actioned";
+  if (finalStatus === "actioned") return "direct_actioned";
   if (finalStatus === "review_not_approved") return "appeal_denied";
-  if (reviewRequested) return "appeal_pending";
+  if (reviewAfterClosure) return "appeal_pending";
   if (finalStatus === "closed_no_action") return "closed_no_action";
   return finalStatus === "received" ? "awaiting_decision" : "awaiting_response";
 }
@@ -85,19 +102,20 @@ export function rateMetric(numerator: number, denominator: number): RateMetric {
 export function durationMetric(seconds: readonly number[]): DurationMetric {
   if (seconds.length === 0) return { sampleSize: 0, medianSeconds: null, p90Seconds: null };
   const sorted = [...seconds].sort((left, right) => left - right);
-  const medianIndex = Math.floor((sorted.length - 1) / 2);
+  const lowerMedianIndex = Math.floor((sorted.length - 1) / 2);
+  const upperMedianIndex = Math.ceil((sorted.length - 1) / 2);
   const p90Index = Math.ceil(sorted.length * 0.9) - 1;
 
   return {
     sampleSize: sorted.length,
-    medianSeconds: sorted[medianIndex] ?? null,
+    medianSeconds: ((sorted[lowerMedianIndex] ?? 0) + (sorted[upperMedianIndex] ?? 0)) / 2,
     p90Seconds: sorted[p90Index] ?? null
   };
 }
 
 export function sanitizePatternText(value: string): string[] {
   const withoutSensitiveValues = value
-    .replace(/https?:\/\/\S+/giu, " ")
+    .replace(/\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)\S+/giu, " ")
     .replace(/\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b/giu, " ")
     .replace(/<@!?\d+>|<@&\d+>|<#\d+>/gu, " ")
     .replace(/\b\d{15,22}\b/gu, " ")
@@ -149,7 +167,7 @@ export function recurringPatterns(
 }
 
 export function suppressCommunityBreakdown(rows: readonly RawBreakdown[]): AnalyticsBreakdownItem[] {
-  const visible = rows.filter((row) => row.reportCount >= 5 && row.userCount >= 3);
+  const visible = rows.filter((row) => row.reportCount >= 3 && row.userCount >= 3);
   const denominator = visible.reduce((total, row) => total + row.reportCount, 0);
 
   return visible.map((row) => ({

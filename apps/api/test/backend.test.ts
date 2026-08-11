@@ -783,6 +783,92 @@ describe("manual appeal retry API", () => {
   });
 });
 
+describe("analytics API", () => {
+  const config: AppConfig = {
+    apiKey: "a".repeat(32),
+    databaseUrl: "postgres://unused",
+    emailDomain: "reports.example.org",
+    environment: "test",
+    port: 3000,
+    proxyUrlTemplate: "http://proxy.example/{country}/{session}",
+    sessionEncryptionKey: Buffer.alloc(32, 7),
+    webhookSecret: "w".repeat(32),
+    workerEnabled: false
+  };
+  const available = {
+    availability: "available",
+    scope: "personal",
+    interval: {
+      period: "7d",
+      startAt: "2026-08-04T00:00:00.000Z",
+      endAt: "2026-08-11T00:00:00.000Z",
+      asOf: "2026-08-11T00:00:00.000Z",
+      timezone: "UTC"
+    }
+  };
+
+  it("serves authenticated personal analytics and owner-scoped action history", async () => {
+    const reportAnalytics = vi.fn().mockResolvedValue(available);
+    const actionHistory = vi.fn().mockResolvedValue({
+      interval: available.interval,
+      items: [],
+      nextCursor: null
+    });
+    const database = { reportAnalytics, actionHistory } as unknown as Database;
+    const server = await buildServer(config, database);
+    const headers = { authorization: `Bearer ${config.apiKey}` };
+
+    const analytics = await server.inject({
+      method: "GET",
+      url: "/v1/users/1197857362942378017/analytics?period=7d",
+      headers
+    });
+    const history = await server.inject({
+      method: "GET",
+      url: "/v1/users/1197857362942378017/action-history?period=7d&limit=10",
+      headers
+    });
+    await server.close();
+
+    expect(analytics.statusCode).toBe(200);
+    expect(history.statusCode).toBe(200);
+    expect(reportAnalytics).toHaveBeenCalledWith("1197857362942378017", "7d");
+    expect(actionHistory).toHaveBeenCalledWith(expect.objectContaining({
+      discordUserId: "1197857362942378017",
+      limit: 10,
+      after: null
+    }));
+  });
+
+  it.each([
+    "/v1/users/not-a-snowflake/action-history?period=7d",
+    "/v1/users/1197857362942378017/analytics?period=quarter",
+    "/v1/users/1197857362942378017/action-history?startAt=2026-08-01T00%3A00%3A00.000Z",
+    "/v1/users/1197857362942378017/action-history?startAt=2026-08-02T00%3A00%3A00.000Z&endAt=2026-08-01T00%3A00%3A00.000Z",
+    "/v1/users/1197857362942378017/action-history?period=7d&after=invalid",
+    "/v1/users/1197857362942378017/action-history?period=7d&limit=26"
+  ])("rejects an invalid analytics query without database work: %s", async (url) => {
+    const reportAnalytics = vi.fn();
+    const actionHistory = vi.fn();
+    const database = { reportAnalytics, actionHistory } as unknown as Database;
+    const server = await buildServer(config, database);
+
+    const response = await server.inject({
+      method: "GET",
+      url,
+      headers: { authorization: `Bearer ${config.apiKey}` }
+    });
+    await server.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: { code: "invalid_analytics_query", message: "Invalid analytics query." }
+    });
+    expect(reportAnalytics).not.toHaveBeenCalled();
+    expect(actionHistory).not.toHaveBeenCalled();
+  });
+});
+
 describe("backend secrets and inbound email", () => {
   it("suppresses duplicate and out-of-order Discord status updates", () => {
     expect(shouldApplyDiscordStatus(null, "received")).toBe(true);

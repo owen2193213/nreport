@@ -514,6 +514,39 @@ The actual objects contain every `ReportSummary` field. Fetch the selected repor
 `ReportDetail` from `GET /v1/reports/{internalReportId}` before rendering it. A normal user-facing command must
 always substitute `interaction.user.id`; never accept an arbitrary user ID option.
 
+### Analytics and Action History
+
+All analytics endpoints require the normal bearer token. The bot must additionally ensure that a
+personal request uses `interaction.user.id`; service authentication alone is not user
+authorization.
+
+```text
+GET /v1/users/{discordUserId}/analytics?period=7d
+GET /v1/analytics/community?period=30d
+GET /v1/users/{discordUserId}/action-history?period=7d&after=&limit=10
+```
+
+Analytics periods are `24h`, `7d`, `30d`, `ytd`, `365d`, and `all`. Responses use UTC and return
+the exact `startAt`, `endAt`, and `asOf` boundaries. A new case is a root report created in the
+interval; retries remain part of that case, while attempt reliability counts every attempt created
+in the interval. Outcomes are based on ordered lifecycle events, so an Actioned result after a
+closed-without-action decision and review request is reported separately as appeal Actioned.
+
+Community responses are anonymized in the API before crossing the service boundary. The overall
+cohort requires at least 10 reports from 5 users. Each categorical bucket requires 3 reports from
+3 users, and each recurring phrase requires 5 reports from 3 users. When the overall threshold is
+not met, `availability` is `insufficient_community_data` and all metrics are withheld.
+
+Action History is always submitter-scoped and includes only reports whose current Discord status is
+Actioned. It returns the submitted explanation and, for message reports, the submitted message URL;
+the service does not retain a separate copy of the original message. Pages are ordered newest first
+by action time and report ID. `nextCursor` is opaque and must be returned unchanged as `after`.
+Limits are 1–25. Supplying both UTC `startAt` and `endAt` gives a custom interval; otherwise the
+period defaults to `7d`.
+
+Invalid periods, ranges, cursors, IDs, or limits return HTTP 400 with
+`error.code = "invalid_analytics_query"`.
+
 ### `GET /v1/report-events`
 
 Returns up to 100 externally meaningful lifecycle events after a numeric event cursor.

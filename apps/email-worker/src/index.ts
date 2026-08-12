@@ -25,6 +25,26 @@ async function hmac(secret: string, value: string): Promise<string> {
   return hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
 }
 
+async function diagnosticResponse(response: Response, sensitiveValues: string[]) {
+  const text = await response.clone().text();
+  const bounded = text.slice(0, 16_384);
+  const redact = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      let safe = value;
+      for (const sensitive of sensitiveValues) safe = safe.replaceAll(sensitive, "[redacted]");
+      return safe.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[redacted-email]");
+    }
+    return value;
+  };
+  const requestId = response.headers.get("x-request-id") ?? response.headers.get("request-id");
+  return {
+    ...(requestId ? { requestId } : {}),
+    contentType: response.headers.get("content-type"),
+    body: redact(bounded),
+    bodyTruncated: text.length > 16_384
+  };
+}
+
 function isDiscordEnvelopeSender(address: string): boolean {
   const separator = address.lastIndexOf("@");
   if (separator <= 0) return false;
@@ -84,10 +104,13 @@ export default {
         body: rawEmail
       });
       if (!response.ok) {
+        const diagnostic = await diagnosticResponse(response, [recipient, messageId]);
         console.error(JSON.stringify({
           event: "email_forward_failed",
           messageIdDigest,
-          httpStatus: response.status
+          httpStatus: response.status,
+          response: diagnostic,
+          ...(diagnostic.requestId ? { requestId: diagnostic.requestId } : {})
         }));
         throw new Error(`Railway email ingestion returned HTTP ${response.status}.`);
       }

@@ -413,6 +413,14 @@ CREATE INDEX IF NOT EXISTS report_events_type_created_idx
 CREATE INDEX IF NOT EXISTS reports_email_status_idx ON reports(reporter_email, status);
 CREATE INDEX IF NOT EXISTS reports_submitter_idx
   ON reports(submitter_discord_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS reports_message_author_id_idx
+  ON reports ((input #>> '{messageEvidence,snapshot,authorId}'))
+  WHERE flow = 'message_urf'
+    AND input #>> '{messageEvidence,status}' = 'captured';
+CREATE INDEX IF NOT EXISTS reports_message_id_idx
+  ON reports ((input #>> '{messageEvidence,snapshot,messageId}'))
+  WHERE flow = 'message_urf'
+    AND input #>> '{messageEvidence,status}' = 'captured';
 CREATE INDEX IF NOT EXISTS reports_verification_deadline_idx
   ON reports(verification_deadline) WHERE status = 'awaiting_verification';
 CREATE INDEX IF NOT EXISTS reports_receipt_deadline_idx

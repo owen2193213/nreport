@@ -612,7 +612,7 @@ describe("Fireworks and Brave report writer", () => {
       ...draft(),
       flow: "message_urf",
       messageUrl: "https://discord.com/channels/1/2/3",
-      messageSnapshot: {
+      messageEvidence: { source: "context_menu", status: "captured", capturedAt: "2026-08-09T00:00:01.000Z", snapshot: {
         messageId: "333333333333333333",
         channelId: "222222222222222222",
         channelName: "channel",
@@ -621,6 +621,7 @@ describe("Fireworks and Brave report writer", () => {
         authorId: "123456789012345678",
         authorUsername: "example",
         authorDisplayName: null,
+        authorAvatarUrl: null,
         authorBot: false,
         content: "coded term",
         createdAt: "2026-08-09T00:00:00.000Z",
@@ -628,11 +629,13 @@ describe("Fireworks and Brave report writer", () => {
           {
             name: "evidence.png",
             url: "https://cdn.discordapp.com/private-evidence.png",
-            contentType: "image/png"
+            contentType: "image/png",
+            size: 10,
+            spoiler: false
           }
         ],
         embeds: []
-      }
+      } }
     };
     const request = vi
       .fn()

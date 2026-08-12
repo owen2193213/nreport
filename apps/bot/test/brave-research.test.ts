@@ -20,7 +20,7 @@ function draft(): ReportDraft {
     reportedUsername: "SensitiveUser",
     guildIdOrInviteCode: "private-invite",
     messageUrl: "https://discord.com/channels/111/222/333",
-    messageSnapshot: {
+    messageEvidence: { source: "context_menu", status: "captured", capturedAt: "2026-08-09T00:00:01.000Z", snapshot: {
       messageId: "333333333333333333",
       channelId: "222222222222222222",
       channelName: "private-channel",
@@ -29,6 +29,7 @@ function draft(): ReportDraft {
       authorId: "123456789012345678",
       authorUsername: "SensitiveUser",
       authorDisplayName: "Sensitive Display",
+      authorAvatarUrl: null,
       authorBot: false,
       content: "coded term",
       createdAt: "2026-08-09T00:00:00.000Z",
@@ -36,11 +37,13 @@ function draft(): ReportDraft {
         {
           name: "evidence.txt",
           url: "https://cdn.discordapp.com/attachments/private/evidence.txt",
-          contentType: "text/plain"
+          contentType: "text/plain",
+          size: 10,
+          spoiler: false
         }
       ],
       embeds: []
-    }
+    } }
   };
 }
 

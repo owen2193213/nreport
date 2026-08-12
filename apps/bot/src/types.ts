@@ -3,6 +3,7 @@ import type {
   DiscordReportStatus,
   GuildElement,
   MessageEvidence,
+  ReportedMessageSnapshot,
   ReportedUserSnapshot,
   ReportFlow,
   ReportStatus,
@@ -48,6 +49,14 @@ export interface ReportDraft {
   };
   serverSnapshot?: ServerSnapshot;
 }
+
+export function capturedMessageSnapshot(
+  evidence: MessageEvidence | undefined
+): ReportedMessageSnapshot | undefined {
+  return evidence?.status === "captured" ? evidence.snapshot : undefined;
+}
+
+export type MessageSnapshot = ReportedMessageSnapshot;
 
 export interface AiDecisionSummary {
   action: "Generated" | "Refined" | "Regenerated" | "Rewritten";

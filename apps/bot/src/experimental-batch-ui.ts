@@ -2,13 +2,13 @@ import { Colors, EmbedBuilder } from "discord.js";
 import type {
   DiscordReportStatus,
   DiscordReviewStatus,
+  ReportedMessageSnapshot,
   ReportStatus
 } from "@discord-dsa/contracts";
 
 import type {
   ExperimentalBatchItemState,
-  ExperimentalBatchMode,
-  MessageSnapshot
+  ExperimentalBatchMode
 } from "./types.js";
 
 export interface ExperimentalOutcomeInput {
@@ -93,7 +93,7 @@ export function experimentalLatestOutcome(item: ExperimentalOutcomeInput): strin
   return STATE_LABELS[item.state];
 }
 
-export function experimentalReportedMessage(snapshot: MessageSnapshot): string {
+export function experimentalReportedMessage(snapshot: ReportedMessageSnapshot): string {
   const content = snapshot.content.replace(/\r\n?/g, "\n").trim();
   if (content) return truncate(content, 500);
   const attachmentLabel = snapshot.attachments.length === 1 ? "attachment" : "attachments";

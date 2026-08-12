@@ -56,10 +56,17 @@ export function unavailableMessageEvidence(
   return { source: "message_link", status: "unavailable", attemptedAt };
 }
 
+export function resolvedMessageEvidence(
+  snapshot: ReportedMessageSnapshot,
+  capturedAt = new Date().toISOString()
+): CapturedMessageEvidence {
+  return { source: "message_link", status: "captured", capturedAt, snapshot };
+}
+
 export class MessageResolver {
   public constructor(private readonly client: Client) {}
 
-  public async resolve(messageUrl: string): Promise<MessageSnapshot | null> {
+  public async resolve(messageUrl: string): Promise<ReportedMessageSnapshot | null> {
     const match = messageUrl.match(MESSAGE_URL);
     const channelId = match?.[1];
     const messageId = match?.[2];

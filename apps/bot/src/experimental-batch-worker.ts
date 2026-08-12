@@ -356,8 +356,8 @@ export class ExperimentalBatchWorker {
         first.encrypted_draft,
         this.config.dataEncryptionKey
       );
-      if (draft.messageSnapshot) {
-        reportedMessage = experimentalReportedMessage(draft.messageSnapshot);
+      if (draft.messageEvidence?.status === "captured") {
+        reportedMessage = experimentalReportedMessage(draft.messageEvidence.snapshot);
       }
     } catch {
       reportedMessage = null;

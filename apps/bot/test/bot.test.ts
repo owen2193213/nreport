@@ -604,6 +604,11 @@ describe("report UI", () => {
           reportType: "sub_other_hate_speech",
           messageUrl:
             "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+          messageEvidence: {
+            source: "message_link",
+            status: "unavailable",
+            attemptedAt: "2026-07-20T00:00:00.000Z"
+          },
           context: "[Basic Law Article 1] The message contains unlawful hate speech.",
           legalResearch: {
             country: "DE",
@@ -622,6 +627,11 @@ describe("report UI", () => {
       reportType: "sub_other_hate_speech",
       submitterDiscordUserId: "1197857362942378017",
       messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+      messageEvidence: {
+        source: "message_link",
+        status: "unavailable",
+        attemptedAt: "2026-07-20T00:00:00.000Z"
+      },
       context: "[Basic Law Article 1] The message contains unlawful hate speech."
     });
   });

@@ -16,12 +16,13 @@ import {
   type FireworksStage
 } from "./fireworks-client.js";
 import { botLog } from "./observability.js";
-import type {
-  AiUsage,
-  LegalResearch,
-  LegalSource,
-  ReportDraft,
-  WriterConversationMessage
+import {
+  capturedMessageSnapshot,
+  type AiUsage,
+  type LegalResearch,
+  type LegalSource,
+  type ReportDraft,
+  type WriterConversationMessage
 } from "./types.js";
 
 export type { AiRequestContext } from "./fireworks-client.js";
@@ -201,7 +202,7 @@ function targetEvidence(draft: ReportDraft): Record<string, unknown> {
         : undefined
     };
   }
-  const snapshot = draft.messageSnapshot;
+  const snapshot = capturedMessageSnapshot(draft.messageEvidence);
   return {
     kind: "message",
     messageUrl: draft.messageUrl,
@@ -1145,7 +1146,7 @@ export class ReportWriter {
     botLog("ai_workflow_started", {
       action,
       actorKey: actor.actorKey,
-      attachmentCount: draft.messageSnapshot?.attachments.length ?? 0,
+      attachmentCount: capturedMessageSnapshot(draft.messageEvidence)?.attachments.length ?? 0,
       country: draft.country ?? null,
       countryMode: countryMode(draft),
       evidenceLength: JSON.stringify(targetEvidence(draft)).length,

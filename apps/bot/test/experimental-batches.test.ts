@@ -549,6 +549,7 @@ describe("experimental report batch aggregate card", () => {
       authorId: "author-1",
       authorUsername: "author",
       authorDisplayName: "Author",
+      authorAvatarUrl: null,
       authorBot: false,
       content: `  Original targeted content\r\n${"x".repeat(600)}  `,
       createdAt: "2026-08-09T00:00:00.000Z",
@@ -563,8 +564,8 @@ describe("experimental report batch aggregate card", () => {
       ...snapshot,
       content: "",
       attachments: [
-        { name: "one", url: "https://example.invalid/one", contentType: null },
-        { name: "two", url: "https://example.invalid/two", contentType: null }
+        { name: "one", url: "https://example.invalid/one", contentType: null, size: 1, spoiler: false },
+        { name: "two", url: "https://example.invalid/two", contentType: null, size: 2, spoiler: false }
       ],
       embeds: [{ title: null, description: null, url: null }]
     })).toBe("No text content · 2 attachments · 1 embed");
@@ -895,6 +896,7 @@ describe("experimental report batch worker", () => {
       authorId: "author-1",
       authorUsername: "author",
       authorDisplayName: "Author",
+      authorAvatarUrl: null,
       authorBot: false,
       content: "Original targeted content",
       createdAt: "2026-08-09T00:00:00.000Z",
@@ -903,7 +905,15 @@ describe("experimental report batch worker", () => {
     };
     const item = workItem({
       preparation_attempts: 1,
-      encrypted_draft: encryptJson({ ...draft, messageSnapshot }, encryptionKey)
+      encrypted_draft: encryptJson({
+        ...draft,
+        messageEvidence: {
+          source: "context_menu",
+          status: "captured",
+          capturedAt: "2026-08-09T00:00:01.000Z",
+          snapshot: messageSnapshot
+        }
+      }, encryptionKey)
     });
     const savedRow = {
       ...item,

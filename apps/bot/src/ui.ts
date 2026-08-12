@@ -829,7 +829,12 @@ export function draftToCreateInput(draft: ReportDraft, userId: string): CreateRe
   switch (draft.flow) {
     case "message_urf":
       if (!draft.messageUrl) throw new Error("A message link is required.");
-      return { ...common, flow: draft.flow, messageUrl: draft.messageUrl };
+      return {
+        ...common,
+        flow: draft.flow,
+        messageUrl: draft.messageUrl,
+        ...(draft.messageEvidence === undefined ? {} : { messageEvidence: draft.messageEvidence })
+      };
     case "user_urf":
       if (
         !draft.reportedUsername ||

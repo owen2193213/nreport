@@ -1,7 +1,7 @@
 import { botLog } from "./observability.js";
 import { readDiagnosticResponse } from "@discord-dsa/contracts";
 import type { AiRequestContext } from "./fireworks-client.js";
-import type { ReportDraft } from "./types.js";
+import { capturedMessageSnapshot, type ReportDraft } from "./types.js";
 
 const BRAVE_WEB_URL = "https://api.search.brave.com/res/v1/web/search";
 const BRAVE_LLM_CONTEXT_URL = "https://api.search.brave.com/res/v1/llm/context";
@@ -104,7 +104,7 @@ function normalizedQuery(value: string): string {
 }
 
 function sensitiveDraftValues(draft: ReportDraft): string[] {
-  const snapshot = draft.messageSnapshot;
+  const snapshot = capturedMessageSnapshot(draft.messageEvidence);
   return [
     draft.reportedUserId,
     draft.reportedUsername,

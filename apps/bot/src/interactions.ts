@@ -43,7 +43,11 @@ import { decryptJson, encryptJson, generateAccessKey, hashAccessKey } from "./cr
 import { AccessError } from "./database.js";
 import type { BotDatabase } from "./database.js";
 import { experimentalBatchDefinitions } from "./experimental-batches.js";
-import { snapshotMessage } from "./message-resolver.js";
+import {
+  capturedMessageEvidence,
+  resolvedMessageEvidence,
+  unavailableMessageEvidence
+} from "./message-resolver.js";
 import type { MessageResolver } from "./message-resolver.js";
 import { botLog, errorFields, pseudonymousActorKey } from "./observability.js";
 import {
@@ -717,7 +721,7 @@ export class InteractionHandler {
     await this.startDraft(interaction, {
       flow: "message_urf",
       messageUrl: interaction.targetMessage.url,
-      messageSnapshot: snapshotMessage(interaction.targetMessage)
+      messageEvidence: capturedMessageEvidence(interaction.targetMessage, "context_menu")
     });
   }
 
@@ -731,7 +735,7 @@ export class InteractionHandler {
     const draft: ReportDraft = {
       flow: "message_urf",
       messageUrl: interaction.targetMessage.url,
-      messageSnapshot: snapshotMessage(interaction.targetMessage),
+      messageEvidence: capturedMessageEvidence(interaction.targetMessage, "context_menu"),
       sendToDms: false
     };
     this.applyDraftDefaults(draft, access.defaultCountry);
@@ -780,7 +784,7 @@ export class InteractionHandler {
     const draft: ReportDraft = {
       flow: "message_urf",
       messageUrl: interaction.targetMessage.url,
-      messageSnapshot: snapshotMessage(interaction.targetMessage),
+      messageEvidence: capturedMessageEvidence(interaction.targetMessage, "context_menu"),
       sendToDms: true
     };
     this.applyDraftDefaults(draft, access.defaultCountry);
@@ -1345,7 +1349,12 @@ export class InteractionHandler {
         resubmitOfReportId: report.internalReportId,
         sendToDms: true,
         ...(details.kind === "message"
-          ? { messageUrl: details.messageUrl }
+          ? {
+              messageUrl: details.messageUrl,
+              ...(details.messageEvidence === undefined
+                ? {}
+                : { messageEvidence: details.messageEvidence })
+            }
           : details.kind === "profile"
             ? {
                 reportedUsername: details.reportedUsername,
@@ -1365,9 +1374,11 @@ export class InteractionHandler {
                 guildElements: details.guildElements
               })
       };
-      if (draft.flow === "message_urf" && draft.messageUrl) {
+      if (draft.flow === "message_urf" && draft.messageUrl && !draft.messageEvidence) {
         const snapshot = await this.messageResolver.resolve(draft.messageUrl);
-        if (snapshot) draft.messageSnapshot = snapshot;
+        draft.messageEvidence = snapshot
+          ? resolvedMessageEvidence(snapshot)
+          : unavailableMessageEvidence();
       }
       if (draft.flow === "guild_urf" && draft.guildIdOrInviteCode) {
         const stored = await this.database.serverSnapshot(
@@ -1558,9 +1569,11 @@ export class InteractionHandler {
       await this.deliverReview(interaction, draftId, draft);
       return;
     }
-    if (draft.flow === "message_urf" && draft.messageUrl && !draft.messageSnapshot) {
+    if (draft.flow === "message_urf" && draft.messageUrl && !draft.messageEvidence) {
       const snapshot = await this.messageResolver.resolve(draft.messageUrl);
-      if (snapshot) draft.messageSnapshot = snapshot;
+      draft.messageEvidence = snapshot
+        ? resolvedMessageEvidence(snapshot)
+        : unavailableMessageEvidence();
     }
     if (draft.flow === "guild_urf") {
       if (draft.guildIdOrInviteCode) {

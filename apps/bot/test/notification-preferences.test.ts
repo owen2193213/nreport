@@ -91,8 +91,10 @@ describe("notification preferences", () => {
     expect(query.mock.calls[1]?.[1]).toEqual(["user-1", false]);
   });
 
-  it("suppresses a disabled category before any Discord or report fetch", async () => {
+  it("reloads a disabled category before any Discord or report fetch", async () => {
     const completeNotification = vi.fn().mockResolvedValue(undefined);
+    const getNotificationPreferences = vi.fn().mockResolvedValue(preferences);
+    const claimedPreferences = { ...preferences, actioned: true };
     const database = {
       claimDueTrackings: vi.fn().mockResolvedValue([]),
       reconciliationCursor: vi.fn().mockResolvedValue("0"),
@@ -108,9 +110,11 @@ describe("notification preferences", () => {
           occurredAt: "2026-08-11T00:00:00.000Z"
         },
         attempts: 1,
-        preferences
+        preferences: claimedPreferences
       }]),
-      completeNotification
+      getNotificationPreferences,
+      completeNotification,
+      failNotification: vi.fn().mockResolvedValue(undefined)
     } as unknown as BotDatabase;
     const report = vi.fn();
     const fetch = vi.fn();
@@ -124,6 +128,7 @@ describe("notification preferences", () => {
 
     await worker.tick();
 
+    expect(getNotificationPreferences).toHaveBeenCalledWith("1197857362942378017");
     expect(completeNotification).toHaveBeenCalledWith("41");
     expect(report).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();

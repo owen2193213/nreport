@@ -4,10 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { Interaction } from "discord.js";
 import type { DsaApi } from "@discord-dsa/contracts";
 
-import { renderAnalyticsChart } from "../src/analytics-charts.js";
+import { chartValues, renderAnalyticsChart } from "../src/analytics-charts.js";
 import {
   actionHistoryModal,
-  analyticsComponents,
+  actionHistoryView,
   analyticsView,
   analyticsViewWithChart
 } from "../src/analytics-ui.js";
@@ -48,15 +48,34 @@ describe("analytics dashboard", () => {
     expect(png.includes(Buffer.from("submitted explanation"))).toBe(false);
   });
 
+  it("keeps missing reply-time samples as chart gaps", () => {
+    const analytics = analyticsFixture({
+      series: [
+        { bucketStart: "2026-08-01T00:00:00.000Z", reportCount: 3, medianReplySeconds: 3_600 },
+        { bucketStart: "2026-08-02T00:00:00.000Z", reportCount: 2, medianReplySeconds: null },
+        { bucketStart: "2026-08-03T00:00:00.000Z", reportCount: 4, medianReplySeconds: 7_200 }
+      ]
+    });
+
+    expect(chartValues("reply_time", analytics)).toEqual([1, null, 2]);
+    expect(chartValues("volume", analytics)).toEqual([3, 2, 4]);
+  });
+
   it("labels Actioned results without claiming bans", () => {
     const text = JSON.stringify(analyticsView(analyticsFixture(), "overview"));
     expect(text).toContain("Actioned");
     expect(text.toLowerCase()).not.toContain("ban");
   });
 
-  it("keeps component state enum-only and provides the custom date modal", () => {
-    const text = JSON.stringify(analyticsComponents("history", "personal", "7d", "next-token"));
+  it("keeps component state enum-only without exposing pagination cursors", () => {
+    const page = {
+      interval: analyticsFixture().interval,
+      items: [],
+      nextCursor: "next-token"
+    };
+    const text = JSON.stringify(actionHistoryView(page, "7d"));
     expect(text).toContain("analytics:history:personal:7d");
+    expect(text).not.toContain("next-token");
     expect(text).not.toContain("1197857362942378017");
     expect(actionHistoryModal().toJSON()).toMatchObject({ custom_id: "analytics:history-range" });
   });
@@ -154,7 +173,7 @@ describe("analytics dashboard", () => {
 
     expect(actionHistory).toHaveBeenCalledWith("1197857362942378017", {
       period: "7d",
-      limit: 10
+      limit: 25
     });
     expect(editReply).toHaveBeenCalledWith(expect.objectContaining({
       allowedMentions: { parse: [] }
@@ -167,5 +186,39 @@ describe("analytics dashboard", () => {
       endAt: "2026-08-04T00:00:00.000Z"
     });
     expect(() => inclusiveAnalyticsRange("2026-08-03", "2026-08-01")).toThrow(/valid date range/);
+  });
+
+  it("keeps a custom Action History request within its submitted UTC range", async () => {
+    const actionHistory = vi.fn().mockResolvedValue({
+      interval: analyticsFixture().interval,
+      items: [],
+      nextCursor: "unused-cursor"
+    });
+    const interaction = {
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => true,
+      isStringSelectMenu: () => false,
+      isButton: () => false,
+      isRepliable: () => true,
+      customId: "analytics:history-range",
+      fields: {
+        getTextInputValue: (name: string) => name === "start_date" ? "2026-08-01" : "2026-08-03"
+      },
+      user: { id: "1197857362942378017" },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler({ actionHistory } as unknown as DsaApi).handle(interaction);
+
+    expect(actionHistory).toHaveBeenCalledWith("1197857362942378017", {
+      startAt: "2026-08-01T00:00:00.000Z",
+      endAt: "2026-08-04T00:00:00.000Z",
+      limit: 25
+    });
   });
 });

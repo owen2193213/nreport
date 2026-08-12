@@ -52,8 +52,8 @@ review and its confirmation controls are sent as an ordinary private bot DM.
 `/analytics` opens one ephemeral hub and defaults to the user's Personal results for the last seven
 days. The available periods are 24 hours, 7 days, 30 days, year to date, 365 days, and all time.
 The hub has four consolidated views: Overview, Trends, Outcomes, and Action History. Navigation is
-stateless; component IDs contain only approved view, scope, period, and opaque pagination values,
-never a user ID. Every personal API call derives ownership from `interaction.user.id`.
+stateless; component IDs contain only approved view, scope, and period values, never a user ID.
+Every personal API call derives ownership from `interaction.user.id`.
 
 Personal analytics distinguish new root cases from retry attempts and show submission reliability,
 Actioned and closed-without-action outcomes, appeal outcomes, and Discord response and decision
@@ -64,10 +64,11 @@ phrase. The bot never receives suppressed raw community rows.
 Action History is personal-only and shows the explanation the user submitted, plus the submitted
 message link for message reports. It does not claim to retain the original reported message.
 Users can filter it by the standard periods or enter inclusive `YYYY-MM-DD` dates; the bot converts
-the inclusive end date to the following UTC midnight and limits a range to 3,660 days. All charts
-are rendered locally as PNGs from numeric aggregates. If chart rendering fails, the same textual
-totals remain available. User-facing outcome language says “Actioned” or “Action taken,” never
-claims that Discord imposed a ban.
+the inclusive end date to the following UTC midnight, limits a range to 3,660 days, and shows up to
+25 results without pagination controls. All charts are rendered locally as PNGs from numeric
+aggregates. Missing reply-time samples are charted as gaps rather than zero-duration replies. If
+chart rendering fails, the same textual totals remain available. User-facing outcome language says
+“Actioned” or “Action taken,” never claims that Discord imposed a ban.
 
 ### Notification preferences
 
@@ -100,8 +101,10 @@ current frequency immediately before delivery, and retries temporary failures up
 Discord errors that mean the user cannot receive DMs end that job permanently. Digest messages
 contain aggregate metrics and locally rendered charts only—never submitted explanations, message
 links, recurring phrases, or Action History entries. If chart rendering fails, the textual totals
-are still delivered. Structured digest logs contain only safe job, frequency, result, and error
-classification fields.
+are still delivered. Delivery is at-least-once: if Discord accepts a DM but the process or database
+fails before the job is marked sent, the stale job can be retried and produce a duplicate. This
+narrow window is retained so a completion failure cannot silently discard an unsent digest.
+Structured digest logs contain only safe job, frequency, result, and error classification fields.
 
 ## Report lifecycle
 

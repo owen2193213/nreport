@@ -7,6 +7,16 @@ const WIDTH = 1_100;
 const HEIGHT = 420;
 const PAD = { left: 76, right: 38, top: 42, bottom: 64 };
 
+export function chartValues(
+  chart: AnalyticsChart,
+  analytics: ReportAnalytics
+): Array<number | null> {
+  return analytics.series.map((point) => {
+    if (chart === "volume") return point.reportCount;
+    return point.medianReplySeconds === null ? null : point.medianReplySeconds / 3_600;
+  });
+}
+
 export async function renderAnalyticsChart(
   chart: AnalyticsChart,
   analytics: ReportAnalytics
@@ -19,10 +29,9 @@ export async function renderAnalyticsChart(
   context.fillStyle = "#f2f3f5";
   context.fillText(chart === "volume" ? "Report volume" : "Discord reply time", PAD.left, 29);
 
-  const values = analytics.series.map((point) =>
-    chart === "volume" ? point.reportCount : (point.medianReplySeconds ?? 0) / 3_600
-  );
-  const maximum = Math.max(1, ...values);
+  const values = chartValues(chart, analytics);
+  const knownValues = values.filter((value): value is number => value !== null);
+  const maximum = Math.max(1, ...knownValues);
   const plotWidth = WIDTH - PAD.left - PAD.right;
   const plotHeight = HEIGHT - PAD.top - PAD.bottom;
   context.strokeStyle = "#4e5058";
@@ -37,7 +46,7 @@ export async function renderAnalyticsChart(
   context.fillStyle = "#b5bac1";
   context.fillText(chart === "volume" ? "Reports" : "Hours", 12, PAD.top + 10);
   context.fillText("UTC date", WIDTH - 112, HEIGHT - 18);
-  if (values.length === 0) {
+  if (knownValues.length === 0) {
     context.fillText("No data in this period", PAD.left + 20, PAD.top + plotHeight / 2);
     return canvas.encode("png");
   }
@@ -50,12 +59,20 @@ export async function renderAnalyticsChart(
   context.fillStyle = "#5865f2";
   context.lineWidth = 4;
   context.beginPath();
+  let drawing = false;
   values.forEach((value, index) => {
-    if (index === 0) context.moveTo(x(index), y(value));
-    else context.lineTo(x(index), y(value));
+    if (value === null) {
+      drawing = false;
+    } else if (drawing) {
+      context.lineTo(x(index), y(value));
+    } else {
+      context.moveTo(x(index), y(value));
+      drawing = true;
+    }
   });
   context.stroke();
   values.forEach((value, index) => {
+    if (value === null) return;
     context.beginPath();
     context.arc(x(index), y(value), 6, 0, Math.PI * 2);
     context.fill();

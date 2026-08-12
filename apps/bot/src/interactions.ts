@@ -1309,7 +1309,7 @@ export class InteractionHandler {
         interaction.fields.getTextInputValue("end_date").trim()
       );
       await interaction.deferReply({ flags: EPHEMERAL });
-      const page = await this.api.actionHistory(interaction.user.id, { ...range, limit: 10 });
+      const page = await this.api.actionHistory(interaction.user.id, { ...range, limit: 25 });
       await interaction.editReply({
         ...actionHistoryView(page, "7d"),
         allowedMentions: { parse: [] }
@@ -1737,8 +1737,7 @@ export class InteractionHandler {
       if (view === "history") {
         const page = await this.api.actionHistory(interaction.user.id, {
           period,
-          ...(parts[4] ? { after: parts[4] } : {}),
-          limit: 10
+          limit: 25
         });
         await interaction.editReply({
           ...actionHistoryView(page, period),

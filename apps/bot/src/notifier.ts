@@ -250,7 +250,8 @@ export class NotificationWorker {
           continue;
         }
         const category = notificationCategory(job.payload.eventType);
-        if (category === null || !allowsLifecycleNotification(job.payload.eventType, job.preferences)) {
+        const preferences = await this.database.getNotificationPreferences(job.discord_user_id);
+        if (category === null || !allowsLifecycleNotification(job.payload.eventType, preferences)) {
           await this.database.completeNotification(job.id);
           botLog("notification_send_suppressed", { notificationId: job.id, category });
           continue;

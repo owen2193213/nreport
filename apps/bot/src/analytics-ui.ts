@@ -48,8 +48,7 @@ function breakdown(items: ReportAnalytics["breakdowns"]["flows"]): string {
 export function analyticsComponents(
   view: AnalyticsView,
   scope: AnalyticsScope,
-  period: AnalyticsPeriod,
-  cursor?: string | null
+  period: AnalyticsPeriod
 ): ActionRowBuilder<MessageActionRowComponentBuilder>[] {
   const viewRow = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
     ...(["overview", "trends", "outcomes", "history"] as const).map((target) =>
@@ -77,16 +76,7 @@ export function analyticsComponents(
     new ButtonBuilder().setCustomId("analytics:history-range").setLabel("Custom history dates")
       .setStyle(ButtonStyle.Secondary)
   );
-  const rows = [viewRow, filterRow, scopeRow];
-  if (view === "history" && cursor) {
-    const customId = `analytics:history:${scope}:${period}:${cursor}`;
-    if (customId.length <= 100) {
-      rows.push(new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
-        new ButtonBuilder().setCustomId(customId).setLabel("Next page").setStyle(ButtonStyle.Secondary)
-      ));
-    }
-  }
-  return rows;
+  return [viewRow, filterRow, scopeRow];
 }
 
 export function analyticsView(
@@ -171,6 +161,6 @@ export function actionHistoryView(
     ].filter(Boolean).join("\n")).join("\n\n").slice(0, 4_000);
   return {
     embeds: [new EmbedBuilder().setColor(Colors.Green).setTitle("Your Action History").setDescription(description)],
-    components: analyticsComponents("history", "personal", period, page.nextCursor)
+    components: analyticsComponents("history", "personal", period)
   };
 }

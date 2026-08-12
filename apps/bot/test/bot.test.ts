@@ -1216,6 +1216,10 @@ describe("lifecycle notification deduplication", () => {
           }
         }
       ]),
+      getNotificationPreferences: vi.fn().mockResolvedValue({
+        submissionResults: true, actioned: true, declined: true,
+        appealProgress: true, digestFrequency: "weekly"
+      }),
       statusDmMessageId: vi.fn().mockResolvedValue("dm-message-1"),
       aiDecisions: vi.fn().mockResolvedValue([]),
       completeNotification
@@ -1277,6 +1281,10 @@ describe("lifecycle notification deduplication", () => {
           }
         }
       ]),
+      getNotificationPreferences: vi.fn().mockResolvedValue({
+        submissionResults: true, actioned: true, declined: true,
+        appealProgress: true, digestFrequency: "weekly"
+      }),
       statusDmMessageId: vi.fn().mockResolvedValue(null),
       aiDecisions: vi.fn().mockResolvedValue([]),
       saveStatusDmMessageId,

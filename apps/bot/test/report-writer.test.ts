@@ -1,12 +1,28 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { braveSearchCountry } from "../src/brave-research.js";
 import type { AiRequestContext } from "../src/report-writer.js";
 import { ReportWriter, ReportWriterError } from "../src/report-writer.js";
 import type { AiUsage, ReportDraft } from "../src/types.js";
 
-const COUNTRIES = ["AT", "DE", "FR"] as const;
+const COUNTRIES = ["AT", "DE", "FR", "IE"] as const;
 const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
 const LAW = "Germany's Basic Law (Grundgesetz), Article 1";
+const BRAVE_UNSUPPORTED_REPORT_COUNTRIES = [
+  "BG",
+  "HR",
+  "CY",
+  "CZ",
+  "HU",
+  "IE",
+  "LV",
+  "LT",
+  "LU",
+  "MT",
+  "RO",
+  "SK",
+  "SI"
+] as const;
 
 function draft(): ReportDraft {
   return {
@@ -148,6 +164,15 @@ function writer(
 function urlAt(request: ReturnType<typeof vi.fn>, index: number): string {
   return String(request.mock.calls[index]?.[0]);
 }
+
+describe("braveSearchCountry", () => {
+  it("uses ALL for every report country unsupported by Brave", () => {
+    expect(braveSearchCountry("DE")).toBe("DE");
+    for (const country of BRAVE_UNSUPPORTED_REPORT_COUNTRIES) {
+      expect(braveSearchCountry(country)).toBe("ALL");
+    }
+  });
+});
 
 function bodyAt<T>(request: ReturnType<typeof vi.fn>, index: number): T {
   const body = (request.mock.calls[index]?.[1] as RequestInit | undefined)?.body;
@@ -342,6 +367,25 @@ describe("Fireworks and Brave report writer", () => {
 
     expect(urlAt(request, 1)).toBe("https://api.search.brave.com/res/v1/llm/context");
     expect(result.legalResearch.sources[0]?.title).toBe("Basic Law Article 1");
+  });
+
+  it("uses ALL as Brave's legal-search target for Ireland", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        fireworks(
+          plan({
+            lawResearchRequired: true,
+            lawSearchQuery: "Ireland official laws on online threats"
+          })
+        )
+      )
+      .mockResolvedValueOnce(braveLaw())
+      .mockResolvedValueOnce(fireworks(completed()));
+
+    await writer(request).generate({ ...draft(), country: "IE" }, ACTOR);
+
+    expect(bodyAt<Record<string, unknown>>(request, 1).country).toBe("ALL");
   });
 
   it("starts terminology and law searches concurrently", async () => {

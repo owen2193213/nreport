@@ -11,6 +11,46 @@ const MAX_QUERY_WORDS = 50;
 const MAX_SOURCES = 3;
 const MAX_SNIPPETS_PER_SOURCE = 4;
 const MAX_SNIPPET_CHARACTERS = 1_200;
+const BRAVE_COUNTRIES = new Set([
+  "AR",
+  "AU",
+  "AT",
+  "BE",
+  "BR",
+  "CA",
+  "CL",
+  "DK",
+  "FI",
+  "FR",
+  "DE",
+  "GR",
+  "HK",
+  "IN",
+  "ID",
+  "IT",
+  "JP",
+  "KR",
+  "MY",
+  "MX",
+  "NL",
+  "NZ",
+  "NO",
+  "CN",
+  "PL",
+  "PT",
+  "PH",
+  "RU",
+  "SA",
+  "ZA",
+  "ES",
+  "SE",
+  "CH",
+  "TW",
+  "TR",
+  "GB",
+  "US",
+  "ALL"
+]);
 const OFFICIAL_LAW_GOGGLE = [
   "$boost=5,site=eur-lex.europa.eu",
   "$boost=5,site=e-justice.europa.eu",
@@ -18,6 +58,11 @@ const OFFICIAL_LAW_GOGGLE = [
 ].join("\n");
 
 export type ResearchKind = "term" | "law";
+
+export function braveSearchCountry(country: string): string {
+  const normalized = country.toUpperCase();
+  return BRAVE_COUNTRIES.has(normalized) ? normalized : "ALL";
+}
 
 export interface ResearchSource {
   title: string;
@@ -319,15 +364,16 @@ export class BraveResearchClient {
       throw new BraveResearchError("timeout", "The research deadline was exceeded.");
     }
     const url = new URL(kind === "term" ? BRAVE_WEB_URL : BRAVE_LLM_CONTEXT_URL);
+    const braveCountry = braveSearchCountry(country);
     let body: string | undefined;
     if (kind === "term") {
       url.searchParams.set("q", query);
-      url.searchParams.set("country", country);
+      url.searchParams.set("country", braveCountry);
       url.searchParams.set("count", "3");
     } else {
       body = JSON.stringify({
         q: query,
-        country,
+        country: braveCountry,
         count: 5,
         maximum_number_of_urls: 3,
         maximum_number_of_tokens: 2048,

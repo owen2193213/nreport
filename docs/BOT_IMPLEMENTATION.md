@@ -264,8 +264,10 @@ The internal law reference has no length limit; validation distinguishes an inva
 missing reference, and missing research summary.
 Terminology research uses Brave Web Search with at most three results. Legal research uses Brave
 LLM Context with at most five source candidates, three returned URLs, and a 2,048-token context
-budget; official EU legal domains receive an inline ranking boost. If both searches are needed they
-start together. Each query is capped at 400 characters and 50 words and is rejected if it contains
+budget; official EU legal domains receive an inline ranking boost. Brave receives the selected
+country only when it supports that target; otherwise both search paths use `ALL` while the
+country-specific query remains unchanged. If both searches are needed they start together. Each
+query is capped at 400 characters and 50 words and is rejected if it contains
 a URL, email address, Discord snowflake, or known sensitive draft value. Search results are untrusted
 source material. The model receives only compact titles, HTTPS URLs, and excerpts, not full pages.
 

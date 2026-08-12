@@ -47,6 +47,48 @@ export interface ReportedUserSnapshot {
   resolvedAt: string;
 }
 
+export interface ReportedMessageSnapshot {
+  messageId: string;
+  channelId: string;
+  channelName: string | null;
+  serverId: string | null;
+  serverName: string | null;
+  authorId: string;
+  authorUsername: string;
+  authorDisplayName: string | null;
+  authorAvatarUrl: string | null;
+  authorBot: boolean;
+  content: string;
+  createdAt: string;
+  attachments: Array<{
+    name: string;
+    url: string;
+    contentType: string | null;
+    size: number;
+    spoiler: boolean;
+  }>;
+  embeds: Array<{
+    title: string | null;
+    description: string | null;
+    url: string | null;
+  }>;
+}
+
+export interface CapturedMessageEvidence {
+  source: "context_menu" | "message_link";
+  status: "captured";
+  capturedAt: string;
+  snapshot: ReportedMessageSnapshot;
+}
+
+export interface UnavailableMessageEvidence {
+  source: "message_link";
+  status: "unavailable";
+  attemptedAt: string;
+}
+
+export type MessageEvidence = CapturedMessageEvidence | UnavailableMessageEvidence;
+
 export const GUILD_ELEMENTS = [
   "name",
   "icon",
@@ -71,6 +113,7 @@ interface BaseCreateReportInput {
 export interface MessageCreateReportInput extends BaseCreateReportInput {
   flow: "message_urf";
   messageUrl: string;
+  messageEvidence?: MessageEvidence;
 }
 
 export interface UserCreateReportInput extends BaseCreateReportInput {
@@ -127,6 +170,7 @@ export type ReportedDetails =
   | {
       kind: "message";
       messageUrl: string;
+      messageEvidence?: MessageEvidence;
       reportReason?: string;
       context?: string;
     }

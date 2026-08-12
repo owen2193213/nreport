@@ -1,11 +1,16 @@
 import type { Client, Message } from "discord.js";
 import { describe, expect, it } from "vitest";
 
-import { MessageResolver, snapshotMessage } from "../src/message-resolver.js";
+import {
+  capturedMessageEvidence,
+  MessageResolver,
+  snapshotMessage,
+  unavailableMessageEvidence
+} from "../src/message-resolver.js";
 
 describe("message snapshots", () => {
   it("captures useful report evidence without adding permanent storage", () => {
-    const snapshot = snapshotMessage({
+    const evidence = capturedMessageEvidence({
       id: "323456789012345678",
       channelId: "223456789012345678",
       channel: { name: "reports" },
@@ -15,7 +20,8 @@ describe("message snapshots", () => {
         id: "423456789012345678",
         username: "example",
         globalName: "Example Display",
-        bot: false
+        bot: false,
+        displayAvatarURL: () => "https://cdn.discordapp.com/avatars/423/avatar.png"
       },
       member: null,
       content: "Message evidence",
@@ -26,19 +32,39 @@ describe("message snapshots", () => {
           {
             name: "evidence.png",
             url: "https://cdn.discordapp.com/evidence.png",
-            contentType: "image/png"
+            contentType: "image/png",
+            size: 1234,
+            spoiler: true
           }
         ]
       ]),
-      embeds: []
-    } as unknown as Message);
-    expect(snapshot).toMatchObject({
-      content: "Message evidence",
-      channelName: "reports",
-      serverName: "Example server",
-      authorUsername: "example"
+      embeds: [
+        { title: "Evidence", description: "Embedded text", url: "https://example.test/e" }
+      ]
+    } as unknown as Message, "context_menu", "2026-07-20T00:01:00.000Z");
+    expect(evidence).toMatchObject({
+      source: "context_menu",
+      status: "captured",
+      capturedAt: "2026-07-20T00:01:00.000Z",
+      snapshot: {
+        content: "Message evidence",
+        channelName: "reports",
+        serverName: "Example server",
+        authorUsername: "example",
+        authorAvatarUrl: "https://cdn.discordapp.com/avatars/423/avatar.png",
+        attachments: [{ size: 1234, spoiler: true }],
+        embeds: [{ title: "Evidence", description: "Embedded text" }]
+      }
     });
-    expect(snapshot.attachments).toHaveLength(1);
+    expect(evidence.snapshot.attachments).toHaveLength(1);
+  });
+
+  it("records inaccessible pasted links without inventing an author", () => {
+    expect(unavailableMessageEvidence("2026-07-20T00:01:00.000Z")).toEqual({
+      source: "message_link",
+      status: "unavailable",
+      attemptedAt: "2026-07-20T00:01:00.000Z"
+    });
   });
 
   it("preserves Stage or voice chat evidence when the channel is not cached", () => {
@@ -52,7 +78,8 @@ describe("message snapshots", () => {
         id: "423456789012345678",
         username: "speaker",
         globalName: "Stage Speaker",
-        bot: false
+        bot: false,
+        displayAvatarURL: () => "https://cdn.discordapp.com/avatars/423/stage.png"
       },
       member: null,
       content: "Message sent in Stage chat",
@@ -80,7 +107,8 @@ describe("message snapshots", () => {
         id: "423456789012345678",
         username: "speaker",
         globalName: null,
-        bot: false
+        bot: false,
+        displayAvatarURL: () => "https://cdn.discordapp.com/avatars/423/stage.png"
       },
       member: null,
       content: "Hydrated Stage message",
@@ -103,7 +131,8 @@ describe("message snapshots", () => {
         id: "423456789012345678",
         username: "speaker",
         globalName: null,
-        bot: false
+        bot: false,
+        displayAvatarURL: () => "https://cdn.discordapp.com/avatars/423/stage.png"
       },
       member: null,
       content: "Stage chat evidence",

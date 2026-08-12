@@ -2,6 +2,7 @@ import type {
   CreateReportInput,
   DiscordReportStatus,
   GuildElement,
+  MessageEvidence,
   ReportedUserSnapshot,
   ReportFlow,
   ReportStatus,
@@ -31,7 +32,7 @@ export interface ReportDraft {
   guildElements?: GuildElement[];
   guildIdOrInviteCode?: string;
   messageUrl?: string;
-  messageSnapshot?: MessageSnapshot;
+  messageEvidence?: MessageEvidence;
   profileElements?: UserProfileElement[];
   reportedUsername?: string;
   reportedUserId?: string;
@@ -96,30 +97,6 @@ export interface ServerSnapshot {
 export interface WriterConversationMessage {
   role: "user" | "assistant";
   content: string;
-}
-
-export interface MessageSnapshot {
-  messageId: string;
-  channelId: string;
-  channelName: string | null;
-  serverId: string | null;
-  serverName: string | null;
-  authorId: string;
-  authorUsername: string;
-  authorDisplayName: string | null;
-  authorBot: boolean;
-  content: string;
-  createdAt: string;
-  attachments: Array<{
-    name: string;
-    url: string;
-    contentType: string | null;
-  }>;
-  embeds: Array<{
-    title: string | null;
-    description: string | null;
-    url: string | null;
-  }>;
 }
 
 export type ExperimentalBatchMode = "same_category_10x" | "all_categories";

@@ -1,11 +1,15 @@
+import type {
+  CapturedMessageEvidence,
+  ReportedMessageSnapshot,
+  UnavailableMessageEvidence
+} from "@discord-dsa/contracts";
 import type { Client, Message } from "discord.js";
 
-import type { MessageSnapshot } from "./types.js";
 
 const MESSAGE_URL =
   /^https:\/\/(?:www\.)?discord\.com\/channels\/(?:@me|\d+)\/(\d+)\/(\d+)$/;
 
-export function snapshotMessage(message: Message): MessageSnapshot {
+export function snapshotMessage(message: Message): ReportedMessageSnapshot {
   const channel = message.channel;
   return {
     messageId: message.id,
@@ -16,13 +20,19 @@ export function snapshotMessage(message: Message): MessageSnapshot {
     authorId: message.author.id,
     authorUsername: message.author.username,
     authorDisplayName: message.member?.displayName ?? message.author.globalName,
+    authorAvatarUrl:
+      typeof message.author.displayAvatarURL === "function"
+        ? message.author.displayAvatarURL()
+        : null,
     authorBot: message.author.bot,
     content: message.content,
     createdAt: message.createdAt.toISOString(),
     attachments: [...message.attachments.values()].map((attachment) => ({
       name: attachment.name,
       url: attachment.url,
-      contentType: attachment.contentType
+      contentType: attachment.contentType,
+      size: attachment.size,
+      spoiler: attachment.spoiler
     })),
     embeds: message.embeds.map((embed) => ({
       title: embed.title,
@@ -30,6 +40,20 @@ export function snapshotMessage(message: Message): MessageSnapshot {
       url: embed.url
     }))
   };
+}
+
+export function capturedMessageEvidence(
+  message: Message,
+  source: CapturedMessageEvidence["source"],
+  capturedAt = new Date().toISOString()
+): CapturedMessageEvidence {
+  return { source, status: "captured", capturedAt, snapshot: snapshotMessage(message) };
+}
+
+export function unavailableMessageEvidence(
+  attemptedAt = new Date().toISOString()
+): UnavailableMessageEvidence {
+  return { source: "message_link", status: "unavailable", attemptedAt };
 }
 
 export class MessageResolver {

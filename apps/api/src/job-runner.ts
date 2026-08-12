@@ -52,6 +52,7 @@ export interface RedactedError {
   retryAfter?: number;
   httpStatus?: number;
   discordErrorCode?: string;
+  discordRequestId?: string;
   discordResponseSummary?: string;
   networkCause?: NetworkCauseDiagnostic;
 }
@@ -209,6 +210,9 @@ function errorLogFields(error: RedactedError): Record<string, unknown> {
     ...(error.discordErrorCode === undefined
       ? {}
       : { discordErrorCode: error.discordErrorCode }),
+    ...(error.discordRequestId === undefined
+      ? {}
+      : { discordRequestId: error.discordRequestId }),
     ...(error.discordResponseSummary === undefined
       ? {}
       : { discordResponseSummary: error.discordResponseSummary }),

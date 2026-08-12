@@ -27,9 +27,15 @@ export interface DiagnosticResponse { contentType: string | null; requestId?: st
 export async function readDiagnosticResponse(response: Response, secrets: string[] = []): Promise<DiagnosticResponse> {
   const text = await response.text();
   const bodyTruncated = text.length > MAX_TEXT;
+  const requestId = response.headers.get("x-request-id") ?? response.headers.get("request-id") ?? undefined;
+  const metadata = {
+    contentType: response.headers.get("content-type"),
+    ...(requestId ? { requestId } : {}),
+    bodyTruncated
+  };
+  if (bodyTruncated) return metadata;
   const bounded = text.slice(0, MAX_TEXT);
   let body: unknown = bounded;
   try { body = JSON.parse(bounded); } catch { /* plain text is valid diagnostics */ }
-  const requestId = response.headers.get("x-request-id") ?? response.headers.get("request-id") ?? undefined;
-  return { contentType: response.headers.get("content-type"), ...(requestId ? { requestId } : {}), body: sanitizeDiagnostic(body, secrets), bodyTruncated };
+  return { ...metadata, body: sanitizeDiagnostic(body, secrets) };
 }

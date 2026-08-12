@@ -16,4 +16,19 @@ describe("diagnostics", () => {
     }), []);
     expect(result).toMatchObject({ requestId: "req_1", body: { detail: "unsupported parameter" } });
   });
+
+  it("omits oversized response bodies instead of logging an unsafe partial value", async () => {
+    const result = await readDiagnosticResponse(new Response(JSON.stringify({
+      token: "must-not-be-logged",
+      padding: "x".repeat(16_384)
+    }), {
+      headers: { "content-type": "application/json", "x-request-id": "req_large" }
+    }));
+
+    expect(result).toEqual({
+      contentType: "application/json",
+      requestId: "req_large",
+      bodyTruncated: true
+    });
+  });
 });

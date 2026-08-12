@@ -542,7 +542,9 @@ describe("JobRunner proxy rotation", () => {
   });
 
   it("does not retry a terminal verification HTTP error", async () => {
-    clientState.sendEmailCode.mockRejectedValue(new DiscordDsaHttpError("bad request", 400));
+    clientState.sendEmailCode.mockRejectedValue(new DiscordDsaHttpError("bad request", 400, {
+      requestId: "discord-request-1"
+    }));
     let retried = false;
     let failed = false;
     const database = {
@@ -557,7 +559,8 @@ describe("JobRunner proxy rotation", () => {
         return Promise.resolve(undefined);
       }
     } as unknown as Database;
-    const runner = new JobRunner(database, config, logger());
+    const attemptLogger = logger();
+    const runner = new JobRunner(database, config, attemptLogger);
 
     await (runner as unknown as { processJob(value: JobRow): Promise<void> }).processJob(
       job()
@@ -565,6 +568,11 @@ describe("JobRunner proxy rotation", () => {
 
     expect(retried).toBe(false);
     expect(failed).toBe(true);
+    expect(attemptLogger.error.mock.calls.map(([data]) => data)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ discordRequestId: "discord-request-1" })
+      ])
+    );
   });
 
   it("never retries an initial report after its final submission POST starts", async () => {

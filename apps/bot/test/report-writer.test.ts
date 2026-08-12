@@ -262,6 +262,14 @@ describe("Fireworks and Brave report writer", () => {
     expect(JSON.stringify(synthesis.messages)).toContain(
       "Do not count characters step by step or spend time optimizing the exact character count."
     );
+    expect(JSON.stringify(synthesis.messages)).toContain(
+      "When the message's meaning is obvious, do not elaborate on it."
+    );
+    expect(synthesis.messages[1]!.content).toContain("# FUCK YOUUUU");
+    expect(synthesis.messages[1]!.content).toContain(
+      "Section 185 prohibits insulting another person."
+    );
+    expect(synthesis.messages[1]!.content).toContain("coded wording");
     expect(synthesis.messages[1]!.content).toContain("## Task");
     expect(synthesis.messages[1]!.content).toContain("## Input");
     expect(synthesis.messages[1]!.content).toContain("## Research");

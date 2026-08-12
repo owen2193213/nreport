@@ -326,14 +326,26 @@ function plannerExamples(): string[] {
 function synthesisExamples(): string[] {
   return [
     "Your JSON must match exactly one of these two shapes:",
-    "Completed report:",
+    "These completed-report examples show tone and structure only; do not reuse their facts or legal conclusions.",
+    "Completed report for direct, obvious wording:",
+    JSON.stringify({
+      status: "completed",
+      followUpType: null,
+      followUpQuery: null,
+      lawReference: "Germany's Criminal Code (Strafgesetzbuch), Section 185",
+      researchSummary: "Section 185 prohibits insulting another person.",
+      report:
+        "# FUCK YOUUUU is a direct profane insult. Germany's Criminal Code (Strafgesetzbuch), Section 185 prohibits insulting another person; this message does so. It violates Discord's Community Guidelines. Please review and remove it."
+    }),
+    "Completed report for ambiguous or coded wording:",
     JSON.stringify({
       status: "completed",
       followUpType: null,
       followUpQuery: null,
       lawReference: "<country, full law title, article or section>",
       researchSummary: "<what the supplied research established>",
-      report: "<final report, at most 512 characters>"
+      report:
+        "The coded wording <term> means <brief meaning>. <Law provision> prohibits <prohibited conduct>; the message uses that wording to <briefly connect it to the violation>. Please review and remove it."
     }),
     "Request for one more search:",
     JSON.stringify({
@@ -629,6 +641,7 @@ export function initialWriterPrompt(): string {
     "Do not count characters step by step or spend time optimizing the exact character count.",
     "Examine the evidence for every reason the content is inappropriate; you may quote only the relevant parts of the message and read them in the strongest applicable sense.",
     "When the content uses slang, abbreviations, or coded wording, briefly explain what the wording means, then connect that meaning to the law and why it breaks it.",
+    "When the message's meaning is obvious, do not elaborate on it. Briefly state what the named law provision prohibits and clearly connect that prohibition to the reported content.",
     "Write with certainty: state that the content violates the named law provision and Discord's Community Guidelines.",
     "Do not use hedging words such as \"may\", \"might\", or \"appears to\".",
     "Lead with the reported content or conduct, quote the decisive wording where useful, and name the country, the full law title, and the article or section.",

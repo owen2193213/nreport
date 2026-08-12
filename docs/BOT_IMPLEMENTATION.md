@@ -369,9 +369,12 @@ Failed provider requests log only an allowlisted diagnostic summary: provider, s
 kind, categorized failure, HTTP status, latency, and attempt count. Raw queries, search results,
 response bodies, evidence, and provider messages are never logged.
 
-The initial writer prompt contains one generalized report structure plus two style examples. They
-appear once in the retained conversation and are explicitly examples of tone and organization,
-not reusable facts or legal conclusions. Refine and Repair append compact instructions to that
+The initial writer prompt distinguishes direct, obvious content from slang, abbreviations, and
+coded wording. Direct content receives only a concise statement of what the cited provision
+prohibits and why the content violates it; ambiguous wording also gets a brief meaning explanation.
+The prompt contains concrete examples of both structures. They appear once in the retained
+conversation and are explicitly examples of tone and organization, not reusable facts or legal
+conclusions. Refine and Repair append compact instructions to that
 same conversation instead of adding another copy of the examples.
 The writer system prompt, initial writer prompt, and the Refine and Repair instructions all
 require the report text to be written entirely in English.

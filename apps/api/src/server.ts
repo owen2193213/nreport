@@ -84,7 +84,13 @@ function reportedDetails(report: ReportRow): ReportedDetails {
     input.reportReason === undefined ? {} : { reportReason: input.reportReason };
   switch (input.flow) {
     case "message_urf":
-      return { kind: "message", messageUrl: input.messageUrl, ...reportReason, ...context };
+      return {
+        kind: "message",
+        messageUrl: input.messageUrl,
+        ...(input.messageEvidence === undefined ? {} : { messageEvidence: input.messageEvidence }),
+        ...reportReason,
+        ...context
+      };
     case "user_urf":
       return {
         kind: "profile",

@@ -1,6 +1,8 @@
 import type { ReportDraft } from "@discord-dsa/client";
 import type {
   GuildElement,
+  MessageEvidence,
+  ReportedMessageSnapshot,
   ReportedUserSnapshot,
   ReportFlow,
   UserProfileElement
@@ -43,6 +45,7 @@ export interface UserCreateReportInput extends BaseCreateReportInput {
 export interface MessageCreateReportInput extends BaseCreateReportInput {
   flow: "message_urf";
   messageUrl: string;
+  messageEvidence?: MessageEvidence;
 }
 
 export interface GuildCreateReportInput extends BaseCreateReportInput {
@@ -90,6 +93,130 @@ function optionalString(
 ): string | undefined {
   if (input[key] === undefined) return undefined;
   return requiredString(input, key, maximum);
+}
+
+function nullableString(
+  input: Record<string, unknown>,
+  key: string,
+  maximum: number
+): string | null {
+  return input[key] === null ? null : requiredString(input, key, maximum);
+}
+
+function rawString(input: Record<string, unknown>, key: string, maximum: number): string {
+  const value = input[key];
+  if (typeof value !== "string" || value.length > maximum) {
+    throw new Error(`${key} must be a string no longer than ${maximum} characters.`);
+  }
+  return value;
+}
+
+function timestamp(input: Record<string, unknown>, key: string): string {
+  const value = requiredString(input, key, 100);
+  if (!Number.isFinite(Date.parse(value))) {
+    throw new Error(`${key} must be an ISO-8601 timestamp.`);
+  }
+  return value;
+}
+
+function httpsUrl(input: Record<string, unknown>, key: string, nullable = false): string | null {
+  if (nullable && input[key] === null) return null;
+  const value = requiredString(input, key, 2_048);
+  try {
+    if (new URL(value).protocol !== "https:") throw new Error("not https");
+  } catch {
+    throw new Error(`${key} must be an HTTPS URL.`);
+  }
+  return value;
+}
+
+function snowflake(input: Record<string, unknown>, key: string): string {
+  const value = requiredString(input, key, 22);
+  if (!/^\d{15,22}$/.test(value)) throw new Error(`${key} must be a Discord snowflake.`);
+  return value;
+}
+
+function reportedMessageSnapshot(value: unknown): ReportedMessageSnapshot {
+  const input = record(value);
+  const attachmentsValue = input.attachments;
+  const embedsValue = input.embeds;
+  if (!Array.isArray(attachmentsValue) || attachmentsValue.length > 25) {
+    throw new Error("messageEvidence.snapshot.attachments must contain at most 25 items.");
+  }
+  if (!Array.isArray(embedsValue) || embedsValue.length > 25) {
+    throw new Error("messageEvidence.snapshot.embeds must contain at most 25 items.");
+  }
+  const attachments = attachmentsValue.map((value) => {
+    const attachment = record(value);
+    const size = attachment.size;
+    if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) {
+      throw new Error("messageEvidence attachment size must be a non-negative integer.");
+    }
+    if (typeof attachment.spoiler !== "boolean") {
+      throw new Error("messageEvidence attachment spoiler must be a boolean.");
+    }
+    return {
+      name: requiredString(attachment, "name", 256),
+      url: httpsUrl(attachment, "url")!,
+      contentType: nullableString(attachment, "contentType", 100),
+      size,
+      spoiler: attachment.spoiler
+    };
+  });
+  const embeds = embedsValue.map((value) => {
+    const embed = record(value);
+    return {
+      title: embed.title === null ? null : rawString(embed, "title", 256),
+      description:
+        embed.description === null ? null : rawString(embed, "description", 4_096),
+      url: httpsUrl(embed, "url", true)
+    };
+  });
+  if (typeof input.authorBot !== "boolean") {
+    throw new Error("messageEvidence.snapshot.authorBot must be a boolean.");
+  }
+  return {
+    messageId: snowflake(input, "messageId"),
+    channelId: snowflake(input, "channelId"),
+    channelName: nullableString(input, "channelName", 100),
+    serverId: input.serverId === null ? null : snowflake(input, "serverId"),
+    serverName: nullableString(input, "serverName", 100),
+    authorId: snowflake(input, "authorId"),
+    authorUsername: requiredString(input, "authorUsername", 100),
+    authorDisplayName: nullableString(input, "authorDisplayName", 100),
+    authorAvatarUrl: httpsUrl(input, "authorAvatarUrl", true),
+    authorBot: input.authorBot,
+    content: rawString(input, "content", 4_000),
+    createdAt: timestamp(input, "createdAt"),
+    attachments,
+    embeds
+  };
+}
+
+function optionalMessageEvidence(input: Record<string, unknown>): MessageEvidence | undefined {
+  if (input.messageEvidence === undefined) return undefined;
+  const evidence = record(input.messageEvidence);
+  const status = requiredString(evidence, "status", 20);
+  const source = requiredString(evidence, "source", 20);
+  if (status === "unavailable") {
+    if (source !== "message_link") {
+      throw new Error("Unavailable messageEvidence must come from a message link.");
+    }
+    return {
+      source,
+      status,
+      attemptedAt: timestamp(evidence, "attemptedAt")
+    };
+  }
+  if (status !== "captured" || (source !== "context_menu" && source !== "message_link")) {
+    throw new Error("messageEvidence status or source is unsupported.");
+  }
+  return {
+    source,
+    status,
+    capturedAt: timestamp(evidence, "capturedAt"),
+    snapshot: reportedMessageSnapshot(evidence.snapshot)
+  };
 }
 
 function stringArray<T extends string>(
@@ -199,7 +326,25 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
     if (!/^https:\/\/(?:www\.)?discord\.com\/channels\/(?:@me|\d+)\/\d+\/\d+$/.test(messageUrl)) {
       throw new Error("messageUrl must be a complete Discord message URL.");
     }
-    return { ...base, flow, messageUrl };
+    const messageEvidence = optionalMessageEvidence(input);
+    if (messageEvidence?.status === "captured") {
+      const [, , urlServerId, urlChannelId, urlMessageId] = new URL(messageUrl).pathname.split("/");
+      if (
+        messageEvidence.snapshot.channelId !== urlChannelId ||
+        messageEvidence.snapshot.messageId !== urlMessageId
+      ) {
+        throw new Error("messageEvidence snapshot must match messageUrl.");
+      }
+      if (urlServerId !== "@me" && messageEvidence.snapshot.serverId !== urlServerId) {
+        throw new Error("messageEvidence serverId must match messageUrl.");
+      }
+    }
+    return {
+      ...base,
+      flow,
+      messageUrl,
+      ...(messageEvidence === undefined ? {} : { messageEvidence })
+    };
   }
   if (flow === "user_urf") {
     const reportedUsername = requiredString(input, "reportedUsername", 100);

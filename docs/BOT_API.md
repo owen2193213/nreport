@@ -360,12 +360,57 @@ Content-Type: application/json
   "reportType": "sub_other_hate_speech",
   "submitterDiscordUserId": "1197857362942378017",
   "messageUrl": "https://discord.com/channels/427067963137589258/427069953078853633/1414818522701369355",
+  "messageEvidence": {
+    "source": "context_menu",
+    "status": "captured",
+    "capturedAt": "2026-08-12T12:00:01.000Z",
+    "snapshot": {
+      "messageId": "1414818522701369355",
+      "channelId": "427069953078853633",
+      "channelName": "general",
+      "serverId": "427067963137589258",
+      "serverName": "Example server",
+      "authorId": "123456789012345678",
+      "authorUsername": "reported-user",
+      "authorDisplayName": "Reported Display",
+      "authorAvatarUrl": "https://cdn.discordapp.com/avatars/123456789012345678/example.png",
+      "authorBot": false,
+      "content": "The exact captured message text.",
+      "createdAt": "2026-08-12T12:00:00.000Z",
+      "attachments": [{
+        "name": "evidence.png",
+        "url": "https://cdn.discordapp.com/attachments/example/evidence.png",
+        "contentType": "image/png",
+        "size": 1234,
+        "spoiler": false
+      }],
+      "embeds": [{
+        "title": "Embedded title",
+        "description": "Embedded description",
+        "url": "https://example.com/source"
+      }]
+    }
+  },
   "context": "Explain specifically why the message is unlawful in the selected jurisdiction."
 }
 ```
 
 `messageUrl` must be a complete `https://discord.com/channels/.../.../...` URL. Guild IDs
 or `@me`, channel IDs, and message IDs are accepted in the appropriate positions.
+
+`messageEvidence` is optional for historical and rolling-deployment compatibility. Context-menu
+reports use `source: "context_menu"`; resolved `/report message` links use `source: "message_link"`.
+An inaccessible link uses `status: "unavailable"` with an ISO `attemptedAt` timestamp.
+
+Captured evidence accepts at most 4,000 message characters, 25 attachments, and 25 embeds.
+Attachment/embed URLs must be HTTPS and attachment sizes must be non-negative integers. Snapshot
+message and channel IDs must match `messageUrl`; a guild snapshot server ID must also match its URL.
+
+The API stores the validated value in PostgreSQL `reports.input jsonb` and returns it as
+`reportedDetails.messageEvidence`. Partial expression indexes `reports_message_author_id_idx` and
+`reports_message_id_idx` support later author/message lookup. Retries preserve the original
+snapshot. Evidence is not added to the low-level Discord submission payload, logged, or sent as AI
+media.
 
 #### User-profile report
 
@@ -540,7 +585,7 @@ not met, `availability` is `insufficient_community_data` and all metrics are wit
 
 Action History is always submitter-scoped and includes only reports whose current Discord status is
 Actioned. It returns the submitted explanation and, for message reports, the submitted message URL;
-the service does not retain a separate copy of the original message. Pages are ordered newest first
+it does not expose the separately retained `messageEvidence` snapshot. Pages are ordered newest first
 by action time and report ID. `nextCursor` is opaque and must be returned unchanged as `after`.
 Limits are 1–25. Supplying both UTC `startAt` and `endAt` gives a custom interval; otherwise the
 period defaults to `7d`.

@@ -372,6 +372,141 @@ describe("backend identity and validation", () => {
     ).toThrow(/Discord snowflake/);
   });
 
+  it("preserves validated captured message evidence for durable analysis", () => {
+    const input = parseCreateReportInput({
+      country: "DE",
+      flow: "message_urf",
+      reportReason: "Illegal content",
+      reportType: "sub_other_hate_speech",
+      messageUrl:
+        "https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+      messageEvidence: {
+        source: "message_link",
+        status: "captured",
+        capturedAt: "2026-07-20T00:01:00.000Z",
+        snapshot: {
+          messageId: "323456789012345678",
+          channelId: "223456789012345678",
+          channelName: "reports",
+          serverId: "123456789012345678",
+          serverName: "Example server",
+          authorId: "423456789012345678",
+          authorUsername: "example",
+          authorDisplayName: "Example Display",
+          authorAvatarUrl: "https://cdn.discordapp.com/avatar.png",
+          authorBot: false,
+          content: "  Exact evidence with whitespace  ",
+          createdAt: "2026-07-20T00:00:00.000Z",
+          attachments: [{
+            name: "evidence.png",
+            url: "https://cdn.discordapp.com/evidence.png",
+            contentType: "image/png",
+            size: 1234,
+            spoiler: true
+          }],
+          embeds: [{
+            title: "Evidence",
+            description: "Embedded text",
+            url: "https://example.test/e"
+          }]
+        }
+      }
+    });
+
+    expect(input.flow).toBe("message_urf");
+    if (input.flow !== "message_urf") throw new Error("Expected a message report.");
+    expect(input.messageEvidence?.status).toBe("captured");
+    expect(
+      input.messageEvidence?.status === "captured" &&
+        input.messageEvidence.snapshot.content
+    ).toBe("  Exact evidence with whitespace  ");
+  });
+
+  it("rejects message evidence that does not match its Discord link", () => {
+    const base = {
+      country: "DE",
+      flow: "message_urf",
+      reportReason: "Illegal content",
+      reportType: "sub_other_hate_speech",
+      messageUrl:
+        "https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+      messageEvidence: {
+        source: "context_menu",
+        status: "captured",
+        capturedAt: "2026-07-20T00:01:00.000Z",
+        snapshot: {
+          messageId: "923456789012345678",
+          channelId: "223456789012345678",
+          channelName: null,
+          serverId: "123456789012345678",
+          serverName: null,
+          authorId: "423456789012345678",
+          authorUsername: "example",
+          authorDisplayName: null,
+          authorAvatarUrl: null,
+          authorBot: false,
+          content: "Evidence",
+          createdAt: "2026-07-20T00:00:00.000Z",
+          attachments: [],
+          embeds: []
+        }
+      }
+    };
+    expect(() => parseCreateReportInput(base)).toThrow(/must match messageUrl/);
+    expect(() =>
+      parseCreateReportInput({
+        ...base,
+        messageEvidence: {
+          ...base.messageEvidence,
+          snapshot: {
+            ...base.messageEvidence.snapshot,
+            messageId: "323456789012345678",
+            serverId: "823456789012345678"
+          }
+        }
+      })
+    ).toThrow(/serverId must match/);
+  });
+
+  it("accepts unavailable link evidence and historical reports without evidence", () => {
+    const base = {
+      country: "DE",
+      flow: "message_urf",
+      reportReason: "Illegal content",
+      reportType: "sub_other_hate_speech",
+      messageUrl:
+        "https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678"
+    };
+    expect(parseCreateReportInput(base)).not.toHaveProperty("messageEvidence");
+    expect(parseCreateReportInput({
+      ...base,
+      messageEvidence: {
+        source: "message_link",
+        status: "unavailable",
+        attemptedAt: "2026-07-20T00:01:00.000Z"
+      }
+    })).toMatchObject({ messageEvidence: { status: "unavailable" } });
+  });
+
+  it("creates lookup indexes for captured message and author IDs", async () => {
+    const queries: string[] = [];
+    const database = new Database("postgres://unused");
+    (database as unknown as { pool: unknown }).pool = {
+      query: (sql: string) => {
+        queries.push(sql);
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+    };
+
+    await database.migrate();
+
+    const schema = queries.join("\n");
+    expect(schema).toContain("reports_message_author_id_idx");
+    expect(schema).toContain("{messageEvidence,snapshot,authorId}");
+    expect(schema).toContain("reports_message_id_idx");
+    expect(schema).toContain("{messageEvidence,snapshot,messageId}");
+  });
+
   it("accepts a validated resolved-user snapshot without requiring a schema migration", () => {
     const input = parseCreateReportInput({
       country: "DE",

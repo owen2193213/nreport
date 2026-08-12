@@ -105,6 +105,27 @@ function reportFixture(): ReportDetail {
     reportedDetails: {
       kind: "message" as const,
       messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+      messageEvidence: {
+        source: "context_menu",
+        status: "captured",
+        capturedAt: "2026-07-19T00:00:01.000Z",
+        snapshot: {
+          messageId: "123456789012345679",
+          channelId: "123456789012345678",
+          channelName: null,
+          serverId: null,
+          serverName: null,
+          authorId: "423456789012345678",
+          authorUsername: "example",
+          authorDisplayName: "Example Display",
+          authorAvatarUrl: "https://cdn.discordapp.com/avatars/423/avatar.png",
+          authorBot: false,
+          content: "Captured message",
+          createdAt: "2026-07-19T00:00:00.000Z",
+          attachments: [],
+          embeds: []
+        }
+      },
       reportReason: "The message contains hateful content.",
       context: "sensitive context"
     },
@@ -604,6 +625,11 @@ describe("report UI", () => {
           reportType: "sub_other_hate_speech",
           messageUrl:
             "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+          messageEvidence: {
+            source: "message_link",
+            status: "unavailable",
+            attemptedAt: "2026-07-20T00:00:00.000Z"
+          },
           context: "[Basic Law Article 1] The message contains unlawful hate speech.",
           legalResearch: {
             country: "DE",
@@ -622,11 +648,19 @@ describe("report UI", () => {
       reportType: "sub_other_hate_speech",
       submitterDiscordUserId: "1197857362942378017",
       messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+      messageEvidence: {
+        source: "message_link",
+        status: "unavailable",
+        attemptedAt: "2026-07-20T00:00:00.000Z"
+      },
       context: "[Basic Law Article 1] The message contains unlawful hate speech."
     });
   });
 
   it("reviews and submits a manual report without AI research", () => {
+    const reportedDetails = reportFixture().reportedDetails;
+    if (reportedDetails.kind !== "message") throw new Error("Expected message details.");
+    if (!reportedDetails.messageEvidence) throw new Error("Expected message evidence.");
     const draft = {
       aiDisabled: true,
       flow: "message_urf" as const,
@@ -636,10 +670,18 @@ describe("report UI", () => {
       reportType: "sub_other_hate_speech",
       messageUrl:
         "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+      messageEvidence: reportedDetails.messageEvidence,
       context: "I am reporting this message because it contains abusive language."
     };
 
     const review = buildReview("draft", draft);
+    const reviewJson = review.embeds[0]?.toJSON();
+    expect(reviewJson?.fields?.find((field) => field.name === "Author info")?.value).toBe(
+      "Reported user: Example Display (@example)\nDiscord ID: `423456789012345678`"
+    );
+    expect(reviewJson?.thumbnail?.url).toBe(
+      "https://cdn.discordapp.com/avatars/423/avatar.png"
+    );
     const buttons = JSON.stringify(review.components[0]?.toJSON());
     expect(buttons).not.toContain("Refine");
     expect(buttons).not.toContain("Regenerate");
@@ -744,6 +786,7 @@ describe("report UI", () => {
     expect(review.embeds[0]?.toJSON().description).toBeUndefined();
     expect(review.embeds[0]?.toJSON().fields?.map((field) => field.name)).toEqual([
       "Item",
+      "Author info",
       "Status",
       "Category",
       "Country",
@@ -788,6 +831,12 @@ describe("report UI", () => {
     const browser = reportBrowser(report, null, 0, 2);
     const embed = browser.embeds[0]?.toJSON();
     expect(embed?.title).toBe("Message report");
+    expect(embed?.fields?.find((field) => field.name === "Author info")?.value).toBe(
+      "Reported user: Example Display (@example)\nDiscord ID: `423456789012345678`"
+    );
+    expect(embed?.thumbnail?.url).toBe(
+      "https://cdn.discordapp.com/avatars/423/avatar.png"
+    );
     expect(embed?.fields?.find((field) => field.name === "Status")?.value).toBe(
       "Report accepted"
     );
@@ -799,6 +848,18 @@ describe("report UI", () => {
       "Check your DMs for the full status log."
     );
     expect(browser.components[0]?.toJSON().components).toHaveLength(2);
+  });
+
+  it("labels historical message reports when author evidence is unavailable", () => {
+    const report = reportFixture();
+    if (report.reportedDetails.kind !== "message") throw new Error("Expected message details.");
+    delete report.reportedDetails.messageEvidence;
+
+    const embed = reportEmbed(report).toJSON();
+    expect(embed.fields?.find((field) => field.name === "Author info")?.value).toBe(
+      "Author information unavailable."
+    );
+    expect(embed.thumbnail).toBeUndefined();
   });
 
   it("keeps full maximum context and a three-attempt timeline within Discord limits", () => {

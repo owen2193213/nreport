@@ -62,7 +62,8 @@ overall, 3 reports from 3 users per breakdown bucket, and 5 reports from 3 users
 phrase. The bot never receives suppressed raw community rows.
 
 Action History is personal-only and shows the explanation the user submitted, plus the submitted
-message link for message reports. It does not claim to retain the original reported message.
+message link for message reports. The canonical API report also retains structured message evidence
+when Discord exposes it; Action History does not currently display that evidence.
 Users can filter it by the standard periods or enter inclusive `YYYY-MM-DD` dates; the bot converts
 the inclusive end date to the following UTC midnight, limits a range to 3,660 days, and shows up to
 25 results without pagination controls. All charts are rendered locally as PNGs from numeric
@@ -295,6 +296,21 @@ avatars, banners, server art, or attachment/embed media URLs are attached or inc
 Fireworks or Brave requests. This prevents child-safety media, gore, and other potentially prohibited
 media from reaching the provider. Attachment names and content types may remain as factual text
 metadata.
+
+**Apps -> Report Message** and **Apps -> Quick Report Message** snapshot the selected message
+directly. `/report message` performs a best-effort lookup: success records captured link evidence;
+failure records an explicit unavailable state and does not invent author information from the URL.
+Captured evidence includes exact text, message/channel/server metadata, author identity and avatar,
+attachment filename/content type/size/URL/spoiler state, and embed title/description/URL. Attachment
+binaries are not downloaded. The API stores this structure in PostgreSQL `reports.input jsonb`;
+indexed author and message IDs support later analysis.
+
+Message review, status, history, browser, and lifecycle-DM cards show **Author info** with the
+display name, `@username`, Discord ID, and author avatar thumbnail. Historical or inaccessible
+messages show `Author information unavailable.` Retries and rewrite/resend preserve an existing
+snapshot; only historical reports with no evidence may attempt a fresh lookup. Snapshot text and
+URLs are sensitive evidence and must never appear in structured logs. Avatar, attachment, and embed
+URLs remain excluded from Fireworks and Brave while AI media processing is disabled.
 
 The shared combined report modal enables Use AI and Send review to DMs by default and lets the
 reporter use Auto, their saved/current country, or the paginated country picker. Report category,

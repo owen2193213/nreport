@@ -356,7 +356,7 @@ export class BraveResearchClient {
       throw new BraveResearchError("network", "Brave could not be reached.", 0, true);
     }
     if (!response.ok) {
-      const kind = response.status === 429 ? "rate_limited" : "provider";
+      const failureKind = response.status === 429 ? "rate_limited" : "provider";
       const retryable = response.status === 429 || response.status >= 500;
       const responseDiagnostic = await readDiagnosticResponse(response.clone(), [query]);
       botLog(
@@ -377,7 +377,7 @@ export class BraveResearchClient {
         },
         "warn"
       );
-      throw new BraveResearchError(kind, "Brave search is unavailable.", 0, retryable);
+      throw new BraveResearchError(failureKind, "Brave search is unavailable.", 0, retryable);
     }
     try {
       return (await response.json()) as BraveWebResponse | BraveContextResponse;

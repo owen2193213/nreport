@@ -69,7 +69,7 @@ describe("email worker", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "recipient alias@example.test rejected" }), { status: 422, headers: { "content-type": "application/json", "x-request-id": "ingest-1" } })));
     await expect(worker.email(emailMessage(), { INGEST_URL: "https://api.example", INGEST_SHARED_SECRET: "secret" })).rejects.toThrow(/HTTP 422/);
-    const event = JSON.parse(String(error.mock.calls[0]?.[0]));
+    const event: unknown = JSON.parse(String(error.mock.calls[0]?.[0]));
     expect(event).toMatchObject({ event: "email_forward_failed", httpStatus: 422, requestId: "ingest-1", response: { body: "{\"detail\":\"recipient [redacted-email] rejected\"}" } });
     error.mockRestore(); vi.unstubAllGlobals();
   });

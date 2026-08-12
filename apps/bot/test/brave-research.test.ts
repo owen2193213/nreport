@@ -255,7 +255,7 @@ describe("BraveResearchClient", () => {
       }).search("law", "German law", "DE", Date.now() + 5_000, ACTOR)
     ).rejects.toMatchObject({ kind: "provider", searchRequests: 1 });
     expect(request).toHaveBeenCalledTimes(1);
-    const event = JSON.parse(String(write.mock.calls.find(([line]) => String(line).includes("ai_search_http_failed"))?.[0]));
+    const event: unknown = JSON.parse(String(write.mock.calls.find(([line]) => String(line).includes("ai_search_http_failed"))?.[0]));
     expect(event).toMatchObject({ httpStatus: 400, provider: "brave", endpoint: "llm_context" });
     write.mockRestore();
   });
@@ -269,7 +269,7 @@ describe("BraveResearchClient", () => {
     await expect(new BraveResearchClient("key", { request: request as unknown as typeof fetch })
       .search("law", "German law", "DE", Date.now() + 5_000, { ...ACTOR, traceId: "trace-1" }))
       .rejects.toMatchObject({ kind: "provider" });
-    const event = JSON.parse(String(write.mock.calls.find(([line]) => String(line).includes("ai_search_http_failed"))?.[0]));
+    const event: unknown = JSON.parse(String(write.mock.calls.find(([line]) => String(line).includes("ai_search_http_failed"))?.[0]));
     expect(event).toMatchObject({ traceId: "trace-1", httpStatus: 422, requestId: "brave-request-1", response: { body: { detail: "query is invalid: [redacted]" } } });
     write.mockRestore();
   });

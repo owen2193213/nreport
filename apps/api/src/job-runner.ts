@@ -52,6 +52,7 @@ export interface RedactedError {
   retryAfter?: number;
   httpStatus?: number;
   discordErrorCode?: string;
+  discordRequestId?: string;
   discordResponseSummary?: string;
   networkCause?: NetworkCauseDiagnostic;
 }
@@ -180,6 +181,7 @@ export function redactedError(error: unknown): RedactedError {
       ...(error.responseSummary === undefined
         ? {}
         : { discordResponseSummary: error.responseSummary }),
+      ...(error.requestId === undefined ? {} : { discordRequestId: error.requestId }),
       ...(error.retryAfterSeconds === undefined
         ? {}
         : { retryAfter: error.retryAfterSeconds })
@@ -208,6 +210,9 @@ function errorLogFields(error: RedactedError): Record<string, unknown> {
     ...(error.discordErrorCode === undefined
       ? {}
       : { discordErrorCode: error.discordErrorCode }),
+    ...(error.discordRequestId === undefined
+      ? {}
+      : { discordRequestId: error.discordRequestId }),
     ...(error.discordResponseSummary === undefined
       ? {}
       : { discordResponseSummary: error.discordResponseSummary }),

@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { ReportLifecycleEvent } from "@discord-dsa/contracts";
+import { readDiagnosticResponse, type ReportLifecycleEvent } from "@discord-dsa/contracts";
 
 import type { AppConfig } from "./config.js";
 import type { Database, DeliveryEventRow } from "./database.js";
@@ -9,6 +9,15 @@ import { signReportEvent } from "./security.js";
 interface DeliveryLogger {
   info(data: Record<string, unknown>, message: string): void;
   error(data: Record<string, unknown>, message: string): void;
+}
+
+export async function diagnosticEventDeliveryFailure(response: Response): Promise<Record<string, unknown>> {
+  const responseDiagnostic = await readDiagnosticResponse(response.clone());
+  return {
+    httpStatus: response.status,
+    response: responseDiagnostic,
+    ...(responseDiagnostic.requestId === undefined ? {} : { requestId: responseDiagnostic.requestId })
+  };
 }
 
 function publicEvent(event: DeliveryEventRow): ReportLifecycleEvent {
@@ -88,7 +97,12 @@ export class EventDeliveryWorker {
         body: payload,
         signal: AbortSignal.timeout(10_000)
       });
-      if (!response.ok) throw new Error(`Bot event endpoint returned HTTP ${response.status}.`);
+      if (!response.ok) {
+        const diagnostic = await diagnosticEventDeliveryFailure(response);
+        const error = new Error(`Bot event endpoint returned HTTP ${response.status}.`);
+        Object.assign(error, diagnostic);
+        throw error;
+      }
       await this.database.completeDeliveryEvent(event.id);
       this.logger.info(
         {
@@ -103,7 +117,20 @@ export class EventDeliveryWorker {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown event delivery error";
       await this.database.retryDeliveryEvent(event.id, event.delivery_attempts, message);
-      this.logger.error({ eventId: event.id, error: message }, "Report event delivery failed");
+      const diagnostic = error as Error & Record<string, unknown>;
+      this.logger.error(
+        {
+          eventId: event.id,
+          reportId: event.report_id,
+          deliveryAttempt: event.delivery_attempts + 1,
+          error: message,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+          ...(diagnostic.httpStatus === undefined ? {} : { httpStatus: diagnostic.httpStatus }),
+          ...(diagnostic.requestId === undefined ? {} : { requestId: diagnostic.requestId }),
+          ...(diagnostic.response === undefined ? {} : { response: diagnostic.response })
+        },
+        "Report event delivery failed"
+      );
     }
   }
 }

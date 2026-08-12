@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { summarizeDiscordErrorBody } from "../src/transport.js";
+import { discordResponseRequestId, summarizeDiscordErrorBody } from "../src/transport.js";
 
 describe("Discord HTTP error sanitization", () => {
   it("extracts structured validation details", () => {
@@ -36,5 +36,9 @@ describe("Discord HTTP error sanitization", () => {
 
   it("does not retain unstructured response bodies", () => {
     expect(summarizeDiscordErrorBody("<html>proxy diagnostic</html>")).toBeUndefined();
+  });
+
+  it("keeps Discord request identifiers without retaining other headers", () => {
+    expect(discordResponseRequestId({ "x-request-id": "discord-request-1", cookie: "private" })).toBe("discord-request-1");
   });
 });

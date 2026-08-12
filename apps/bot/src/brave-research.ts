@@ -1,4 +1,5 @@
 import { botLog } from "./observability.js";
+import { readDiagnosticResponse } from "@discord-dsa/contracts";
 import type { AiRequestContext } from "./fireworks-client.js";
 import type { ReportDraft } from "./types.js";
 
@@ -355,14 +356,28 @@ export class BraveResearchClient {
       throw new BraveResearchError("network", "Brave could not be reached.", 0, true);
     }
     if (!response.ok) {
-      const kind = response.status === 429 ? "rate_limited" : "provider";
+      const failureKind = response.status === 429 ? "rate_limited" : "provider";
       const retryable = response.status === 429 || response.status >= 500;
+      const responseDiagnostic = await readDiagnosticResponse(response.clone(), [query]);
       botLog(
         "ai_search_http_failed",
-        { actorKey: actor.actorKey, httpStatus: response.status },
+        {
+          actorKey: actor.actorKey,
+          endpoint: kind === "term" ? "web_search" : "llm_context",
+          httpStatus: response.status,
+          kind,
+          method: kind === "term" ? "GET" : "POST",
+          provider: "brave",
+          queryCharacters: query.length,
+          queryWords: query.split(/\s+/).length,
+          requestParameterNames: kind === "term" ? "q,country,count" : "q,country,count,maximum_number_of_urls,maximum_number_of_tokens,maximum_number_of_tokens_per_url,context_threshold_mode,enable_source_metadata,enable_local,goggles",
+          response: responseDiagnostic,
+          ...(responseDiagnostic.requestId === undefined ? {} : { requestId: responseDiagnostic.requestId }),
+          ...(actor.traceId === undefined ? {} : { traceId: actor.traceId })
+        },
         "warn"
       );
-      throw new BraveResearchError(kind, "Brave search is unavailable.", 0, retryable);
+      throw new BraveResearchError(failureKind, "Brave search is unavailable.", 0, retryable);
     }
     try {
       return (await response.json()) as BraveWebResponse | BraveContextResponse;

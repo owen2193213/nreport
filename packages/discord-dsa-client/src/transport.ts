@@ -55,6 +55,11 @@ function parseRetryAfter(value: string | string[] | undefined): number | undefin
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
 }
 
+export function discordResponseRequestId(headers: Record<string, string | string[] | undefined>): string | undefined {
+  const value = headerValues(headers["x-request-id"] ?? headers["request-id"])[0];
+  return value?.slice(0, 200);
+}
+
 function safeDetail(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
   return value
@@ -212,14 +217,16 @@ export class UndiciJsonTransport implements JsonTransport {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       const retryAfterSeconds = parseRetryAfter(response.headers["retry-after"]);
       const responseSummary = summarizeDiscordErrorBody(responseText);
+      const requestId = discordResponseRequestId(response.headers);
       throw new DiscordDsaHttpError(
         `Discord returned HTTP ${response.statusCode} for ${requestOptions.method} ${url.pathname}.`,
         response.statusCode,
-        retryAfterSeconds === undefined && responseSummary === undefined
+        retryAfterSeconds === undefined && responseSummary === undefined && requestId === undefined
           ? undefined
           : {
               ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
-              ...(responseSummary === undefined ? {} : { responseSummary })
+              ...(responseSummary === undefined ? {} : { responseSummary }),
+              ...(requestId === undefined ? {} : { requestId })
             }
       );
     }

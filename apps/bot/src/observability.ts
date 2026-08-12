@@ -1,5 +1,5 @@
 interface LogFields {
-  [key: string]: boolean | number | string | null | undefined;
+  [key: string]: unknown;
 }
 
 type LogLevel = "info" | "warn" | "error";

@@ -247,6 +247,7 @@ describe("BraveResearchClient", () => {
   });
 
   it("does not retry permanent errors", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const request = vi.fn().mockResolvedValue(new Response("bad request", { status: 400 }));
     await expect(
       new BraveResearchClient("key", {
@@ -254,6 +255,23 @@ describe("BraveResearchClient", () => {
       }).search("law", "German law", "DE", Date.now() + 5_000, ACTOR)
     ).rejects.toMatchObject({ kind: "provider", searchRequests: 1 });
     expect(request).toHaveBeenCalledTimes(1);
+    const event: unknown = JSON.parse(String(write.mock.calls.find(([line]) => String(line).includes("ai_search_http_failed"))?.[0]));
+    expect(event).toMatchObject({ httpStatus: 400, provider: "brave", endpoint: "llm_context" });
+    write.mockRestore();
+  });
+
+  it("records Brave's redacted 422 response details", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "query is invalid: German law" }), {
+      status: 422,
+      headers: { "content-type": "application/json", "x-request-id": "brave-request-1" }
+    }));
+    await expect(new BraveResearchClient("key", { request: request as unknown as typeof fetch })
+      .search("law", "German law", "DE", Date.now() + 5_000, { ...ACTOR, traceId: "trace-1" }))
+      .rejects.toMatchObject({ kind: "provider" });
+    const event: unknown = JSON.parse(String(write.mock.calls.find(([line]) => String(line).includes("ai_search_http_failed"))?.[0]));
+    expect(event).toMatchObject({ traceId: "trace-1", httpStatus: 422, requestId: "brave-request-1", response: { body: { detail: "query is invalid: [redacted]" } } });
+    write.mockRestore();
   });
 
   it("rejects empty results and exhausted deadlines", async () => {

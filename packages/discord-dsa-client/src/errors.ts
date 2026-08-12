@@ -16,11 +16,12 @@ export class DiscordDsaHttpError extends DiscordDsaError {
   public readonly status: number;
   public readonly retryAfterSeconds?: number;
   public readonly responseSummary?: string;
+  public readonly requestId?: string;
 
   public constructor(
     message: string,
     status: number,
-    options?: ErrorOptions & { retryAfterSeconds?: number; responseSummary?: string }
+    options?: ErrorOptions & { retryAfterSeconds?: number; responseSummary?: string; requestId?: string }
   ) {
     super(message, options);
     this.name = "DiscordDsaHttpError";
@@ -31,6 +32,7 @@ export class DiscordDsaHttpError extends DiscordDsaError {
     if (options?.responseSummary !== undefined) {
       this.responseSummary = options.responseSummary;
     }
+    if (options?.requestId !== undefined) this.requestId = options.requestId;
   }
 }
 

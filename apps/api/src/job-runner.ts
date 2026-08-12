@@ -180,6 +180,7 @@ export function redactedError(error: unknown): RedactedError {
       ...(error.responseSummary === undefined
         ? {}
         : { discordResponseSummary: error.responseSummary }),
+      ...(error.requestId === undefined ? {} : { discordRequestId: error.requestId }),
       ...(error.retryAfterSeconds === undefined
         ? {}
         : { retryAfter: error.retryAfterSeconds })

@@ -1,4 +1,4 @@
-import { reportReasonLabel, reportReasons } from "@discord-dsa/contracts";
+import { createTraceId, reportReasonLabel, reportReasons } from "@discord-dsa/contracts";
 
 import {
   BraveResearchClient,
@@ -724,6 +724,7 @@ export class ReportWriter {
     actor: AiRequestContext,
     onProgress?: WriterProgressHandler
   ): Promise<WriterResult> {
+    actor = { ...actor, traceId: actor.traceId ?? createTraceId() };
     const draft = normalizedDraft(inputDraft);
     const deadline = Date.now() + WORKFLOW_TIMEOUT_MS;
     this.logWorkflowStarted(draft, actor, "generate");
@@ -870,6 +871,7 @@ export class ReportWriter {
     instruction: string,
     actor: AiRequestContext
   ): Promise<WriterResult> {
+    actor = { ...actor, traceId: actor.traceId ?? createTraceId() };
     if (
       !draft.country ||
       !draft.legalResearch ||

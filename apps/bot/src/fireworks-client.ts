@@ -1,3 +1,4 @@
+import { readDiagnosticResponse } from "@discord-dsa/contracts";
 import { botLog } from "./observability.js";
 import type { AiUsage } from "./types.js";
 
@@ -8,6 +9,7 @@ const REQUEST_TIMEOUT_MS = 45_000;
 export interface AiRequestContext {
   actorKey: string;
   userId: string;
+  traceId?: string;
 }
 
 export type FireworksStage = "plan" | "synthesize" | "refine";
@@ -115,7 +117,8 @@ export class FireworksClient {
 
       if (!response.ok) {
         const kind = response.status === 429 ? "rate_limited" : "provider";
-        this.logFailure(actor, stage, Date.now() - startedAt, kind, response.status);
+        const responseDiagnostic = await readDiagnosticResponse(response.clone(), [JSON.stringify(requestBody)]);
+        this.logFailure(actor, stage, Date.now() - startedAt, kind, response.status, responseDiagnostic, attempts);
         const retryable = response.status === 429 || response.status >= 500;
         if (attempts === 1 && retryable && deadline > Date.now()) continue;
         throw new FireworksClientError(
@@ -172,7 +175,9 @@ export class FireworksClient {
     stage: FireworksStage,
     latencyMs: number,
     failureCategory: FireworksClientErrorKind,
-    httpStatus?: number
+    httpStatus?: number,
+    response?: unknown,
+    attempts?: number
   ): void {
     botLog(
       "ai_request_failed",
@@ -182,7 +187,10 @@ export class FireworksClient {
         ...(httpStatus === undefined ? {} : { httpStatus }),
         latencyMs,
         model: this.model,
-        stage
+        stage,
+        ...(attempts === undefined ? {} : { attempts }),
+        ...(actor.traceId === undefined ? {} : { traceId: actor.traceId }),
+        ...(response === undefined ? {} : { response })
       },
       "warn"
     );

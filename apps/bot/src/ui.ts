@@ -6,7 +6,12 @@ import {
   reportReasonLabel,
   reportReasons
 } from "@discord-dsa/contracts";
-import type { CreateReportInput, ReportFlow, ReportView } from "@discord-dsa/contracts";
+import type {
+  CreateReportInput,
+  MessageEvidence,
+  ReportFlow,
+  ReportView
+} from "@discord-dsa/contracts";
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -577,6 +582,17 @@ function profileSnapshotText(snapshot: ReportDraft["reportedUserSnapshot"]): str
     .join("\n");
 }
 
+function messageAuthorText(evidence: MessageEvidence | undefined): string {
+  if (evidence?.status !== "captured") return "Author information unavailable.";
+  const snapshot = evidence.snapshot;
+  const display = snapshot.authorDisplayName ?? snapshot.authorUsername;
+  return `Reported user: ${truncate(display, 100)} (@${truncate(snapshot.authorUsername, 100)})\nDiscord ID: \`${snapshot.authorId}\``;
+}
+
+function messageAuthorAvatar(evidence: MessageEvidence | undefined): string | null {
+  return evidence?.status === "captured" ? evidence.snapshot.authorAvatarUrl : null;
+}
+
 export function buildProfileTargetConfirmation(
   draftId: string,
   draft: ReportDraft
@@ -691,6 +707,9 @@ export function buildReview(draftId: string, draft: ReportDraft): {
     .setTitle(`${FLOW_LABELS[draft.flow]} report`)
     .addFields(
       { name: "Item", value: truncate(targetSummary(draft), 1_000) },
+      ...(draft.flow === "message_urf"
+        ? [{ name: "Author info", value: messageAuthorText(draft.messageEvidence) }]
+        : []),
       { name: "Status", value: "Ready for review", inline: true },
       {
         name: "Category",
@@ -720,7 +739,11 @@ export function buildReview(draftId: string, draft: ReportDraft): {
       { name: "Appeal", value: "Not available until submission" }
     );
   embed.setFooter({ text: `${draft.context.length}/512 characters • Review carefully before submitting` });
-  if (draft.flow === "user_urf" && draft.reportedUserSnapshot?.avatarUrl) {
+  const messageAvatar =
+    draft.flow === "message_urf" ? messageAuthorAvatar(draft.messageEvidence) : null;
+  if (messageAvatar) {
+    embed.setThumbnail(messageAvatar);
+  } else if (draft.flow === "user_urf" && draft.reportedUserSnapshot?.avatarUrl) {
     embed.setThumbnail(draft.reportedUserSnapshot.avatarUrl);
   } else if (draft.serverSnapshot?.iconUrl) {
     embed.setThumbnail(draft.serverSnapshot.iconUrl);
@@ -1144,6 +1167,12 @@ export function reportEmbed(
     .setTitle(options.title ?? `${FLOW_LABELS[report.flow]} report`)
     .addFields(
       { name: "Item", value: truncate(reportTarget(report, snapshot), 1_024) },
+      ...(report.reportedDetails.kind === "message"
+        ? [{
+            name: "Author info",
+            value: messageAuthorText(report.reportedDetails.messageEvidence)
+          }]
+        : []),
       { name: "Status", value: statusLabel(currentStatus), inline: true },
       { name: "Category", value: category, inline: true },
       { name: "Country", value: countryDisplay(report.country), inline: true },
@@ -1219,7 +1248,13 @@ export function reportEmbed(
     report.reportedDetails.kind === "profile"
       ? report.reportedDetails.reportedUserSnapshot?.avatarUrl
       : null;
-  if (profileAvatar ?? snapshot?.iconUrl) embed.setThumbnail(profileAvatar ?? snapshot!.iconUrl!);
+  const messageAvatar =
+    report.reportedDetails.kind === "message"
+      ? messageAuthorAvatar(report.reportedDetails.messageEvidence)
+      : null;
+  if (messageAvatar ?? profileAvatar ?? snapshot?.iconUrl) {
+    embed.setThumbnail(messageAvatar ?? profileAvatar ?? snapshot!.iconUrl!);
+  }
   if (report.error) {
     embed.addFields({
       name: "Latest error",

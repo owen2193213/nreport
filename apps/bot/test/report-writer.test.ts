@@ -211,6 +211,11 @@ describe("Fireworks and Brave report writer", () => {
     expect(planning.messages[1]!.content).toContain("## Output");
     expect(planning.messages[1]!.content).toContain("## Examples");
     expect(planning.messages[1]!.content).not.toContain("hedging");
+    expect(planning.messages[1]!.content).toContain("generic, standalone searches");
+    expect(planning.messages[1]!.content).toContain("Germany laws on online threats");
+    expect(planning.messages[1]!.content).toContain(
+      "what does [slang] mean in online context"
+    );
     const planningSchema = embeddedSchema(planning.messages[1]!.content);
     expect(planningSchema.properties).not.toHaveProperty("country");
     expect(planningSchema.properties).not.toHaveProperty("reportType");

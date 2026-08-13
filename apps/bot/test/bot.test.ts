@@ -1074,7 +1074,8 @@ describe("report UI", () => {
       code: "discord_review_ineligible",
       message: "Discord says this DSA report is ineligible for review."
     };
-    report.appealRetryable = true;
+    report.appealRetryable = false;
+    report.resubmittable = true;
     report.timeline = [
       {
         eventId: "1",
@@ -1104,10 +1105,10 @@ describe("report UI", () => {
     expect(json.fields?.find((field) => field.name === "History")?.value).toMatch(
       /\*\*Appeal ineligible\*\*/
     );
-    expect(reportRetryComponents(report)[0]?.components[0]?.data).toMatchObject({
-      custom_id: `reports:retry-appeal:${report.internalReportId}`,
-      label: "Retry appeal"
-    });
+    expect(reportRetryComponents(report)[0]?.components.map((component) => component.data)).toEqual([
+      expect.objectContaining({ custom_id: `reports:retry:${report.internalReportId}`, label: "Send as is" }),
+      expect.objectContaining({ custom_id: `reports:rewrite:${report.internalReportId}`, label: "Rewrite & send" })
+    ]);
     expect(lifecycleReplyText("review_ineligible", report)).toBe(
       "Report ineligible for review. No appeal sent."
     );
@@ -1493,11 +1494,12 @@ describe("lifecycle notification deduplication", () => {
 });
 
 describe("report component responsiveness", () => {
-  it("retries an owned ineligible appeal and refreshes the private status", async () => {
+  it("rejects a stale retry-appeal button for an ineligible appeal", async () => {
     const ineligible = reportFixture();
     ineligible.discordStatus = "closed_no_action";
     ineligible.reviewStatus = "ineligible";
-    ineligible.appealRetryable = true;
+    ineligible.appealRetryable = false;
+    ineligible.resubmittable = true;
     const queued = reportFixture();
     queued.discordStatus = "closed_no_action";
     queued.reviewStatus = "queued";
@@ -1532,7 +1534,7 @@ describe("report component responsiveness", () => {
       user: { id: "1197857362942378017" },
       deferUpdate,
       editReply,
-      deferred: false,
+      deferred: true,
       replied: false
     } as unknown as Interaction;
 
@@ -1540,16 +1542,11 @@ describe("report component responsiveness", () => {
 
     expect(deferUpdate).toHaveBeenCalledOnce();
     expect(report).toHaveBeenCalledWith(ineligible.internalReportId);
-    expect(retryAppeal).toHaveBeenCalledWith(
-      ineligible.internalReportId,
-      "interaction-1",
-      "1197857362942378017"
-    );
+    expect(retryAppeal).not.toHaveBeenCalled();
     const payload = editReply.mock.calls[0]?.[0] as
       | { content?: string; components?: unknown[]; embeds?: unknown[] }
       | undefined;
-    expect(payload?.content).toBe("Appeal queued for another attempt.");
-    expect(JSON.stringify(payload)).not.toContain("reports:retry-appeal");
+    expect(JSON.stringify(payload)).toContain("no longer available for retry");
   });
 
   it("keeps the report card and offers a private cooldown message", async () => {
@@ -1724,7 +1721,7 @@ describe("report component responsiveness", () => {
       message: { id: "dm-message-1" },
       deferUpdate: vi.fn().mockResolvedValue(undefined),
       editReply,
-      deferred: false,
+      deferred: true,
       replied: false
     } as unknown as Interaction;
 

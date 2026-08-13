@@ -1332,6 +1332,20 @@ export function reportEmbed(
 export function reportRetryComponents(
   report: ReportView
 ): ActionRowBuilder<ButtonBuilder>[] {
+  if (report.resubmittable) {
+    return [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`reports:retry:${report.internalReportId}`)
+          .setLabel(report.reviewStatus === "ineligible" ? "Send as is" : "Resend same report")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`reports:rewrite:${report.internalReportId}`)
+          .setLabel(report.reviewStatus === "ineligible" ? "Rewrite & send" : "Rewrite & resend")
+          .setStyle(ButtonStyle.Secondary)
+      )
+    ];
+  }
   if (report.appealRetryable) {
     return [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -1339,20 +1353,6 @@ export function reportRetryComponents(
           .setCustomId(`reports:retry-appeal:${report.internalReportId}`)
           .setLabel("Retry appeal")
           .setStyle(ButtonStyle.Primary)
-      )
-    ];
-  }
-  if (report.resubmittable) {
-    return [
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`reports:retry:${report.internalReportId}`)
-          .setLabel("Resend same report")
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId(`reports:rewrite:${report.internalReportId}`)
-          .setLabel("Rewrite & resend")
-          .setStyle(ButtonStyle.Secondary)
       )
     ];
   }

@@ -798,6 +798,7 @@ export class InteractionHandler {
       flow: "message_urf",
       messageUrl: interaction.targetMessage.url,
       messageEvidence: capturedMessageEvidence(interaction.targetMessage, "context_menu"),
+      quickSubmit: true,
       sendToDms: true
     };
     this.applyDraftDefaults(draft, access.defaultCountry);
@@ -840,7 +841,7 @@ export class InteractionHandler {
   }
 
   private async submitQuickDraft(
-    interaction: MessageContextMenuCommandInteraction,
+    interaction: DraftDeliveryInteraction,
     draftId: string,
     draft: ReportDraft
   ): Promise<void> {
@@ -949,7 +950,7 @@ export class InteractionHandler {
   }
 
   private async deliverQuickResult(
-    interaction: MessageContextMenuCommandInteraction,
+    interaction: DraftDeliveryInteraction,
     draft: ReportDraft,
     report: ReportDetail
   ): Promise<void> {
@@ -985,7 +986,7 @@ export class InteractionHandler {
   }
 
   private async deliverQuickFailure(
-    interaction: MessageContextMenuCommandInteraction,
+    interaction: DraftDeliveryInteraction,
     draftId: string,
     draft: ReportDraft,
     description: string
@@ -1969,7 +1970,11 @@ export class InteractionHandler {
         );
         applyWriterResult(draft, result, "Regenerated");
         await this.replaceDraft(interaction.user.id, draftId, draft);
-        await this.deliverReview(interaction, draftId, draft);
+        if (draft.quickSubmit) {
+          await this.submitQuickDraft(interaction, draftId, draft);
+        } else {
+          await this.deliverReview(interaction, draftId, draft);
+        }
       } catch (error) {
         const canManualEdit = await this.preserveWriterCandidate(
           interaction.user.id,

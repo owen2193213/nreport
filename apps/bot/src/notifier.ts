@@ -14,7 +14,7 @@ import {
 } from "./notification-preferences.js";
 import type { ServerResolver } from "./server-resolver.js";
 import type { AiDecisionSummary, ServerSnapshot } from "./types.js";
-import { reportEmbed, reportRetryComponents } from "./ui.js";
+import { reportDecisionEmbed, reportEmbed, reportRetryComponents } from "./ui.js";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown notification error";
@@ -324,8 +324,19 @@ export class NotificationWorker {
             allowedMentions: { parse: [] }
           });
         }
+        const decision = reportDecisionEmbed(
+          job.payload.eventType,
+          report,
+          await this.snapshotFor(report, job.discord_user_id)
+        );
         const replyText = lifecycleReplyText(job.payload.eventType, report);
-        if (replyText !== null) {
+        if (decision !== null) {
+          await statusMessage.reply({
+            embeds: [decision],
+            components: [],
+            allowedMentions: { parse: [] }
+          });
+        } else if (replyText !== null) {
           await statusMessage.reply({
             content: replyText,
             components: shouldIncludeRetryComponents(job.payload.eventType) ? components : [],

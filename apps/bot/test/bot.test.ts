@@ -69,6 +69,7 @@ import {
   draftToCreateInput,
   generatedKeysEmbed,
   reportBrowser,
+  reportDecisionEmbed,
   reportEmbed,
   reportRetryComponents
 } from "../src/ui.js";
@@ -1304,8 +1305,8 @@ describe("lifecycle notification deduplication", () => {
 
     expect(edit).toHaveBeenCalledOnce();
     expect(reply).toHaveBeenCalledOnce();
-    const replyPayload = reply.mock.calls[0]?.[0] as { content: string } | undefined;
-    expect(replyPayload?.content).toContain("accepted");
+    const replyPayload = reply.mock.calls[0]?.[0] as { embeds?: unknown[] } | undefined;
+    expect(JSON.stringify(replyPayload?.embeds)).toContain("Report accepted");
     expect(send).not.toHaveBeenCalled();
     expect(completeNotification).toHaveBeenCalledWith("1");
   });
@@ -1653,6 +1654,20 @@ describe("report component responsiveness", () => {
     const replyJson = JSON.stringify(editReply.mock.calls[0]?.[0]);
     expect(replyJson).toContain("History");
     expect(replyJson).not.toContain("Check your DMs for the full status log.");
+  });
+
+  it("distinguishes report acceptance from appeal acceptance with target details", () => {
+    const direct = reportFixture();
+    const directJson = reportDecisionEmbed("discord:actioned", direct)?.toJSON();
+    expect(directJson?.title).toBe("Report accepted");
+    expect(JSON.stringify(directJson)).toContain("Example Display");
+    expect(JSON.stringify(directJson)).toContain("@example");
+    expect(JSON.stringify(directJson)).toContain("Captured message");
+
+    const appealed = reportFixture();
+    appealed.reviewStatus = "approved";
+    const appealJson = reportDecisionEmbed("discord:actioned", appealed)?.toJSON();
+    expect(appealJson?.title).toBe("Appeal accepted");
   });
 
   it("edits a DM retry card in place without replacing it with a DM notice", async () => {

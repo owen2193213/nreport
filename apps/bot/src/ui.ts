@@ -946,6 +946,66 @@ function reportTarget(report: ReportView, snapshot?: ServerSnapshot | null): str
   }
 }
 
+function decisionTitle(eventType: string, report: ReportView): string | null {
+  if (eventType === "discord:actioned") {
+    const appealed =
+      report.reviewStatus === "approved" ||
+      report.timeline.some((event) =>
+        ["review_requested", "review_received", "review_approved"].includes(event.type)
+      );
+    return appealed ? "Appeal accepted" : "Report accepted";
+  }
+  if (eventType === "discord:closed_no_action") return "Report denied";
+  if (eventType === "discord:review_not_approved") return "Appeal denied";
+  return null;
+}
+
+function decisionReportedUser(report: ReportView): string | null {
+  const details = report.reportedDetails;
+  if (details.kind === "message" && details.messageEvidence?.status === "captured") {
+    const author = details.messageEvidence.snapshot;
+    return `<@${author.authorId}>\n${messageAuthorText(details.messageEvidence)}`;
+  }
+  if (details.kind === "profile" && details.reportedUserSnapshot) {
+    return `<@${details.reportedUserSnapshot.userId}>\n${profileSnapshotText(details.reportedUserSnapshot)}`;
+  }
+  return null;
+}
+
+export function reportDecisionEmbed(
+  eventType: string,
+  report: ReportView,
+  snapshot?: ServerSnapshot | null
+): EmbedBuilder | null {
+  const title = decisionTitle(eventType, report);
+  if (title === null) return null;
+  const accepted = title.endsWith("accepted");
+  const embed = new EmbedBuilder()
+    .setColor(accepted ? Colors.Green : Colors.Red)
+    .setTitle(title)
+    .setDescription(
+      accepted
+        ? "Discord accepted this decision."
+        : "Discord did not accept this report or appeal."
+    )
+    .addFields(
+      { name: "Category", value: reasonText(report.flow, report.reportType, reportElements(report)) },
+      { name: "Reported item", value: truncate(reportTarget(report, snapshot), 1_024) }
+    );
+  const reportedUser = decisionReportedUser(report);
+  if (reportedUser) embed.addFields({ name: "Reported user", value: reportedUser });
+  if (
+    report.reportedDetails.kind === "message" &&
+    report.reportedDetails.messageEvidence?.status === "captured"
+  ) {
+    const excerpt = report.reportedDetails.messageEvidence.snapshot.content
+      .replace(/[\p{Cc}\p{Cf}]/gu, "")
+      .trim();
+    if (excerpt) embed.addFields({ name: "Message", value: codeBlock(truncate(excerpt, 300)) });
+  }
+  return embed;
+}
+
 function reportDetails(report: ReportView, snapshot?: ServerSnapshot | null): string {
   const details = report.reportedDetails;
   return (

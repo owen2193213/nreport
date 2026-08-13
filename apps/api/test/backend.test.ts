@@ -868,6 +868,28 @@ describe("manual appeal retry API", () => {
     workerEnabled: false
   };
 
+  it("makes a terminally ineligible appeal resubmittable instead of appeal-retryable", async () => {
+    const ineligible = reviewReport({ review_status: "ineligible" });
+    const database = {
+      getReport: () => Promise.resolve(ineligible),
+      getReportEvents: () => Promise.resolve([])
+    } as unknown as Database;
+    const server = await buildServer(config, database);
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/v1/reports/report-1",
+      headers: { authorization: `Bearer ${config.apiKey}` }
+    });
+    await server.close();
+
+    expect(response.json()).toMatchObject({
+      reviewStatus: "ineligible",
+      appealRetryable: false,
+      resubmittable: true
+    });
+  });
+
   it.each([
     [false, 202],
     [true, 200]

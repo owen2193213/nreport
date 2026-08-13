@@ -1827,7 +1827,8 @@ export class Database {
       }
       const failedRetry = report.status === "failed";
       const deniedReviewResubmission =
-        report.discord_status === "review_not_approved" &&
+        (report.discord_status === "review_not_approved" ||
+          report.review_status === "ineligible") &&
         report.retried_as_report_id === null;
       if (!failedRetry && !deniedReviewResubmission) {
         throw new ReportRetryError("report_not_failed");

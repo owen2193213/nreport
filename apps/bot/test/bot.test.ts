@@ -1655,6 +1655,73 @@ describe("report component responsiveness", () => {
     expect(replyJson).not.toContain("Check your DMs for the full status log.");
   });
 
+  it("edits a DM retry card in place without replacing it with a DM notice", async () => {
+    const failed = reportFixture();
+    failed.status = "failed";
+    failed.retryable = true;
+    failed.discordStatus = null;
+    const successor = reportFixture();
+    successor.internalReportId = "successor-report";
+    successor.status = "queued";
+    successor.discordStatus = null;
+    successor.retrySequence = 1;
+    const send = vi.fn();
+    const editStatus = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const handler = new InteractionHandler({
+      api: {
+        report: vi.fn().mockResolvedValue(failed),
+        retryReport: vi.fn().mockResolvedValue(successor)
+      } as unknown as DsaApi,
+      config: {
+        adminUserIds: new Set<string>(),
+        whitelistEnabled: false
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database: {
+        getAccess: vi.fn().mockResolvedValue({ suspended: false }),
+        trackRetryReport: vi.fn().mockResolvedValue("successor-tracking"),
+        statusDmMessageId: vi.fn().mockResolvedValue("dm-message-1"),
+        aiDecisions: vi.fn().mockResolvedValue([])
+      } as unknown as BotDatabase,
+      messageResolver: {} as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: {} as ReportWriter,
+      serverResolver: {} as ServerResolver
+    });
+    const interaction = {
+      id: "interaction-retry",
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => true,
+      isRepliable: () => true,
+      customId: `reports:retry:${failed.internalReportId}`,
+      user: {
+        id: "1197857362942378017",
+        send,
+        createDM: vi.fn().mockResolvedValue({
+          messages: { fetch: vi.fn().mockResolvedValue({ edit: editStatus }) }
+        })
+      },
+      message: { id: "dm-message-1" },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply,
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(editStatus).toHaveBeenCalledOnce();
+    expect(JSON.stringify(editReply.mock.calls[0]?.[0])).not.toContain(
+      "Check your DMs for the full status log."
+    );
+  });
+
   it("contains a secondary response failure after the original interaction error", async () => {
     const reply = vi.fn().mockRejectedValue(Object.assign(new Error("Unknown interaction"), {
       code: 10_062,

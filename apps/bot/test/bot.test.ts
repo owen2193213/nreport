@@ -1310,13 +1310,20 @@ describe("lifecycle notification deduplication", () => {
     expect(completeNotification).toHaveBeenCalledWith("1");
   });
 
-  it("uses the same full report embed for pre-submission failure DMs", async () => {
+  it("automatically creates a safe successor before notifying a pre-submission failure", async () => {
     const report = reportFixture();
     report.status = "failed";
     report.discordReportId = null;
     report.discordStatus = null;
     report.retryable = true;
     report.error = { code: "verification_email_timeout", message: "Verification timed out." };
+    const successor = reportFixture();
+    successor.internalReportId = "successor-report";
+    successor.status = "queued";
+    successor.discordStatus = null;
+    successor.retrySequence = 1;
+    const retryReport = vi.fn().mockResolvedValue(successor);
+    const trackRetryReport = vi.fn().mockResolvedValue("tracking-successor");
     const send = vi.fn().mockResolvedValue({ id: "failure-status-message" });
     const completeNotification = vi.fn().mockResolvedValue(undefined);
     const saveStatusDmMessageId = vi.fn().mockResolvedValue(undefined);
@@ -1348,6 +1355,7 @@ describe("lifecycle notification deduplication", () => {
       }),
       statusDmMessageId: vi.fn().mockResolvedValue(null),
       aiDecisions: vi.fn().mockResolvedValue([]),
+      trackRetryReport,
       saveStatusDmMessageId,
       completeNotification
     } as unknown as BotDatabase;
@@ -1355,7 +1363,8 @@ describe("lifecycle notification deduplication", () => {
       database,
       {
         lifecycleEvents: vi.fn().mockResolvedValue({ events: [] }),
-        report: vi.fn().mockResolvedValue(report)
+        report: vi.fn().mockResolvedValue(report),
+        retryReport
       } as unknown as DsaApi,
       {
         users: { fetch: vi.fn().mockResolvedValue({ send }) }
@@ -1372,10 +1381,23 @@ describe("lifecycle notification deduplication", () => {
       | undefined;
     expect(payload?.content).toBeUndefined();
     expect(payload?.embeds).toHaveLength(1);
-    expect(JSON.stringify(payload?.embeds)).toContain("Verification timed out.");
+    expect(retryReport).toHaveBeenCalledWith(
+      report.internalReportId,
+      `auto:${report.internalReportId}:1`,
+      "1197857362942378017",
+      {},
+      "automatic"
+    );
+    expect(trackRetryReport).toHaveBeenCalledWith(
+      report.internalReportId,
+      "1197857362942378017",
+      `auto:${report.internalReportId}:1`,
+      successor
+    );
+    expect(JSON.stringify(payload?.embeds)).not.toContain("Verification timed out.");
     expect(JSON.stringify(payload?.embeds)).toContain("History");
     expect(saveStatusDmMessageId).toHaveBeenCalledWith(
-      "tracking-2",
+      "tracking-successor",
       "failure-status-message"
     );
     expect(completeNotification).toHaveBeenCalledWith("2");

@@ -253,6 +253,12 @@ DeepSeek handles planning, synthesis, refinement, and repair. There is no OpenRo
 fallback. The bot validates every returned value locally. The complete generation workflow is
 capped at 90 seconds.
 
+Unicode evidence remains available to the model so it can identify obfuscation such as zero-width
+characters. The planner, synthesis, refinement, and repair prompts request printable ASCII-only
+prose, and the bot enforces that rule after parsing every AI-owned text field before validation or
+submission. Invisible and other non-ASCII output is removed rather than copied or rendered as a
+Unicode escape. This does not affect intentional bot UI Unicode, such as country flags and arrows.
+
 Generation starts with a strict-JSON plan. Fixed country, category, and reason values remain
 application-owned and are omitted from the planner output schema; only missing Auto fields may be
 selected. The bot merges those selections with fixed inputs into immutable resolved state. A
@@ -303,7 +309,9 @@ failure records an explicit unavailable state and does not invent author informa
 Captured evidence includes exact text, message/channel/server metadata, author identity and avatar,
 attachment filename/content type/size/URL/spoiler state, and embed title/description/URL. Attachment
 binaries are not downloaded. The API stores this structure in PostgreSQL `reports.input jsonb`;
-indexed author and message IDs support later analysis.
+indexed author and message IDs support later analysis. PostgreSQL cannot store the literal NUL
+character, so API validation removes only that character from free-form captured message and embed
+text before persistence; other Unicode, including zero-width characters, is retained.
 
 Message review, status, history, browser, and lifecycle-DM cards show **Author info** with the
 display name, `@username`, Discord ID, and author avatar thumbnail. Historical or inaccessible

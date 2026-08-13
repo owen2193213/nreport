@@ -395,7 +395,7 @@ describe("backend identity and validation", () => {
           authorDisplayName: "Example Display",
           authorAvatarUrl: "https://cdn.discordapp.com/avatar.png",
           authorBot: false,
-          content: "  Exact evidence with whitespace  ",
+          content: "  Exact e\u200Bvidence café 😀\u0000 with whitespace  ",
           createdAt: "2026-07-20T00:00:00.000Z",
           attachments: [{
             name: "evidence.png",
@@ -405,8 +405,8 @@ describe("backend identity and validation", () => {
             spoiler: true
           }],
           embeds: [{
-            title: "Evidence",
-            description: "Embedded text",
+            title: "E\u200Bvidence\u0000",
+            description: "Embedded café 😀\u0000 text",
             url: "https://example.test/e"
           }]
         }
@@ -419,7 +419,17 @@ describe("backend identity and validation", () => {
     expect(
       input.messageEvidence?.status === "captured" &&
         input.messageEvidence.snapshot.content
-    ).toBe("  Exact evidence with whitespace  ");
+    ).toBe("  Exact e\u200Bvidence café 😀 with whitespace  ");
+    if (input.messageEvidence?.status !== "captured") {
+      throw new Error("Expected captured message evidence.");
+    }
+    expect(input.messageEvidence.snapshot.embeds).toEqual([
+      {
+        title: "E\u200Bvidence",
+        description: "Embedded café 😀 text",
+        url: "https://example.test/e"
+      }
+    ]);
   });
 
   it("rejects message evidence that does not match its Discord link", () => {

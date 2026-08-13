@@ -111,6 +111,10 @@ function rawString(input: Record<string, unknown>, key: string, maximum: number)
   return value;
 }
 
+function evidenceString(input: Record<string, unknown>, key: string, maximum: number): string {
+  return rawString(input, key, maximum).replaceAll(String.fromCharCode(0), "");
+}
+
 function timestamp(input: Record<string, unknown>, key: string): string {
   const value = requiredString(input, key, 100);
   if (!Number.isFinite(Date.parse(value))) {
@@ -166,9 +170,9 @@ function reportedMessageSnapshot(value: unknown): ReportedMessageSnapshot {
   const embeds = embedsValue.map((value) => {
     const embed = record(value);
     return {
-      title: embed.title === null ? null : rawString(embed, "title", 256),
+      title: embed.title === null ? null : evidenceString(embed, "title", 256),
       description:
-        embed.description === null ? null : rawString(embed, "description", 4_096),
+        embed.description === null ? null : evidenceString(embed, "description", 4_096),
       url: httpsUrl(embed, "url", true)
     };
   });
@@ -186,7 +190,7 @@ function reportedMessageSnapshot(value: unknown): ReportedMessageSnapshot {
     authorDisplayName: nullableString(input, "authorDisplayName", 100),
     authorAvatarUrl: httpsUrl(input, "authorAvatarUrl", true),
     authorBot: input.authorBot,
-    content: rawString(input, "content", 4_000),
+    content: evidenceString(input, "content", 4_000),
     createdAt: timestamp(input, "createdAt"),
     attachments,
     embeds

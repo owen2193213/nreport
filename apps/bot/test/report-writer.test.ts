@@ -653,6 +653,73 @@ describe("Fireworks and Brave report writer", () => {
     expect(serialized).not.toContain("private-evidence.png");
   });
 
+  it("preserves Unicode evidence for analysis while removing it from AI-generated prose", async () => {
+    const messageDraft: ReportDraft = {
+      ...draft(),
+      flow: "message_urf",
+      countrySelection: "auto",
+      messageUrl: "https://discord.com/channels/111111111111111111/222222222222222222/333333333333333333",
+      messageEvidence: {
+        source: "context_menu",
+        status: "captured",
+        capturedAt: "2026-08-09T00:00:01.000Z",
+        snapshot: {
+          messageId: "333333333333333333",
+          channelId: "222222222222222222",
+          channelName: "channel",
+          serverId: "111111111111111111",
+          serverName: "server",
+          authorId: "123456789012345678",
+          authorUsername: "example",
+          authorDisplayName: null,
+          authorAvatarUrl: null,
+          authorBot: false,
+          content: "h\u200Bate café 😀\u0000",
+          createdAt: "2026-08-09T00:00:00.000Z",
+          attachments: [],
+          embeds: []
+        }
+      }
+    };
+    delete messageDraft.country;
+    delete messageDraft.reportType;
+    delete messageDraft.reportBrief;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        fireworks(
+          plan({
+            country: "IE",
+            reportType: "sub_other_hate_speech",
+            reportReason: "h\u200Bateful café 😀\u0000 content",
+            provisionalLawReference: "Ireland law 😀"
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        fireworks(
+          completed({
+            lawReference: "Ireland law 😀",
+            researchSummary: "Prohibits hateful café content.",
+            report: "The h\\u200Bateful message 😀 violates Irish law."
+          })
+        )
+      );
+
+    const result = await writer(request).generate(messageDraft, ACTOR);
+    const planning = bodyAt<{ messages: Array<{ content: string }> }>(request, 0);
+
+    expect(planning.messages.at(-1)?.content).toContain("h\u200Bate café 😀\\u0000");
+    expect(result.reportReason).toBe("hateful caf  content");
+    expect(result.legalResearch.lawReference).toBe("Ireland law");
+    expect(result.legalResearch.summary).toBe("Prohibits hateful caf content.");
+    expect(result.report).toBe("The hateful message  violates Irish law.");
+    expect(result.report).toMatch(/^[\x20-\x7E]+$/);
+    expect(result.conversation.at(-1)?.content).toBe(
+      JSON.stringify({ report: "The hateful message  violates Irish law." })
+    );
+  });
+
   it("refines through Fireworks without searching or changing research", async () => {
     const reportDraft = draft();
     reportDraft.legalResearch = {

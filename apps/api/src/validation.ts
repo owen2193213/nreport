@@ -5,6 +5,7 @@ import type {
   ReportedMessageSnapshot,
   ReportedUserSnapshot,
   ReportFlow,
+  ReportRetryMode,
   UserProfileElement
 } from "@discord-dsa/contracts";
 import { supportedCountries } from "./pseudonyms.js";
@@ -61,6 +62,7 @@ export type CreateReportInput =
 
 export interface RetryReportInput {
   submitterDiscordUserId: string;
+  mode: ReportRetryMode;
   reportReason?: string;
   context?: string;
 }
@@ -394,10 +396,15 @@ export function parseRetryReportInput(value: unknown): RetryReportInput {
   if (!/^\d{15,22}$/.test(submitterDiscordUserId)) {
     throw new Error("submitterDiscordUserId must be a Discord snowflake.");
   }
+  const modeValue = input.mode ?? "manual";
+  if (modeValue !== "automatic" && modeValue !== "manual") {
+    throw new Error("mode must be automatic or manual.");
+  }
   const reportReason = optionalString(input, "reportReason", 512);
   const context = optionalString(input, "context", 512);
   return {
     submitterDiscordUserId,
+    mode: modeValue,
     ...(reportReason === undefined ? {} : { reportReason }),
     ...(context === undefined ? {} : { context })
   };

@@ -238,6 +238,7 @@ export interface RetryReportRecord {
   input: CreateReportInput;
   requestHash: string;
   hasOverrides: boolean;
+  mode: "automatic" | "manual";
 }
 
 export interface RetryReportResult {
@@ -1834,8 +1835,35 @@ export class Database {
       if (failedRetry && !report.retryable) {
         throw new ReportRetryError("report_not_retryable");
       }
+      if (
+        record.mode === "automatic" &&
+        (report.error_code === "discord_receipt_timeout" || report.retry_sequence >= 2)
+      ) {
+        throw new ReportRetryError("report_not_retryable");
+      }
       if (failedRetry && record.hasOverrides) {
         throw new ReportRetryError("report_not_retryable");
+      }
+      if (record.mode === "manual" && report.error_code === "discord_receipt_timeout") {
+        const priorTimeout = await client.query<{ exists: boolean }>(
+          `WITH RECURSIVE ancestors AS (
+             SELECT retry_of_report_id FROM reports WHERE id = $1
+             UNION ALL
+             SELECT parent.retry_of_report_id
+             FROM reports parent
+             JOIN ancestors child ON parent.id = child.retry_of_report_id
+             WHERE child.retry_of_report_id IS NOT NULL
+           )
+           SELECT EXISTS (
+             SELECT 1 FROM reports
+             WHERE id IN (SELECT retry_of_report_id FROM ancestors)
+               AND error_code = 'discord_receipt_timeout'
+           ) AS exists`,
+          [report.id]
+        );
+        if (priorTimeout.rows[0]?.exists) {
+          throw new ReportRetryError("report_not_retryable");
+        }
       }
       const nextSequence = report.retry_sequence + 1;
       const inserted = await client.query<ReportRow>(

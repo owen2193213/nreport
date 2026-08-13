@@ -72,4 +72,31 @@ describe("report contracts", () => {
       submitterDiscordUserId: "1197857362942378017"
     });
   });
+
+  it("sends an explicit automatic mode for automatic report retries", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ internalReportId: "report-2" }), {
+        status: 202,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    const api = new DsaApi({
+      baseUrl: "https://api.example.test",
+      apiKey: "secret",
+      fetch: fetchMock
+    });
+
+    await api.retryReport(
+      "report-1",
+      "auto:event-1",
+      "1197857362942378017",
+      {},
+      "automatic"
+    );
+
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toEqual({
+      submitterDiscordUserId: "1197857362942378017",
+      mode: "automatic"
+    });
+  });
 });

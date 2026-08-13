@@ -611,7 +611,19 @@ describe("backend identity and validation", () => {
     expect(DISCORD_REVIEW_CONFIRMATION_TIMEOUT_SECONDS).toBe(120);
     expect(
       parseRetryReportInput({ submitterDiscordUserId: "1197857362942378017" })
-    ).toEqual({ submitterDiscordUserId: "1197857362942378017" });
+    ).toEqual({ submitterDiscordUserId: "1197857362942378017", mode: "manual" });
+    expect(
+      parseRetryReportInput({
+        submitterDiscordUserId: "1197857362942378017",
+        mode: "automatic"
+      })
+    ).toEqual({ submitterDiscordUserId: "1197857362942378017", mode: "automatic" });
+    expect(() =>
+      parseRetryReportInput({
+        submitterDiscordUserId: "1197857362942378017",
+        mode: "unsafe"
+      })
+    ).toThrow(/mode/);
     expect(() =>
       parseRetryReportInput({ submitterDiscordUserId: "invalid" })
     ).toThrow(/Discord snowflake/);
@@ -623,6 +635,7 @@ describe("backend identity and validation", () => {
       })
     ).toEqual({
       submitterDiscordUserId: "1197857362942378017",
+      mode: "manual",
       reportReason: "A clearer replacement reason.",
       context: "A rewritten final report."
     });

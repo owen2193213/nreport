@@ -384,7 +384,8 @@ export async function buildServer(config: AppConfig, database: Database) {
           input: retryInput,
           requestHash: sha256Hex(JSON.stringify(retryInput)),
           hasOverrides:
-            input.reportReason !== undefined || input.context !== undefined
+            input.reportReason !== undefined || input.context !== undefined,
+          mode: input.mode
         });
         request.log.info(
           {

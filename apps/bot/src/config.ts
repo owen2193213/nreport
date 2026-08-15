@@ -78,7 +78,7 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     braveSearchApiKey: required(env, "BRAVE_SEARCH_API_KEY"),
     fireworksApiKey: required(env, "FIREWORKS_API_KEY"),
     fireworksModel:
-      env.FIREWORKS_MODEL?.trim() || "accounts/fireworks/models/deepseek-v4-flash",
+      env.FIREWORKS_MODEL?.trim() || "accounts/fireworks/models/deepseek-v4-flash-0731",
     port: port(env.PORT),
     token: required(env, "DISCORD_BOT_TOKEN"),
     whitelistEnabled: env.WHITELIST_ENABLED !== "false",

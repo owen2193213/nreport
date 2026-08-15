@@ -22,7 +22,7 @@ function environment(): NodeJS.ProcessEnv {
 describe("bot configuration", () => {
   it("requires Fireworks and Brave keys and defaults to DeepSeek V4 Flash", () => {
     const config = loadBotConfig(environment());
-    expect(config.fireworksModel).toBe("accounts/fireworks/models/deepseek-v4-flash");
+    expect(config.fireworksModel).toBe("accounts/fireworks/models/deepseek-v4-flash-0731");
 
     const withoutFireworks = environment();
     delete withoutFireworks.FIREWORKS_API_KEY;

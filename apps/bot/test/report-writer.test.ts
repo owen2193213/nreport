@@ -151,7 +151,7 @@ function writer(
 ): ReportWriter {
   return new ReportWriter(
     "fireworks-secret",
-    "accounts/fireworks/models/deepseek-v4-flash",
+    "accounts/fireworks/models/deepseek-v4-flash-0731",
     "brave-secret",
     COUNTRIES,
     {

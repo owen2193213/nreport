@@ -7,7 +7,7 @@ import {
 } from "../src/fireworks-client.js";
 
 const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
-const MODEL = "accounts/fireworks/models/deepseek-v4-flash";
+const MODEL = "accounts/fireworks/models/deepseek-v4-flash-0731";
 
 function success(
   content = '{"ok":true}',

@@ -248,7 +248,7 @@ disables further aggregate DM attempts without stopping report processing.
 
 The bot calls Fireworks and Brave directly; the API and low-level Discord client never receive the
 reporter's brief or AI context. `FIREWORKS_API_KEY` and `BRAVE_SEARCH_API_KEY` are required, and
-`FIREWORKS_MODEL` defaults to `accounts/fireworks/models/deepseek-v4-flash`. Fireworks-hosted
+`FIREWORKS_MODEL` defaults to `accounts/fireworks/models/deepseek-v4-flash-0731`. Fireworks-hosted
 DeepSeek handles planning, synthesis, refinement, and repair. There is no OpenRouter or model
 fallback. The bot validates every returned value locally. The complete generation workflow is
 capped at 90 seconds.
@@ -693,7 +693,7 @@ same immutable audit relationship as failure retries.
   appeal submission failures through a fresh same-country proxy. Initial report submission remains
   non-retryable after its final POST starts because it has no equivalent duplicate guard.
 - Chosen: call Fireworks directly with configurable
-  `accounts/fireworks/models/deepseek-v4-flash` for planning, synthesis, refinement, and repair. No
+  `accounts/fireworks/models/deepseek-v4-flash-0731` for planning, synthesis, refinement, and repair. No
   model fallback is used. One
   retry handles network errors, rate limits, and server failures within the workflow deadline;
   refusals, malformed provider payloads, and token-limit completions remain terminal. Malformed or

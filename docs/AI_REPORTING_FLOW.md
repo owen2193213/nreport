@@ -168,7 +168,7 @@ The bot merges any planner-selected Auto values with fixed inputs into one resol
 
 ```text
 Provider: Fireworks
-Default model: accounts/fireworks/models/deepseek-v4-flash
+Default model: accounts/fireworks/models/deepseek-v4-flash-0731
 reasoning_effort: high
 max_completion_tokens: 8192
 stream: false

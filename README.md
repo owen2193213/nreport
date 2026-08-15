@@ -95,7 +95,7 @@ uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypt
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
 the global commands automatically. Set `FIREWORKS_API_KEY` and `BRAVE_SEARCH_API_KEY` for the
 bot-side report writer; `FIREWORKS_MODEL` defaults to
-`accounts/fireworks/models/deepseek-v4-flash`.
+`accounts/fireworks/models/deepseek-v4-flash-0731`.
 
 The first Fireworks DeepSeek call resolves omitted Auto fields and decides independently whether
 the evidence needs terminology research, legal research, both, or neither. The bot runs only the

@@ -77,7 +77,7 @@ The bot needs only these reporting-service variables:
 DSA_API_BASE_URL=https://discord-dsa-production.up.railway.app
 DSA_API_KEY=<same API_KEY configured on the Railway API service>
 FIREWORKS_API_KEY=<bot-only Fireworks key>
-FIREWORKS_MODEL=accounts/fireworks/models/deepseek-v4-flash
+FIREWORKS_MODEL=accounts/fireworks/models/deepseek-v4-flash-0731
 BRAVE_SEARCH_API_KEY=<bot-only Brave Search key>
 ```
 

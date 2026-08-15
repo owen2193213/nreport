@@ -611,7 +611,19 @@ describe("backend identity and validation", () => {
     expect(DISCORD_REVIEW_CONFIRMATION_TIMEOUT_SECONDS).toBe(120);
     expect(
       parseRetryReportInput({ submitterDiscordUserId: "1197857362942378017" })
-    ).toEqual({ submitterDiscordUserId: "1197857362942378017" });
+    ).toEqual({ submitterDiscordUserId: "1197857362942378017", mode: "manual" });
+    expect(
+      parseRetryReportInput({
+        submitterDiscordUserId: "1197857362942378017",
+        mode: "automatic"
+      })
+    ).toEqual({ submitterDiscordUserId: "1197857362942378017", mode: "automatic" });
+    expect(() =>
+      parseRetryReportInput({
+        submitterDiscordUserId: "1197857362942378017",
+        mode: "unsafe"
+      })
+    ).toThrow(/mode/);
     expect(() =>
       parseRetryReportInput({ submitterDiscordUserId: "invalid" })
     ).toThrow(/Discord snowflake/);
@@ -623,6 +635,7 @@ describe("backend identity and validation", () => {
       })
     ).toEqual({
       submitterDiscordUserId: "1197857362942378017",
+      mode: "manual",
       reportReason: "A clearer replacement reason.",
       context: "A rewritten final report."
     });
@@ -854,6 +867,28 @@ describe("manual appeal retry API", () => {
     webhookSecret: "w".repeat(32),
     workerEnabled: false
   };
+
+  it("makes a terminally ineligible appeal resubmittable instead of appeal-retryable", async () => {
+    const ineligible = reviewReport({ review_status: "ineligible" });
+    const database = {
+      getReport: () => Promise.resolve(ineligible),
+      getReportEvents: () => Promise.resolve([])
+    } as unknown as Database;
+    const server = await buildServer(config, database);
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/v1/reports/report-1",
+      headers: { authorization: `Bearer ${config.apiKey}` }
+    });
+    await server.close();
+
+    expect(response.json()).toMatchObject({
+      reviewStatus: "ineligible",
+      appealRetryable: false,
+      resubmittable: true
+    });
+  });
 
   it.each([
     [false, 202],

@@ -11,6 +11,7 @@ import type {
 } from "@discord-dsa/contracts";
 
 export interface ReportDraft {
+  quickSubmit?: boolean;
   aiDisabled?: boolean;
   aiDecisions?: AiDecisionSummary[];
   sendToDms?: boolean;

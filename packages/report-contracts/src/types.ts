@@ -12,6 +12,7 @@ export const REPORT_STATUSES = [
   "failed"
 ] as const;
 export type ReportStatus = (typeof REPORT_STATUSES)[number];
+export type ReportRetryMode = "automatic" | "manual";
 
 export const DISCORD_REPORT_STATUSES = [
   "received",

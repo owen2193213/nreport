@@ -64,9 +64,10 @@ function publicReportSummary(report: ReportRow): ReportSummary {
       report.review_error_code === null
         ? null
         : { code: report.review_error_code, message: report.review_error_message },
-    appealRetryable: report.review_status === "ineligible",
+    appealRetryable: false,
     resubmittable:
-      report.discord_status === "review_not_approved" &&
+      (report.discord_status === "review_not_approved" ||
+        report.review_status === "ineligible") &&
       report.retried_as_report_id === null,
     error:
       report.error_code === null
@@ -384,7 +385,8 @@ export async function buildServer(config: AppConfig, database: Database) {
           input: retryInput,
           requestHash: sha256Hex(JSON.stringify(retryInput)),
           hasOverrides:
-            input.reportReason !== undefined || input.context !== undefined
+            input.reportReason !== undefined || input.context !== undefined,
+          mode: input.mode
         });
         request.log.info(
           {

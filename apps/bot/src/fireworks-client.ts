@@ -111,7 +111,7 @@ export class FireworksClient {
         });
       } catch {
         this.logFailure(actor, stage, Date.now() - startedAt, "network");
-        if (attempts === 1 && deadline > Date.now()) continue;
+        if (attempts < 3 && deadline > Date.now()) continue;
         throw new FireworksClientError("network", "Fireworks could not be reached.");
       }
 
@@ -120,7 +120,7 @@ export class FireworksClient {
         const responseDiagnostic = await readDiagnosticResponse(response.clone(), [JSON.stringify(requestBody)]);
         this.logFailure(actor, stage, Date.now() - startedAt, kind, response.status, responseDiagnostic, attempts);
         const retryable = response.status === 429 || response.status >= 500;
-        if (attempts === 1 && retryable && deadline > Date.now()) continue;
+        if (attempts < 3 && retryable && deadline > Date.now()) continue;
         throw new FireworksClientError(
           kind,
           response.status === 429 ? "Fireworks is rate limited." : "Fireworks is unavailable."

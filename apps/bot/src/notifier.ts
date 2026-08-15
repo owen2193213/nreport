@@ -14,7 +14,7 @@ import {
 } from "./notification-preferences.js";
 import type { ServerResolver } from "./server-resolver.js";
 import type { AiDecisionSummary, ServerSnapshot } from "./types.js";
-import { reportEmbed, reportRetryComponents } from "./ui.js";
+import { reportDecisionEmbed, reportEmbed, reportRetryComponents } from "./ui.js";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown notification error";
@@ -249,6 +249,42 @@ export class NotificationWorker {
           });
           continue;
         }
+        let report: ReportDetail | undefined;
+        let trackingId = job.tracking_id;
+        if (job.payload.eventType === "report_failed") {
+          report = await this.api.report(job.payload.internalReportId);
+        }
+        if (
+          report !== undefined &&
+          !job.experimental_batch_item_id &&
+          report.status === "failed" &&
+          report.retryable &&
+          report.retrySequence < 2 &&
+          report.error?.code !== "discord_receipt_timeout"
+        ) {
+          const automaticIdentity = `auto:${report.internalReportId}:${report.retrySequence + 1}`;
+          const successor = await this.api.retryReport(
+            report.internalReportId,
+            automaticIdentity,
+            job.discord_user_id,
+            {},
+            "automatic"
+          );
+          trackingId = await this.database.trackRetryReport(
+            report.internalReportId,
+            job.discord_user_id,
+            automaticIdentity,
+            successor
+          );
+          botLog("report_automatic_retry_created", {
+            trackingId,
+            previousTrackingId: job.tracking_id,
+            reportId: successor.internalReportId,
+            previousReportId: report.internalReportId,
+            retrySequence: successor.retrySequence
+          });
+          report = successor;
+        }
         const category = notificationCategory(job.payload.eventType);
         const preferences = await this.database.getNotificationPreferences(job.discord_user_id);
         if (category === null || !allowsLifecycleNotification(job.payload.eventType, preferences)) {
@@ -256,6 +292,7 @@ export class NotificationWorker {
           botLog("notification_send_suppressed", { notificationId: job.id, category });
           continue;
         }
+        report ??= await this.api.report(job.payload.internalReportId);
         botLog("notification_send_started", {
           notificationId: job.id,
           trackingId: job.tracking_id,
@@ -263,24 +300,23 @@ export class NotificationWorker {
           eventType: job.payload.eventType,
           deliveryAttempt: job.attempts
         });
-        const report = await this.api.report(job.payload.internalReportId);
         const user = await this.client.users.fetch(job.discord_user_id);
         const components = reportRetryComponents(report);
-        const aiDecisions = await this.database.aiDecisions(job.tracking_id);
+        const aiDecisions = await this.database.aiDecisions(trackingId);
         const embed = renderNotification(
           report,
           await this.snapshotFor(report, job.discord_user_id),
           job.payload.eventType,
           aiDecisions
         );
-        let statusMessage = await this.storedStatusMessage(user, job.tracking_id);
+        let statusMessage = await this.storedStatusMessage(user, trackingId);
         if (statusMessage === null) {
           statusMessage = await user.send({
             embeds: [embed],
             components,
             allowedMentions: { parse: [] }
           });
-          await this.database.saveStatusDmMessageId(job.tracking_id, statusMessage.id);
+          await this.database.saveStatusDmMessageId(trackingId, statusMessage.id);
         } else {
           await statusMessage.edit({
             embeds: [embed],
@@ -288,8 +324,19 @@ export class NotificationWorker {
             allowedMentions: { parse: [] }
           });
         }
+        const decision = reportDecisionEmbed(
+          job.payload.eventType,
+          report,
+          await this.snapshotFor(report, job.discord_user_id)
+        );
         const replyText = lifecycleReplyText(job.payload.eventType, report);
-        if (replyText !== null) {
+        if (decision !== null) {
+          await statusMessage.reply({
+            embeds: [decision],
+            components: [],
+            allowedMentions: { parse: [] }
+          });
+        } else if (replyText !== null) {
           await statusMessage.reply({
             content: replyText,
             components: shouldIncludeRetryComponents(job.payload.eventType) ? components : [],

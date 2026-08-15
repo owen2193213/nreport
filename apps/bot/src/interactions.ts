@@ -431,13 +431,26 @@ export class InteractionHandler {
     trackingId?: string
   ): Promise<boolean> {
     try {
-      if (trackingId && (await this.database.statusDmMessageId(trackingId))) return true;
       const aiDecisions = trackingId ? await this.database.aiDecisions(trackingId) : [];
-      const message = await user.send({
+      const payload = {
         embeds: [reportEmbed(report, snapshot, { history: "full", aiDecisions })],
         components: reportRetryComponents(report),
         allowedMentions: { parse: [] }
-      });
+      };
+      const existingMessageId = trackingId
+        ? await this.database.statusDmMessageId(trackingId)
+        : null;
+      if (existingMessageId) {
+        const channel = await user.createDM();
+        try {
+          const existing = await channel.messages.fetch(existingMessageId);
+          await existing.edit(payload);
+          return true;
+        } catch (error) {
+          if (!(error instanceof DiscordAPIError) || error.code !== 10_008) throw error;
+        }
+      }
+      const message = await user.send(payload);
       if (trackingId) await this.database.saveStatusDmMessageId(trackingId, message.id);
       return true;
     } catch (error) {
@@ -785,6 +798,7 @@ export class InteractionHandler {
       flow: "message_urf",
       messageUrl: interaction.targetMessage.url,
       messageEvidence: capturedMessageEvidence(interaction.targetMessage, "context_menu"),
+      quickSubmit: true,
       sendToDms: true
     };
     this.applyDraftDefaults(draft, access.defaultCountry);
@@ -827,7 +841,7 @@ export class InteractionHandler {
   }
 
   private async submitQuickDraft(
-    interaction: MessageContextMenuCommandInteraction,
+    interaction: DraftDeliveryInteraction,
     draftId: string,
     draft: ReportDraft
   ): Promise<void> {
@@ -936,7 +950,7 @@ export class InteractionHandler {
   }
 
   private async deliverQuickResult(
-    interaction: MessageContextMenuCommandInteraction,
+    interaction: DraftDeliveryInteraction,
     draft: ReportDraft,
     report: ReportDetail
   ): Promise<void> {
@@ -972,7 +986,7 @@ export class InteractionHandler {
   }
 
   private async deliverQuickFailure(
-    interaction: MessageContextMenuCommandInteraction,
+    interaction: DraftDeliveryInteraction,
     draftId: string,
     draft: ReportDraft,
     description: string
@@ -1811,6 +1825,8 @@ export class InteractionHandler {
       const retry = await this.retryAsNewReport(parts[2], interaction.id, interaction.user.id);
       const retried = retry.report;
       const snapshot = await this.snapshotFor(retried, interaction.user.id);
+      const sourceIsStatusDm =
+        interaction.message.id === await this.database.statusDmMessageId(retry.trackingId);
       const dmSent = await this.sendReportDm(
         interaction.user,
         retried,
@@ -1821,7 +1837,11 @@ export class InteractionHandler {
         content: dmSent
           ? null
           : "I could not send the full status log to your DMs. Check your privacy settings.",
-        embeds: [reportEmbed(retried, snapshot, { history: "dm_notice" })],
+        embeds: [
+          reportEmbed(retried, snapshot, {
+            history: sourceIsStatusDm ? "full" : "dm_notice"
+          })
+        ],
         components: reportRetryComponents(retried),
         allowedMentions: { parse: [] }
       });
@@ -1950,7 +1970,11 @@ export class InteractionHandler {
         );
         applyWriterResult(draft, result, "Regenerated");
         await this.replaceDraft(interaction.user.id, draftId, draft);
-        await this.deliverReview(interaction, draftId, draft);
+        if (draft.quickSubmit) {
+          await this.submitQuickDraft(interaction, draftId, draft);
+        } else {
+          await this.deliverReview(interaction, draftId, draft);
+        }
       } catch (error) {
         const canManualEdit = await this.preserveWriterCandidate(
           interaction.user.id,
@@ -2190,7 +2214,8 @@ export class InteractionHandler {
           : "I could not send the full status log to your DMs. Check your privacy settings.",
         embeds: [
           reportEmbed(report, draft.serverSnapshot, {
-            history: "dm_notice",
+            history:
+              interaction.message.id === draft.reviewDmMessageId ? "full" : "dm_notice",
             aiDecisions: draft.aiDecisions ?? []
           })
         ],

@@ -155,9 +155,10 @@ describe("FireworksClient", () => {
     ).rejects.toMatchObject({ kind });
   });
 
-  it.each([429, 500])("retries transient HTTP %s failures once", async (status) => {
+  it.each([429, 500])("retries transient HTTP %s failures up to three attempts", async (status) => {
     const request = vi
       .fn()
+      .mockResolvedValueOnce(new Response("temporary", { status }))
       .mockResolvedValueOnce(new Response("temporary", { status }))
       .mockResolvedValueOnce(success());
 
@@ -165,13 +166,14 @@ describe("FireworksClient", () => {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(3);
     expect(result.content).toBe('{"ok":true}');
   });
 
-  it("retries a transient network failure once", async () => {
+  it("retries transient network failures up to three attempts", async () => {
     const request = vi
       .fn()
+      .mockRejectedValueOnce(new Error("temporary network failure"))
       .mockRejectedValueOnce(new Error("temporary network failure"))
       .mockResolvedValueOnce(success());
 
@@ -179,7 +181,7 @@ describe("FireworksClient", () => {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(3);
     expect(result.content).toBe('{"ok":true}');
   });
 

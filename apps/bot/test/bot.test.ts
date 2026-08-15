@@ -69,6 +69,7 @@ import {
   draftToCreateInput,
   generatedKeysEmbed,
   reportBrowser,
+  reportDecisionEmbed,
   reportEmbed,
   reportRetryComponents
 } from "../src/ui.js";
@@ -1073,7 +1074,8 @@ describe("report UI", () => {
       code: "discord_review_ineligible",
       message: "Discord says this DSA report is ineligible for review."
     };
-    report.appealRetryable = true;
+    report.appealRetryable = false;
+    report.resubmittable = true;
     report.timeline = [
       {
         eventId: "1",
@@ -1103,10 +1105,10 @@ describe("report UI", () => {
     expect(json.fields?.find((field) => field.name === "History")?.value).toMatch(
       /\*\*Appeal ineligible\*\*/
     );
-    expect(reportRetryComponents(report)[0]?.components[0]?.data).toMatchObject({
-      custom_id: `reports:retry-appeal:${report.internalReportId}`,
-      label: "Retry appeal"
-    });
+    expect(reportRetryComponents(report)[0]?.components.map((component) => component.data)).toEqual([
+      expect.objectContaining({ custom_id: `reports:retry:${report.internalReportId}`, label: "Send as is" }),
+      expect.objectContaining({ custom_id: `reports:rewrite:${report.internalReportId}`, label: "Rewrite & send" })
+    ]);
     expect(lifecycleReplyText("review_ineligible", report)).toBe(
       "Report ineligible for review. No appeal sent."
     );
@@ -1304,19 +1306,26 @@ describe("lifecycle notification deduplication", () => {
 
     expect(edit).toHaveBeenCalledOnce();
     expect(reply).toHaveBeenCalledOnce();
-    const replyPayload = reply.mock.calls[0]?.[0] as { content: string } | undefined;
-    expect(replyPayload?.content).toContain("accepted");
+    const replyPayload = reply.mock.calls[0]?.[0] as { embeds?: unknown[] } | undefined;
+    expect(JSON.stringify(replyPayload?.embeds)).toContain("Report accepted");
     expect(send).not.toHaveBeenCalled();
     expect(completeNotification).toHaveBeenCalledWith("1");
   });
 
-  it("uses the same full report embed for pre-submission failure DMs", async () => {
+  it("automatically creates a safe successor before notifying a pre-submission failure", async () => {
     const report = reportFixture();
     report.status = "failed";
     report.discordReportId = null;
     report.discordStatus = null;
     report.retryable = true;
     report.error = { code: "verification_email_timeout", message: "Verification timed out." };
+    const successor = reportFixture();
+    successor.internalReportId = "successor-report";
+    successor.status = "queued";
+    successor.discordStatus = null;
+    successor.retrySequence = 1;
+    const retryReport = vi.fn().mockResolvedValue(successor);
+    const trackRetryReport = vi.fn().mockResolvedValue("tracking-successor");
     const send = vi.fn().mockResolvedValue({ id: "failure-status-message" });
     const completeNotification = vi.fn().mockResolvedValue(undefined);
     const saveStatusDmMessageId = vi.fn().mockResolvedValue(undefined);
@@ -1348,6 +1357,7 @@ describe("lifecycle notification deduplication", () => {
       }),
       statusDmMessageId: vi.fn().mockResolvedValue(null),
       aiDecisions: vi.fn().mockResolvedValue([]),
+      trackRetryReport,
       saveStatusDmMessageId,
       completeNotification
     } as unknown as BotDatabase;
@@ -1355,7 +1365,8 @@ describe("lifecycle notification deduplication", () => {
       database,
       {
         lifecycleEvents: vi.fn().mockResolvedValue({ events: [] }),
-        report: vi.fn().mockResolvedValue(report)
+        report: vi.fn().mockResolvedValue(report),
+        retryReport
       } as unknown as DsaApi,
       {
         users: { fetch: vi.fn().mockResolvedValue({ send }) }
@@ -1372,10 +1383,23 @@ describe("lifecycle notification deduplication", () => {
       | undefined;
     expect(payload?.content).toBeUndefined();
     expect(payload?.embeds).toHaveLength(1);
-    expect(JSON.stringify(payload?.embeds)).toContain("Verification timed out.");
+    expect(retryReport).toHaveBeenCalledWith(
+      report.internalReportId,
+      `auto:${report.internalReportId}:1`,
+      "1197857362942378017",
+      {},
+      "automatic"
+    );
+    expect(trackRetryReport).toHaveBeenCalledWith(
+      report.internalReportId,
+      "1197857362942378017",
+      `auto:${report.internalReportId}:1`,
+      successor
+    );
+    expect(JSON.stringify(payload?.embeds)).not.toContain("Verification timed out.");
     expect(JSON.stringify(payload?.embeds)).toContain("History");
     expect(saveStatusDmMessageId).toHaveBeenCalledWith(
-      "tracking-2",
+      "tracking-successor",
       "failure-status-message"
     );
     expect(completeNotification).toHaveBeenCalledWith("2");
@@ -1470,11 +1494,12 @@ describe("lifecycle notification deduplication", () => {
 });
 
 describe("report component responsiveness", () => {
-  it("retries an owned ineligible appeal and refreshes the private status", async () => {
+  it("rejects a stale retry-appeal button for an ineligible appeal", async () => {
     const ineligible = reportFixture();
     ineligible.discordStatus = "closed_no_action";
     ineligible.reviewStatus = "ineligible";
-    ineligible.appealRetryable = true;
+    ineligible.appealRetryable = false;
+    ineligible.resubmittable = true;
     const queued = reportFixture();
     queued.discordStatus = "closed_no_action";
     queued.reviewStatus = "queued";
@@ -1509,7 +1534,7 @@ describe("report component responsiveness", () => {
       user: { id: "1197857362942378017" },
       deferUpdate,
       editReply,
-      deferred: false,
+      deferred: true,
       replied: false
     } as unknown as Interaction;
 
@@ -1517,16 +1542,11 @@ describe("report component responsiveness", () => {
 
     expect(deferUpdate).toHaveBeenCalledOnce();
     expect(report).toHaveBeenCalledWith(ineligible.internalReportId);
-    expect(retryAppeal).toHaveBeenCalledWith(
-      ineligible.internalReportId,
-      "interaction-1",
-      "1197857362942378017"
-    );
+    expect(retryAppeal).not.toHaveBeenCalled();
     const payload = editReply.mock.calls[0]?.[0] as
       | { content?: string; components?: unknown[]; embeds?: unknown[] }
       | undefined;
-    expect(payload?.content).toBe("Appeal queued for another attempt.");
-    expect(JSON.stringify(payload)).not.toContain("reports:retry-appeal");
+    expect(JSON.stringify(payload)).toContain("no longer available for retry");
   });
 
   it("keeps the report card and offers a private cooldown message", async () => {
@@ -1631,6 +1651,87 @@ describe("report component responsiveness", () => {
     const replyJson = JSON.stringify(editReply.mock.calls[0]?.[0]);
     expect(replyJson).toContain("History");
     expect(replyJson).not.toContain("Check your DMs for the full status log.");
+  });
+
+  it("distinguishes report acceptance from appeal acceptance with target details", () => {
+    const direct = reportFixture();
+    const directJson = reportDecisionEmbed("discord:actioned", direct)?.toJSON();
+    expect(directJson?.title).toBe("Report accepted");
+    expect(JSON.stringify(directJson)).toContain("Example Display");
+    expect(JSON.stringify(directJson)).toContain("@example");
+    expect(JSON.stringify(directJson)).toContain("Captured message");
+
+    const appealed = reportFixture();
+    appealed.reviewStatus = "approved";
+    const appealJson = reportDecisionEmbed("discord:actioned", appealed)?.toJSON();
+    expect(appealJson?.title).toBe("Appeal accepted");
+  });
+
+  it("edits a DM retry card in place without replacing it with a DM notice", async () => {
+    const failed = reportFixture();
+    failed.status = "failed";
+    failed.retryable = true;
+    failed.discordStatus = null;
+    const successor = reportFixture();
+    successor.internalReportId = "successor-report";
+    successor.status = "queued";
+    successor.discordStatus = null;
+    successor.retrySequence = 1;
+    const send = vi.fn();
+    const editStatus = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const handler = new InteractionHandler({
+      api: {
+        report: vi.fn().mockResolvedValue(failed),
+        retryReport: vi.fn().mockResolvedValue(successor)
+      } as unknown as DsaApi,
+      config: {
+        adminUserIds: new Set<string>(),
+        whitelistEnabled: false
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database: {
+        getAccess: vi.fn().mockResolvedValue({ suspended: false }),
+        trackRetryReport: vi.fn().mockResolvedValue("successor-tracking"),
+        statusDmMessageId: vi.fn().mockResolvedValue("dm-message-1"),
+        aiDecisions: vi.fn().mockResolvedValue([])
+      } as unknown as BotDatabase,
+      messageResolver: {} as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: {} as ReportWriter,
+      serverResolver: {} as ServerResolver
+    });
+    const interaction = {
+      id: "interaction-retry",
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => true,
+      isRepliable: () => true,
+      customId: `reports:retry:${failed.internalReportId}`,
+      user: {
+        id: "1197857362942378017",
+        send,
+        createDM: vi.fn().mockResolvedValue({
+          messages: { fetch: vi.fn().mockResolvedValue({ edit: editStatus }) }
+        })
+      },
+      message: { id: "dm-message-1" },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply,
+      deferred: true,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(editStatus).toHaveBeenCalledOnce();
+    expect(JSON.stringify(editReply.mock.calls[0]?.[0])).not.toContain(
+      "Check your DMs for the full status log."
+    );
   });
 
   it("contains a secondary response failure after the original interaction error", async () => {

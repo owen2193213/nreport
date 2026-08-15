@@ -476,6 +476,7 @@ export interface NotificationJob extends QueryResultRow {
   payload: NotificationPayload;
   attempts: number;
   preferences: NotificationPreferences;
+  experimental_batch_item_id: string | null;
 }
 
 interface NotificationPreferencesRow extends QueryResultRow {
@@ -1901,10 +1902,11 @@ export class BotDatabase {
         `INSERT INTO report_tracking (
            id, discord_user_id, interaction_id, idempotency_key, internal_report_id,
            flow, country, report_type, encrypted_request, credit_state,
-           last_status, last_discord_status, server_snapshot, dm_enabled, ai_decisions, poll_at
+           last_status, last_discord_status, server_snapshot, dm_enabled,
+           status_dm_message_id, ai_decisions, poll_at
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, 'none', $10, $11, $12,
-           true, $13, now() + interval '30 seconds'
+           $13, $14, $15, now() + interval '30 seconds'
          )`,
         [
           trackingId,
@@ -1919,6 +1921,8 @@ export class BotDatabase {
           report.status,
           report.discordStatus,
           previous.server_snapshot,
+          previous.dm_enabled,
+          previous.status_dm_message_id,
           jsonbParameter(aiDecisions ?? previous.ai_decisions)
         ]
       );
@@ -2148,7 +2152,8 @@ export class BotDatabase {
            AND outbox.state IN ('pending', 'sending')`
       );
       const result = await client.query<NotificationJob & NotificationPreferencesRow>(
-        `SELECT outbox.*, users.notify_submission_results, users.notify_actioned,
+        `SELECT outbox.*, tracking.experimental_batch_item_id,
+                users.notify_submission_results, users.notify_actioned,
                 users.notify_declined, users.notify_appeal_progress, users.digest_frequency
          FROM notification_outbox AS outbox
          JOIN report_tracking AS tracking ON tracking.id = outbox.tracking_id

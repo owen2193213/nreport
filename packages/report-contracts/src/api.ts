@@ -2,7 +2,8 @@ import type {
   CreateReportInput,
   ReportDetail,
   ReportLifecycleEvent,
-  ReportSummary
+  ReportSummary,
+  ReportRetryMode
 } from "./types.js";
 import type {
   ActionHistoryPage,
@@ -154,7 +155,8 @@ export class DsaApi {
     internalReportId: string,
     interactionId: string,
     discordUserId: string,
-    overrides: { reportReason?: string; context?: string } = {}
+    overrides: { reportReason?: string; context?: string } = {},
+    mode: ReportRetryMode = "manual"
   ): Promise<ReportDetail> {
     return this.request(`/v1/reports/${encodeURIComponent(internalReportId)}/retry`, {
       method: "POST",
@@ -162,7 +164,7 @@ export class DsaApi {
         "content-type": "application/json",
         "idempotency-key": `retry:${interactionId}`
       },
-      body: JSON.stringify({ submitterDiscordUserId: discordUserId, ...overrides })
+      body: JSON.stringify({ submitterDiscordUserId: discordUserId, mode, ...overrides })
     });
   }
 

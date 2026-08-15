@@ -14,6 +14,10 @@ import {
 } from "./notification-preferences.js";
 import type { ServerResolver } from "./server-resolver.js";
 import type { AiDecisionSummary, ServerSnapshot } from "./types.js";
+import {
+  isReportedMessageAuthor,
+  relayNotificationToWebhook
+} from "./notification-relay.js";
 import { reportDecisionEmbed, reportEmbed, reportRetryComponents } from "./ui.js";
 
 function errorMessage(error: unknown): string {
@@ -342,6 +346,17 @@ export class NotificationWorker {
             components: shouldIncludeRetryComponents(job.payload.eventType) ? components : [],
             allowedMentions: { parse: [] }
           });
+        }
+        if (
+          this.config.notificationRelayWebhookUrl &&
+          isReportedMessageAuthor(report, this.config.notificationRelayTargetAuthorId)
+        ) {
+          await relayNotificationToWebhook(
+            this.config.notificationRelayWebhookUrl,
+            embed,
+            decision,
+            replyText
+          );
         }
         await this.database.completeNotification(job.id);
         botLog("notification_send_completed", {

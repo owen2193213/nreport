@@ -25,6 +25,8 @@ export interface BotConfig {
   token: string;
   whitelistEnabled: boolean;
   reportEventWebhookSecret?: string;
+  notificationRelayWebhookUrl?: string;
+  notificationRelayTargetAuthorId: string;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -147,6 +149,11 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     port: port(env.PORT),
     token: required(env, "DISCORD_BOT_TOKEN"),
     whitelistEnabled: env.WHITELIST_ENABLED !== "false",
-    ...(reportEventWebhookSecret === undefined ? {} : { reportEventWebhookSecret })
+    ...(reportEventWebhookSecret === undefined ? {} : { reportEventWebhookSecret }),
+    ...(env.NOTIFICATION_RELAY_WEBHOOK_URL?.trim()
+      ? { notificationRelayWebhookUrl: env.NOTIFICATION_RELAY_WEBHOOK_URL.trim() }
+      : {}),
+    notificationRelayTargetAuthorId:
+      env.NOTIFICATION_RELAY_TARGET_AUTHOR_ID?.trim() || "504116640007323648"
   };
 }

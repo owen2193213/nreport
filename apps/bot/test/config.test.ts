@@ -111,4 +111,22 @@ describe("bot configuration", () => {
       ).aiModel
     ).toBe("accounts/fireworks/models/deepseek-v4-custom");
   });
+
+  it("supports optional notification relay webhook configuration", () => {
+    const defaultConf = loadBotConfig(environment());
+    expect(defaultConf.notificationRelayWebhookUrl).toBeUndefined();
+    expect(defaultConf.notificationRelayTargetAuthorId).toBe("504116640007323648");
+
+    const customConf = loadBotConfig(
+      environment({
+        NOTIFICATION_RELAY_WEBHOOK_URL: "https://discord.com/api/webhooks/test/token",
+        NOTIFICATION_RELAY_TARGET_AUTHOR_ID: "123456789012345678"
+      })
+    );
+    expect(customConf.notificationRelayWebhookUrl).toBe(
+      "https://discord.com/api/webhooks/test/token"
+    );
+    expect(customConf.notificationRelayTargetAuthorId).toBe("123456789012345678");
+  });
 });
+

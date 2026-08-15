@@ -6,7 +6,8 @@ import {
   ApplicationIntegrationType,
   InteractionContextType,
   MessageFlags,
-  Routes
+  Routes,
+  WebhookClient
 } from "discord.js";
 import type { REST } from "discord.js";
 import type { Client, Guild, Interaction } from "discord.js";
@@ -1309,6 +1310,91 @@ describe("lifecycle notification deduplication", () => {
     const replyPayload = reply.mock.calls[0]?.[0] as { embeds?: unknown[] } | undefined;
     expect(JSON.stringify(replyPayload?.embeds)).toContain("Report accepted");
     expect(send).not.toHaveBeenCalled();
+    expect(completeNotification).toHaveBeenCalledWith("1");
+  });
+
+  it("relays notification to webhook when report is for target message author", async () => {
+    const report = reportFixture();
+    if (
+      report.reportedDetails.kind === "message" &&
+      report.reportedDetails.messageEvidence?.status === "captured"
+    ) {
+      report.reportedDetails.messageEvidence.snapshot.authorId = "504116640007323648";
+    }
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue({ id: "status-message" });
+    const user = {
+      send,
+      createDM: vi.fn().mockResolvedValue({
+        messages: { fetch: vi.fn().mockResolvedValue({ id: "dm-message-1", edit, reply }) }
+      })
+    };
+    const webhookSend = vi.fn().mockResolvedValue({ id: "webhook-msg" });
+    const webhookDestroy = vi.fn();
+    vi.spyOn(WebhookClient.prototype, "send").mockImplementation(webhookSend);
+    vi.spyOn(WebhookClient.prototype, "destroy").mockImplementation(webhookDestroy);
+
+    const completeNotification = vi.fn().mockResolvedValue(undefined);
+    const database = {
+      claimDueTrackings: vi.fn().mockResolvedValue([]),
+      reconciliationCursor: vi.fn().mockResolvedValue("0"),
+      setReconciliationCursor: vi.fn(),
+      claimNotifications: vi.fn().mockResolvedValue([
+        {
+          id: "1",
+          tracking_id: "tracking-1",
+          discord_user_id: "1197857362942378017",
+          payload: {
+            eventId: "42",
+            eventType: "discord:actioned",
+            internalReportId: report.internalReportId,
+            occurredAt: report.updatedAt
+          },
+          attempts: 0,
+          preferences: {
+            submissionResults: true,
+            actioned: true,
+            declined: true,
+            appealProgress: true,
+            digestFrequency: "weekly"
+          }
+        }
+      ]),
+      getNotificationPreferences: vi.fn().mockResolvedValue({
+        submissionResults: true,
+        actioned: true,
+        declined: true,
+        appealProgress: true,
+        digestFrequency: "weekly"
+      }),
+      statusDmMessageId: vi.fn().mockResolvedValue("dm-message-1"),
+      aiDecisions: vi.fn().mockResolvedValue([]),
+      completeNotification
+    } as unknown as BotDatabase;
+    const api = {
+      lifecycleEvents: vi.fn().mockResolvedValue({ events: [] }),
+      report: vi.fn().mockResolvedValue(report)
+    } as unknown as DsaApi;
+    const client = {
+      users: { fetch: vi.fn().mockResolvedValue(user) }
+    } as unknown as Client;
+    const worker = new NotificationWorker(
+      database,
+      api,
+      client,
+      {
+        notificationRelayWebhookUrl: "https://discord.com/api/webhooks/123456789012345678/dummy_test_token_abcdefghijklmnop",
+        notificationRelayTargetAuthorId: "504116640007323648"
+      } as BotConfig,
+      {} as ServerResolver
+    );
+
+    await worker.tick();
+
+    expect(edit).toHaveBeenCalledOnce();
+    expect(webhookSend).toHaveBeenCalledOnce();
+    expect(webhookDestroy).toHaveBeenCalledOnce();
     expect(completeNotification).toHaveBeenCalledWith("1");
   });
 

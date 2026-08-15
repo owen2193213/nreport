@@ -8,7 +8,7 @@ export const OPENROUTER_CHAT_COMPLETIONS_URL =
   "https://openrouter.ai/api/v1/chat/completions";
 export const FIREWORKS_CHAT_COMPLETIONS_URL =
   "https://api.fireworks.ai/inference/v1/chat/completions";
-const REQUEST_TIMEOUT_MS = 65_000;
+const REQUEST_TIMEOUT_MS = 97_500;
 
 export interface AiRequestContext {
   actorKey: string;

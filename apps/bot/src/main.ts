@@ -17,6 +17,9 @@ import { ServerResolver } from "./server-resolver.js";
 
 async function main(): Promise<void> {
   const config = loadBotConfig();
+  process.stdout.write(
+    `Starting Discord DSA bot (AI Provider: ${config.aiProvider}, Model: ${config.aiModel})...\n`
+  );
   if (!config.reportEventWebhookSecret) {
     process.stderr.write(
       "REPORT_EVENT_WEBHOOK_SECRET is not configured; lifecycle DMs will use reconciliation and fallback polling.\n"

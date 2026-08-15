@@ -29,31 +29,55 @@ export async function relayNotificationToWebhook(
   webhookUrl: string,
   embed: EmbedBuilder,
   decision: EmbedBuilder | null,
-  replyText: string | null
-): Promise<void> {
+  replyText: string | null,
+  existingMessageId: string | null
+): Promise<string | null> {
   const credentials = parseWebhookCredentials(webhookUrl);
   if (!credentials) {
     botLog("notification_relay_failed", { reason: "invalid_webhook_url" }, "warn");
-    return;
+    return null;
   }
 
   const webhookClient = new WebhookClient({ id: credentials.id, token: credentials.token });
   try {
-    const embeds = [embed];
-    if (decision !== null) {
-      embeds.push(decision);
+    let messageId = existingMessageId;
+    if (messageId !== null) {
+      try {
+        await webhookClient.editMessage(messageId, {
+          embeds: [embed],
+          allowedMentions: { parse: [] }
+        });
+      } catch {
+        messageId = null;
+      }
     }
-    await webhookClient.send({
-      ...(replyText !== null ? { content: replyText } : {}),
-      embeds,
-      allowedMentions: { parse: [] }
-    });
+    if (messageId === null) {
+      const msg = await webhookClient.send({
+        embeds: [embed],
+        allowedMentions: { parse: [] }
+      });
+      messageId = msg.id;
+    }
+    if (decision !== null) {
+      await webhookClient.send({
+        embeds: [decision],
+        allowedMentions: { parse: [] }
+      });
+    } else if (replyText !== null) {
+      await webhookClient.send({
+        content: replyText,
+        allowedMentions: { parse: [] }
+      });
+    }
     botLog("notification_relay_completed", {
+      messageId,
       hasDecision: decision !== null,
       hasReplyText: replyText !== null
     });
+    return messageId;
   } catch (error) {
     botLog("notification_relay_failed", errorFields(error), "warn");
+    return null;
   } finally {
     webhookClient.destroy();
   }

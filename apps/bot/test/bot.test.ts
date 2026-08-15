@@ -1331,11 +1331,14 @@ describe("lifecycle notification deduplication", () => {
       })
     };
     const webhookSend = vi.fn().mockResolvedValue({ id: "webhook-msg" });
+    const webhookEditMessage = vi.fn().mockResolvedValue({ id: "dm-message-1" });
     const webhookDestroy = vi.fn();
     vi.spyOn(WebhookClient.prototype, "send").mockImplementation(webhookSend);
+    vi.spyOn(WebhookClient.prototype, "editMessage").mockImplementation(webhookEditMessage);
     vi.spyOn(WebhookClient.prototype, "destroy").mockImplementation(webhookDestroy);
 
     const completeNotification = vi.fn().mockResolvedValue(undefined);
+    const saveStatusDmMessageId = vi.fn().mockResolvedValue(undefined);
     const database = {
       claimDueTrackings: vi.fn().mockResolvedValue([]),
       reconciliationCursor: vi.fn().mockResolvedValue("0"),
@@ -1369,6 +1372,7 @@ describe("lifecycle notification deduplication", () => {
         digestFrequency: "weekly"
       }),
       statusDmMessageId: vi.fn().mockResolvedValue("dm-message-1"),
+      saveStatusDmMessageId,
       aiDecisions: vi.fn().mockResolvedValue([]),
       completeNotification
     } as unknown as BotDatabase;
@@ -1392,8 +1396,14 @@ describe("lifecycle notification deduplication", () => {
 
     await worker.tick();
 
-    expect(edit).toHaveBeenCalledOnce();
-    expect(webhookSend).toHaveBeenCalledOnce();
+    // User DM should NOT be sent or edited
+    expect(send).not.toHaveBeenCalled();
+    expect(edit).not.toHaveBeenCalled();
+    expect(reply).not.toHaveBeenCalled();
+
+    // Webhook should edit message in place and send decision
+    expect(webhookEditMessage).toHaveBeenCalledWith("dm-message-1", expect.any(Object));
+    expect(webhookSend).toHaveBeenCalledOnce(); // for decision
     expect(webhookDestroy).toHaveBeenCalledOnce();
     expect(completeNotification).toHaveBeenCalledWith("1");
   });

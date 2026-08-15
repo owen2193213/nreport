@@ -117,7 +117,7 @@ describe("notification-relay", () => {
     expect(isReportedMessageAuthor(report, "504116640007323648")).toBe(false);
   });
 
-  it("sends notification embed and decision to webhook client", async () => {
+  it("sends notification embed and decision to webhook client when no existing message ID", async () => {
     const send = vi.fn().mockResolvedValue({ id: "webhook-msg-1" });
     const destroy = vi.fn();
     vi.spyOn(WebhookClient.prototype, "send").mockImplementation(send);
@@ -126,19 +126,44 @@ describe("notification-relay", () => {
     const embed = new EmbedBuilder().setTitle("Report Status");
     const decision = new EmbedBuilder().setTitle("Decision");
 
-    await relayNotificationToWebhook(
+    const messageId = await relayNotificationToWebhook(
       "https://discord.com/api/webhooks/123456789012345678/dummy_test_token_abcdefghijklmnop",
       embed,
       decision,
-      "Report accepted."
+      "Report accepted.",
+      null
     );
 
-    expect(send).toHaveBeenCalledOnce();
-    expect(send).toHaveBeenCalledWith({
-      content: "Report accepted.",
-      embeds: [embed, decision],
+    expect(messageId).toBe("webhook-msg-1");
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it("edits existing message in place when existingMessageId is present", async () => {
+    const send = vi.fn().mockResolvedValue({ id: "webhook-msg-decision" });
+    const editMessage = vi.fn().mockResolvedValue({ id: "existing-msg-1" });
+    const destroy = vi.fn();
+    vi.spyOn(WebhookClient.prototype, "send").mockImplementation(send);
+    vi.spyOn(WebhookClient.prototype, "editMessage").mockImplementation(editMessage);
+    vi.spyOn(WebhookClient.prototype, "destroy").mockImplementation(destroy);
+
+    const embed = new EmbedBuilder().setTitle("Updated Report Status");
+    const decision = new EmbedBuilder().setTitle("Decision");
+
+    const messageId = await relayNotificationToWebhook(
+      "https://discord.com/api/webhooks/123456789012345678/dummy_test_token_abcdefghijklmnop",
+      embed,
+      decision,
+      null,
+      "existing-msg-1"
+    );
+
+    expect(messageId).toBe("existing-msg-1");
+    expect(editMessage).toHaveBeenCalledWith("existing-msg-1", {
+      embeds: [embed],
       allowedMentions: { parse: [] }
     });
+    expect(send).toHaveBeenCalledOnce(); // Only for decision
     expect(destroy).toHaveBeenCalledOnce();
   });
 });

@@ -246,12 +246,13 @@ disables further aggregate DM attempts without stopping report processing.
 
 ## AI report writing
 
-The bot calls Fireworks and Brave directly; the API and low-level Discord client never receive the
-reporter's brief or AI context. `FIREWORKS_API_KEY` and `BRAVE_SEARCH_API_KEY` are required, and
-`FIREWORKS_MODEL` defaults to `accounts/fireworks/models/deepseek-v4-flash-0731`. Fireworks-hosted
-DeepSeek handles planning, synthesis, refinement, and repair. There is no OpenRouter or model
-fallback. The bot validates every returned value locally. The complete generation workflow is
-capped at 90 seconds.
+The bot calls the configured AI provider (OpenRouter or Fireworks) and Brave directly; the API
+and low-level Discord client never receive the reporter's brief or AI context. `AI_PROVIDER`
+selects the provider (`openrouter` [default] or `fireworks`). `OPENROUTER_API_KEY` (with model
+`deepseek/deepseek-v4-flash-0731`) or `FIREWORKS_API_KEY` (with model
+`accounts/fireworks/models/deepseek-v4-flash-0731`) and `BRAVE_SEARCH_API_KEY` are required.
+DeepSeek handles planning, synthesis, refinement, and repair. The bot validates every returned value
+locally. The complete generation workflow is capped at 90 seconds.
 
 Unicode evidence remains available to the model so it can identify obfuscation such as zero-width
 characters. The planner, synthesis, refinement, and repair prompts request printable ASCII-only

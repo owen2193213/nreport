@@ -93,17 +93,18 @@ application creates or updates its database schema idempotently during startup.
 Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. The bot
 uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
-the global commands automatically. Set `FIREWORKS_API_KEY` and `BRAVE_SEARCH_API_KEY` for the
-bot-side report writer; `FIREWORKS_MODEL` defaults to
-`accounts/fireworks/models/deepseek-v4-flash-0731`.
+the global commands automatically. Set `AI_PROVIDER` (defaults to `openrouter`, or `fireworks`),
+with `OPENROUTER_API_KEY` (`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-flash-0731`) or
+`FIREWORKS_API_KEY` (`FIREWORKS_MODEL` defaults to `accounts/fireworks/models/deepseek-v4-flash-0731`),
+and `BRAVE_SEARCH_API_KEY` for the bot-side report writer.
 
-The first Fireworks DeepSeek call resolves omitted Auto fields and decides independently whether
+The first DeepSeek call resolves omitted Auto fields and decides independently whether
 the evidence needs terminology research, legal research, both, or neither. The bot runs only the
 chosen Brave requests: Web Search for unfamiliar terms and LLM Context for country-specific law.
 If both are needed, they run together. DeepSeek then writes the report from compact search excerpts
-and may ask for one additional bounded search before producing the final result. There is no
-OpenRouter or model fallback. Fixed reporter values remain application-owned and are omitted from
-AI output contracts. Once Auto values are resolved, synthesis cannot return or change them.
+and may ask for one additional bounded search before producing the final result. Fixed reporter values
+remain application-owned and are omitted from AI output contracts. Once Auto values are resolved,
+synthesis cannot return or change them.
 The bot records per-user request/token/reasoning/search totals and operational workflow metadata
 such as flow, category, country mode, selected elements, counts, lengths, latency, and validation
 failures. Logs are intended to support development diagnostics and may include report and lifecycle

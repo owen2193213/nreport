@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { loadBotConfig } from "../src/config.js";
 
-function environment(): NodeJS.ProcessEnv {
+function environment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     DISCORD_BOT_TOKEN: "discord-token",
     DISCORD_APPLICATION_ID: "123456789012345678",
@@ -14,42 +14,101 @@ function environment(): NodeJS.ProcessEnv {
     BOT_DATABASE_URL: "postgresql://localhost/bot",
     DSA_API_BASE_URL: "https://api.example.test",
     DSA_API_KEY: "a".repeat(32),
-    FIREWORKS_API_KEY: "fireworks-secret",
-    BRAVE_SEARCH_API_KEY: "brave-secret"
+    OPENROUTER_API_KEY: "openrouter-secret",
+    BRAVE_SEARCH_API_KEY: "brave-secret",
+    ...overrides
   };
 }
 
 describe("bot configuration", () => {
-  it("requires Fireworks and Brave keys and defaults to DeepSeek V4 Flash", () => {
+  it("defaults to OpenRouter with DeepSeek V4 Flash when OPENROUTER_API_KEY is supplied", () => {
     const config = loadBotConfig(environment());
-    expect(config.fireworksModel).toBe("accounts/fireworks/models/deepseek-v4-flash-0731");
+    expect(config.aiProvider).toBe("openrouter");
+    expect(config.aiApiKey).toBe("openrouter-secret");
+    expect(config.aiModel).toBe("deepseek/deepseek-v4-flash-0731");
+  });
 
-    const withoutFireworks = environment();
-    delete withoutFireworks.FIREWORKS_API_KEY;
-    expect(() => loadBotConfig(withoutFireworks)).toThrow(/FIREWORKS_API_KEY is required/);
+  it("defaults to Fireworks when only FIREWORKS_API_KEY is supplied", () => {
+    const env = environment();
+    delete env.OPENROUTER_API_KEY;
+    env.FIREWORKS_API_KEY = "fireworks-secret";
 
+    const config = loadBotConfig(env);
+    expect(config.aiProvider).toBe("fireworks");
+    expect(config.aiApiKey).toBe("fireworks-secret");
+    expect(config.aiModel).toBe("accounts/fireworks/models/deepseek-v4-flash-0731");
+  });
+
+  it("supports explicit AI_PROVIDER=openrouter", () => {
+    const config = loadBotConfig(
+      environment({
+        AI_PROVIDER: "openrouter",
+        OPENROUTER_API_KEY: "openrouter-key",
+        OPENROUTER_MODEL: "deepseek/deepseek-v4-flash-0731"
+      })
+    );
+    expect(config.aiProvider).toBe("openrouter");
+    expect(config.aiApiKey).toBe("openrouter-key");
+    expect(config.aiModel).toBe("deepseek/deepseek-v4-flash-0731");
+  });
+
+  it("supports explicit AI_PROVIDER=fireworks", () => {
+    const config = loadBotConfig(
+      environment({
+        AI_PROVIDER: "fireworks",
+        FIREWORKS_API_KEY: "fireworks-key",
+        FIREWORKS_MODEL: "accounts/fireworks/models/deepseek-v4-flash-0731"
+      })
+    );
+    expect(config.aiProvider).toBe("fireworks");
+    expect(config.aiApiKey).toBe("fireworks-key");
+    expect(config.aiModel).toBe("accounts/fireworks/models/deepseek-v4-flash-0731");
+  });
+
+  it("rejects invalid AI_PROVIDER values", () => {
+    expect(() =>
+      loadBotConfig(
+        environment({
+          AI_PROVIDER: "anthropic"
+        })
+      )
+    ).toThrow(/AI_PROVIDER must be either 'openrouter' or 'fireworks'/);
+  });
+
+  it("requires API key for the selected provider", () => {
+    const envOpenRouter = environment({ AI_PROVIDER: "openrouter" });
+    delete envOpenRouter.OPENROUTER_API_KEY;
+    expect(() => loadBotConfig(envOpenRouter)).toThrow(/OPENROUTER_API_KEY is required/);
+
+    const envFireworks = environment({ AI_PROVIDER: "fireworks" });
+    delete envFireworks.FIREWORKS_API_KEY;
+    expect(() => loadBotConfig(envFireworks)).toThrow(/FIREWORKS_API_KEY is required/);
+  });
+
+  it("requires Brave search key", () => {
     const withoutBrave = environment();
     delete withoutBrave.BRAVE_SEARCH_API_KEY;
     expect(() => loadBotConfig(withoutBrave)).toThrow(/BRAVE_SEARCH_API_KEY is required/);
   });
 
-  it("allows the Fireworks model to be configured", () => {
+  it("allows the AI model to be overridden via provider-specific or generic env variables", () => {
     expect(
-      loadBotConfig({
-        ...environment(),
-        FIREWORKS_MODEL: "accounts/fireworks/models/deepseek-v4-pro"
-      }).fireworksModel
-    ).toBe("accounts/fireworks/models/deepseek-v4-pro");
-  });
+      loadBotConfig(
+        environment({
+          AI_PROVIDER: "openrouter",
+          OPENROUTER_MODEL: "deepseek/deepseek-v4-flash-custom"
+        })
+      ).aiModel
+    ).toBe("deepseek/deepseek-v4-flash-custom");
 
-  it("does not require obsolete Groq or OpenRouter configuration", () => {
-    const config = loadBotConfig({
-      ...environment(),
-      GROQ_API_KEY: "obsolete",
-      OPENROUTER_API_KEY: "obsolete"
-    });
-
-    expect(config).not.toHaveProperty("groqApiKey");
-    expect(config).not.toHaveProperty("openRouterApiKey");
+    expect(
+      loadBotConfig(
+        environment({
+          AI_PROVIDER: "fireworks",
+          FIREWORKS_API_KEY: "fireworks-key",
+          FIREWORKS_MODEL: "accounts/fireworks/models/deepseek-v4-custom"
+        })
+      ).aiModel
+    ).toBe("accounts/fireworks/models/deepseek-v4-custom");
   });
 });

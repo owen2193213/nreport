@@ -10,11 +10,13 @@ import {
 import { countryChoice } from "./countries.js";
 import { experimentalVariationInstruction } from "./experimental-batches.js";
 import {
-  FireworksClient,
-  FireworksClientError,
+  AiClient,
+  AiClientError,
+  type AiClientOptions,
+  type AiProvider,
   type AiRequestContext,
-  type FireworksStage
-} from "./fireworks-client.js";
+  type AiStage
+} from "./ai-client.js";
 import { botLog } from "./observability.js";
 import {
   capturedMessageSnapshot,
@@ -25,7 +27,7 @@ import {
   type WriterConversationMessage
 } from "./types.js";
 
-export type { AiRequestContext } from "./fireworks-client.js";
+export type { AiRequestContext } from "./ai-client.js";
 
 const MAX_REPORT_LENGTH = 512;
 const MECHANICAL_COMPLETION_TOKEN_LIMIT = 4_096;
@@ -52,6 +54,7 @@ const PLANNER_SYSTEM_PROMPT = [
 type UsageRecorder = (userId: string, usage: AiUsage) => Promise<void>;
 
 export interface ReportWriterOptions {
+  provider?: AiProvider;
   recordUsage?: UsageRecorder;
   request?: typeof globalThis.fetch;
 }
@@ -719,20 +722,26 @@ function parseAndValidatePlan(
 
 export class ReportWriter {
   private readonly brave: BraveResearchClient;
-  private readonly fireworks: FireworksClient;
+  private readonly ai: AiClient;
   private readonly recordUsage: UsageRecorder;
 
   public constructor(
-    fireworksApiKey: string,
-    fireworksModel: string,
+    aiApiKey: string,
+    aiModel: string,
     braveSearchApiKey: string,
     private readonly supportedCountries: readonly string[],
     options: ReportWriterOptions = {}
   ) {
     this.recordUsage = options.recordUsage ?? (() => Promise.resolve());
-    const clientOptions = options.request ? { request: options.request } : {};
-    this.fireworks = new FireworksClient(fireworksApiKey, fireworksModel, clientOptions);
-    this.brave = new BraveResearchClient(braveSearchApiKey, clientOptions);
+    const clientOptions: AiClientOptions = {
+      ...(options.provider ? { provider: options.provider } : {}),
+      ...(options.request ? { request: options.request } : {})
+    };
+    this.ai = new AiClient(aiApiKey, aiModel, clientOptions);
+    this.brave = new BraveResearchClient(
+      braveSearchApiKey,
+      options.request ? { request: options.request } : {}
+    );
   }
 
   public async generate(
@@ -757,7 +766,7 @@ export class ReportWriter {
       planFormat,
       plannerExamples()
     );
-    const firstPlanContent = await this.completeFireworks(
+    const firstPlanContent = await this.completeAi(
       {
         messages: [
           { role: "system", content: PLANNER_SYSTEM_PROMPT },
@@ -776,7 +785,7 @@ export class ReportWriter {
     } catch (error) {
       const problem = repairablePlanError(error);
       if (problem === null) throw error;
-      const repairedPlanContent = await this.completeFireworks(
+      const repairedPlanContent = await this.completeAi(
         {
           messages: [
             { role: "system", content: PLANNER_SYSTEM_PROMPT },
@@ -903,7 +912,7 @@ export class ReportWriter {
       ...draft.writerConversation,
       { role: "user", content: refinementPrompt(instruction) }
     ];
-    const first = await this.completeFireworks(
+    const first = await this.completeAi(
       {
         messages: [{ role: "system", content: WRITER_SYSTEM_PROMPT }, ...conversation],
         max_completion_tokens: MECHANICAL_COMPLETION_TOKEN_LIMIT,
@@ -925,7 +934,7 @@ export class ReportWriter {
         { role: "assistant", content: first },
         { role: "user", content: repairPrompt(problem) }
       ];
-      const repaired = await this.completeFireworks(
+      const repaired = await this.completeAi(
         {
           messages: [
             { role: "system", content: WRITER_SYSTEM_PROMPT },
@@ -984,7 +993,7 @@ export class ReportWriter {
     const prompt = synthesisPrompt(draft, plan, materials, followUpUsed);
     let content: string;
     try {
-      content = await this.completeFireworks(
+      content = await this.completeAi(
         reasoningRequired
           ? {
               messages: [
@@ -1017,7 +1026,7 @@ export class ReportWriter {
         return parseSynthesis(content);
       } catch (error) {
         if (!(error instanceof ReportWriterError)) throw error;
-        const repaired = await this.completeFireworks(
+        const repaired = await this.completeAi(
           {
             messages: [
               { role: "system", content: WRITER_SYSTEM_PROMPT },
@@ -1100,18 +1109,18 @@ export class ReportWriter {
     }
   }
 
-  private async completeFireworks(
+  private async completeAi(
     body: Record<string, unknown>,
     deadline: number,
     actor: AiRequestContext,
-    stage: FireworksStage
+    stage: AiStage
   ): Promise<string> {
     try {
-      const completion = await this.fireworks.complete(body, deadline, actor, stage);
+      const completion = await this.ai.complete(body, deadline, actor, stage);
       await this.record(actor.userId, completion.usage, stage, actor);
       return completion.content;
     } catch (error) {
-      if (error instanceof FireworksClientError) {
+      if (error instanceof AiClientError) {
         if (error.kind === "refusal") {
           throw new ReportWriterError("The AI declined to process this evidence.");
         }

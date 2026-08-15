@@ -1,5 +1,9 @@
 import { Buffer } from "node:buffer";
 
+import type { AiProvider } from "./ai-client.js";
+
+export type { AiProvider } from "./ai-client.js";
+
 export interface BotConfig {
   apiBaseUrl: string;
   apiKey: string;
@@ -10,8 +14,13 @@ export interface BotConfig {
   environment: string;
   keyPepper: string;
   braveSearchApiKey: string;
+  aiProvider: AiProvider;
+  aiApiKey: string;
+  aiModel: string;
   fireworksApiKey: string;
   fireworksModel: string;
+  openRouterApiKey?: string;
+  openRouterModel?: string;
   port: number;
   token: string;
   whitelistEnabled: boolean;
@@ -52,6 +61,23 @@ function port(value: string | undefined): number {
   return parsed;
 }
 
+function resolveAiProvider(env: NodeJS.ProcessEnv): AiProvider {
+  const configured = env.AI_PROVIDER?.trim().toLowerCase();
+  if (configured) {
+    if (configured === "openrouter" || configured === "fireworks") {
+      return configured;
+    }
+    throw new Error("AI_PROVIDER must be either 'openrouter' or 'fireworks'.");
+  }
+  if (env.OPENROUTER_API_KEY?.trim() && !env.FIREWORKS_API_KEY?.trim()) {
+    return "openrouter";
+  }
+  if (env.FIREWORKS_API_KEY?.trim() && !env.OPENROUTER_API_KEY?.trim()) {
+    return "fireworks";
+  }
+  return "openrouter";
+}
+
 export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const adminValues = required(env, "DISCORD_ADMIN_USER_IDS")
     .split(",")
@@ -64,6 +90,41 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   if (reportEventWebhookSecret !== undefined && reportEventWebhookSecret.length < 32) {
     throw new Error("REPORT_EVENT_WEBHOOK_SECRET must contain at least 32 characters.");
   }
+
+  const aiProvider = resolveAiProvider(env);
+  const openRouterApiKey = env.OPENROUTER_API_KEY?.trim() || env.AI_API_KEY?.trim();
+  const openRouterModel =
+    env.OPENROUTER_MODEL?.trim() ||
+    (aiProvider === "openrouter" ? env.AI_MODEL?.trim() : undefined) ||
+    "deepseek/deepseek-v4-flash-0731";
+
+  const fireworksApiKey = env.FIREWORKS_API_KEY?.trim() || env.AI_API_KEY?.trim();
+  const fireworksModel =
+    env.FIREWORKS_MODEL?.trim() ||
+    (aiProvider === "fireworks" ? env.AI_MODEL?.trim() : undefined) ||
+    "accounts/fireworks/models/deepseek-v4-flash-0731";
+
+  let aiApiKey: string;
+  let aiModel: string;
+
+  if (aiProvider === "openrouter") {
+    if (!openRouterApiKey) {
+      throw new Error(
+        env.AI_PROVIDER
+          ? "OPENROUTER_API_KEY is required when AI_PROVIDER is 'openrouter'."
+          : "OPENROUTER_API_KEY or FIREWORKS_API_KEY is required."
+      );
+    }
+    aiApiKey = openRouterApiKey;
+    aiModel = openRouterModel;
+  } else {
+    if (!fireworksApiKey) {
+      throw new Error("FIREWORKS_API_KEY is required when AI_PROVIDER is 'fireworks'.");
+    }
+    aiApiKey = fireworksApiKey;
+    aiModel = fireworksModel;
+  }
+
   return {
     apiBaseUrl,
     apiKey: secret(env, "DSA_API_KEY"),
@@ -76,9 +137,13 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     environment: env.NODE_ENV?.trim() || "development",
     keyPepper: secret(env, "ACCESS_KEY_PEPPER"),
     braveSearchApiKey: required(env, "BRAVE_SEARCH_API_KEY"),
-    fireworksApiKey: required(env, "FIREWORKS_API_KEY"),
-    fireworksModel:
-      env.FIREWORKS_MODEL?.trim() || "accounts/fireworks/models/deepseek-v4-flash-0731",
+    aiProvider,
+    aiApiKey,
+    aiModel,
+    fireworksApiKey: fireworksApiKey || aiApiKey,
+    fireworksModel,
+    ...(openRouterApiKey ? { openRouterApiKey } : {}),
+    openRouterModel,
     port: port(env.PORT),
     token: required(env, "DISCORD_BOT_TOKEN"),
     whitelistEnabled: env.WHITELIST_ENABLED !== "false",

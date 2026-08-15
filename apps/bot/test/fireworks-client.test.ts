@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  FireworksClient,
+  AiClient,
   type AiRequestContext,
-  type FireworksClientError
-} from "../src/fireworks-client.js";
+  type AiClientError
+} from "../src/ai-client.js";
 
 const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
-const MODEL = "accounts/fireworks/models/deepseek-v4-flash-0731";
+const FIREWORKS_MODEL = "accounts/fireworks/models/deepseek-v4-flash-0731";
+const OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";
 
 function success(
   content = '{"ok":true}',
@@ -19,7 +20,7 @@ function success(
       id: "chatcmpl-safe-id",
       object: "chat.completion",
       created: 1,
-      model: MODEL,
+      model: OPENROUTER_MODEL,
       choices: [
         {
           index: 0,
@@ -54,50 +55,99 @@ function headers(request: ReturnType<typeof vi.fn>): Record<string, string> {
   return value;
 }
 
-describe("FireworksClient", () => {
-  it("sends the supplied reasoning request directly to Fireworks", async () => {
-    const request = vi.fn().mockResolvedValue(success());
-    const client = new FireworksClient("fireworks-secret", MODEL, {
-      request: request as unknown as typeof fetch
-    });
+describe("AiClient", () => {
+  describe("OpenRouter provider", () => {
+    it("sends requests to OpenRouter endpoint with required headers and DeepSeek V4 Flash", async () => {
+      const request = vi.fn().mockResolvedValue(success());
+      const client = new AiClient("openrouter-secret", OPENROUTER_MODEL, {
+        provider: "openrouter",
+        request: request as unknown as typeof fetch
+      });
 
-    const result = await client.complete(
-      {
-        messages: [{ role: "user", content: "Return JSON" }],
+      const result = await client.complete(
+        {
+          messages: [{ role: "user", content: "Return JSON" }],
+          max_completion_tokens: 8_192,
+          reasoning_effort: "high"
+        },
+        Date.now() + 5_000,
+        ACTOR,
+        "plan"
+      );
+
+      expect(request.mock.calls[0]?.[0]).toBe(
+        "https://openrouter.ai/api/v1/chat/completions"
+      );
+      const reqHeaders = headers(request);
+      expect(reqHeaders.Authorization).toBe("Bearer openrouter-secret");
+      expect(reqHeaders["HTTP-Referer"]).toBe("https://discord.com");
+      expect(reqHeaders["X-Title"]).toBe("Discord DSA");
+      expect(body(request)).toMatchObject({
+        model: OPENROUTER_MODEL,
         max_completion_tokens: 8_192,
-        reasoning_effort: "high"
-      },
-      Date.now() + 5_000,
-      ACTOR,
-      "plan"
-    );
-
-    expect(request.mock.calls[0]?.[0]).toBe(
-      "https://api.fireworks.ai/inference/v1/chat/completions"
-    );
-    expect(headers(request).Authorization).toBe("Bearer fireworks-secret");
-    expect(body(request)).toMatchObject({
-      model: MODEL,
-      max_completion_tokens: 8_192,
-      reasoning_effort: "high",
-      stream: false
-    });
-    expect(result).toEqual({
-      content: '{"ok":true}',
-      finishReason: "stop",
-      usage: {
-        costCredits: 0,
-        inputTokens: 120,
-        outputTokens: 35,
-        reasoningTokens: 12,
-        searchRequests: 0
-      }
+        reasoning_effort: "high",
+        stream: false
+      });
+      expect(result).toEqual({
+        content: '{"ok":true}',
+        finishReason: "stop",
+        usage: {
+          costCredits: 0,
+          inputTokens: 120,
+          outputTokens: 35,
+          reasoningTokens: 12,
+          searchRequests: 0
+        }
+      });
     });
   });
 
-  it("uses zero separate reasoning tokens when Fireworks omits the detail", async () => {
+  describe("Fireworks provider", () => {
+    it("sends reasoning request directly to Fireworks endpoint", async () => {
+      const request = vi.fn().mockResolvedValue(success());
+      const client = new AiClient("fireworks-secret", FIREWORKS_MODEL, {
+        provider: "fireworks",
+        request: request as unknown as typeof fetch
+      });
+
+      const result = await client.complete(
+        {
+          messages: [{ role: "user", content: "Return JSON" }],
+          max_completion_tokens: 8_192,
+          reasoning_effort: "high"
+        },
+        Date.now() + 5_000,
+        ACTOR,
+        "plan"
+      );
+
+      expect(request.mock.calls[0]?.[0]).toBe(
+        "https://api.fireworks.ai/inference/v1/chat/completions"
+      );
+      expect(headers(request).Authorization).toBe("Bearer fireworks-secret");
+      expect(body(request)).toMatchObject({
+        model: FIREWORKS_MODEL,
+        max_completion_tokens: 8_192,
+        reasoning_effort: "high",
+        stream: false
+      });
+      expect(result).toEqual({
+        content: '{"ok":true}',
+        finishReason: "stop",
+        usage: {
+          costCredits: 0,
+          inputTokens: 120,
+          outputTokens: 35,
+          reasoningTokens: 12,
+          searchRequests: 0
+        }
+      });
+    });
+  });
+
+  it("uses zero separate reasoning tokens when the response omits the detail", async () => {
     const request = vi.fn().mockResolvedValue(success('{"ok":true}', "stop", null));
-    const result = await new FireworksClient("key", MODEL, {
+    const result = await new AiClient("key", OPENROUTER_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({ messages: [] }, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -109,7 +159,7 @@ describe("FireworksClient", () => {
     const request = vi.fn().mockResolvedValue(success('{"ok":', "length"));
 
     await expect(
-      new FireworksClient("key", MODEL, {
+      new AiClient("key", OPENROUTER_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind: "incomplete" });
@@ -131,7 +181,7 @@ describe("FireworksClient", () => {
     );
 
     await expect(
-      new FireworksClient("key", MODEL, {
+      new AiClient("key", OPENROUTER_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({ messages: [] }, Date.now() + 5_000, ACTOR, "synthesize")
     ).rejects.toMatchObject({ kind: "refusal" });
@@ -149,7 +199,7 @@ describe("FireworksClient", () => {
     );
 
     await expect(
-      new FireworksClient("key", MODEL, {
+      new AiClient("key", OPENROUTER_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind });
@@ -162,7 +212,7 @@ describe("FireworksClient", () => {
       .mockResolvedValueOnce(new Response("temporary", { status }))
       .mockResolvedValueOnce(success());
 
-    const result = await new FireworksClient("key", MODEL, {
+    const result = await new AiClient("key", OPENROUTER_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -177,7 +227,7 @@ describe("FireworksClient", () => {
       .mockRejectedValueOnce(new Error("temporary network failure"))
       .mockResolvedValueOnce(success());
 
-    const result = await new FireworksClient("key", MODEL, {
+    const result = await new AiClient("key", OPENROUTER_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -194,7 +244,7 @@ describe("FireworksClient", () => {
     );
 
     await expect(
-      new FireworksClient("key", MODEL, {
+      new AiClient("key", OPENROUTER_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind: "malformed" });
@@ -203,12 +253,12 @@ describe("FireworksClient", () => {
 
   it("rejects exhausted deadlines without making a request", async () => {
     const request = vi.fn();
-    const client = new FireworksClient("key", MODEL, {
+    const client = new AiClient("key", OPENROUTER_MODEL, {
       request: request as unknown as typeof fetch
     });
 
     await expect(client.complete({}, Date.now() - 1, ACTOR, "refine")).rejects.toEqual(
-      expect.objectContaining<Partial<FireworksClientError>>({ kind: "timeout" })
+      expect.objectContaining<Partial<AiClientError>>({ kind: "timeout" })
     );
     expect(request).not.toHaveBeenCalled();
   });

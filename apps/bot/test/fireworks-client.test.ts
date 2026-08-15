@@ -57,7 +57,7 @@ function headers(request: ReturnType<typeof vi.fn>): Record<string, string> {
 
 describe("AiClient", () => {
   describe("OpenRouter provider", () => {
-    it("sends requests to OpenRouter endpoint with required headers and DeepSeek V4 Flash", async () => {
+    it("sends requests to OpenRouter endpoint with required headers, fallback routing, and DeepSeek V4 Flash", async () => {
       const request = vi.fn().mockResolvedValue(success());
       const client = new AiClient("openrouter-secret", OPENROUTER_MODEL, {
         provider: "openrouter",
@@ -84,6 +84,7 @@ describe("AiClient", () => {
       expect(reqHeaders["X-Title"]).toBe("Discord DSA");
       expect(body(request)).toMatchObject({
         model: OPENROUTER_MODEL,
+        provider: { allow_fallbacks: true },
         max_completion_tokens: 8_192,
         reasoning_effort: "high",
         stream: false
@@ -98,6 +99,27 @@ describe("AiClient", () => {
           reasoningTokens: 12,
           searchRequests: 0
         }
+      });
+    });
+
+    it("handles upstream error object in response payload", async () => {
+      const request = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: { message: "Provider returned 504 gateway timeout", code: 504 }
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      );
+
+      await expect(
+        new AiClient("key", OPENROUTER_MODEL, {
+          provider: "openrouter",
+          request: request as unknown as typeof fetch
+        }).complete({}, Date.now() + 5_000, ACTOR, "plan")
+      ).rejects.toMatchObject({
+        kind: "provider",
+        message: "Provider returned 504 gateway timeout"
       });
     });
   });

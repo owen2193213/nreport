@@ -8,7 +8,7 @@ export const OPENROUTER_CHAT_COMPLETIONS_URL =
   "https://openrouter.ai/api/v1/chat/completions";
 export const FIREWORKS_CHAT_COMPLETIONS_URL =
   "https://api.fireworks.ai/inference/v1/chat/completions";
-const REQUEST_TIMEOUT_MS = 45_000;
+const REQUEST_TIMEOUT_MS = 65_000;
 
 export interface AiRequestContext {
   actorKey: string;
@@ -27,6 +27,7 @@ export interface AiCompletion {
 export type FireworksCompletion = AiCompletion;
 
 interface ChatCompletionResponse {
+  error?: { message?: unknown; code?: unknown };
   choices?: Array<{
     finish_reason?: unknown;
     message?: { content?: unknown; refusal?: unknown };
@@ -111,11 +112,15 @@ export class AiClient {
     actor: AiRequestContext,
     stage: AiStage
   ): Promise<AiCompletion> {
-    const requestBody = {
+    const requestBody: Record<string, unknown> = {
       ...body,
       model: this.model,
       stream: false
     };
+    if (this.provider === "openrouter" && !body.provider) {
+      requestBody.provider = { allow_fallbacks: true };
+    }
+
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
       "Content-Type": "application/json"
@@ -143,16 +148,37 @@ export class AiClient {
           body: JSON.stringify(requestBody),
           signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining))
         });
-      } catch {
-        this.logFailure(actor, stage, Date.now() - startedAt, "network");
+      } catch (fetchError) {
+        const isTimeout =
+          fetchError instanceof Error &&
+          (fetchError.name === "TimeoutError" || fetchError.name === "AbortError");
+        const failureCategory = isTimeout ? "timeout" : "network";
+        const diagnosticMessage =
+          fetchError instanceof Error ? fetchError.message : undefined;
+        this.logFailure(
+          actor,
+          stage,
+          Date.now() - startedAt,
+          failureCategory,
+          undefined,
+          diagnosticMessage,
+          attempts
+        );
         if (attempts < 3 && deadline > Date.now()) continue;
-        throw new AiClientError("network", `${this.providerName} could not be reached.`);
+        throw new AiClientError(
+          failureCategory,
+          isTimeout
+            ? `${this.providerName} request timed out after ${Math.round((Date.now() - startedAt) / 1000)}s.`
+            : `${this.providerName} could not be reached.`
+        );
       }
+
+      const responseClone = response.clone();
 
       if (!response.ok) {
         const kind = response.status === 429 ? "rate_limited" : "provider";
         const responseDiagnostic = await readDiagnosticResponse(
-          response.clone(),
+          responseClone,
           [JSON.stringify(requestBody)]
         );
         this.logFailure(
@@ -178,24 +204,81 @@ export class AiClient {
       try {
         payload = (await response.json()) as ChatCompletionResponse;
       } catch {
-        this.logFailure(actor, stage, Date.now() - startedAt, "malformed");
+        const responseDiagnostic = await readDiagnosticResponse(
+          responseClone,
+          [JSON.stringify(requestBody)]
+        );
+        this.logFailure(
+          actor,
+          stage,
+          Date.now() - startedAt,
+          "malformed",
+          response.status,
+          responseDiagnostic,
+          attempts
+        );
         throw new AiClientError("malformed", `${this.providerName} returned malformed JSON.`);
+      }
+
+      if (payload.error) {
+        const errorMessage =
+          typeof payload.error.message === "string"
+            ? payload.error.message
+            : `${this.providerName} returned an upstream error.`;
+        this.logFailure(
+          actor,
+          stage,
+          Date.now() - startedAt,
+          "provider",
+          response.status,
+          payload.error,
+          attempts
+        );
+        throw new AiClientError("provider", errorMessage);
       }
 
       const choice = payload.choices?.[0];
       if (choice?.message?.refusal) {
-        this.logFailure(actor, stage, Date.now() - startedAt, "refusal");
+        this.logFailure(
+          actor,
+          stage,
+          Date.now() - startedAt,
+          "refusal",
+          response.status,
+          choice.message.refusal,
+          attempts
+        );
         throw new AiClientError("refusal", "The model declined the request.");
       }
       if (choice?.finish_reason === "length") {
-        this.logFailure(actor, stage, Date.now() - startedAt, "incomplete");
+        this.logFailure(
+          actor,
+          stage,
+          Date.now() - startedAt,
+          "incomplete",
+          response.status,
+          payload,
+          attempts
+        );
         throw new AiClientError(
           "incomplete",
           `${this.providerName} exhausted the completion budget.`
         );
       }
       if (typeof choice?.message?.content !== "string" || !choice.message.content.trim()) {
-        this.logFailure(actor, stage, Date.now() - startedAt, "malformed");
+        const responseDiagnostic = await readDiagnosticResponse(
+          responseClone,
+          [JSON.stringify(requestBody)]
+        );
+        this.logFailure(
+          actor,
+          stage,
+          Date.now() - startedAt,
+          "malformed",
+          response.status,
+          responseDiagnostic,
+          attempts
+        );
         throw new AiClientError("malformed", `${this.providerName} returned no completion.`);
       }
 

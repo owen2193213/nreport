@@ -432,6 +432,74 @@ describe("backend identity and validation", () => {
     ]);
   });
 
+  it("parses and validates referenced message evidence on message reports", () => {
+    const input = parseCreateReportInput({
+      country: "DE",
+      flow: "message_urf",
+      reportReason: "Illegal content",
+      reportType: "sub_other_hate_speech",
+      messageUrl:
+        "https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+      messageEvidence: {
+        source: "message_link",
+        status: "captured",
+        capturedAt: "2026-07-20T00:01:00.000Z",
+        snapshot: {
+          messageId: "323456789012345678",
+          channelId: "223456789012345678",
+          channelName: "reports",
+          serverId: "123456789012345678",
+          serverName: "Example server",
+          authorId: "423456789012345678",
+          authorUsername: "example",
+          authorDisplayName: "Example Display",
+          authorAvatarUrl: "https://cdn.discordapp.com/avatar.png",
+          authorBot: false,
+          content: "Replying message",
+          createdAt: "2026-07-20T00:00:00.000Z",
+          attachments: [],
+          embeds: [],
+          referencedMessage: {
+            messageId: "223456789012345679",
+            authorId: "504116640007323648",
+            authorUsername: "original_user",
+            authorDisplayName: "Original User",
+            authorBot: false,
+            content: "Original message text",
+            attachments: [
+              {
+                name: "context.png",
+                contentType: "image/png",
+                size: 512,
+                spoiler: false
+              }
+            ]
+          }
+        }
+      }
+    });
+
+    if (input.flow !== "message_urf" || input.messageEvidence?.status !== "captured") {
+      throw new Error("Expected captured message evidence.");
+    }
+    expect(input.messageEvidence.snapshot.referencedMessage).toEqual({
+      messageId: "223456789012345679",
+      authorId: "504116640007323648",
+      authorUsername: "original_user",
+      authorDisplayName: "Original User",
+      authorBot: false,
+      content: "Original message text",
+      attachments: [
+        {
+          name: "context.png",
+          contentType: "image/png",
+          size: 512,
+          spoiler: false
+        }
+      ]
+    });
+  });
+
   it("rejects message evidence that does not match its Discord link", () => {
     const base = {
       country: "DE",

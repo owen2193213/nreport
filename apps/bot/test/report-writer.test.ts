@@ -653,6 +653,59 @@ describe("Fireworks and Brave report writer", () => {
     expect(serialized).not.toContain("private-evidence.png");
   });
 
+  it("includes referenced message context in AI evidence prompt", async () => {
+    const messageDraft: ReportDraft = {
+      ...draft(),
+      flow: "message_urf",
+      countrySelection: "auto",
+      messageUrl: "https://discord.com/channels/123/456/789",
+      messageEvidence: {
+        source: "context_menu",
+        status: "captured",
+        capturedAt: "2026-08-09T00:00:01.000Z",
+        snapshot: {
+          messageId: "789",
+          channelId: "456",
+          channelName: "chat",
+          serverId: "123",
+          serverName: "server",
+          authorId: "111111111111111111",
+          authorUsername: "replier",
+          authorDisplayName: "Replier User",
+          authorAvatarUrl: null,
+          authorBot: false,
+          content: "You are not an adult yet",
+          createdAt: "2026-08-09T00:00:00.000Z",
+          attachments: [],
+          embeds: [],
+          referencedMessage: {
+            messageId: "788",
+            authorId: "222222222222222222",
+            authorUsername: "minor_user",
+            authorDisplayName: "Minor User",
+            authorBot: false,
+            content: "excuse me im 17 in highschool",
+            attachments: []
+          }
+        }
+      }
+    };
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(fireworks(completed()));
+
+    await writer(request).generate(messageDraft, ACTOR);
+    const serialized = request.mock.calls
+      .map((call) => {
+        const body = (call[1] as RequestInit | undefined)?.body;
+        return typeof body === "string" ? body : "";
+      })
+      .join("\n");
+    expect(serialized).toContain("minor_user");
+    expect(serialized).toContain("excuse me im 17 in highschool");
+  });
+
   it("preserves Unicode evidence for analysis while removing it from AI-generated prose", async () => {
     const messageDraft: ReportDraft = {
       ...draft(),

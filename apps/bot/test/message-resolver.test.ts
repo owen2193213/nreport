@@ -157,4 +157,78 @@ describe("message snapshots", () => {
       content: "Stage chat evidence"
     });
   });
+
+  it("captures referenced message and attachment info when message is a reply", () => {
+    const snapshot = snapshotMessage({
+      id: "323456789012345682",
+      channelId: "223456789012345682",
+      channel: { name: "general" },
+      guildId: "123456789012345678",
+      guild: { name: "Example server" },
+      author: {
+        id: "423456789012345678",
+        username: "replier",
+        globalName: "Replier Display",
+        bot: false,
+        displayAvatarURL: () => "https://cdn.discordapp.com/avatars/423/replier.png"
+      },
+      member: null,
+      content: "This is a reply to the original message",
+      createdAt: new Date("2026-07-20T00:00:00.000Z"),
+      attachments: new Map([
+        [
+          "1",
+          {
+            name: "image.png",
+            url: "https://cdn.discordapp.com/image.png",
+            contentType: "image/png",
+            size: 2048,
+            spoiler: false
+          }
+        ]
+      ]),
+      embeds: [],
+      referencedMessage: {
+        id: "323456789012345680",
+        author: {
+          id: "504116640007323648",
+          username: "original_author",
+          globalName: "Original Author",
+          bot: false
+        },
+        member: null,
+        content: "excuse me im 17 in highschool",
+        attachments: new Map([
+          [
+            "att-1",
+            {
+              name: "context.jpg",
+              contentType: "image/jpeg",
+              size: 512,
+              spoiler: false
+            }
+          ]
+        ])
+      }
+    } as unknown as Message);
+
+    expect(snapshot.referencedMessage).toEqual({
+      messageId: "323456789012345680",
+      authorId: "504116640007323648",
+      authorUsername: "original_author",
+      authorDisplayName: "Original Author",
+      authorBot: false,
+      content: "excuse me im 17 in highschool",
+      attachments: [
+        {
+          name: "context.jpg",
+          contentType: "image/jpeg",
+          size: 512,
+          spoiler: false
+        }
+      ]
+    });
+    expect(snapshot.attachments).toHaveLength(1);
+    expect(snapshot.attachments[0]?.name).toBe("image.png");
+  });
 });

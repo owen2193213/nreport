@@ -48,6 +48,21 @@ export interface ReportedUserSnapshot {
   resolvedAt: string;
 }
 
+export interface ReportedReferencedMessageSnapshot {
+  messageId: string;
+  authorId: string;
+  authorUsername: string;
+  authorDisplayName: string | null;
+  authorBot: boolean;
+  content: string;
+  attachments?: Array<{
+    name: string;
+    contentType: string | null;
+    size: number;
+    spoiler: boolean;
+  }>;
+}
+
 export interface ReportedMessageSnapshot {
   messageId: string;
   channelId: string;
@@ -73,6 +88,7 @@ export interface ReportedMessageSnapshot {
     description: string | null;
     url: string | null;
   }>;
+  referencedMessage?: ReportedReferencedMessageSnapshot | null;
 }
 
 export interface CapturedMessageEvidence {

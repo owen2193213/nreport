@@ -586,7 +586,22 @@ function messageAuthorText(evidence: MessageEvidence | undefined): string {
   if (evidence?.status !== "captured") return "Author information unavailable.";
   const snapshot = evidence.snapshot;
   const display = snapshot.authorDisplayName ?? snapshot.authorUsername;
-  return `Reported user: ${truncate(display, 100)} (@${truncate(snapshot.authorUsername, 100)})\nDiscord ID: \`${snapshot.authorId}\``;
+  const base = `Reported user: ${truncate(display, 100)} (@${truncate(snapshot.authorUsername, 100)})\nDiscord ID: \`${snapshot.authorId}\``;
+  const replyInfo = snapshot.referencedMessage
+    ? `\nReplying to: @${truncate(snapshot.referencedMessage.authorUsername, 50)}${
+        snapshot.referencedMessage.content
+          ? ` ("${truncate(snapshot.referencedMessage.content.replace(/[\p{Cc}\p{Cf}]/gu, " ").trim(), 60)}")`
+          : ""
+      }`
+    : "";
+  const attachmentInfo =
+    snapshot.attachments.length > 0
+      ? `\nAttachments (${snapshot.attachments.length}): ${truncate(
+          snapshot.attachments.map((attachment) => attachment.name).join(", "),
+          100
+        )}`
+      : "";
+  return `${base}${replyInfo}${attachmentInfo}`;
 }
 
 function messageAuthorAvatar(evidence: MessageEvidence | undefined): string | null {

@@ -3,6 +3,7 @@ import type {
   GuildElement,
   MessageEvidence,
   ReportedMessageSnapshot,
+  ReportedReferencedMessageSnapshot,
   ReportedUserSnapshot,
   ReportFlow,
   ReportRetryMode,
@@ -142,6 +143,47 @@ function snowflake(input: Record<string, unknown>, key: string): string {
   return value;
 }
 
+function reportedReferencedMessageSnapshot(
+  value: unknown
+): ReportedReferencedMessageSnapshot {
+  const input = record(value);
+  const attachmentsValue = input.attachments;
+  let attachments: ReportedReferencedMessageSnapshot["attachments"] = undefined;
+  if (attachmentsValue !== undefined) {
+    if (!Array.isArray(attachmentsValue) || attachmentsValue.length > 25) {
+      throw new Error("referencedMessage.attachments must contain at most 25 items.");
+    }
+    attachments = attachmentsValue.map((item) => {
+      const attachment = record(item);
+      const size = attachment.size;
+      if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) {
+        throw new Error("referencedMessage attachment size must be a non-negative integer.");
+      }
+      if (typeof attachment.spoiler !== "boolean") {
+        throw new Error("referencedMessage attachment spoiler must be a boolean.");
+      }
+      return {
+        name: requiredString(attachment, "name", 256),
+        contentType: nullableString(attachment, "contentType", 100),
+        size,
+        spoiler: attachment.spoiler
+      };
+    });
+  }
+  if (typeof input.authorBot !== "boolean") {
+    throw new Error("referencedMessage.authorBot must be a boolean.");
+  }
+  return {
+    messageId: snowflake(input, "messageId"),
+    authorId: snowflake(input, "authorId"),
+    authorUsername: requiredString(input, "authorUsername", 100),
+    authorDisplayName: nullableString(input, "authorDisplayName", 100),
+    authorBot: input.authorBot,
+    content: evidenceString(input, "content", 4_000),
+    ...(attachments !== undefined ? { attachments } : {})
+  };
+}
+
 function reportedMessageSnapshot(value: unknown): ReportedMessageSnapshot {
   const input = record(value);
   const attachmentsValue = input.attachments;
@@ -181,6 +223,10 @@ function reportedMessageSnapshot(value: unknown): ReportedMessageSnapshot {
   if (typeof input.authorBot !== "boolean") {
     throw new Error("messageEvidence.snapshot.authorBot must be a boolean.");
   }
+  const referencedMessage =
+    input.referencedMessage === undefined || input.referencedMessage === null
+      ? null
+      : reportedReferencedMessageSnapshot(input.referencedMessage);
   return {
     messageId: snowflake(input, "messageId"),
     channelId: snowflake(input, "channelId"),
@@ -195,7 +241,8 @@ function reportedMessageSnapshot(value: unknown): ReportedMessageSnapshot {
     content: evidenceString(input, "content", 4_000),
     createdAt: timestamp(input, "createdAt"),
     attachments,
-    embeds
+    embeds,
+    ...(referencedMessage ? { referencedMessage } : {})
   };
 }
 

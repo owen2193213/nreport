@@ -17,16 +17,14 @@ export interface BotConfig {
   aiProvider: AiProvider;
   aiApiKey: string;
   aiModel: string;
-  fireworksApiKey: string;
-  fireworksModel: string;
+  basetenApiKey?: string;
+  basetenModel?: string;
   openRouterApiKey?: string;
   openRouterModel?: string;
   port: number;
   token: string;
   whitelistEnabled: boolean;
   reportEventWebhookSecret?: string;
-  notificationRelayWebhookUrl?: string;
-  notificationRelayTargetAuthorId: string;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -66,16 +64,16 @@ function port(value: string | undefined): number {
 function resolveAiProvider(env: NodeJS.ProcessEnv): AiProvider {
   const configured = env.AI_PROVIDER?.trim().toLowerCase();
   if (configured) {
-    if (configured === "openrouter" || configured === "fireworks") {
+    if (configured === "openrouter" || configured === "baseten") {
       return configured;
     }
-    throw new Error("AI_PROVIDER must be either 'openrouter' or 'fireworks'.");
+    throw new Error("AI_PROVIDER must be either 'openrouter' or 'baseten'.");
   }
-  if (env.OPENROUTER_API_KEY?.trim() && !env.FIREWORKS_API_KEY?.trim()) {
+  if (env.OPENROUTER_API_KEY?.trim() && !env.BASETEN_API_KEY?.trim()) {
     return "openrouter";
   }
-  if (env.FIREWORKS_API_KEY?.trim() && !env.OPENROUTER_API_KEY?.trim()) {
-    return "fireworks";
+  if (env.BASETEN_API_KEY?.trim() && !env.OPENROUTER_API_KEY?.trim()) {
+    return "baseten";
   }
   return "openrouter";
 }
@@ -100,11 +98,11 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     (aiProvider === "openrouter" ? env.AI_MODEL?.trim() : undefined) ||
     "deepseek/deepseek-v4-flash-0731";
 
-  const fireworksApiKey = env.FIREWORKS_API_KEY?.trim() || env.AI_API_KEY?.trim();
-  const fireworksModel =
-    env.FIREWORKS_MODEL?.trim() ||
-    (aiProvider === "fireworks" ? env.AI_MODEL?.trim() : undefined) ||
-    "accounts/fireworks/models/deepseek-v4-flash-0731";
+  const basetenApiKey = env.BASETEN_API_KEY?.trim() || env.AI_API_KEY?.trim();
+  const basetenModel =
+    env.BASETEN_MODEL?.trim() ||
+    (aiProvider === "baseten" ? env.AI_MODEL?.trim() : undefined) ||
+    "deepseek-ai/DeepSeek-V4-Flash-0731";
 
   let aiApiKey: string;
   let aiModel: string;
@@ -114,17 +112,17 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
       throw new Error(
         env.AI_PROVIDER
           ? "OPENROUTER_API_KEY is required when AI_PROVIDER is 'openrouter'."
-          : "OPENROUTER_API_KEY or FIREWORKS_API_KEY is required."
+          : "OPENROUTER_API_KEY or BASETEN_API_KEY is required."
       );
     }
     aiApiKey = openRouterApiKey;
     aiModel = openRouterModel;
   } else {
-    if (!fireworksApiKey) {
-      throw new Error("FIREWORKS_API_KEY is required when AI_PROVIDER is 'fireworks'.");
+    if (!basetenApiKey) {
+      throw new Error("BASETEN_API_KEY is required when AI_PROVIDER is 'baseten'.");
     }
-    aiApiKey = fireworksApiKey;
-    aiModel = fireworksModel;
+    aiApiKey = basetenApiKey;
+    aiModel = basetenModel;
   }
 
   return {
@@ -142,18 +140,13 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     aiProvider,
     aiApiKey,
     aiModel,
-    fireworksApiKey: fireworksApiKey || aiApiKey,
-    fireworksModel,
+    ...(basetenApiKey ? { basetenApiKey } : {}),
+    basetenModel,
     ...(openRouterApiKey ? { openRouterApiKey } : {}),
     openRouterModel,
     port: port(env.PORT),
     token: required(env, "DISCORD_BOT_TOKEN"),
     whitelistEnabled: env.WHITELIST_ENABLED !== "false",
-    ...(reportEventWebhookSecret === undefined ? {} : { reportEventWebhookSecret }),
-    ...(env.NOTIFICATION_RELAY_WEBHOOK_URL?.trim()
-      ? { notificationRelayWebhookUrl: env.NOTIFICATION_RELAY_WEBHOOK_URL.trim() }
-      : {}),
-    notificationRelayTargetAuthorId:
-      env.NOTIFICATION_RELAY_TARGET_AUTHOR_ID?.trim() || "504116640007323648"
+    ...(reportEventWebhookSecret === undefined ? {} : { reportEventWebhookSecret })
   };
 }

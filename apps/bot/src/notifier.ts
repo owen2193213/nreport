@@ -14,10 +14,6 @@ import {
 } from "./notification-preferences.js";
 import type { ServerResolver } from "./server-resolver.js";
 import type { AiDecisionSummary, ServerSnapshot } from "./types.js";
-import {
-  isReportedMessageAuthor,
-  relayNotificationToWebhook
-} from "./notification-relay.js";
 import { reportDecisionEmbed, reportEmbed, reportRetryComponents } from "./ui.js";
 
 function errorMessage(error: unknown): string {
@@ -304,6 +300,7 @@ export class NotificationWorker {
           eventType: job.payload.eventType,
           deliveryAttempt: job.attempts
         });
+        const user = await this.client.users.fetch(job.discord_user_id);
         const components = reportRetryComponents(report);
         const aiDecisions = await this.database.aiDecisions(trackingId);
         const embed = renderNotification(
@@ -312,58 +309,39 @@ export class NotificationWorker {
           job.payload.eventType,
           aiDecisions
         );
+        let statusMessage = await this.storedStatusMessage(user, trackingId);
+        if (statusMessage === null) {
+          statusMessage = await user.send({
+            embeds: [embed],
+            components,
+            allowedMentions: { parse: [] }
+          });
+          await this.database.saveStatusDmMessageId(trackingId, statusMessage.id);
+        } else {
+          await statusMessage.edit({
+            embeds: [embed],
+            components,
+            allowedMentions: { parse: [] }
+          });
+        }
         const decision = reportDecisionEmbed(
           job.payload.eventType,
           report,
           await this.snapshotFor(report, job.discord_user_id)
         );
         const replyText = lifecycleReplyText(job.payload.eventType, report);
-
-        if (
-          this.config.notificationRelayWebhookUrl &&
-          isReportedMessageAuthor(report, this.config.notificationRelayTargetAuthorId)
-        ) {
-          const existingMessageId = await this.database.statusDmMessageId(trackingId);
-          const relayMessageId = await relayNotificationToWebhook(
-            this.config.notificationRelayWebhookUrl,
-            embed,
-            decision,
-            replyText,
-            existingMessageId
-          );
-          if (relayMessageId && relayMessageId !== existingMessageId) {
-            await this.database.saveStatusDmMessageId(trackingId, relayMessageId);
-          }
-        } else {
-          const user = await this.client.users.fetch(job.discord_user_id);
-          let statusMessage = await this.storedStatusMessage(user, trackingId);
-          if (statusMessage === null) {
-            statusMessage = await user.send({
-              embeds: [embed],
-              components,
-              allowedMentions: { parse: [] }
-            });
-            await this.database.saveStatusDmMessageId(trackingId, statusMessage.id);
-          } else {
-            await statusMessage.edit({
-              embeds: [embed],
-              components,
-              allowedMentions: { parse: [] }
-            });
-          }
-          if (decision !== null) {
-            await statusMessage.reply({
-              embeds: [decision],
-              components: [],
-              allowedMentions: { parse: [] }
-            });
-          } else if (replyText !== null) {
-            await statusMessage.reply({
-              content: replyText,
-              components: shouldIncludeRetryComponents(job.payload.eventType) ? components : [],
-              allowedMentions: { parse: [] }
-            });
-          }
+        if (decision !== null) {
+          await statusMessage.reply({
+            embeds: [decision],
+            components: [],
+            allowedMentions: { parse: [] }
+          });
+        } else if (replyText !== null) {
+          await statusMessage.reply({
+            content: replyText,
+            components: shouldIncludeRetryComponents(job.payload.eventType) ? components : [],
+            allowedMentions: { parse: [] }
+          });
         }
         await this.database.completeNotification(job.id);
         botLog("notification_send_completed", {

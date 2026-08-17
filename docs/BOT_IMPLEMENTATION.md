@@ -124,7 +124,7 @@ Structured digest logs contain only safe job, frequency, result, and error class
    The profile's optional observed server and the server report's optional server/invite remain
    slash-command parameters. A server report without either a slash target or current server is rejected.
 4. Encrypt the draft and its compact AI context at rest with a 30-minute expiry.
-5. Ask Fireworks DeepSeek for a JSON plan that resolves omitted Auto fields and decides whether term and
+5. Ask Baseten DeepSeek for a JSON plan that resolves omitted Auto fields and decides whether term and
    law research are necessary. Run only the selected Brave searches, concurrently when both are
    needed, then synthesize a completed result. DeepSeek may request one bounded follow-up search. The
    final writer receives only compact resolved evidence and research context. When DM delivery is
@@ -132,7 +132,7 @@ Structured digest logs contain only safe job, frequency, result, and error class
    report card in DMs; Writing, Refining, Regenerating, review, submission, and resubmission edit
    that same message. The ephemeral interaction points to the DM and remains the fallback if DM
    delivery fails. When DM delivery is cleared, the same cards remain ephemeral. Then ask the
-   configured Fireworks model to write a factual report of at most 512 characters that naturally names
+   configured Baseten model to write a factual report of at most 512 characters that naturally names
    the researched law or provision.
 6. Atomically reserve one credit and create the API report with the interaction ID.
 7. Consume the reservation after HTTP 202 or idempotent HTTP 200.
@@ -246,11 +246,11 @@ disables further aggregate DM attempts without stopping report processing.
 
 ## AI report writing
 
-The bot calls the configured AI provider (OpenRouter or Fireworks) and Brave directly; the API
+The bot calls the configured AI provider (OpenRouter or Baseten) and Brave directly; the API
 and low-level Discord client never receive the reporter's brief or AI context. `AI_PROVIDER`
-selects the provider (`openrouter` [default] or `fireworks`). `OPENROUTER_API_KEY` (with model
-`deepseek/deepseek-v4-flash-0731`) or `FIREWORKS_API_KEY` (with model
-`accounts/fireworks/models/deepseek-v4-flash-0731`) and `BRAVE_SEARCH_API_KEY` are required.
+selects the provider (`openrouter` [default] or `baseten`). `OPENROUTER_API_KEY` (with model
+`deepseek/deepseek-v4-flash-0731`) or `BASETEN_API_KEY` (with model
+`deepseek-ai/DeepSeek-V4-Flash-0731`) and `BRAVE_SEARCH_API_KEY` are required.
 DeepSeek handles planning, synthesis, refinement, and repair. The bot validates every returned value
 locally. The complete generation workflow is capped at 90 seconds.
 
@@ -281,7 +281,7 @@ source material. The model receives only compact titles, HTTPS URLs, and excerpt
 
 Synthesis either returns the completed structured result or requests one additional term or law
 search. The bot executes at most one such follow-up and synthesizes once more; a second request is
-an error. Brave retries one transient network, rate-limit, or server failure. Fireworks and Brave have no
+an error. Brave retries one transient network, rate-limit, or server failure. Baseten and Brave have no
 cross-provider fallback.
 
 The AI integration remains bot-local and single-model. It assumes normal interactive bot traffic,
@@ -295,12 +295,12 @@ back to the link and brief when Discord does not allow the bot to fetch the mess
 reports include the ID, username, global display name, and bot status. A supplied server ID remains
 report context, but a user-installed-only bot does not attempt to resolve server-member profiles
 from it. Selecting profile photos or server media records the selected report element, but no media
-or media URL is sent to Fireworks or Brave while processing is disabled. Discord's supported bot API does not expose profile About Me text,
+or media URL is sent to Baseten or Brave while processing is disabled. Discord's supported bot API does not expose profile About Me text,
 so the bot does not claim or attempt to retrieve it.
 
 AI media processing is temporarily disabled for every report category. No images, GIFs, videos,
 avatars, banners, server art, or attachment/embed media URLs are attached or included in
-Fireworks or Brave requests. This prevents child-safety media, gore, and other potentially prohibited
+Baseten or Brave requests. This prevents child-safety media, gore, and other potentially prohibited
 media from reaching the provider. Attachment names and content types may remain as factual text
 metadata.
 
@@ -319,14 +319,14 @@ display name, `@username`, Discord ID, and author avatar thumbnail. Historical o
 messages show `Author information unavailable.` Retries and rewrite/resend preserve an existing
 snapshot; only historical reports with no evidence may attempt a fresh lookup. Snapshot text and
 URLs are sensitive evidence and must never appear in structured logs. Avatar, attachment, and embed
-URLs remain excluded from Fireworks and Brave while AI media processing is disabled.
+URLs remain excluded from Baseten and Brave while AI media processing is disabled.
 
 The shared combined report modal enables Use AI and Send review to DMs by default and lets the
 reporter use Auto, their saved/current country, or the paginated country picker. Report category,
 flow-specific elements, and report details appear before country and preferences. Category and
 details are optional, use the placeholder `Auto`, and explain that AI fills a blank field when Use
 AI is enabled. When Use AI is cleared, interaction validation requires both category and
-final report text and performs no Fireworks or Brave
+final report text and performs no Baseten or Brave
 request, and shows the normal review with Submit, Edit manually, Change country, and Cancel.
 Refine and Regenerate are omitted. Because Auto country selection requires AI, a manual report
 with no saved country must select a country before review. The message context-menu command opens
@@ -364,10 +364,10 @@ Planning uses DeepSeek's high reasoning mode and an 8,192-token completion budge
 high reasoning with 12,288 tokens only when Brave research must be interpreted. No-research
 synthesis, refinement, and repair disable reasoning and use 4,096 tokens. These limits include
 thinking and visible JSON. Reasoning calls receive the complete JSON Schema in the prompt;
-non-reasoning calls use Fireworks-enforced JSON Schema. The model is told to keep the report
+non-reasoning calls use Baseten-enforced JSON Schema. The model is told to keep the report
 naturally concise without counting characters or optimizing the exact count, while local validation
 still enforces the 512-character limit.
-Reasoning, input/output tokens, Fireworks request counts, and actual Brave request counts are accumulated
+Reasoning, input/output tokens, Baseten request counts, and actual Brave request counts are accumulated
 per user in `bot_users` and displayed by `/access status`. The former provider-cost field remains in
 the database for compatibility but is not estimated or shown. Safe logs use a keyed pseudonymous
 actor value plus stage, model, latency, usage, and failure category.
@@ -377,7 +377,7 @@ If the repaired result is still invalid, the encrypted draft retains the latest 
 conversation. The manual-edit modal shows the AI draft in a copyable read-only text display and
 provides a separate required 512-character input. Drafts already within the limit prefill that
 input; overlength drafts leave it blank for the user to shorten and paste. Insufficient
-Fireworks or Brave rate limits, timeouts, malformed output, unsupported Auto countries, and unusable
+Baseten or Brave rate limits, timeouts, malformed output, unsupported Auto countries, and unusable
 legal research use the safe AI failure screen. Errors identify planning, term research, legal
 research, writing,
 refinement, or repair as the failed stage. Retry, country override, detail editing,
@@ -693,8 +693,8 @@ same immutable audit relationship as failure retries.
 - Chosen: treat Discord API code `521002` as successful appeal convergence and retry transient
   appeal submission failures through a fresh same-country proxy. Initial report submission remains
   non-retryable after its final POST starts because it has no equivalent duplicate guard.
-- Chosen: call Fireworks directly with configurable
-  `accounts/fireworks/models/deepseek-v4-flash-0731` for planning, synthesis, refinement, and repair. No
+- Chosen: call Baseten directly with configurable
+  `deepseek-ai/DeepSeek-V4-Flash-0731` for planning, synthesis, refinement, and repair. No
   model fallback is used. One
   retry handles network errors, rate limits, and server failures within the workflow deadline;
   refusals, malformed provider payloads, and token-limit completions remain terminal. Malformed or

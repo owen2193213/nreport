@@ -7,7 +7,7 @@ import {
 } from "../src/ai-client.js";
 
 const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
-const FIREWORKS_MODEL = "accounts/fireworks/models/deepseek-v4-flash-0731";
+const BASETEN_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731";
 const OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";
 
 function success(
@@ -124,11 +124,11 @@ describe("AiClient", () => {
     });
   });
 
-  describe("Fireworks provider", () => {
-    it("sends reasoning request directly to Fireworks endpoint", async () => {
+  describe("Baseten provider", () => {
+    it("sends reasoning request directly to Baseten endpoint", async () => {
       const request = vi.fn().mockResolvedValue(success());
-      const client = new AiClient("fireworks-secret", FIREWORKS_MODEL, {
-        provider: "fireworks",
+      const client = new AiClient("baseten-secret", BASETEN_MODEL, {
+        provider: "baseten",
         request: request as unknown as typeof fetch
       });
 
@@ -144,15 +144,17 @@ describe("AiClient", () => {
       );
 
       expect(request.mock.calls[0]?.[0]).toBe(
-        "https://api.fireworks.ai/inference/v1/chat/completions"
+        "https://inference.baseten.co/v1/chat/completions"
       );
-      expect(headers(request).Authorization).toBe("Bearer fireworks-secret");
+      expect(headers(request).Authorization).toBe("Bearer baseten-secret");
+      expect(headers(request)["HTTP-Referer"]).toBeUndefined();
       expect(body(request)).toMatchObject({
-        model: FIREWORKS_MODEL,
+        model: BASETEN_MODEL,
         max_completion_tokens: 8_192,
         reasoning_effort: "high",
         stream: false
       });
+      expect(body(request).provider).toBeUndefined();
       expect(result).toEqual({
         content: '{"ok":true}',
         finishReason: "stop",
@@ -164,6 +166,13 @@ describe("AiClient", () => {
           searchRequests: 0
         }
       });
+    });
+
+    it("auto-detects baseten provider when model starts with deepseek-ai/", () => {
+      const client = new AiClient("baseten-secret", BASETEN_MODEL);
+      expect(client.provider).toBe("baseten");
+      expect(client.endpoint).toBe("https://inference.baseten.co/v1/chat/completions");
+      expect(client.providerName).toBe("Baseten");
     });
   });
 

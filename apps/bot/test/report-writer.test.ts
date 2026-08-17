@@ -85,7 +85,7 @@ function moreResearch(
   };
 }
 
-function fireworks(value: Record<string, unknown>, usage: Partial<AiUsage> = {}): Response {
+function baseten(value: Record<string, unknown>, usage: Partial<AiUsage> = {}): Response {
   return new Response(
     JSON.stringify({
       choices: [
@@ -150,8 +150,8 @@ function writer(
   recordUsage: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined)
 ): ReportWriter {
   return new ReportWriter(
-    "fireworks-secret",
-    "accounts/fireworks/models/deepseek-v4-flash-0731",
+    "baseten-secret",
+    "deepseek-ai/DeepSeek-V4-Flash-0731",
     "brave-secret",
     COUNTRIES,
     {
@@ -190,12 +190,12 @@ function embeddedSchema(message: string): { properties: Record<string, unknown> 
   };
 }
 
-describe("Fireworks and Brave report writer", () => {
+describe("Baseten and Brave report writer", () => {
   it("skips Brave when the strict planner requires no research", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(plan()))
+      .mockResolvedValueOnce(baseten(completed()));
     const recordUsage = vi.fn().mockResolvedValue(undefined);
 
     const result = await writer(request, recordUsage).generate(draft(), ACTOR);
@@ -206,10 +206,10 @@ describe("Fireworks and Brave report writer", () => {
     expect(result.report.length).toBeLessThanOrEqual(512);
     expect(request).toHaveBeenCalledTimes(2);
     expect(urlAt(request, 0)).toBe(
-      "https://api.fireworks.ai/inference/v1/chat/completions"
+      "https://inference.baseten.co/v1/chat/completions"
     );
     expect(urlAt(request, 1)).toBe(
-      "https://api.fireworks.ai/inference/v1/chat/completions"
+      "https://inference.baseten.co/v1/chat/completions"
     );
     expect(recordUsage).toHaveBeenCalledTimes(2);
 
@@ -284,9 +284,9 @@ describe("Fireworks and Brave report writer", () => {
   it("keeps resolved fields out of the synthesis output contract", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(baseten(plan()))
       .mockResolvedValueOnce(
-        fireworks({
+        baseten({
           status: "completed",
           followUpType: null,
           followUpQuery: null,
@@ -321,7 +321,7 @@ describe("Fireworks and Brave report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           plan({
             termResearchRequired: true,
             termSearchQuery: "coded term meaning hateful language"
@@ -329,7 +329,7 @@ describe("Fireworks and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(braveTerm())
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(completed()));
 
     const result = await writer(request).generate(draft(), ACTOR);
 
@@ -361,7 +361,7 @@ describe("Fireworks and Brave report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           plan({
             lawResearchRequired: true,
             lawSearchQuery: "Germany official Basic Law Article 1"
@@ -369,7 +369,7 @@ describe("Fireworks and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(braveLaw())
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(completed()));
 
     const result = await writer(request).generate(draft(), ACTOR);
 
@@ -381,7 +381,7 @@ describe("Fireworks and Brave report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           plan({
             lawResearchRequired: true,
             lawSearchQuery: "Ireland official laws on online threats"
@@ -389,7 +389,7 @@ describe("Fireworks and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(braveLaw())
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(completed()));
 
     await writer(request).generate({ ...draft(), country: "IE" }, ACTOR);
 
@@ -406,8 +406,8 @@ describe("Fireworks and Brave report writer", () => {
       resolveLaw = resolve;
     });
     const request = vi.fn(async (url: string) => {
-      if (url.includes("api.fireworks.ai") && request.mock.calls.length === 1) {
-        return fireworks(
+      if (url.includes("inference.baseten.co") && request.mock.calls.length === 1) {
+        return baseten(
           plan({
             termResearchRequired: true,
             termSearchQuery: "coded term meaning hateful language",
@@ -418,7 +418,7 @@ describe("Fireworks and Brave report writer", () => {
       }
       if (url.includes("/web/search")) return termPending;
       if (url.includes("/llm/context")) return lawPending;
-      return fireworks(completed());
+      return baseten(completed());
     });
 
     const generation = writer(request).generate(draft(), ACTOR);
@@ -433,7 +433,7 @@ describe("Fireworks and Brave report writer", () => {
 
   it("rejects inconsistent plans after one repair attempt", async () => {
     const inconsistent = vi.fn().mockImplementation(() =>
-      Promise.resolve(fireworks(plan({ termResearchRequired: true, termSearchQuery: null })))
+      Promise.resolve(baseten(plan({ termResearchRequired: true, termSearchQuery: null })))
     );
     await expect(writer(inconsistent).generate(draft(), ACTOR)).rejects.toThrow(
       /terminology research query/
@@ -455,7 +455,7 @@ describe("Fireworks and Brave report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           plan({
             country: "AT",
             reportType: "sub_other_threats",
@@ -463,7 +463,7 @@ describe("Fireworks and Brave report writer", () => {
           })
         )
       )
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(completed()));
 
     const result = await writer(request).generate(draft(), ACTOR);
 
@@ -483,7 +483,7 @@ describe("Fireworks and Brave report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           plan({
             country: "AT",
             reportType: "sub_other_threats",
@@ -494,7 +494,7 @@ describe("Fireworks and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           completed({
             lawReference: "Austria's Criminal Code (Strafgesetzbuch), Section 107"
           })
@@ -517,12 +517,12 @@ describe("Fireworks and Brave report writer", () => {
   it("performs one targeted follow-up and rejects a second request", async () => {
     const successRequest = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(baseten(plan()))
       .mockResolvedValueOnce(
-        fireworks(moreResearch("law", "Germany official Basic Law Article 1 text"))
+        baseten(moreResearch("law", "Germany official Basic Law Article 1 text"))
       )
       .mockResolvedValueOnce(braveLaw())
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(completed()));
     const result = await writer(successRequest).generate(draft(), ACTOR);
     expect(result.legalResearch.searchRequests).toBe(1);
     expect(successRequest).toHaveBeenCalledTimes(4);
@@ -541,13 +541,13 @@ describe("Fireworks and Brave report writer", () => {
 
     const repeated = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(baseten(plan()))
       .mockResolvedValueOnce(
-        fireworks(moreResearch("law", "Germany official Basic Law Article 1 text"))
+        baseten(moreResearch("law", "Germany official Basic Law Article 1 text"))
       )
       .mockResolvedValueOnce(braveLaw())
       .mockResolvedValueOnce(
-        fireworks(moreResearch("law", "Germany official Basic Law Article 1 current text"))
+        baseten(moreResearch("law", "Germany official Basic Law Article 1 current text"))
       );
     await expect(writer(repeated).generate(draft(), ACTOR)).rejects.toThrow(
       /allowed follow-up/
@@ -557,9 +557,9 @@ describe("Fireworks and Brave report writer", () => {
   it("repairs an oversized completed report once with reasoning disabled", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
-      .mockResolvedValueOnce(fireworks(completed({ report: "x".repeat(513) })))
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(plan()))
+      .mockResolvedValueOnce(baseten(completed({ report: "x".repeat(513) })))
+      .mockResolvedValueOnce(baseten(completed()));
 
     const result = await writer(request).generate(draft(), ACTOR);
 
@@ -580,9 +580,9 @@ describe("Fireworks and Brave report writer", () => {
     );
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(baseten(plan()))
       .mockResolvedValueOnce(malformed)
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(completed()));
 
     await expect(writer(request).generate(draft(), ACTOR)).resolves.toMatchObject({
       reportType: "sub_other_hate_speech"
@@ -590,7 +590,7 @@ describe("Fireworks and Brave report writer", () => {
     expect(request).toHaveBeenCalledTimes(3);
   });
 
-  it("maps a Fireworks refusal to a specific safe error", async () => {
+  it("maps a Baseten refusal to a specific safe error", async () => {
     const request = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -639,8 +639,8 @@ describe("Fireworks and Brave report writer", () => {
     };
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(plan()))
+      .mockResolvedValueOnce(baseten(completed()));
 
     await writer(request).generate(messageDraft, ACTOR);
     const serialized = request.mock.calls
@@ -692,8 +692,8 @@ describe("Fireworks and Brave report writer", () => {
     };
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(plan()))
+      .mockResolvedValueOnce(baseten(completed()));
 
     await writer(request).generate(messageDraft, ACTOR);
     const serialized = request.mock.calls
@@ -740,7 +740,7 @@ describe("Fireworks and Brave report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           plan({
             country: "IE",
             reportType: "sub_other_hate_speech",
@@ -750,7 +750,7 @@ describe("Fireworks and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           completed({
             lawReference: "Ireland law 😀",
             researchSummary: "Prohibits hateful café content.",
@@ -773,7 +773,7 @@ describe("Fireworks and Brave report writer", () => {
     );
   });
 
-  it("refines through Fireworks without searching or changing research", async () => {
+  it("refines through Baseten without searching or changing research", async () => {
     const reportDraft = draft();
     reportDraft.legalResearch = {
       country: "DE",
@@ -789,7 +789,7 @@ describe("Fireworks and Brave report writer", () => {
       { role: "assistant", content: JSON.stringify({ report: "Original report." }) }
     ];
     const request = vi.fn().mockResolvedValue(
-      fireworks({ report: `Refined report under ${LAW}.` })
+      baseten({ report: `Refined report under ${LAW}.` })
     );
 
     const result = await writer(request).refine(reportDraft, "Make it clearer", ACTOR);
@@ -798,7 +798,7 @@ describe("Fireworks and Brave report writer", () => {
     expect(result.legalResearch).toEqual(reportDraft.legalResearch);
     expect(request).toHaveBeenCalledTimes(1);
     expect(urlAt(request, 0)).toBe(
-      "https://api.fireworks.ai/inference/v1/chat/completions"
+      "https://inference.baseten.co/v1/chat/completions"
     );
     expect(bodyAt<{ reasoning_effort: string; max_completion_tokens: number }>(request, 0)).toMatchObject({
       reasoning_effort: "none",
@@ -811,9 +811,9 @@ describe("Fireworks and Brave report writer", () => {
     const repairedCandidate = "y".repeat(514);
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
-      .mockResolvedValueOnce(fireworks(completed({ report: firstCandidate })))
-      .mockResolvedValueOnce(fireworks(completed({ report: repairedCandidate })));
+      .mockResolvedValueOnce(baseten(plan()))
+      .mockResolvedValueOnce(baseten(completed({ report: firstCandidate })))
+      .mockResolvedValueOnce(baseten(completed({ report: repairedCandidate })));
 
     const failure = await writer(request)
       .generate(draft(), ACTOR)
@@ -826,9 +826,9 @@ describe("Fireworks and Brave report writer", () => {
   it("repairs a synthesis response that is missing its law reference", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
-      .mockResolvedValueOnce(fireworks(completed({ lawReference: null })))
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(plan()))
+      .mockResolvedValueOnce(baseten(completed({ lawReference: null })))
+      .mockResolvedValueOnce(baseten(completed()));
 
     const result = await writer(request).generate(draft(), ACTOR);
 
@@ -849,15 +849,15 @@ describe("Fireworks and Brave report writer", () => {
   it("repairs an invalid follow-up request once", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(baseten(plan()))
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           moreResearch("law", "Germany official Basic Law Article 1", {
             followUpType: "legal"
           })
         )
       )
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(completed()));
 
     const result = await writer(request).generate(draft(), ACTOR);
 
@@ -868,9 +868,9 @@ describe("Fireworks and Brave report writer", () => {
   it("stops after one failed synthesis repair", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
-      .mockResolvedValueOnce(fireworks(completed({ lawReference: null })))
-      .mockResolvedValueOnce(fireworks(completed({ researchSummary: null })));
+      .mockResolvedValueOnce(baseten(plan()))
+      .mockResolvedValueOnce(baseten(completed({ lawReference: null })))
+      .mockResolvedValueOnce(baseten(completed({ researchSummary: null })));
 
     await expect(writer(request).generate(draft(), ACTOR)).rejects.toThrow(
       /remained invalid after one repair/
@@ -881,9 +881,9 @@ describe("Fireworks and Brave report writer", () => {
   it("normalizes near-miss follow-up responses instead of rejecting them", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(baseten(plan()))
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           moreResearch("law", "Germany official Basic Law Article 1 text", {
             lawReference: "",
             report: "pending further research"
@@ -891,7 +891,7 @@ describe("Fireworks and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(braveLaw())
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(completed()));
 
     const result = await writer(request).generate(draft(), ACTOR);
 
@@ -902,9 +902,9 @@ describe("Fireworks and Brave report writer", () => {
   it("accepts a completed synthesis with stray follow-up values", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(baseten(plan()))
       .mockResolvedValueOnce(
-        fireworks(completed({ followUpType: "law", followUpQuery: "stray query" }))
+        baseten(completed({ followUpType: "law", followUpQuery: "stray query" }))
       );
 
     const result = await writer(request).generate(draft(), ACTOR);
@@ -920,7 +920,7 @@ describe("Fireworks and Brave report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           plan({
             country: "UK",
             reportType: "sub_other_hate_speech",
@@ -929,7 +929,7 @@ describe("Fireworks and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           plan({
             country: "DE",
             reportType: "sub_other_hate_speech",
@@ -937,7 +937,7 @@ describe("Fireworks and Brave report writer", () => {
           })
         )
       )
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(completed()));
 
     const result = await writer(request).generate(auto, ACTOR);
 
@@ -949,7 +949,7 @@ describe("Fireworks and Brave report writer", () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           plan({
             termResearchRequired: true,
             termSearchQuery: "meaning of coded term, see https://example.com"
@@ -957,7 +957,7 @@ describe("Fireworks and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(
-        fireworks(
+        baseten(
           plan({
             termResearchRequired: true,
             termSearchQuery: "coded term meaning hateful language"
@@ -965,7 +965,7 @@ describe("Fireworks and Brave report writer", () => {
         )
       )
       .mockResolvedValueOnce(braveTerm())
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(completed()));
 
     const result = await writer(request).generate(draft(), ACTOR);
 
@@ -976,11 +976,11 @@ describe("Fireworks and Brave report writer", () => {
   it("skips a follow-up search whose query breaks the sanitization rules", async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(fireworks(plan()))
+      .mockResolvedValueOnce(baseten(plan()))
       .mockResolvedValueOnce(
-        fireworks(moreResearch("law", "Germany Basic Law text https://example.com"))
+        baseten(moreResearch("law", "Germany Basic Law text https://example.com"))
       )
-      .mockResolvedValueOnce(fireworks(completed()));
+      .mockResolvedValueOnce(baseten(completed()));
 
     const result = await writer(request).generate(draft(), ACTOR);
 

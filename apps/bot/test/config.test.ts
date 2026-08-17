@@ -28,15 +28,15 @@ describe("bot configuration", () => {
     expect(config.aiModel).toBe("deepseek/deepseek-v4-flash-0731");
   });
 
-  it("defaults to Fireworks when only FIREWORKS_API_KEY is supplied", () => {
+  it("defaults to Baseten when only BASETEN_API_KEY is supplied", () => {
     const env = environment();
     delete env.OPENROUTER_API_KEY;
-    env.FIREWORKS_API_KEY = "fireworks-secret";
+    env.BASETEN_API_KEY = "baseten-secret";
 
     const config = loadBotConfig(env);
-    expect(config.aiProvider).toBe("fireworks");
-    expect(config.aiApiKey).toBe("fireworks-secret");
-    expect(config.aiModel).toBe("accounts/fireworks/models/deepseek-v4-flash-0731");
+    expect(config.aiProvider).toBe("baseten");
+    expect(config.aiApiKey).toBe("baseten-secret");
+    expect(config.aiModel).toBe("deepseek-ai/DeepSeek-V4-Flash-0731");
   });
 
   it("supports explicit AI_PROVIDER=openrouter", () => {
@@ -52,17 +52,17 @@ describe("bot configuration", () => {
     expect(config.aiModel).toBe("deepseek/deepseek-v4-flash-0731");
   });
 
-  it("supports explicit AI_PROVIDER=fireworks", () => {
+  it("supports explicit AI_PROVIDER=baseten", () => {
     const config = loadBotConfig(
       environment({
-        AI_PROVIDER: "fireworks",
-        FIREWORKS_API_KEY: "fireworks-key",
-        FIREWORKS_MODEL: "accounts/fireworks/models/deepseek-v4-flash-0731"
+        AI_PROVIDER: "baseten",
+        BASETEN_API_KEY: "baseten-key",
+        BASETEN_MODEL: "deepseek-ai/DeepSeek-V4-Flash-0731"
       })
     );
-    expect(config.aiProvider).toBe("fireworks");
-    expect(config.aiApiKey).toBe("fireworks-key");
-    expect(config.aiModel).toBe("accounts/fireworks/models/deepseek-v4-flash-0731");
+    expect(config.aiProvider).toBe("baseten");
+    expect(config.aiApiKey).toBe("baseten-key");
+    expect(config.aiModel).toBe("deepseek-ai/DeepSeek-V4-Flash-0731");
   });
 
   it("rejects invalid AI_PROVIDER values", () => {
@@ -72,7 +72,7 @@ describe("bot configuration", () => {
           AI_PROVIDER: "anthropic"
         })
       )
-    ).toThrow(/AI_PROVIDER must be either 'openrouter' or 'fireworks'/);
+    ).toThrow(/AI_PROVIDER must be either 'openrouter' or 'baseten'/);
   });
 
   it("requires API key for the selected provider", () => {
@@ -80,9 +80,9 @@ describe("bot configuration", () => {
     delete envOpenRouter.OPENROUTER_API_KEY;
     expect(() => loadBotConfig(envOpenRouter)).toThrow(/OPENROUTER_API_KEY is required/);
 
-    const envFireworks = environment({ AI_PROVIDER: "fireworks" });
-    delete envFireworks.FIREWORKS_API_KEY;
-    expect(() => loadBotConfig(envFireworks)).toThrow(/FIREWORKS_API_KEY is required/);
+    const envBaseten = environment({ AI_PROVIDER: "baseten" });
+    delete envBaseten.BASETEN_API_KEY;
+    expect(() => loadBotConfig(envBaseten)).toThrow(/BASETEN_API_KEY is required/);
   });
 
   it("requires Brave search key", () => {
@@ -104,29 +104,13 @@ describe("bot configuration", () => {
     expect(
       loadBotConfig(
         environment({
-          AI_PROVIDER: "fireworks",
-          FIREWORKS_API_KEY: "fireworks-key",
-          FIREWORKS_MODEL: "accounts/fireworks/models/deepseek-v4-custom"
+          AI_PROVIDER: "baseten",
+          BASETEN_API_KEY: "baseten-key",
+          BASETEN_MODEL: "deepseek-ai/DeepSeek-V4-Custom"
         })
       ).aiModel
-    ).toBe("accounts/fireworks/models/deepseek-v4-custom");
-  });
-
-  it("supports optional notification relay webhook configuration", () => {
-    const defaultConf = loadBotConfig(environment());
-    expect(defaultConf.notificationRelayWebhookUrl).toBeUndefined();
-    expect(defaultConf.notificationRelayTargetAuthorId).toBe("504116640007323648");
-
-    const customConf = loadBotConfig(
-      environment({
-        NOTIFICATION_RELAY_WEBHOOK_URL: "https://discord.com/api/webhooks/test/token",
-        NOTIFICATION_RELAY_TARGET_AUTHOR_ID: "123456789012345678"
-      })
-    );
-    expect(customConf.notificationRelayWebhookUrl).toBe(
-      "https://discord.com/api/webhooks/test/token"
-    );
-    expect(customConf.notificationRelayTargetAuthorId).toBe("123456789012345678");
+    ).toBe("deepseek-ai/DeepSeek-V4-Custom");
   });
 });
+
 

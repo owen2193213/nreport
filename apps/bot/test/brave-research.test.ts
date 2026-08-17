@@ -4,7 +4,7 @@ import {
   BraveResearchClient,
   validateResearchQuery
 } from "../src/brave-research.js";
-import type { AiRequestContext } from "../src/fireworks-client.js";
+import type { AiRequestContext } from "../src/ai-client.js";
 import type { ReportDraft } from "../src/types.js";
 
 const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };

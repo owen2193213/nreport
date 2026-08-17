@@ -1,6 +1,6 @@
 import { botLog } from "./observability.js";
 import { readDiagnosticResponse } from "@discord-dsa/contracts";
-import type { AiRequestContext } from "./fireworks-client.js";
+import type { AiRequestContext } from "./ai-client.js";
 import { capturedMessageSnapshot, type ReportDraft } from "./types.js";
 
 const BRAVE_WEB_URL = "https://api.search.brave.com/res/v1/web/search";

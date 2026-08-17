@@ -2,12 +2,12 @@ import { readDiagnosticResponse } from "@discord-dsa/contracts";
 import { botLog } from "./observability.js";
 import type { AiUsage } from "./types.js";
 
-export type AiProvider = "openrouter" | "fireworks";
+export type AiProvider = "openrouter" | "baseten";
 
 export const OPENROUTER_CHAT_COMPLETIONS_URL =
   "https://openrouter.ai/api/v1/chat/completions";
-export const FIREWORKS_CHAT_COMPLETIONS_URL =
-  "https://api.fireworks.ai/inference/v1/chat/completions";
+export const BASETEN_CHAT_COMPLETIONS_URL =
+  "https://inference.baseten.co/v1/chat/completions";
 const REQUEST_TIMEOUT_MS = 150_000;
 
 export interface AiRequestContext {
@@ -17,14 +17,12 @@ export interface AiRequestContext {
 }
 
 export type AiStage = "plan" | "synthesize" | "refine";
-export type FireworksStage = AiStage;
 
 export interface AiCompletion {
   content: string;
   finishReason: string;
   usage: AiUsage;
 }
-export type FireworksCompletion = AiCompletion;
 
 interface ChatCompletionResponse {
   error?: { message?: unknown; code?: unknown };
@@ -48,7 +46,6 @@ export type AiClientErrorKind =
   | "malformed"
   | "incomplete"
   | "timeout";
-export type FireworksClientErrorKind = AiClientErrorKind;
 
 export class AiClientError extends Error {
   public constructor(
@@ -59,7 +56,6 @@ export class AiClientError extends Error {
     this.name = "AiClientError";
   }
 }
-export { AiClientError as FireworksClientError };
 
 function numeric(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -92,18 +88,20 @@ export class AiClient {
   ) {
     this.provider =
       options.provider ??
-      (model.startsWith("accounts/fireworks") ? "fireworks" : "openrouter");
+      (model.startsWith("deepseek-ai/") || model.includes("baseten")
+        ? "baseten"
+        : "openrouter");
     this.request = options.request ?? globalThis.fetch;
   }
 
   public get endpoint(): string {
-    return this.provider === "fireworks"
-      ? FIREWORKS_CHAT_COMPLETIONS_URL
+    return this.provider === "baseten"
+      ? BASETEN_CHAT_COMPLETIONS_URL
       : OPENROUTER_CHAT_COMPLETIONS_URL;
   }
 
   public get providerName(): string {
-    return this.provider === "fireworks" ? "Fireworks" : "OpenRouter";
+    return this.provider === "baseten" ? "Baseten" : "OpenRouter";
   }
 
   public async complete(
@@ -332,4 +330,3 @@ export class AiClient {
   }
 }
 
-export { AiClient as FireworksClient };

@@ -2,7 +2,7 @@
 
 This document explains how the Discord bot prepares an EU Digital Services Act report, when it calls AI or web search, what each prompt contains, what each model response may contain, and how the reviewed report reaches Discord.
 
-The implementation is in the bot. The API and low-level Discord client never call Fireworks or Brave and never receive the retained AI conversation. Code is the source of truth; this guide describes the implementation at the time of writing.
+The implementation is in the bot. The API and low-level Discord client never call Baseten, OpenRouter, or Brave and never receive the retained AI conversation. Code is the source of truth; this guide describes the implementation at the time of writing.
 
 All JSON outputs in this document are illustrative, schema-valid examples. They are not captured provider responses and contain no real report data.
 
@@ -14,9 +14,9 @@ flowchart TD
     B --> C[Combined report form]
     C --> D{Use AI?}
     D -- No --> E[Require fixed country, category, and final report text]
-    D -- Yes --> F[Fireworks planner]
+    D -- Yes --> F[AI planner]
     F --> G{Research decisions}
-    G -->|Neither| H[Fireworks synthesis]
+    G -->|Neither| H[AI synthesis]
     G -->|Term| I[Brave Web Search]
     G -->|Law| J[Brave LLM Context]
     G -->|Both| K[Run both Brave requests concurrently]
@@ -128,7 +128,7 @@ Server icon, banner, invite splash, and discovery splash URLs are omitted even w
 
 ### 2.4 Why media is excluded
 
-`mediaAllowed()` currently returns `false`. Fireworks and Brave therefore receive no images, videos, avatars, banners, server art, or attachment/embed media URLs. This avoids forwarding child-safety imagery, gore, and other potentially prohibited media. Text metadata such as a filename or MIME type may remain because it can help describe what was attached without transmitting the file.
+`mediaAllowed()` currently returns `false`. Baseten and Brave therefore receive no images, videos, avatars, banners, server art, or attachment/embed media URLs. This avoids forwarding child-safety imagery, gore, and other potentially prohibited media. Text metadata such as a filename or MIME type may remain because it can help describe what was attached without transmitting the file.
 
 ## 3. Combined form and the AI/manual split
 
@@ -147,7 +147,7 @@ With AI disabled:
 - category is required;
 - final report text of 1–512 characters is required;
 - country must already be a supported fixed value;
-- Fireworks and Brave are never called; and
+- Baseten and Brave are never called; and
 - Refine and Regenerate are not shown.
 
 The manual route exists so a reporter can use the same review and submission controls without sending report evidence to either AI provider.
@@ -162,18 +162,18 @@ The manual route exists so a reporter can use the same review and submission con
 
 The bot merges any planner-selected Auto values with fixed inputs into one resolved state. That state is immutable during synthesis. This prevents the writer from silently changing the country, report category, or reporter explanation.
 
-## 5. Stage 1: Fireworks planning
+## 5. Stage 1: AI planning
 
 ### 5.1 Request settings
 
 ```text
-Provider: Fireworks
-Default model: accounts/fireworks/models/deepseek-v4-flash-0731
+Provider: Baseten (or OpenRouter)
+Default model: deepseek-ai/DeepSeek-V4-Flash-0731
 reasoning_effort: high
 max_completion_tokens: 8192
 stream: false
 Shared generate() deadline: 90000 ms
-Per-request timeout: min(45000 ms, remaining workflow time)
+Per-request timeout: min(150000 ms, remaining workflow time)
 ```
 
 The 8,192 completion allowance includes thinking tokens and visible JSON. Planning uses high reasoning because it may have to classify ambiguous evidence, select an EU country and category, and decide whether external research is necessary.
@@ -186,7 +186,7 @@ MECHANICAL_COMPLETION_TOKEN_LIMIT = 4_096
 PLAN_COMPLETION_TOKEN_LIMIT = 8_192
 RESEARCH_SYNTHESIS_COMPLETION_TOKEN_LIMIT = 12_288
 WORKFLOW_TIMEOUT_MS = 90_000
-FIREWORKS_REQUEST_TIMEOUT_MS = 45_000
+REQUEST_TIMEOUT_MS = 150_000
 BRAVE_REQUEST_TIMEOUT_MS = 30_000
 ```
 
@@ -325,7 +325,7 @@ ${JSON.stringify(schema)}
 
 followed by the two short example field blocks (`plannerExamples()`): one where `lawResearchRequired` is `true` and one where it is `false`. Both examples show `lawSearchQuery` paired with its flag and a non-empty `provisionalLawReference`, anchoring the conditional rule with concrete shapes.
 
-Fireworks reasoning mode does not use `response_format` here. Putting the schema and examples directly in the prompt preserves the contract while allowing the model to use reasoning tokens.
+Baseten reasoning mode does not use `response_format` here. Putting the schema and examples directly in the prompt preserves the contract while allowing the model to use reasoning tokens.
 
 ### 5.6 Example planner outputs
 
@@ -458,8 +458,8 @@ Each request has a 30-second provider timeout bounded by the shared 90-second wo
 | Situation | Reasoning | Completion allowance | Schema enforcement |
 |---|---:|---:|---|
 | Brave material must be interpreted | `high` | 12,288 tokens | Complete schema plus the two allowed shapes appended to the prompt |
-| No Brave material | `none` | 4,096 tokens | Fireworks `response_format` JSON Schema, also repeated in the prompt |
-| Refine or repair | `none` | 4,096 tokens | Fireworks `response_format` JSON Schema |
+| No Brave material | `none` | 4,096 tokens | Baseten `response_format` JSON Schema, also repeated in the prompt |
+| Refine or repair | `none` | 4,096 tokens | Baseten `response_format` JSON Schema |
 
 Only research-backed synthesis uses the larger reasoning allowance. Mechanical rewriting and validation repair do not need high reasoning.
 
@@ -846,13 +846,13 @@ A retry always creates a fresh report ID, email alias, proxy/session lifecycle, 
 
 | Stage | Automatic retry | Output repair | Fallback provider |
 |---|---|---|---|
-| Fireworks planner | Once for network, 429, or 5xx within the deadline | Once for any invalid plan or invalid planner search query | None |
+| AI planner | Once for network, 429, or 5xx within the deadline | Once for any invalid plan or invalid planner search query | None |
 | Brave term/law search | Once for network, 429, or 5xx within the deadline | Not applicable (an invalid follow-up query is skipped instead) | None |
-| Fireworks synthesis | Once for network, 429, or 5xx within the deadline | Once for any invalid synthesis output | None |
-| Fireworks Refine | Once for network, 429, or 5xx within the deadline | Once for invalid report-only output | None |
+| AI synthesis | Once for network, 429, or 5xx within the deadline | Once for any invalid synthesis output | None |
+| AI Refine | Once for network, 429, or 5xx within the deadline | Once for invalid report-only output | None |
 | Final Discord submission | No automatic retry after an ambiguous POST | Not applicable | Not applicable |
 
-Fireworks refusals, malformed provider envelopes, empty completions, and completion-budget exhaustion are not transport-retried. Provider errors are translated into safe user-facing messages such as `AI planning could not be completed. Retry when ready.` or `Report writing could not be completed. Retry when ready.`
+Baseten refusals, malformed provider envelopes, empty completions, and completion-budget exhaustion are not transport-retried. Provider errors are translated into safe user-facing messages such as `AI planning could not be completed. Retry when ready.` or `Report writing could not be completed. Retry when ready.`
 
 ## 15. What is retained and logged
 
@@ -864,7 +864,7 @@ Structured logs contain safe operational metadata such as a keyed actor identifi
 
 - [`../apps/bot/src/report-writer.ts`](../apps/bot/src/report-writer.ts): prompt construction, schemas, parsing, validation, research orchestration, refine, and repair.
 - [`../apps/bot/src/brave-research.ts`](../apps/bot/src/brave-research.ts): query validation, Brave request shapes, compaction, and retry rules.
-- [`../apps/bot/src/fireworks-client.ts`](../apps/bot/src/fireworks-client.ts): Fireworks request, timeout, retry, refusal, completion, and usage behavior.
+- [`../apps/bot/src/ai-client.ts`](../apps/bot/src/ai-client.ts): AI client request, timeout, retry, refusal, completion, and usage behavior.
 - [`../apps/bot/src/interactions.ts`](../apps/bot/src/interactions.ts): commands, modal submissions, review actions, quick reports, and API creation.
 - [`../apps/bot/src/ui.ts`](../apps/bot/src/ui.ts): combined form, manual edit, refinement, and rewrite modals.
 - [`../apps/bot/src/types.ts`](../apps/bot/src/types.ts): encrypted draft, evidence snapshots, legal research, AI decisions, and conversation types.

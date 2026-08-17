@@ -93,9 +93,9 @@ application creates or updates its database schema idempotently during startup.
 Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. The bot
 uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
 report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
-the global commands automatically. Set `AI_PROVIDER` (defaults to `openrouter`, or `fireworks`),
+the global commands automatically. Set `AI_PROVIDER` (defaults to `openrouter`, or `baseten`),
 with `OPENROUTER_API_KEY` (`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-flash-0731`) or
-`FIREWORKS_API_KEY` (`FIREWORKS_MODEL` defaults to `accounts/fireworks/models/deepseek-v4-flash-0731`),
+`BASETEN_API_KEY` (`BASETEN_MODEL` defaults to `deepseek-ai/DeepSeek-V4-Flash-0731`),
 and `BRAVE_SEARCH_API_KEY` for the bot-side report writer.
 
 The first DeepSeek call resolves omitted Auto fields and decides independently whether
@@ -113,11 +113,11 @@ email. To synchronize commands manually, set only the
 Discord token and application ID and run:
 
 AI media processing is temporarily disabled for every report category. The bot never attaches
-images, GIFs, videos, avatars, banners, server art, or attachment/embed media URLs to Fireworks or Brave.
+images, GIFs, videos, avatars, banners, server art, or attachment/embed media URLs to Baseten or Brave.
 Attachment names and content types may remain as text metadata.
 
 Every `/report` subcommand also accepts optional `dont-use-ai:true`. It defaults to AI when
-omitted. Manual mode sends nothing to Fireworks or Brave, limits the reporter's final text to 512
+omitted. Manual mode sends nothing to Baseten or Brave, limits the reporter's final text to 512
 characters, and requires a saved or explicit country because Auto normally depends on AI.
 
 ```powershell

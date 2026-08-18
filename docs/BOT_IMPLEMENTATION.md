@@ -360,7 +360,7 @@ different country. Manual edits become the current assistant answer so a later r
 continues from that text. Repair also
 continues the same conversation, performs no search, and is attempted only once.
 
-Planning uses DeepSeek's medium reasoning mode and a 4,096-token completion budget. Synthesis uses
+Planning uses DeepSeek's low reasoning mode and a 4,096-token completion budget. Synthesis uses
 medium reasoning with 6,144 tokens only when Brave research must be interpreted. Refinement uses low
 reasoning with 2,048 tokens. No-research synthesis and repair disable reasoning and use 2,048 tokens. These limits include
 thinking and visible JSON. Reasoning calls receive the complete JSON Schema in the prompt;

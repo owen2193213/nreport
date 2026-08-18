@@ -892,7 +892,7 @@ reference, and legal summary. It does not receive the supported-country list, ca
 search instructions, or raw research transcript. Refine sends the compact completed result and the
 reporter's instruction to Baseten without searching. Repair also uses Baseten without search
 and receives one attempt. Regenerate starts a fresh plan, and changing country clears the retained
-AI context. Planning uses medium reasoning with a 4,096-token completion budget. Synthesis uses medium
+AI context. Planning uses low reasoning with a 4,096-token completion budget. Synthesis uses medium
 reasoning and 6,144 tokens only when Brave research must be interpreted; refinement uses low reasoning
 with 2,048 tokens, while no-research synthesis and repair disable reasoning and use 2,048 tokens. Reasoning calls receive their JSON
 schema in the prompt, while non-reasoning calls use Baseten-enforced JSON Schema. A network error,

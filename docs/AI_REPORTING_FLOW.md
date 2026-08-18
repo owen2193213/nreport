@@ -169,14 +169,14 @@ The bot merges any planner-selected Auto values with fixed inputs into one resol
 ```text
 Provider: Baseten (or OpenRouter)
 Default model: deepseek-ai/DeepSeek-V4-Flash-0731
-reasoning_effort: medium
+reasoning_effort: low
 max_completion_tokens: 4096
 stream: false
 Shared generate() deadline: 90000 ms
 Per-request timeout: min(150000 ms, remaining workflow time)
 ```
 
-The 4,096 completion allowance includes thinking tokens and visible JSON. Planning uses medium reasoning to classify evidence, select an EU country and category, and decide whether external research is necessary.
+The 4,096 completion allowance includes thinking tokens and visible JSON. Planning uses low reasoning to classify evidence, select an EU country and category, and decide whether external research is necessary without getting caught in circular thinking loops on minimal input.
 
 The relevant implementation constants are:
 
@@ -210,6 +210,8 @@ Review the Discord evidence and prepare the details of an EU Digital Services Ac
 Decide the country, the report category, and a short factual explanation of why the content is inappropriate.
 Look for every reason the evidence is inappropriate, including single phrases that are harmful on their own.
 ## Rules
+- When reviewing ambiguous, minimal, or short messages, assume the most harmful/worst-case plausible interpretation of the content (e.g. Treat single derogatory words, insults, or slurs as directed harassment/hate) and report it accordingly.
+- If no specific EU country is evident from the language or context, default to Germany (DE) or Ireland (IE).
 - Rely primarily on your own knowledge. Search only when strictly necessary to conserve search API usage.
 - termResearchRequired: false by default. Set to true ONLY when you do NOT know what an unfamiliar, coded, slang, or ambiguous term means and cannot determine its meaning without web search.
 - lawResearchRequired: false by default. Set to true ONLY when you do NOT know an applicable statute, its official title, or the exact article/section. If you already know a relevant law provision, set to false and provide it in provisionalLawReference.

@@ -225,7 +225,7 @@ describe("Baseten and Brave report writer", () => {
     expect(planning.plugins).toBeUndefined();
     expect(planning.tools).toBeUndefined();
     expect(planning.provider).toBeUndefined();
-    expect(planning.reasoning_effort).toBe("medium");
+    expect(planning.reasoning_effort).toBe("low");
     expect(planning.max_completion_tokens).toBe(4_096);
     expect(planning.response_format).toBeUndefined();
     expect(JSON.stringify(planning.messages)).toContain("provisionalLawReference");

@@ -221,4 +221,31 @@ describe("analytics dashboard", () => {
       limit: 25
     });
   });
+
+  it("delivers full high-resolution charts to user DMs on button click", async () => {
+    const analyticsFor = vi.fn().mockResolvedValue(analyticsFixture());
+    const send = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => true,
+      isRepliable: () => true,
+      customId: "analytics:dm-chart:overview:personal:24h",
+      user: { id: "1197857362942378017", send },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply,
+      deferred: false,
+      replied: false
+    } as unknown as Interaction;
+
+    await handler({ analyticsFor } as unknown as DsaApi).handle(interaction);
+
+    expect(analyticsFor).toHaveBeenCalledWith("1197857362942378017", "24h");
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalled();
+  });
 });

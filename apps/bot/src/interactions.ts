@@ -18,7 +18,10 @@ import type {
   UserProfileElement
 } from "@discord-dsa/contracts";
 import {
+  AttachmentBuilder,
+  Colors,
   DiscordAPIError,
+  EmbedBuilder,
   MessageFlags,
   type AutocompleteInteraction,
   type ButtonInteraction,
@@ -32,10 +35,12 @@ import {
 } from "discord.js";
 
 import type { BotConfig } from "./config.js";
+import { renderAnalyticsChart } from "./analytics-charts.js";
 import {
   actionHistoryModal,
   actionHistoryView,
   analyticsView,
+  intervalLabel,
   type AnalyticsView
 } from "./analytics-ui.js";
 import { countryDisplay, matchingCountries } from "./countries.js";
@@ -1769,6 +1774,51 @@ export class InteractionHandler {
     if (parts[0] === "analytics") {
       if (parts[1] === "history-range") {
         await interaction.showModal(actionHistoryModal());
+        return;
+      }
+      if (parts[1] === "dm-chart") {
+        const view = approvedAnalyticsView(parts[2]);
+        const scope = approvedAnalyticsScope(parts[3]);
+        const period = approvedAnalyticsPeriod(parts[4]);
+        await interaction.deferUpdate();
+        const analytics = scope === "community"
+          ? await this.api.communityAnalytics(period)
+          : await this.api.analyticsFor(interaction.user.id, period);
+
+        try {
+          const [volume, reply] = await Promise.all([
+            renderAnalyticsChart("volume", analytics),
+            renderAnalyticsChart("reply_time", analytics)
+          ]);
+          const dmEmbed = new EmbedBuilder()
+            .setColor(Colors.Blurple)
+            .setTitle(scope === "personal" ? "Your Report Analytics Charts" : "Community Analytics Charts")
+            .setDescription(`${intervalLabel(analytics)}\n\nAttached are your full 24-hour volume and Discord reply-time charts.`)
+            .setImage("attachment://report-volume.png");
+
+          await interaction.user.send({
+            embeds: [dmEmbed],
+            files: [
+              new AttachmentBuilder(volume, { name: "report-volume.png" }),
+              new AttachmentBuilder(reply, { name: "discord-reply-time.png" })
+            ]
+          });
+          const chartView = view === "history" ? "overview" : view;
+          const currentPayload = analyticsView(analytics, chartView);
+          currentPayload.embeds[0]?.setFooter({ text: "✅ Full resolution charts sent to your DMs!" });
+          await interaction.editReply({
+            ...currentPayload,
+            allowedMentions: { parse: [] }
+          });
+        } catch {
+          const chartView = view === "history" ? "overview" : view;
+          const currentPayload = analyticsView(analytics, chartView);
+          currentPayload.embeds[0]?.setFooter({ text: "⚠️ Could not deliver charts to DMs. Check your privacy settings." });
+          await interaction.editReply({
+            ...currentPayload,
+            allowedMentions: { parse: [] }
+          });
+        }
         return;
       }
       let view: AnalyticsView;

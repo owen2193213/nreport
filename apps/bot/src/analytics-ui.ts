@@ -34,7 +34,7 @@ function duration(seconds: number | null): string {
   return `${Math.round(seconds / 86_400 * 10) / 10} days`;
 }
 
-function intervalLabel(analytics: ReportAnalytics): string {
+export function intervalLabel(analytics: ReportAnalytics): string {
   const start = analytics.interval.startAt?.slice(0, 10) ?? "All time";
   const end = analytics.interval.endAt ? analytics.interval.endAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
   return `${start} → ${end} UTC`;
@@ -56,6 +56,37 @@ function formatActivityTimeline(series: ReportAnalytics["series"], isHourly: boo
   }).join("");
   const unit = isHourly ? "hourly" : "daily";
   return `\`${sparkline}\` (${unit})`;
+}
+
+function formatTimelineHistogram(series: ReportAnalytics["series"], isHourly: boolean): string {
+  if (!series || series.length === 0) return "```\nNo activity recorded in this period.\n```";
+  const max = Math.max(1, ...series.map((s) => s.reportCount));
+  const barLen = 10;
+
+  if (isHourly && series.length >= 24) {
+    const chunks: { label: string; count: number }[] = [];
+    for (let i = 0; i < series.length; i += 4) {
+      const slice = series.slice(i, i + 4);
+      const startHour = slice[0]?.bucketStart.slice(11, 16) ?? "00:00";
+      const totalCount = slice.reduce((sum, p) => sum + p.reportCount, 0);
+      chunks.push({ label: `${startHour} UTC`, count: totalCount });
+    }
+    const chunkMax = Math.max(1, ...chunks.map((c) => c.count));
+    const lines = chunks.map((c) => {
+      const filled = Math.round((c.count / chunkMax) * barLen);
+      const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
+      return `${c.label.padEnd(10)} [${bar}] ${String(c.count).padStart(2)}`;
+    });
+    return "```text\n" + lines.join("\n") + "\n```";
+  }
+
+  const lines = series.slice(-7).map((p) => {
+    const label = p.bucketStart.slice(5, 10).padEnd(10);
+    const filled = Math.round((p.reportCount / max) * barLen);
+    const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
+    return `${label} [${bar}] ${String(p.reportCount).padStart(2)}`;
+  });
+  return "```text\n" + lines.join("\n") + "\n```";
 }
 
 export function analyticsComponents(
@@ -90,7 +121,9 @@ export function analyticsComponents(
       .setStyle(scope === "community" ? ButtonStyle.Primary : ButtonStyle.Secondary)
       .setDisabled(view === "history"),
     new ButtonBuilder().setCustomId("analytics:history-range").setLabel("Custom history dates")
-      .setStyle(ButtonStyle.Secondary)
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`analytics:dm-chart:${view}:${scope}:${period}`).setLabel("Send Chart to DM")
+      .setStyle(ButtonStyle.Secondary).setEmoji("📊")
   );
   return [viewRow, filterRow, scopeRow];
 }
@@ -150,6 +183,10 @@ export function analyticsView(
           `• Median decision: **${duration(analytics.timing.decision.medianSeconds)}**`,
           `• 90th percentile reply: **${duration(analytics.timing.reply.p90Seconds)}**`
         ].join("\n")
+      },
+      {
+        name: "Activity Histogram",
+        value: formatTimelineHistogram(analytics.series, isHourly)
       }
     );
   } else if (view === "trends") {

@@ -4,6 +4,7 @@ import type {
   AnalyticsPattern,
   AnalyticsPeriod,
   AnalyticsScope,
+  AnalyticsSeriesPoint,
   DurationMetric,
   RateMetric,
   ReportAnalytics,
@@ -278,6 +279,97 @@ function emptyAnalytics(scope: AnalyticsScope, interval: AnalyticsInterval): Rep
   };
 }
 
+export function buildTimeSeriesBuckets(
+  interval: AnalyticsInterval,
+  cohortReports: readonly AnalyticsSourceReport[],
+  replySecondsByRoot: Map<string, number[]>
+): AnalyticsSeriesPoint[] {
+  const endTime = new Date(interval.endAt).getTime();
+  let startTime = interval.startAt ? new Date(interval.startAt).getTime() : null;
+
+  if (startTime === null) {
+    if (cohortReports.length > 0) {
+      const earliest = Math.min(...cohortReports.map((r) => new Date(r.createdAt).getTime()));
+      const d = new Date(earliest);
+      d.setUTCHours(0, 0, 0, 0);
+      startTime = d.getTime();
+    } else {
+      startTime = endTime - 7 * 24 * 3600 * 1000;
+    }
+  }
+
+  const durationMs = Math.max(0, endTime - startTime);
+  let stepMs: number;
+
+  if (durationMs <= 36 * 3600 * 1000) {
+    stepMs = 3600 * 1000;
+  } else if (durationMs <= 60 * 24 * 3600 * 1000) {
+    stepMs = 24 * 3600 * 1000;
+  } else {
+    stepMs = 7 * 24 * 3600 * 1000;
+  }
+
+  let cursor = startTime;
+  if (stepMs === 3600 * 1000) {
+    const d = new Date(cursor);
+    d.setUTCMinutes(0, 0, 0);
+    cursor = d.getTime();
+  } else if (stepMs === 24 * 3600 * 1000) {
+    const d = new Date(cursor);
+    d.setUTCHours(0, 0, 0, 0);
+    cursor = d.getTime();
+  }
+
+  const buckets: Array<{ start: number; end: number; iso: string }> = [];
+  while (cursor < endTime) {
+    const next = cursor + stepMs;
+    buckets.push({
+      start: cursor,
+      end: next,
+      iso: new Date(cursor).toISOString()
+    });
+    cursor = next;
+  }
+
+  if (buckets.length === 0) {
+    buckets.push({
+      start: startTime,
+      end: endTime,
+      iso: new Date(startTime).toISOString()
+    });
+  }
+
+  const groups = new Map<string, { reports: number; replies: number[] }>();
+  for (const b of buckets) {
+    groups.set(b.iso, { reports: 0, replies: [] });
+  }
+
+  for (const report of cohortReports) {
+    const reportTime = new Date(report.createdAt).getTime();
+    let bucket = buckets.find((b) => reportTime >= b.start && reportTime < b.end);
+    if (!bucket) {
+      if (reportTime < buckets[0]!.start) bucket = buckets[0];
+      else if (reportTime >= buckets.at(-1)!.end) bucket = buckets.at(-1);
+    }
+    if (bucket) {
+      const g = groups.get(bucket.iso);
+      if (g) {
+        g.reports += 1;
+        g.replies.push(...(replySecondsByRoot.get(report.rootId) ?? []));
+      }
+    }
+  }
+
+  return buckets.map((b) => {
+    const g = groups.get(b.iso) ?? { reports: 0, replies: [] };
+    return {
+      bucketStart: b.iso,
+      reportCount: g.reports,
+      medianReplySeconds: durationMetric(g.replies).medianSeconds
+    };
+  });
+}
+
 export function aggregateAnalyticsRows(input: AggregateAnalyticsInput): ReportAnalytics {
   const scope = input.scope ?? "personal";
   const interval = input.interval ?? resolveAnalyticsInterval("all");
@@ -372,16 +464,6 @@ export function aggregateAnalyticsRows(input: AggregateAnalyticsInput): ReportAn
   const actioned = outcomeCounts.direct_actioned + outcomeCounts.appeal_actioned;
   const resolved = actioned + outcomeCounts.closed_no_action + outcomeCounts.appeal_denied;
   const decidedAppeals = outcomeCounts.appeal_actioned + outcomeCounts.appeal_denied;
-  const seriesGroups = new Map<string, { reports: number; replies: number[] }>();
-  for (const report of cohortReports) {
-    const bucketStart = new Date(report.createdAt);
-    bucketStart.setUTCHours(0, 0, 0, 0);
-    const key = bucketStart.toISOString();
-    const group = seriesGroups.get(key) ?? { reports: 0, replies: [] };
-    group.reports += 1;
-    group.replies.push(...(replySecondsByRoot.get(report.rootId) ?? []));
-    seriesGroups.set(key, group);
-  }
 
   return {
     availability: "available",
@@ -421,13 +503,7 @@ export function aggregateAnalyticsRows(input: AggregateAnalyticsInput): ReportAn
       categories: buildBreakdown((report) => report.category),
       countries: buildBreakdown((report) => report.country)
     },
-    series: [...seriesGroups.entries()].sort(([left], [right]) => left.localeCompare(right)).map(
-      ([bucketStart, group]) => ({
-        bucketStart,
-        reportCount: group.reports,
-        medianReplySeconds: durationMetric(group.replies).medianSeconds
-      })
-    ),
+    series: buildTimeSeriesBuckets(interval, cohortReports, replySecondsByRoot),
     patterns: recurringPatterns(latestCaseReports
       .filter((report) => {
         if (scope === "community" && report.submitterDiscordUserId === null) return false;

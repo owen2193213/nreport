@@ -333,4 +333,58 @@ describe("analytics rules", () => {
       { userId: "u1", text: "repeated threat" }
     ], "personal")).toContainEqual({ phrase: "repeated threat", reportCount: 2 });
   });
+
+  it("generates 24 hourly zero-filled series buckets for 24h period", () => {
+    const interval = resolveAnalyticsInterval("24h", new Date("2026-08-11T12:00:00.000Z"));
+    const result = aggregateAnalyticsRows({
+      reports: [
+        {
+          id: "r1",
+          rootId: "r1",
+          retryOfReportId: null,
+          createdAt: "2026-08-10T14:30:00.000Z",
+          status: "submitted",
+          discordReportId: "d1",
+          flow: "message_urf",
+          category: "illegal_content",
+          country: "DE",
+          submitterDiscordUserId: "user-1",
+          submittedText: "threat"
+        },
+        {
+          id: "r2",
+          rootId: "r2",
+          retryOfReportId: null,
+          createdAt: "2026-08-10T14:45:00.000Z",
+          status: "submitted",
+          discordReportId: "d2",
+          flow: "message_urf",
+          category: "illegal_content",
+          country: "DE",
+          submitterDiscordUserId: "user-1",
+          submittedText: "threat 2"
+        }
+      ],
+      events: [],
+      interval
+    });
+
+    expect(result.series.length).toBeGreaterThanOrEqual(24);
+    const hour14 = result.series.find((point) => point.bucketStart.includes("2026-08-10T14:00:00"));
+    expect(hour14?.reportCount).toBe(2);
+    const hour15 = result.series.find((point) => point.bucketStart.includes("2026-08-10T15:00:00"));
+    expect(hour15?.reportCount).toBe(0);
+  });
+
+  it("generates 7 daily buckets for 7d period", () => {
+    const interval = resolveAnalyticsInterval("7d", new Date("2026-08-11T12:00:00.000Z"));
+    const result = aggregateAnalyticsRows({
+      reports: [],
+      events: [],
+      interval
+    });
+
+    expect(result.series.length).toBeGreaterThanOrEqual(7);
+  });
 });
+

@@ -35,3 +35,6 @@ Thumbs.db
 
 # Local reverse-engineering downloads
 code.js
+*.js_1
+bleh.js_1
+

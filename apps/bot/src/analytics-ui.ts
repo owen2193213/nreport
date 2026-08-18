@@ -59,7 +59,7 @@ export function analyticsComponents(
     )
   );
   const periodMenu = new StringSelectMenuBuilder()
-    .setCustomId(`analytics:period:${scope}:${period}`)
+    .setCustomId(`analytics:period:${view}:${scope}:${period}`)
     .setPlaceholder("Choose a period")
     .addOptions(...([
       ["24h", "Last 24 hours"], ["7d", "Last 7 days"], ["30d", "Last 30 days"],
@@ -95,10 +95,42 @@ export function analyticsView(
   const embed = new EmbedBuilder().setColor(Colors.Blurple).setTitle(title)
     .setDescription(intervalLabel(analytics));
   if (view === "overview") {
+    const successfulSubmissions = analytics.volume.sentAttempts;
+    const pendingReports = analytics.outcomes.awaitingResponse + analytics.outcomes.awaitingDecision;
+    const acceptedReports = analytics.outcomes.directActioned + analytics.outcomes.appealActioned;
+    const appealsPending = Math.max(
+      0,
+      analytics.outcomes.appealsStarted - (analytics.outcomes.appealActioned + analytics.outcomes.appealsDenied)
+    );
+    const deniedReports = analytics.outcomes.closedNoAction + analytics.outcomes.appealsDenied;
+
     embed.addFields(
-      { name: "Volume", value: `New cases: **${analytics.volume.newCases}**\nAttempts: **${analytics.volume.attempts}**\nSent: **${analytics.volume.sentAttempts}**` },
-      { name: "Results", value: `Actioned: **${analytics.outcomes.directActioned + analytics.outcomes.appealActioned}**\nClosed without action: **${analytics.outcomes.closedNoAction}**\nPending: **${analytics.outcomes.awaitingResponse + analytics.outcomes.awaitingDecision}**` },
-      { name: "Key rates", value: `Submission: **${percentage(analytics.rates.submission.percentage)}**\nAction: **${percentage(analytics.rates.action.percentage)}**\nAppeal action: **${percentage(analytics.rates.appealAction.percentage)}**` }
+      {
+        name: "Report Statuses",
+        value: [
+          `• Submissions: **${successfulSubmissions}** (successful)`,
+          `• Pending: **${pendingReports}**`,
+          `• Accepted (Actioned): **${acceptedReports}**`,
+          `• Appealed (pending): **${appealsPending}**`,
+          `• Denied: **${deniedReports}**`
+        ].join("\n")
+      },
+      {
+        name: "Performance & Rates",
+        value: [
+          `• Submission success: **${percentage(analytics.rates.submission.percentage)}**`,
+          `• Action rate: **${percentage(analytics.rates.action.percentage)}**`,
+          `• Appeal success rate: **${percentage(analytics.rates.appealAction.percentage)}**`
+        ].join("\n")
+      },
+      {
+        name: "Response Time",
+        value: [
+          `• Median reply: **${duration(analytics.timing.reply.medianSeconds)}**`,
+          `• Median decision: **${duration(analytics.timing.decision.medianSeconds)}**`,
+          `• 90th percentile reply: **${duration(analytics.timing.reply.p90Seconds)}**`
+        ].join("\n")
+      }
     );
   } else if (view === "trends") {
     embed.addFields(
@@ -122,8 +154,8 @@ export async function analyticsViewWithChart(
   view: Exclude<AnalyticsView, "history">
 ): Promise<ReturnType<typeof analyticsView>> {
   const payload = analyticsView(analytics, view);
-  if (analytics.availability !== "available" || view === "overview") return payload;
-  const chart: AnalyticsChart = view === "trends" ? "volume" : "reply_time";
+  if (analytics.availability !== "available") return payload;
+  const chart: AnalyticsChart = view === "outcomes" ? "reply_time" : "volume";
   try {
     const buffer = await renderAnalyticsChart(chart, analytics);
     const name = chart === "volume" ? "report-volume.png" : "discord-reply-time.png";

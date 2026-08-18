@@ -1652,14 +1652,28 @@ export class InteractionHandler {
       return;
     }
     if (scope === "analytics" && action === "period") {
-      const analyticsScope = approvedAnalyticsScope(draftId);
+      const parts = customParts(interaction.customId);
+      const view = parts.length >= 4 ? approvedAnalyticsView(parts[2]) : "overview";
+      const analyticsScope = approvedAnalyticsScope(parts.length >= 4 ? parts[3] : draftId);
       const period = approvedAnalyticsPeriod(interaction.values[0]);
       await interaction.deferUpdate();
+      if (view === "history") {
+        const page = await this.api.actionHistory(interaction.user.id, {
+          period,
+          limit: 25
+        });
+        await interaction.editReply({
+          ...actionHistoryView(page, period),
+          attachments: [],
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
       const analytics = analyticsScope === "community"
         ? await this.api.communityAnalytics(period)
         : await this.api.analyticsFor(interaction.user.id, period);
       await interaction.editReply({
-        ...(await analyticsViewWithChart(analytics, "overview")),
+        ...(await analyticsViewWithChart(analytics, view)),
         allowedMentions: { parse: [] }
       });
       return;
@@ -1778,7 +1792,6 @@ export class InteractionHandler {
         : await this.api.analyticsFor(interaction.user.id, period);
       await interaction.editReply({
         ...(await analyticsViewWithChart(analytics, view)),
-        attachments: [],
         allowedMentions: { parse: [] }
       });
       return;

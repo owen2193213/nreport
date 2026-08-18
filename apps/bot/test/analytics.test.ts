@@ -74,7 +74,7 @@ describe("analytics dashboard", () => {
       nextCursor: "next-token"
     };
     const text = JSON.stringify(actionHistoryView(page, "7d"));
-    expect(text).toContain("analytics:history:personal:7d");
+    expect(text).toContain("analytics:view:history:personal:7d");
     expect(text).not.toContain("next-token");
     expect(text).not.toContain("1197857362942378017");
     expect(actionHistoryModal().toJSON()).toMatchObject({ custom_id: "analytics:history-range" });
@@ -132,7 +132,7 @@ describe("analytics dashboard", () => {
       isStringSelectMenu: () => false,
       isButton: () => true,
       isRepliable: () => true,
-      customId: "analytics:overview:community:30d",
+      customId: "analytics:scope:community:overview:30d",
       user: { id: "1197857362942378017" },
       deferUpdate: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),

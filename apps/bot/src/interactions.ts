@@ -1771,9 +1771,22 @@ export class InteractionHandler {
         await interaction.showModal(actionHistoryModal());
         return;
       }
-      const view = approvedAnalyticsView(parts[1]);
-      const scope = approvedAnalyticsScope(parts[2]);
-      const period = approvedAnalyticsPeriod(parts[3]);
+      let view: AnalyticsView;
+      let scope: AnalyticsScope;
+      let period: AnalyticsPeriod;
+      if (parts[1] === "scope") {
+        scope = approvedAnalyticsScope(parts[2]);
+        view = approvedAnalyticsView(parts[3]);
+        period = approvedAnalyticsPeriod(parts[4]);
+      } else if (parts[1] === "view") {
+        view = approvedAnalyticsView(parts[2]);
+        scope = approvedAnalyticsScope(parts[3]);
+        period = approvedAnalyticsPeriod(parts[4]);
+      } else {
+        view = approvedAnalyticsView(parts[1]);
+        scope = approvedAnalyticsScope(parts[2]);
+        period = approvedAnalyticsPeriod(parts[3]);
+      }
       await interaction.deferUpdate();
       if (view === "history") {
         const page = await this.api.actionHistory(interaction.user.id, {

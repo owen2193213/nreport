@@ -36,7 +36,8 @@ function duration(seconds: number | null): string {
 
 function intervalLabel(analytics: ReportAnalytics): string {
   const start = analytics.interval.startAt?.slice(0, 10) ?? "All time";
-  return `${start} → ${analytics.interval.endAt.slice(0, 10)} UTC`;
+  const end = analytics.interval.endAt ? analytics.interval.endAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
+  return `${start} → ${end} UTC`;
 }
 
 function breakdown(items: ReportAnalytics["breakdowns"]["flows"]): string {
@@ -46,7 +47,7 @@ function breakdown(items: ReportAnalytics["breakdowns"]["flows"]): string {
 }
 
 function formatActivityTimeline(series: ReportAnalytics["series"], isHourly: boolean): string {
-  if (series.length === 0) return "No data recorded";
+  if (!series || series.length === 0) return "No data recorded";
   const max = Math.max(1, ...series.map((s) => s.reportCount));
   const blocks = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
   const sparkline = series.map((s) => {
@@ -65,7 +66,7 @@ export function analyticsComponents(
   const viewRow = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
     ...(["overview", "trends", "outcomes", "history"] as const).map((target) =>
       new ButtonBuilder()
-        .setCustomId(`analytics:${target}:${scope}:${period}`)
+        .setCustomId(`analytics:view:${target}:${scope}:${period}`)
         .setLabel(target[0]?.toUpperCase() + target.slice(1))
         .setStyle(target === view ? ButtonStyle.Primary : ButtonStyle.Secondary)
     )
@@ -83,9 +84,9 @@ export function analyticsComponents(
     }));
   const filterRow = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(periodMenu);
   const scopeRow = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`analytics:${view}:personal:${period}`).setLabel("Personal")
+    new ButtonBuilder().setCustomId(`analytics:scope:personal:${view}:${period}`).setLabel("Personal")
       .setStyle(scope === "personal" ? ButtonStyle.Primary : ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`analytics:${view}:community:${period}`).setLabel("Community")
+    new ButtonBuilder().setCustomId(`analytics:scope:community:${view}:${period}`).setLabel("Community")
       .setStyle(scope === "community" ? ButtonStyle.Primary : ButtonStyle.Secondary)
       .setDisabled(view === "history"),
     new ButtonBuilder().setCustomId("analytics:history-range").setLabel("Custom history dates")

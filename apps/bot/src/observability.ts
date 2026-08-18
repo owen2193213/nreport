@@ -6,11 +6,17 @@ type LogLevel = "info" | "warn" | "error";
 
 export function errorFields(error: unknown): LogFields {
   if (!(error instanceof Error)) return { errorType: typeof error };
-  const candidate = error as Error & { code?: string | number; status?: number };
+  const candidate = error as Error & {
+    code?: string | number;
+    status?: number;
+    rawError?: { message?: string; code?: number; errors?: unknown };
+  };
   return {
     errorName: error.name,
+    errorMessage: error.message,
     ...(candidate.code === undefined ? {} : { errorCode: String(candidate.code) }),
-    ...(candidate.status === undefined ? {} : { httpStatus: candidate.status })
+    ...(candidate.status === undefined ? {} : { httpStatus: candidate.status }),
+    ...(candidate.rawError?.errors === undefined ? {} : { validationErrors: candidate.rawError.errors })
   };
 }
 

@@ -35,7 +35,7 @@ import type { BotConfig } from "./config.js";
 import {
   actionHistoryModal,
   actionHistoryView,
-  analyticsViewWithChart,
+  analyticsView,
   type AnalyticsView
 } from "./analytics-ui.js";
 import { countryDisplay, matchingCountries } from "./countries.js";
@@ -1045,7 +1045,7 @@ export class InteractionHandler {
     await interaction.deferReply({ flags: EPHEMERAL });
     const analytics = await this.api.analyticsFor(interaction.user.id, period);
     await interaction.editReply({
-      ...(await analyticsViewWithChart(analytics, "overview")),
+      ...analyticsView(analytics, "overview"),
       allowedMentions: { parse: [] }
     });
   }
@@ -1673,7 +1673,7 @@ export class InteractionHandler {
         ? await this.api.communityAnalytics(period)
         : await this.api.analyticsFor(interaction.user.id, period);
       await interaction.editReply({
-        ...(await analyticsViewWithChart(analytics, view)),
+        ...analyticsView(analytics, view),
         allowedMentions: { parse: [] }
       });
       return;
@@ -1791,7 +1791,7 @@ export class InteractionHandler {
         ? await this.api.communityAnalytics(period)
         : await this.api.analyticsFor(interaction.user.id, period);
       await interaction.editReply({
-        ...(await analyticsViewWithChart(analytics, view)),
+        ...analyticsView(analytics, view),
         allowedMentions: { parse: [] }
       });
       return;

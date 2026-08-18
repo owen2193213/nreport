@@ -45,6 +45,18 @@ function breakdown(items: ReportAnalytics["breakdowns"]["flows"]): string {
     : items.slice(0, 8).map((item) => `${item.label}: **${item.percentage}%** (${item.count})`).join("\n");
 }
 
+function formatActivityTimeline(series: ReportAnalytics["series"], isHourly: boolean): string {
+  if (series.length === 0) return "No data recorded";
+  const max = Math.max(1, ...series.map((s) => s.reportCount));
+  const blocks = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+  const sparkline = series.map((s) => {
+    const idx = Math.min(blocks.length - 1, Math.round((s.reportCount / max) * (blocks.length - 1)));
+    return blocks[idx];
+  }).join("");
+  const unit = isHourly ? "hourly" : "daily";
+  return `\`${sparkline}\` (${unit})`;
+}
+
 export function analyticsComponents(
   view: AnalyticsView,
   scope: AnalyticsScope,
@@ -64,8 +76,11 @@ export function analyticsComponents(
     .addOptions(...([
       ["24h", "Last 24 hours"], ["7d", "Last 7 days"], ["30d", "Last 30 days"],
       ["ytd", "Year to date"], ["365d", "Last 365 days"], ["all", "All time"]
-    ] as const).map(([value, label]) => new StringSelectMenuOptionBuilder()
-      .setValue(value).setLabel(label).setDefault(value === period)));
+    ] as const).map(([value, label]) => {
+      const option = new StringSelectMenuOptionBuilder().setValue(value).setLabel(label);
+      if (value === period) option.setDefault(true);
+      return option;
+    }));
   const filterRow = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(periodMenu);
   const scopeRow = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`analytics:${view}:personal:${period}`).setLabel("Personal")
@@ -103,6 +118,9 @@ export function analyticsView(
       analytics.outcomes.appealsStarted - (analytics.outcomes.appealActioned + analytics.outcomes.appealsDenied)
     );
     const deniedReports = analytics.outcomes.closedNoAction + analytics.outcomes.appealsDenied;
+    const isHourly = analytics.interval.period === "24h" ||
+      (analytics.series.length > 1 &&
+        Date.parse(analytics.series[1]!.bucketStart) - Date.parse(analytics.series[0]!.bucketStart) <= 3_600_000);
 
     embed.addFields(
       {
@@ -120,7 +138,8 @@ export function analyticsView(
         value: [
           `• Submission success: **${percentage(analytics.rates.submission.percentage)}**`,
           `• Action rate: **${percentage(analytics.rates.action.percentage)}**`,
-          `• Appeal success rate: **${percentage(analytics.rates.appealAction.percentage)}**`
+          `• Appeal success rate: **${percentage(analytics.rates.appealAction.percentage)}**`,
+          `• Timeline: ${formatActivityTimeline(analytics.series, isHourly)}`
         ].join("\n")
       },
       {

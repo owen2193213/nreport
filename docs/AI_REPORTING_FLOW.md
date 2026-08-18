@@ -169,22 +169,22 @@ The bot merges any planner-selected Auto values with fixed inputs into one resol
 ```text
 Provider: Baseten (or OpenRouter)
 Default model: deepseek-ai/DeepSeek-V4-Flash-0731
-reasoning_effort: high
-max_completion_tokens: 8192
+reasoning_effort: medium
+max_completion_tokens: 4096
 stream: false
 Shared generate() deadline: 90000 ms
 Per-request timeout: min(150000 ms, remaining workflow time)
 ```
 
-The 8,192 completion allowance includes thinking tokens and visible JSON. Planning uses high reasoning because it may have to classify ambiguous evidence, select an EU country and category, and decide whether external research is necessary.
+The 4,096 completion allowance includes thinking tokens and visible JSON. Planning uses medium reasoning to classify evidence, select an EU country and category, and decide whether external research is necessary.
 
 The relevant implementation constants are:
 
 ```text
 MAX_REPORT_LENGTH = 512
-MECHANICAL_COMPLETION_TOKEN_LIMIT = 4_096
-PLAN_COMPLETION_TOKEN_LIMIT = 8_192
-RESEARCH_SYNTHESIS_COMPLETION_TOKEN_LIMIT = 12_288
+MECHANICAL_COMPLETION_TOKEN_LIMIT = 2_048
+PLAN_COMPLETION_TOKEN_LIMIT = 4_096
+RESEARCH_SYNTHESIS_COMPLETION_TOKEN_LIMIT = 6_144
 WORKFLOW_TIMEOUT_MS = 90_000
 REQUEST_TIMEOUT_MS = 150_000
 BRAVE_REQUEST_TIMEOUT_MS = 30_000
@@ -210,8 +210,9 @@ Review the Discord evidence and prepare the details of an EU Digital Services Ac
 Decide the country, the report category, and a short factual explanation of why the content is inappropriate.
 Look for every reason the evidence is inappropriate, including single phrases that are harmful on their own.
 ## Rules
-- termResearchRequired: true only when the evidence uses unfamiliar, coded, slang, or ambiguous wording whose meaning could change the classification.
-- lawResearchRequired: true only when you are unsure about the current statute, its full title, or the exact article that applies.
+- Rely primarily on your own knowledge. Search only when strictly necessary to conserve search API usage.
+- termResearchRequired: false by default. Set to true ONLY when you do NOT know what an unfamiliar, coded, slang, or ambiguous term means and cannot determine its meaning without web search.
+- lawResearchRequired: false by default. Set to true ONLY when you do NOT know an applicable statute, its official title, or the exact article/section. If you already know a relevant law provision, set to false and provide it in provisionalLawReference.
 - provisionalLawReference is ALWAYS a non-empty string naming the country, the full law title, and the article or section that applies. Give your best reference even when lawResearchRequired is true.
 - If termResearchRequired is true, termSearchQuery is a non-empty search query. If it is false, termSearchQuery is null.
 - If lawResearchRequired is true, lawSearchQuery is a non-empty search query. If it is false, lawSearchQuery is null.
@@ -457,9 +458,10 @@ Each request has a 30-second provider timeout bounded by the shared 90-second wo
 
 | Situation | Reasoning | Completion allowance | Schema enforcement |
 |---|---:|---:|---|
-| Brave material must be interpreted | `high` | 12,288 tokens | Complete schema plus the two allowed shapes appended to the prompt |
-| No Brave material | `none` | 4,096 tokens | Baseten `response_format` JSON Schema, also repeated in the prompt |
-| Refine or repair | `none` | 4,096 tokens | Baseten `response_format` JSON Schema |
+| Brave material must be interpreted | `medium` | 6,144 tokens | Complete schema plus the two allowed shapes appended to the prompt |
+| No Brave material | `none` | 2,048 tokens | Baseten `response_format` JSON Schema, also repeated in the prompt |
+| Refine | `low` | 2,048 tokens | Report-only schema in prompt |
+| Repair | `none` | 2,048 tokens | Baseten `response_format` JSON Schema |
 
 Only research-backed synthesis uses the larger reasoning allowance. Mechanical rewriting and validation repair do not need high reasoning.
 
@@ -697,7 +699,7 @@ Expected response:
 }
 ```
 
-Refine is a mechanical rewrite: `reasoning_effort` is `none`, the allowance is 4,096 completion tokens, and the report-only schema is enforced through `response_format`.
+Refine uses `reasoning_effort: low` with a 2,048 completion token allowance, with the report-only schema provided in the prompt.
 
 ### 9.2 Regenerate
 

@@ -30,9 +30,9 @@ import {
 export type { AiRequestContext } from "./ai-client.js";
 
 const MAX_REPORT_LENGTH = 512;
-const MECHANICAL_COMPLETION_TOKEN_LIMIT = 4_096;
-const PLAN_COMPLETION_TOKEN_LIMIT = 8_192;
-const RESEARCH_SYNTHESIS_COMPLETION_TOKEN_LIMIT = 12_288;
+const MECHANICAL_COMPLETION_TOKEN_LIMIT = 2_048;
+const PLAN_COMPLETION_TOKEN_LIMIT = 4_096;
+const RESEARCH_SYNTHESIS_COMPLETION_TOKEN_LIMIT = 6_144;
 const WORKFLOW_TIMEOUT_MS = 300_000;
 
 const WRITER_SYSTEM_PROMPT = [
@@ -266,8 +266,9 @@ function plannerPrompt(draft: ReportDraft, countries: readonly string[]): string
     "Decide the country, the report category, and a short factual explanation of why the content is inappropriate.",
     "Look for every reason the evidence is inappropriate, including single phrases that are harmful on their own.",
     "## Rules",
-    "- termResearchRequired: true only when the evidence uses unfamiliar, coded, slang, or ambiguous wording whose meaning could change the classification.",
-    "- lawResearchRequired: true only when you are unsure about the current statute, its full title, or the exact article that applies.",
+    "- Rely primarily on your own knowledge. Search only when strictly necessary to conserve search API usage.",
+    "- termResearchRequired: false by default. Set to true ONLY when you do NOT know what an unfamiliar, coded, slang, or ambiguous term means and cannot determine its meaning without web search.",
+    "- lawResearchRequired: false by default. Set to true ONLY when you do NOT know an applicable statute, its official title, or the exact article/section. If you already know a relevant law provision, set to false and provide it in provisionalLawReference.",
     "- provisionalLawReference is ALWAYS a non-empty string naming the country, the full law title, and the article or section that applies. Give your best reference even when lawResearchRequired is true.",
     "- If termResearchRequired is true, termSearchQuery is a non-empty search query. If it is false, termSearchQuery is null.",
     "- If lawResearchRequired is true, lawSearchQuery is a non-empty search query. If it is false, lawSearchQuery is null.",
@@ -570,7 +571,7 @@ function synthesisPrompt(
     initialWriterPrompt(),
     followUpUsed
       ? "You have already used the allowed follow-up search. Do not request more research. Complete the report now using the best available law reference from the supplied research and the provisional reference."
-      : "Use the supplied research to confirm or replace the provisional law reference. Prefer completing the report with the material you already have. You may request at most one sanitized term or law follow-up search; this is your only research opportunity and you cannot request more research after it."
+      : "Complete the report using the material you already have and your own knowledge. Do NOT request a follow-up search unless the existing material is completely insufficient to identify an applicable law or understand unknown terminology."
   ].join("\n");
 }
 
@@ -781,7 +782,7 @@ export class ReportWriter {
           { role: "user", content: planUserPrompt }
         ],
         max_completion_tokens: PLAN_COMPLETION_TOKEN_LIMIT,
-        reasoning_effort: "high"
+        reasoning_effort: "medium"
       },
       deadline,
       actor,
@@ -918,14 +919,16 @@ export class ReportWriter {
     this.logWorkflowStarted(draft, actor, "refine");
     const conversation: WriterConversationMessage[] = [
       ...draft.writerConversation,
-      { role: "user", content: refinementPrompt(instruction) }
+      {
+        role: "user",
+        content: schemaPrompt(refinementPrompt(instruction), reportResponseFormat())
+      }
     ];
     const first = await this.completeAi(
       {
         messages: [{ role: "system", content: WRITER_SYSTEM_PROMPT }, ...conversation],
         max_completion_tokens: MECHANICAL_COMPLETION_TOKEN_LIMIT,
-        reasoning_effort: "none",
-        response_format: reportResponseFormat()
+        reasoning_effort: "low"
       },
       deadline,
       actor,
@@ -1012,7 +1015,7 @@ export class ReportWriter {
                 }
               ],
               max_completion_tokens: RESEARCH_SYNTHESIS_COMPLETION_TOKEN_LIMIT,
-              reasoning_effort: "high"
+              reasoning_effort: "medium"
             }
           : {
               messages: [

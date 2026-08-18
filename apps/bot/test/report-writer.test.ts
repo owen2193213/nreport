@@ -225,8 +225,8 @@ describe("Baseten and Brave report writer", () => {
     expect(planning.plugins).toBeUndefined();
     expect(planning.tools).toBeUndefined();
     expect(planning.provider).toBeUndefined();
-    expect(planning.reasoning_effort).toBe("high");
-    expect(planning.max_completion_tokens).toBe(8_192);
+    expect(planning.reasoning_effort).toBe("medium");
+    expect(planning.max_completion_tokens).toBe(4_096);
     expect(planning.response_format).toBeUndefined();
     expect(JSON.stringify(planning.messages)).toContain("provisionalLawReference");
     expect(JSON.stringify(planning.messages)).not.toContain("without Markdown or a code fence");
@@ -256,7 +256,7 @@ describe("Baseten and Brave report writer", () => {
       };
     }>(request, 1);
     expect(synthesis.reasoning_effort).toBe("none");
-    expect(synthesis.max_completion_tokens).toBe(4_096);
+    expect(synthesis.max_completion_tokens).toBe(2_048);
     expect(synthesis.response_format.type).toBe("json_schema");
     expect(synthesis.response_format.json_schema.strict).toBeUndefined();
     expect(JSON.stringify(synthesis.messages)).toContain(
@@ -347,8 +347,8 @@ describe("Baseten and Brave report writer", () => {
       reasoning_effort: string;
       response_format?: unknown;
     }>(request, 2);
-    expect(synthesis.reasoning_effort).toBe("high");
-    expect(synthesis.max_completion_tokens).toBe(12_288);
+    expect(synthesis.reasoning_effort).toBe("medium");
+    expect(synthesis.max_completion_tokens).toBe(6_144);
     expect(synthesis.response_format).toBeUndefined();
     expect(JSON.stringify(synthesis.messages)).toContain("researchSummary");
     const synthesisSchema = embeddedSchema(synthesis.messages[1]!.content);
@@ -446,7 +446,7 @@ describe("Baseten and Brave report writer", () => {
     }>(inconsistent, 1);
     expect(repair).toMatchObject({
       reasoning_effort: "none",
-      max_completion_tokens: 4_096
+      max_completion_tokens: 2_048
     });
     expect(repair.response_format).toBeDefined();
   });
@@ -529,10 +529,10 @@ describe("Baseten and Brave report writer", () => {
 
     const firstSynthesis = bodyAt<{ messages: Array<{ content: string }> }>(successRequest, 1);
     expect(firstSynthesis.messages[1]!.content).toContain(
-      "this is your only research opportunity and you cannot request more research after it"
+      "Do NOT request a follow-up search unless the existing material is completely insufficient"
     );
     expect(firstSynthesis.messages[1]!.content).not.toContain(
-      "Do not request more research"
+      "You have already used the allowed follow-up search"
     );
     const finalSynthesis = bodyAt<{ messages: Array<{ content: string }> }>(successRequest, 3);
     expect(finalSynthesis.messages[1]!.content).toContain(
@@ -567,7 +567,7 @@ describe("Baseten and Brave report writer", () => {
     expect(request).toHaveBeenCalledTimes(3);
     expect(bodyAt<{ reasoning_effort: string; max_completion_tokens: number }>(request, 2)).toMatchObject({
       reasoning_effort: "none",
-      max_completion_tokens: 4_096
+      max_completion_tokens: 2_048
     });
   });
 
@@ -801,8 +801,8 @@ describe("Baseten and Brave report writer", () => {
       "https://inference.baseten.co/v1/chat/completions"
     );
     expect(bodyAt<{ reasoning_effort: string; max_completion_tokens: number }>(request, 0)).toMatchObject({
-      reasoning_effort: "none",
-      max_completion_tokens: 4_096
+      reasoning_effort: "low",
+      max_completion_tokens: 2_048
     });
   });
 
@@ -841,7 +841,7 @@ describe("Baseten and Brave report writer", () => {
     }>(request, 2);
     expect(repair).toMatchObject({
       reasoning_effort: "none",
-      max_completion_tokens: 4_096
+      max_completion_tokens: 2_048
     });
     expect(repair.response_format).toBeDefined();
   });

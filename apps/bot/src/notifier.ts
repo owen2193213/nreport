@@ -287,10 +287,10 @@ export class NotificationWorker {
         }
         const category = notificationCategory(job.payload.eventType);
         const preferences = await this.database.getNotificationPreferences(job.discord_user_id);
-        if (category === null || !allowsLifecycleNotification(job.payload.eventType, preferences)) {
-          await this.database.completeNotification(job.id);
+        const allowReply =
+          category !== null && allowsLifecycleNotification(job.payload.eventType, preferences);
+        if (!allowReply) {
           botLog("notification_send_suppressed", { notificationId: job.id, category });
-          continue;
         }
         report ??= await this.api.report(job.payload.internalReportId);
         botLog("notification_send_started", {
@@ -324,24 +324,26 @@ export class NotificationWorker {
             allowedMentions: { parse: [] }
           });
         }
-        const decision = reportDecisionEmbed(
-          job.payload.eventType,
-          report,
-          await this.snapshotFor(report, job.discord_user_id)
-        );
-        const replyText = lifecycleReplyText(job.payload.eventType, report);
-        if (decision !== null) {
-          await statusMessage.reply({
-            embeds: [decision],
-            components: [],
-            allowedMentions: { parse: [] }
-          });
-        } else if (replyText !== null) {
-          await statusMessage.reply({
-            content: replyText,
-            components: shouldIncludeRetryComponents(job.payload.eventType) ? components : [],
-            allowedMentions: { parse: [] }
-          });
+        if (allowReply) {
+          const decision = reportDecisionEmbed(
+            job.payload.eventType,
+            report,
+            await this.snapshotFor(report, job.discord_user_id)
+          );
+          const replyText = lifecycleReplyText(job.payload.eventType, report);
+          if (decision !== null) {
+            await statusMessage.reply({
+              embeds: [decision],
+              components: [],
+              allowedMentions: { parse: [] }
+            });
+          } else if (replyText !== null) {
+            await statusMessage.reply({
+              content: replyText,
+              components: shouldIncludeRetryComponents(job.payload.eventType) ? components : [],
+              allowedMentions: { parse: [] }
+            });
+          }
         }
         await this.database.completeNotification(job.id);
         botLog("notification_send_completed", {

@@ -91,10 +91,13 @@ describe("notification preferences", () => {
     expect(query.mock.calls[1]?.[1]).toEqual(["user-1", false]);
   });
 
-  it("reloads a disabled category before any Discord or report fetch", async () => {
+  it("edits the status embed but suppresses replies when category is disabled", async () => {
     const completeNotification = vi.fn().mockResolvedValue(undefined);
     const getNotificationPreferences = vi.fn().mockResolvedValue(preferences);
     const claimedPreferences = { ...preferences, actioned: true };
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
     const database = {
       claimDueTrackings: vi.fn().mockResolvedValue([]),
       reconciliationCursor: vi.fn().mockResolvedValue("0"),
@@ -113,15 +116,75 @@ describe("notification preferences", () => {
         preferences: claimedPreferences
       }]),
       getNotificationPreferences,
+      statusDmMessageId: vi.fn().mockResolvedValue("dm-message-1"),
+      aiDecisions: vi.fn().mockResolvedValue([]),
+      serverSnapshot: vi.fn().mockResolvedValue(null),
       completeNotification,
       failNotification: vi.fn().mockResolvedValue(undefined)
     } as unknown as BotDatabase;
-    const report = vi.fn();
-    const fetch = vi.fn();
+    const report = {
+      internalReportId: "report-1",
+      country: "DE" as const,
+      flow: "message_urf" as const,
+      reportType: "sub_other_hate_speech",
+      submitterDiscordUserId: "1197857362942378017",
+      pseudonym: "hidden",
+      email: "hidden@example.invalid",
+      locale: "de-DE",
+      timezone: "Europe/Berlin",
+      lifecycleAttempt: 1,
+      retryable: false,
+      retryOfReportId: null,
+      retriedAsReportId: null,
+      retrySequence: 0,
+      failureStage: null,
+      status: "submitted" as const,
+      discordReportId: "1527695430949798110",
+      discordStatus: "actioned" as const,
+      discordStatusUpdatedAt: "2026-07-20T00:00:00.000Z",
+      reviewStatus: null,
+      reviewStatusUpdatedAt: null,
+      reviewError: null,
+      appealRetryable: false,
+      resubmittable: false,
+      error: null,
+      timeline: [],
+      createdAt: "2026-07-19T00:00:00.000Z",
+      updatedAt: "2026-07-20T00:00:00.000Z",
+      reportedDetails: {
+        kind: "message" as const,
+        messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679",
+        messageEvidence: {
+          source: "context_menu" as const,
+          guildId: null,
+          channelId: "123456789012345678",
+          messageId: "123456789012345679",
+          author: {
+            id: "123456789012345680",
+            username: "reported-user",
+            displayName: "Reported User"
+          },
+          content: "Bad message",
+          attachments: []
+        }
+      }
+    };
+    const reportFn = vi.fn().mockResolvedValue(report);
     const worker = new NotificationWorker(
       database,
-      { lifecycleEvents: vi.fn().mockResolvedValue({ events: [] }), report } as unknown as DsaApi,
-      { users: { fetch } } as unknown as Client,
+      { lifecycleEvents: vi.fn().mockResolvedValue({ events: [] }), report: reportFn } as unknown as DsaApi,
+      {
+        users: {
+          fetch: vi.fn().mockResolvedValue({
+            createDM: vi.fn().mockResolvedValue({
+              messages: {
+                fetch: vi.fn().mockResolvedValue({ edit, reply })
+              }
+            }),
+            send
+          })
+        }
+      } as unknown as Client,
       {} as BotConfig,
       {} as ServerResolver
     );
@@ -129,9 +192,10 @@ describe("notification preferences", () => {
     await worker.tick();
 
     expect(getNotificationPreferences).toHaveBeenCalledWith("1197857362942378017");
+    expect(reportFn).toHaveBeenCalledWith("report-1");
+    expect(edit).toHaveBeenCalledOnce();
+    expect(reply).not.toHaveBeenCalled();
     expect(completeNotification).toHaveBeenCalledWith("41");
-    expect(report).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("toggles Actioned for only the interaction user", async () => {

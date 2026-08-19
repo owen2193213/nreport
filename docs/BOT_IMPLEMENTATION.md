@@ -83,11 +83,13 @@ digest frequency selector. All lifecycle categories default to Enabled for new a
   ambiguous appeal events.
 
 Digest choices are Off, Daily, Weekly, and Monthly; Weekly is the default. Preferences are evaluated
-immediately before delivery, so changing a toggle also affects already queued but unsent DMs. The
-bot continues to ingest, deduplicate, reconcile, and retain authorized lifecycle events when a DM
-is disabled. A report's own `dm_enabled` value remains an additional restriction. Settings and
-confirmation interactions are ephemeral with mentions disabled, and suppressed notification logs
-contain only the notification ID and semantic category.
+immediately before delivery, so changing a toggle also affects already queued but unsent DMs. When
+a lifecycle category is disabled, the tracked DM status embed is still edited in place with the latest
+status and timeline, but no new reply message or decision card is sent. The bot continues to ingest,
+deduplicate, reconcile, and retain authorized lifecycle events when a DM is disabled. A report's own
+`dm_enabled` value remains an additional restriction. Settings and confirmation interactions are
+ephemeral with mentions disabled, and suppressed notification logs contain only the notification ID
+and semantic category.
 
 Digests cover the most recently closed UTC period: the previous calendar day, Monday-to-Monday
 week, or previous calendar month. They are sent only when that user created at least three new root

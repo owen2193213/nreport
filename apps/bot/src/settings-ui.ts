@@ -22,7 +22,8 @@ const SETTINGS: Array<{
 }> = [
   { key: "submission_results", label: "Submission results", read: (value) => value.submissionResults },
   { key: "actioned", label: "Actioned", read: (value) => value.actioned },
-  { key: "declined", label: "Declined", read: (value) => value.declined },
+  { key: "denied_reports", label: "Denied reports", read: (value) => value.deniedReports },
+  { key: "denied_appeals", label: "Denied appeals", read: (value) => value.deniedAppeals },
   { key: "appeal_progress", label: "Appeal progress", read: (value) => value.appealProgress }
 ];
 

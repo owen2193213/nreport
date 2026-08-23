@@ -34,7 +34,8 @@ function interactionHandler(database: BotDatabase): InteractionHandler {
 const preferences: NotificationPreferences = {
   submissionResults: true,
   actioned: false,
-  declined: true,
+  deniedReports: false,
+  deniedAppeals: true,
   appealProgress: false,
   digestFrequency: "weekly"
 };
@@ -43,7 +44,7 @@ describe("notification preferences", () => {
   it.each([
     ["report_submitted", "submission_results"], ["report_failed", "submission_results"],
     ["discord:received", "submission_results"], ["discord:actioned", "actioned"],
-    ["discord:closed_no_action", "declined"], ["discord:review_not_approved", "declined"],
+    ["discord:closed_no_action", "denied_reports"], ["discord:review_not_approved", "denied_appeals"],
     ["review_requested", "appeal_progress"], ["review_received", "appeal_progress"],
     ["review_confirmation_timeout", "appeal_progress"], ["review_request_failed", "appeal_progress"],
     ["review_ineligible", "appeal_progress"], ["review_request_ambiguous", "appeal_progress"]
@@ -53,7 +54,8 @@ describe("notification preferences", () => {
 
   it("checks the matching current preference and rejects unknown events", () => {
     expect(allowsLifecycleNotification("discord:actioned", preferences)).toBe(false);
-    expect(allowsLifecycleNotification("discord:closed_no_action", preferences)).toBe(true);
+    expect(allowsLifecycleNotification("discord:closed_no_action", preferences)).toBe(false);
+    expect(allowsLifecycleNotification("discord:review_not_approved", preferences)).toBe(true);
     expect(allowsLifecycleNotification("review_requested", preferences)).toBe(false);
     expect(allowsLifecycleNotification("unknown", preferences)).toBe(false);
   });
@@ -64,13 +66,15 @@ describe("notification preferences", () => {
     const text = JSON.stringify(notificationSettingsView({
       submissionResults: true,
       actioned: true,
-      declined: true,
+      deniedReports: true,
+      deniedAppeals: true,
       appealProgress: true,
       digestFrequency: "weekly"
     }));
     expect(text).toContain("Submission results");
     expect(text).toContain("Actioned");
-    expect(text).toContain("Declined");
+    expect(text).toContain("Denied reports");
+    expect(text).toContain("Denied appeals");
     expect(text).toContain("Appeal progress");
     expect(text).toContain("Weekly");
   });
@@ -79,8 +83,8 @@ describe("notification preferences", () => {
     const query = vi.fn()
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{
-        notify_submission_results: true, notify_actioned: false, notify_declined: true,
-        notify_appeal_progress: true, digest_frequency: "weekly"
+        notify_submission_results: true, notify_actioned: false, notify_denied_reports: false,
+        notify_denied_appeals: true, notify_appeal_progress: true, digest_frequency: "weekly"
       }] });
     const database = new BotDatabase("postgres://unused", { query } as never);
 

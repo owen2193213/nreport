@@ -1274,14 +1274,14 @@ describe("lifecycle notification deduplication", () => {
           },
           attempts: 0,
           preferences: {
-            submissionResults: true, actioned: true, declined: true,
-            appealProgress: true, digestFrequency: "weekly"
+            submissionResults: true, actioned: true, deniedReports: true,
+            deniedAppeals: true, appealProgress: true, digestFrequency: "weekly"
           }
         }
       ]),
       getNotificationPreferences: vi.fn().mockResolvedValue({
-        submissionResults: true, actioned: true, declined: true,
-        appealProgress: true, digestFrequency: "weekly"
+        submissionResults: true, actioned: true, deniedReports: true,
+        deniedAppeals: true, appealProgress: true, digestFrequency: "weekly"
       }),
       statusDmMessageId: vi.fn().mockResolvedValue("dm-message-1"),
       aiDecisions: vi.fn().mockResolvedValue([]),
@@ -1346,14 +1346,14 @@ describe("lifecycle notification deduplication", () => {
           },
           attempts: 0,
           preferences: {
-            submissionResults: true, actioned: true, declined: true,
-            appealProgress: true, digestFrequency: "weekly"
+            submissionResults: true, actioned: true, deniedReports: true,
+            deniedAppeals: true, appealProgress: true, digestFrequency: "weekly"
           }
         }
       ]),
       getNotificationPreferences: vi.fn().mockResolvedValue({
-        submissionResults: true, actioned: true, declined: true,
-        appealProgress: true, digestFrequency: "weekly"
+        submissionResults: true, actioned: true, deniedReports: true,
+        deniedAppeals: true, appealProgress: true, digestFrequency: "weekly"
       }),
       statusDmMessageId: vi.fn().mockResolvedValue(null),
       aiDecisions: vi.fn().mockResolvedValue([]),

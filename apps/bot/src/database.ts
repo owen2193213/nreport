@@ -126,10 +126,10 @@ CREATE TABLE IF NOT EXISTS bot_users (
   suspended boolean NOT NULL DEFAULT false,
   suspension_reason text,
   suspended_at timestamptz,
-  suspended_by text,
   notify_submission_results boolean NOT NULL DEFAULT true,
   notify_actioned boolean NOT NULL DEFAULT true,
-  notify_declined boolean NOT NULL DEFAULT true,
+  notify_denied_reports boolean NOT NULL DEFAULT true,
+  notify_denied_appeals boolean NOT NULL DEFAULT true,
   notify_appeal_progress boolean NOT NULL DEFAULT true,
   digest_frequency text NOT NULL DEFAULT 'weekly'
     CONSTRAINT bot_users_digest_frequency_check
@@ -324,8 +324,25 @@ ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS ai_last_used_at timestamptz;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_submission_results boolean NOT NULL DEFAULT true;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_actioned boolean NOT NULL DEFAULT true;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_declined boolean NOT NULL DEFAULT true;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_denied_reports boolean NOT NULL DEFAULT true;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_denied_appeals boolean NOT NULL DEFAULT true;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_appeal_progress boolean NOT NULL DEFAULT true;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS digest_frequency text NOT NULL DEFAULT 'weekly';
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'bot_users' AND column_name = 'notify_declined'
+  ) THEN
+    UPDATE bot_users
+       SET notify_denied_reports = notify_declined,
+           notify_denied_appeals = notify_declined
+     WHERE notify_declined = false
+       AND notify_denied_reports = true
+       AND notify_denied_appeals = true;
+  END IF;
+END
+$$;
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -482,7 +499,9 @@ export interface NotificationJob extends QueryResultRow {
 interface NotificationPreferencesRow extends QueryResultRow {
   notify_submission_results: boolean;
   notify_actioned: boolean;
-  notify_declined: boolean;
+  notify_denied_reports?: boolean;
+  notify_denied_appeals?: boolean;
+  notify_declined?: boolean;
   notify_appeal_progress: boolean;
   digest_frequency: DigestFrequency;
 }
@@ -581,7 +600,8 @@ function notificationPreferences(row: NotificationPreferencesRow): NotificationP
   return {
     submissionResults: row.notify_submission_results,
     actioned: row.notify_actioned,
-    declined: row.notify_declined,
+    deniedReports: row.notify_denied_reports ?? row.notify_declined ?? true,
+    deniedAppeals: row.notify_denied_appeals ?? row.notify_declined ?? true,
     appealProgress: row.notify_appeal_progress,
     digestFrequency: row.digest_frequency
   };
@@ -655,8 +675,8 @@ export class BotDatabase {
       await client.query("BEGIN");
       await this.ensureUser(client, userId);
       const result = await client.query<NotificationPreferencesRow>(
-        `SELECT notify_submission_results, notify_actioned, notify_declined,
-                notify_appeal_progress, digest_frequency
+        `SELECT notify_submission_results, notify_actioned, notify_denied_reports,
+                notify_denied_appeals, notify_appeal_progress, digest_frequency
          FROM bot_users WHERE discord_user_id = $1`,
         [userId]
       );
@@ -681,7 +701,8 @@ export class BotDatabase {
       switch (key) {
         case "submission_results": return "notify_submission_results";
         case "actioned": return "notify_actioned";
-        case "declined": return "notify_declined";
+        case "denied_reports": return "notify_denied_reports";
+        case "denied_appeals": return "notify_denied_appeals";
         case "appeal_progress": return "notify_appeal_progress";
       }
     })();
@@ -692,8 +713,8 @@ export class BotDatabase {
     const result = await this.pool.query<NotificationPreferencesRow>(
       `UPDATE bot_users SET ${column} = $2, updated_at = now()
        WHERE discord_user_id = $1
-       RETURNING notify_submission_results, notify_actioned, notify_declined,
-                 notify_appeal_progress, digest_frequency`,
+       RETURNING notify_submission_results, notify_actioned, notify_denied_reports,
+                 notify_denied_appeals, notify_appeal_progress, digest_frequency`,
       [userId, enabled]
     );
     const row = result.rows[0];
@@ -712,8 +733,8 @@ export class BotDatabase {
     const result = await this.pool.query<NotificationPreferencesRow>(
       `UPDATE bot_users SET digest_frequency = $2, updated_at = now()
        WHERE discord_user_id = $1
-       RETURNING notify_submission_results, notify_actioned, notify_declined,
-                 notify_appeal_progress, digest_frequency`,
+       RETURNING notify_submission_results, notify_actioned, notify_denied_reports,
+                 notify_denied_appeals, notify_appeal_progress, digest_frequency`,
       [userId, frequency]
     );
     const row = result.rows[0];
@@ -2154,7 +2175,8 @@ export class BotDatabase {
       const result = await client.query<NotificationJob & NotificationPreferencesRow>(
         `SELECT outbox.*, tracking.experimental_batch_item_id,
                 users.notify_submission_results, users.notify_actioned,
-                users.notify_declined, users.notify_appeal_progress, users.digest_frequency
+                users.notify_denied_reports, users.notify_denied_appeals,
+                users.notify_appeal_progress, users.digest_frequency
          FROM notification_outbox AS outbox
          JOIN report_tracking AS tracking ON tracking.id = outbox.tracking_id
          JOIN bot_users AS users ON users.discord_user_id = outbox.discord_user_id

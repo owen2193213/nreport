@@ -73,12 +73,13 @@ chart rendering fails, the same textual totals remain available. User-facing out
 
 ### Notification preferences
 
-`/settings notifications` opens an ephemeral settings card with four lifecycle-DM toggles and a
+`/settings notifications` opens an ephemeral settings card with five lifecycle-DM toggles and a
 digest frequency selector. All lifecycle categories default to Enabled for new and migrated users:
 
 - Submission results: `report_submitted`, `report_failed`, and `discord:received`.
 - Actioned: `discord:actioned`.
-- Declined: `discord:closed_no_action` and `discord:review_not_approved`.
+- Denied reports: `discord:closed_no_action`.
+- Denied appeals: `discord:review_not_approved`.
 - Appeal progress: requested, received, confirmation timeout, request failed, ineligible, and
   ambiguous appeal events.
 

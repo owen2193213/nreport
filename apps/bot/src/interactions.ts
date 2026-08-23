@@ -1757,7 +1757,7 @@ export class InteractionHandler {
     const parts = customParts(interaction.customId);
     if (parts[0] === "settings" && parts[1] === "notifications") {
       const keys: readonly NotificationPreferenceKey[] = [
-        "submission_results", "actioned", "declined", "appeal_progress"
+        "submission_results", "actioned", "denied_reports", "denied_appeals", "appeal_progress"
       ];
       const key = parts[3] as NotificationPreferenceKey | undefined;
       if (parts[2] !== "toggle" || key === undefined || !keys.includes(key) ||

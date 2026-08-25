@@ -911,8 +911,15 @@ export function accessEmbed(access: AccessView, admin: boolean, userId?: string)
     .setColor(access.suspended ? Colors.Red : Colors.Blurple)
     .setTitle(userId ? "User access" : "Your reporting access")
     .addFields(
-      { name: "Access level", value: admin ? "Administrator — unlimited reports" : "Credit-based access", inline: true },
-      { name: "Credits", value: admin ? "Unlimited" : access.credits.toString(), inline: true },
+      {
+        name: "Access level",
+        value: admin
+          ? "Administrator — unrestricted access"
+          : access.accessGranted
+            ? "Access granted"
+            : "No access",
+        inline: true
+      },
       {
         name: "Default country",
         value: access.defaultCountry ? countryDisplay(access.defaultCountry) : countryDisplay("AUTO"),
@@ -1412,7 +1419,7 @@ export function accessKeysEmbed(keys: readonly AccessKeyView[]): EmbedBuilder {
       name: `${key.code_prefix} • ${statusLabel(key.status)}`,
       value: [
         `ID: \`${key.id}\``,
-        `Credits granted: **${key.credits_total}** • Expires: ${key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never"}`,
+        `Expires: ${key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never"}`,
         key.redeemed_by
           ? `Redeemed by: ${discordUserMention(key.redeemed_by)}${key.redeemed_at ? ` • ${discordTimestamp(key.redeemed_at.toISOString())}` : ""}`
           : "Redeemed by: Nobody"
@@ -1430,7 +1437,6 @@ export function accessKeyEmbed(key: AccessKeyView): EmbedBuilder {
     .setDescription(`\`${key.id}\``)
     .addFields(
       { name: "Prefix", value: key.code_prefix, inline: true },
-      { name: "Credits granted", value: key.credits_total.toString(), inline: true },
       { name: "Status", value: statusLabel(key.status), inline: true },
       { name: "Expires", value: key.expires_at ? discordTimestamp(key.expires_at.toISOString()) : "Never", inline: true },
       { name: "Redeemed by", value: key.redeemed_by ? discordUserMention(key.redeemed_by) : "Nobody", inline: true },

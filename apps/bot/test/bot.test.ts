@@ -54,7 +54,7 @@ import {
 } from "../src/profile-resolver.js";
 import type { ReportWriter } from "../src/report-writer.js";
 import { ServerResolver } from "../src/server-resolver.js";
-import { DsaApiError, USER_MESSAGE_REPORT_REASONS } from "@discord-dsa/contracts";
+import { DsaApiError } from "@discord-dsa/contracts";
 import type { DsaApi, ReportDetail } from "@discord-dsa/contracts";
 import {
   buildCountryPicker,
@@ -176,7 +176,7 @@ describe("Discord command registration", () => {
   });
 
   it("registers user-installed commands in every requested interaction context", () => {
-    expect(COMMANDS).toHaveLength(10);
+    expect(COMMANDS).toHaveLength(8);
     for (const command of COMMANDS) {
       expect(command.integration_types).toEqual([ApplicationIntegrationType.UserInstall]);
       expect(command.contexts).toEqual([
@@ -195,17 +195,6 @@ describe("Discord command registration", () => {
   it("registers Apps → Quick Report Message as a message context command", () => {
     const command = COMMANDS.find((candidate) => candidate.name === "Quick Report Message");
     expect(command?.type).toBe(ApplicationCommandType.Message);
-  });
-
-  it("registers both experimental batch reports as message context commands", () => {
-    for (const name of [
-      "Experimental 10x Same Category",
-      "Experimental All Categories"
-    ]) {
-      const command = COMMANDS.find((candidate) => candidate.name === name);
-      expect(command?.type).toBe(ApplicationCommandType.Message);
-      expect(name.length).toBeLessThanOrEqual(32);
-    }
   });
 
   it("keeps targets in report commands and moves report preferences into modals", () => {
@@ -240,9 +229,7 @@ describe("Discord command registration", () => {
       ? server.options?.find((option) => option.name === "server-or-invite")
       : undefined;
     expect(serverOrInvite).toMatchObject({ required: false });
-  });
-
-  it("allows access keys to grant any positive integer number of credits", () => {
+  });  it("configures access key creation options without credit limits", () => {
     const command = COMMANDS.find((candidate) => candidate.name === "admin");
     const keyGroup = command?.options?.find((option) => option.name === "key");
     const create = keyGroup && "options" in keyGroup
@@ -251,9 +238,12 @@ describe("Discord command registration", () => {
     const credits = create && "options" in create
       ? create.options?.find((option) => option.name === "credits")
       : undefined;
+    const count = create && "options" in create
+      ? create.options?.find((option) => option.name === "count")
+      : undefined;
 
-    expect(credits).toMatchObject({ required: true, min_value: 1 });
-    expect(credits && "max_value" in credits ? credits.max_value : undefined).toBeUndefined();
+    expect(credits).toBeUndefined();
+    expect(count).toMatchObject({ required: false, min_value: 1, max_value: 20 });
   });
 });
 
@@ -367,9 +357,11 @@ describe("access key administration views", () => {
     );
   });
 
-  it("labels key credits as the original grant rather than a live balance", () => {
+  it("displays access key details with redemption status", () => {
     const output = JSON.stringify(accessKeyEmbed(redeemedKey).toJSON());
-    expect(output).toContain("Credits granted");
+    expect(output).toContain("internal-key-id");
+    expect(output).toContain("redeemed");
+    expect(output).toContain("100000000000000002");
   });
 });
 
@@ -458,13 +450,13 @@ describe("report UI", () => {
   it("shows cumulative AI usage without an estimated provider cost", () => {
     const embed = accessEmbed(
       {
+        accessGranted: true,
         aiCostCredits: 0.012345,
         aiInputTokens: 1_000,
         aiOutputTokens: 200,
         aiReasoningTokens: 100,
         aiRequestCount: 4,
         aiSearchRequests: 2,
-        credits: 3,
         defaultCountry: null,
         suspended: false,
         suspensionReason: null
@@ -483,13 +475,13 @@ describe("report UI", () => {
     const text = JSON.stringify(
       accessEmbed(
         {
+          accessGranted: true,
           aiCostCredits: 0,
           aiInputTokens: 0,
           aiOutputTokens: 0,
           aiReasoningTokens: 0,
           aiRequestCount: 0,
           aiSearchRequests: 0,
-          credits: 3,
           defaultCountry: null,
           suspended: false,
           suspensionReason: null
@@ -1515,7 +1507,9 @@ describe("report component responsiveness", () => {
         whitelistEnabled: false
       } as unknown as BotConfig,
       countries: ["DE"],
-      database: {} as BotDatabase,
+      database: {
+        getAccess: vi.fn().mockResolvedValue({ suspended: false, accessGranted: true })
+      } as unknown as BotDatabase,
       messageResolver: {} as MessageResolver,
       profileResolver: {} as ProfileResolver,
       reportWriter: {} as ReportWriter,
@@ -1570,7 +1564,9 @@ describe("report component responsiveness", () => {
         whitelistEnabled: false
       } as unknown as BotConfig,
       countries: ["DE"],
-      database: {} as BotDatabase,
+      database: {
+        getAccess: vi.fn().mockResolvedValue({ suspended: false, accessGranted: true })
+      } as unknown as BotDatabase,
       messageResolver: {} as MessageResolver,
       profileResolver: {} as ProfileResolver,
       reportWriter: {} as ReportWriter,
@@ -1617,7 +1613,9 @@ describe("report component responsiveness", () => {
         whitelistEnabled: false
       } as unknown as BotConfig,
       countries: ["DE"],
-      database: {} as BotDatabase,
+      database: {
+        getAccess: vi.fn().mockResolvedValue({ suspended: false, accessGranted: true })
+      } as unknown as BotDatabase,
       messageResolver: {} as MessageResolver,
       profileResolver: {} as ProfileResolver,
       reportWriter: {} as ReportWriter,
@@ -1790,7 +1788,9 @@ describe("report component responsiveness", () => {
         whitelistEnabled: false
       } as unknown as BotConfig,
       countries: ["DE"],
-      database: {} as BotDatabase,
+      database: {
+        getAccess: vi.fn().mockResolvedValue({ suspended: false, accessGranted: true })
+      } as unknown as BotDatabase,
       messageResolver: {} as MessageResolver,
       profileResolver: {} as ProfileResolver,
       reportWriter: {} as ReportWriter,
@@ -1826,6 +1826,11 @@ describe("report interaction country precedence", () => {
     const dataEncryptionKey = randomBytes(32);
     const updateDraft = vi.fn();
     const database = {
+      getAccess: vi.fn().mockResolvedValue({
+        accessGranted: true,
+        suspended: false,
+        defaultCountry: "DE"
+      }),
       getDraft: vi.fn().mockResolvedValue(
         encryptJson(
           {
@@ -2048,6 +2053,11 @@ describe("report interaction country precedence", () => {
     };
     const updateDraft = vi.fn();
     const database = {
+      getAccess: vi.fn().mockResolvedValue({
+        accessGranted: true,
+        suspended: false,
+        defaultCountry: "DE"
+      }),
       getDraft: vi.fn().mockResolvedValue(encryptJson(draft, dataEncryptionKey)),
       updateDraft
     } as unknown as BotDatabase;
@@ -2126,6 +2136,11 @@ describe("report interaction country precedence", () => {
     };
     const updateDraft = vi.fn();
     const database = {
+      getAccess: vi.fn().mockResolvedValue({
+        accessGranted: true,
+        suspended: false,
+        defaultCountry: "DE"
+      }),
       getDraft: vi.fn().mockResolvedValue(encryptJson(draft, dataEncryptionKey)),
       updateDraft
     } as unknown as BotDatabase;
@@ -2300,7 +2315,7 @@ describe("quick report message context flow", () => {
     const observeReport = vi.fn().mockResolvedValue(undefined);
     const database = {
       getAccess: vi.fn().mockResolvedValue({
-        credits: 1,
+        accessGranted: true,
         suspended: false,
         defaultCountry: "DE"
       }),
@@ -2384,7 +2399,7 @@ describe("quick report message context flow", () => {
   it("rejects suspended users without generating a report", async () => {
     const database = {
       getAccess: vi.fn().mockResolvedValue({
-        credits: 1,
+        accessGranted: true,
         suspended: true,
         defaultCountry: null
       })
@@ -2419,130 +2434,126 @@ describe("quick report message context flow", () => {
   });
 });
 
-describe("experimental report batch interaction flow", () => {
-  function experimentalTargetMessage() {
-    return {
-      id: "123456789012345679",
-      channelId: "123456789012345678",
-      channel: { name: "general" },
-      guildId: null,
-      guild: null,
-      member: null,
-      author: { id: "999", username: "reported-user", globalName: null, bot: false },
-      content: "hateful content",
-      createdAt: new Date("2026-08-09T00:00:00.000Z"),
-      attachments: { values: () => [] },
-      embeds: [],
-      url: "https://discord.com/channels/1/123456789012345678/123456789012345679"
-    };
-  }
-
+describe("access-based authorization and universal suspension", () => {
   it.each([
-    ["Experimental 10x Same Category", "same_category_10x", 10],
-    [
-      "Experimental All Categories",
-      "all_categories",
-      USER_MESSAGE_REPORT_REASONS.length
-    ]
-  ] as const)(
-    "defers and durably reserves %s without inline AI or API work",
-    async (commandName, mode, requiredCredits) => {
-      const order: string[] = [];
-      const dataEncryptionKey = randomBytes(32);
-      const reserveExperimentalBatch = vi.fn(
-        (input: Parameters<BotDatabase["reserveExperimentalBatch"]>[0]) => {
-          void input;
-          order.push("reserve");
-          return Promise.resolve({
-            batchId: "batch-id",
-            itemCount: requiredCredits,
-            balanceBefore: 30,
-            balanceAfter: 30 - requiredCredits,
-            replayed: false
-          });
+    ["chat input", () => ({ isChatInputCommand: () => true, commandName: "reports", options: { getSubcommand: () => "status" } })],
+    ["button", () => ({ isButton: () => true, customId: "reports:page:1" })],
+    ["modal", () => ({ isModalSubmit: () => true, customId: "report:modal:draft-id" })],
+    ["select menu", () => ({ isStringSelectMenu: () => true, customId: "settings:notifications:digest", values: ["weekly"] })],
+    ["context menu", () => ({ isMessageContextMenuCommand: () => true, commandName: "Quick Report Message", targetMessage: { url: "https://discord.com/channels/1/2/3" } })]
+  ])("blocks suspended user from all bot interactions (%s)", async (_kind, buildInteraction) => {
+    const database = {
+      getAccess: vi.fn().mockResolvedValue({
+        accessGranted: true,
+        suspended: true,
+        suspensionReason: "Rule violation",
+        defaultCountry: null
+      })
+    } as unknown as BotDatabase;
+    const handler = new InteractionHandler({
+      api: {} as DsaApi,
+      config: {
+        whitelistEnabled: false,
+        adminUserIds: new Set<string>()
+      } as unknown as BotConfig,
+      countries: ["DE"],
+      database,
+      messageResolver: {} as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: {} as ReportWriter,
+      serverResolver: {} as ServerResolver
+    });
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => false,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => false,
+      isRepliable: () => true,
+      user: { id: "1197857362942378017" },
+      reply,
+      update,
+      deferred: false,
+      replied: false,
+      ...buildInteraction()
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    const callPayload: unknown = reply.mock.calls[0]?.[0] ?? update.mock.calls[0]?.[0];
+    expect(JSON.stringify(callPayload)).toContain("Your account is suspended");
+  });
+
+  it("still delivers lifecycle notifications to suspended users for their previous reports", async () => {
+    const report = reportFixture();
+    report.status = "submitted";
+    report.discordStatus = "actioned";
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const completeNotification = vi.fn().mockResolvedValue(undefined);
+    const database = {
+      claimDueTrackings: vi.fn().mockResolvedValue([]),
+      reconciliationCursor: vi.fn().mockResolvedValue("0"),
+      setReconciliationCursor: vi.fn().mockResolvedValue(undefined),
+      statusDmMessageId: vi.fn().mockResolvedValue("status-dm-1"),
+      aiDecisions: vi.fn().mockResolvedValue([]),
+      claimNotifications: vi.fn().mockResolvedValue([
+        {
+          id: "notif-1",
+          tracking_id: "tracking-1",
+          discord_user_id: "1197857362942378017",
+          payload: {
+            internalReportId: "report-1",
+            eventType: "discord:actioned"
+          },
+          attempts: 0,
+          created_at: new Date()
         }
-      );
-      const database = {
-        getAccess: vi.fn(() => {
-          order.push("access");
-          return Promise.resolve({
-            credits: 30,
-            suspended: false,
-            defaultCountry: "DE"
-          });
-        }),
-        reserveExperimentalBatch
-      } as unknown as BotDatabase;
-      const generate = vi.fn();
-      const createReport = vi.fn();
-      const handler = new InteractionHandler({
-        api: { createReport } as unknown as DsaApi,
-        config: {
-          whitelistEnabled: true,
-          adminUserIds: new Set<string>(),
-          dataEncryptionKey,
-          keyPepper: "test-key-pepper"
-        } as unknown as BotConfig,
-        countries: ["DE"],
-        database,
-        messageResolver: {} as MessageResolver,
-        profileResolver: {} as ProfileResolver,
-        reportWriter: { generate } as unknown as ReportWriter,
-        serverResolver: {} as ServerResolver
-      });
-      const editReply = vi.fn((payload: unknown) => {
-        void payload;
-        order.push("edit");
-        return Promise.resolve();
-      });
-      const interaction = {
-        isAutocomplete: () => false,
-        isMessageContextMenuCommand: () => true,
-        isChatInputCommand: () => false,
-        isModalSubmit: () => false,
-        isStringSelectMenu: () => false,
-        isButton: () => false,
-        isRepliable: () => true,
-        commandName,
-        id: "interaction-id",
-        user: { id: "1197857362942378017" },
-        targetMessage: experimentalTargetMessage(),
-        deferReply: vi.fn(() => {
-          order.push("defer");
-          return Promise.resolve();
-        }),
-        editReply,
-        deferred: false,
-        replied: false
-      } as unknown as Interaction;
+      ]),
+      getNotificationPreferences: vi.fn().mockResolvedValue({
+        submissionResults: true,
+        actioned: true,
+        deniedReports: true,
+        deniedAppeals: true,
+        appealProgress: true,
+        digestFrequency: "weekly"
+      }),
+      completeNotification,
+      failNotificationDelivery: vi.fn()
+    } as unknown as BotDatabase;
 
-      await handler.handle(interaction);
+    const worker = new NotificationWorker(
+      database,
+      {
+        report: vi.fn().mockResolvedValue(report),
+        lifecycleEvents: vi.fn().mockResolvedValue({ events: [] })
+      } as unknown as DsaApi,
+      {
+        users: {
+          fetch: vi.fn().mockResolvedValue({
+            createDM: vi.fn().mockResolvedValue({
+              messages: {
+                fetch: vi.fn().mockResolvedValue({
+                  edit,
+                  reply
+                })
+              }
+            })
+          })
+        }
+      } as unknown as Client,
+      {} as BotConfig,
+      {} as ServerResolver
+    );
 
-      expect(order[0]).toBe("defer");
-      expect(reserveExperimentalBatch).toHaveBeenCalledWith(
-        expect.objectContaining({
-          userId: "1197857362942378017",
-          interactionId: "interaction-id",
-          mode,
-          requiredCredits,
-          adminBypass: false
-        })
-      );
-      const reservation = reserveExperimentalBatch.mock.calls[0]?.[0];
-      expect(reservation?.definitions).toHaveLength(requiredCredits);
-      expect(
-        decryptJson(String(reservation?.encryptedDraft), dataEncryptionKey)
-      ).toMatchObject({
-        flow: "message_urf",
-        country: "DE",
-        countrySelection: "default",
-        sendToDms: false
-      });
-      expect(generate).not.toHaveBeenCalled();
-      expect(createReport).not.toHaveBeenCalled();
-      expect(JSON.stringify(editReply.mock.calls.at(-1)?.[0])).toContain(
-        `${requiredCredits} credits reserved`
-      );
-    }
-  );
+    await worker.tick();
+
+    expect(edit).toHaveBeenCalledOnce();
+    expect(reply).toHaveBeenCalledOnce();
+    expect(JSON.stringify(reply.mock.calls[0]?.[0])).toContain("Report accepted");
+    expect(completeNotification).toHaveBeenCalledWith("notif-1");
+  });
 });

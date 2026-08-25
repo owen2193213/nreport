@@ -17,7 +17,6 @@ import {
   experimentalVariationInstruction
 } from "../src/experimental-batches.js";
 import {
-  batchBalanceAfterReservation,
   BotDatabase,
   experimentalClaimLimit,
   experimentalObservationSchedule,
@@ -37,15 +36,16 @@ import type { MessageSnapshot, ReportDraft } from "../src/types.js";
 import type { ExperimentalBatchWorkItemRow } from "../src/database.js";
 
 class ReservationPool {
-  public balance: number;
+  public accessGranted: boolean;
+  public suspended: boolean;
   public readonly batches: string[] = [];
   public readonly items: string[] = [];
-  public readonly ledgerDeltas: number[] = [];
   public commits = 0;
   public rollbacks = 0;
 
-  public constructor(balance: number) {
-    this.balance = balance;
+  public constructor(accessGranted = true, suspended = false) {
+    this.accessGranted = accessGranted;
+    this.suspended = suspended;
   }
 
   public connect = () => ({
@@ -63,13 +63,13 @@ class ReservationPool {
       if (sql.includes("FROM experimental_report_batches")) {
         return { rows: [], rowCount: 0 };
       }
-      if (sql.includes("SELECT credits") && sql.includes("FROM bot_users")) {
+      if (sql.includes("SELECT access_granted") && sql.includes("FROM bot_users")) {
         return {
           rows: [
             {
-              credits: this.balance,
+              access_granted: this.accessGranted,
               default_country: null,
-              suspended: false,
+              suspended: this.suspended,
               suspension_reason: null
             }
           ],
@@ -82,14 +82,6 @@ class ReservationPool {
       }
       if (sql.includes("INSERT INTO experimental_report_batch_items")) {
         this.items.push(String(values[0]));
-        return { rows: [], rowCount: 1 };
-      }
-      if (sql.includes("UPDATE bot_users SET credits")) {
-        this.balance = Number(values[1]);
-        return { rows: [], rowCount: 1 };
-      }
-      if (sql.includes("INSERT INTO credit_ledger")) {
-        this.ledgerDeltas.push(Number(values[1]));
         return { rows: [], rowCount: 1 };
       }
       throw new Error(`Unexpected SQL in reservation test: ${sql}`);
@@ -128,13 +120,10 @@ class ClaimPool {
 }
 
 class ReleasePool {
-  public balance = 4;
-  public creditState = "reserved";
   public state = "queued";
-  public ledgerEntries = 0;
 
   public connect = () => ({
-    query: (sql: string, values: unknown[] = []) => {
+    query: (sql: string) => {
       if (sql === "BEGIN" || sql === "ROLLBACK") return { rows: [], rowCount: null };
       if (sql === "COMMIT") return { rows: [], rowCount: null };
       if (
@@ -147,7 +136,7 @@ class ReleasePool {
               id: "item-id",
               batch_id: "batch-id",
               discord_user_id: "1197857362942378017",
-              credit_state: this.creditState,
+              credit_state: "none",
               state: this.state,
               tracking_id: null
             }
@@ -155,19 +144,7 @@ class ReleasePool {
           rowCount: 1
         };
       }
-      if (sql.includes("SELECT credits") && sql.includes("FROM bot_users")) {
-        return { rows: [{ credits: this.balance }], rowCount: 1 };
-      }
-      if (sql.includes("UPDATE bot_users SET credits")) {
-        this.balance = Number(values[1]);
-        return { rows: [], rowCount: 1 };
-      }
-      if (sql.includes("INSERT INTO credit_ledger")) {
-        this.ledgerEntries += 1;
-        return { rows: [], rowCount: 1 };
-      }
       if (sql.includes("UPDATE experimental_report_batch_items")) {
-        this.creditState = "released";
         this.state = "failed";
         return { rows: [], rowCount: 1 };
       }
@@ -306,21 +283,9 @@ describe("experimental report batch domain", () => {
   });
 });
 
-describe("experimental report batch credits", () => {
-  it("reserves the complete batch or preserves a bypassed balance", () => {
-    expect(batchBalanceAfterReservation(20, 10, false)).toBe(10);
-    expect(batchBalanceAfterReservation(20, 18, false)).toBe(2);
-    expect(batchBalanceAfterReservation(20, 18, true)).toBe(20);
-  });
-
-  it("rejects a partial batch before credits are deducted", () => {
-    expect(() => batchBalanceAfterReservation(9, 10, false)).toThrow(
-      "You need 10 report credits."
-    );
-  });
-
-  it("atomically persists every item and deducts the full reservation once", async () => {
-    const pool = new ReservationPool(5);
+describe("experimental report batch access and reservation", () => {
+  it("atomically persists every item when access is granted", async () => {
+    const pool = new ReservationPool(true);
     const database = new BotDatabase("postgres://test", pool as unknown as Pool);
     const categories = USER_MESSAGE_REPORT_REASONS.slice(0, 2);
 
@@ -328,7 +293,6 @@ describe("experimental report batch credits", () => {
       userId: "1197857362942378017",
       interactionId: "interaction-id",
       mode: "all_categories",
-      requiredCredits: 2,
       encryptedDraft: "encrypted",
       categories,
       definitions: experimentalBatchDefinitions("all_categories", categories),
@@ -337,20 +301,18 @@ describe("experimental report batch credits", () => {
 
     expect(result).toMatchObject({
       itemCount: 2,
-      balanceBefore: 5,
-      balanceAfter: 3,
+      balanceBefore: null,
+      balanceAfter: null,
       replayed: false
     });
-    expect(pool.balance).toBe(3);
     expect(pool.batches).toHaveLength(1);
     expect(pool.items).toHaveLength(2);
-    expect(pool.ledgerDeltas).toEqual([-2]);
     expect(pool.commits).toBe(1);
     expect(pool.rollbacks).toBe(0);
   });
 
-  it("rolls back an insufficient reservation without partial state", async () => {
-    const pool = new ReservationPool(1);
+  it("rolls back when user does not have access", async () => {
+    const pool = new ReservationPool(false);
     const database = new BotDatabase("postgres://test", pool as unknown as Pool);
     const categories = USER_MESSAGE_REPORT_REASONS.slice(0, 2);
 
@@ -359,18 +321,36 @@ describe("experimental report batch credits", () => {
         userId: "1197857362942378017",
         interactionId: "interaction-id",
         mode: "all_categories",
-        requiredCredits: 2,
         encryptedDraft: "encrypted",
         categories,
         definitions: experimentalBatchDefinitions("all_categories", categories),
         adminBypass: false
       })
-    ).rejects.toThrow("You need 2 report credits.");
+    ).rejects.toThrow("You do not have reporting access.");
 
-    expect(pool.balance).toBe(1);
     expect(pool.batches).toHaveLength(0);
     expect(pool.items).toHaveLength(0);
-    expect(pool.ledgerDeltas).toHaveLength(0);
+    expect(pool.commits).toBe(0);
+    expect(pool.rollbacks).toBe(1);
+  });
+
+  it("rejects suspended users unconditionally even with admin bypass", async () => {
+    const pool = new ReservationPool(true, true);
+    const database = new BotDatabase("postgres://test", pool as unknown as Pool);
+    const categories = USER_MESSAGE_REPORT_REASONS.slice(0, 2);
+
+    await expect(
+      database.reserveExperimentalBatch({
+        userId: "1197857362942378017",
+        interactionId: "interaction-id",
+        mode: "all_categories",
+        encryptedDraft: "encrypted",
+        categories,
+        definitions: experimentalBatchDefinitions("all_categories", categories),
+        adminBypass: true
+      })
+    ).rejects.toThrow("This account is suspended.");
+
     expect(pool.commits).toBe(0);
     expect(pool.rollbacks).toBe(1);
   });
@@ -448,17 +428,14 @@ describe("experimental report batch scheduling", () => {
     expect(pool.lockedIds).toEqual(["item-1", "item-2"]);
   });
 
-  it("releases one reserved item exactly once", async () => {
+  it("marks a failed item as failed", async () => {
     const pool = new ReleasePool();
     const database = new BotDatabase("postgres://test", pool as unknown as Pool);
 
     await database.failExperimentalBatchItem("item-id", "ai_preparation_failed");
     await database.failExperimentalBatchItem("item-id", "ai_preparation_failed");
 
-    expect(pool.balance).toBe(5);
-    expect(pool.creditState).toBe("released");
     expect(pool.state).toBe("failed");
-    expect(pool.ledgerEntries).toBe(1);
   });
 });
 

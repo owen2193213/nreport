@@ -98,12 +98,12 @@ const access = userInstalled()
     .addSubcommand((command) =>
       command
         .setName("redeem")
-        .setDescription("Redeem a report-credit key")
+        .setDescription("Redeem an access key")
         .addStringOption((option) =>
           option.setName("key").setDescription("Access key").setRequired(true).setMaxLength(100)
         )
     )
-    .addSubcommand((command) => command.setName("status").setDescription("View your access and credits"));
+    .addSubcommand((command) => command.setName("status").setDescription("View your reporting access"));
 
 const settings = userInstalled()
     .setName("settings")
@@ -149,14 +149,7 @@ const admin = userInstalled()
         .addSubcommand((command) =>
           command
             .setName("create")
-            .setDescription("Generate report-credit keys")
-            .addIntegerOption((option) =>
-              option
-                .setName("credits")
-                .setDescription("Credits granted by each key")
-                .setRequired(true)
-                .setMinValue(1)
-            )
+            .setDescription("Generate access keys")
             .addIntegerOption((option) =>
               option
                 .setName("count")
@@ -182,7 +175,7 @@ const admin = userInstalled()
         .addSubcommand((command) =>
           command
             .setName("revoke")
-            .setDescription("Revoke a key and suspend its redeemer")
+            .setDescription("Revoke an access key and suspend its redeemer")
             .addStringOption((option) =>
               option.setName("key-id").setDescription("Key ID").setRequired(true)
             )
@@ -206,7 +199,7 @@ const admin = userInstalled()
         .addSubcommand((command) =>
           command
             .setName("suspend")
-            .setDescription("Suspend a user and clear their credits")
+            .setDescription("Suspend a user")
             .addStringOption((option) =>
               option.setName("user-id").setDescription("Discord user ID").setRequired(true)
             )
@@ -217,7 +210,7 @@ const admin = userInstalled()
         .addSubcommand((command) =>
           command
             .setName("reinstate")
-            .setDescription("Reinstate a suspended user with zero credits")
+            .setDescription("Reinstate a suspended user")
             .addStringOption((option) =>
               option.setName("user-id").setDescription("Discord user ID").setRequired(true)
             )
@@ -236,18 +229,6 @@ const quickReportMessage = new ContextMenuCommandBuilder()
   .setIntegrationTypes(ApplicationIntegrationType.UserInstall)
   .setContexts(...contexts);
 
-const experimentalSameCategory = new ContextMenuCommandBuilder()
-  .setName("Experimental 10x Same Category")
-  .setType(ApplicationCommandType.Message)
-  .setIntegrationTypes(ApplicationIntegrationType.UserInstall)
-  .setContexts(...contexts);
-
-const experimentalAllCategories = new ContextMenuCommandBuilder()
-  .setName("Experimental All Categories")
-  .setType(ApplicationCommandType.Message)
-  .setIntegrationTypes(ApplicationIntegrationType.UserInstall)
-  .setContexts(...contexts);
-
 export const COMMANDS: RESTPostAPIApplicationCommandsJSONBody[] = [
   report.toJSON(),
   reports.toJSON(),
@@ -256,7 +237,5 @@ export const COMMANDS: RESTPostAPIApplicationCommandsJSONBody[] = [
   analytics.toJSON(),
   admin.toJSON(),
   reportMessage.toJSON(),
-  quickReportMessage.toJSON(),
-  experimentalSameCategory.toJSON(),
-  experimentalAllCategories.toJSON()
+  quickReportMessage.toJSON()
 ];

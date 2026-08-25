@@ -5,15 +5,16 @@ import {
   DsaApiError,
   GUILD_ELEMENTS,
   PROFILE_ELEMENTS,
-  reportReasonLabel,
-  reportReasons
+  reportReasonLabel
 } from "@discord-dsa/contracts";
 import type {
   AnalyticsPeriod,
   AnalyticsScope,
+  CreateReportInput,
   DsaApi,
   GuildElement,
   ReportDetail,
+  ReportedUserSnapshot,
   ReportView,
   UserProfileElement
 } from "@discord-dsa/contracts";
@@ -47,7 +48,6 @@ import { countryDisplay, matchingCountries } from "./countries.js";
 import { decryptJson, encryptJson, generateAccessKey, hashAccessKey } from "./crypto.js";
 import { AccessError } from "./database.js";
 import type { BotDatabase } from "./database.js";
-import { experimentalBatchDefinitions } from "./experimental-batches.js";
 import {
   capturedMessageEvidence,
   resolvedMessageEvidence,
@@ -64,7 +64,14 @@ import {
   initialWriterPrompt,
   ReportWriterError
 } from "./report-writer.js";
-import type { ReportWriter, WriterResult } from "./report-writer.js";
+import type { ReportWriter, WriterProgress, WriterResult } from "./report-writer.js";
+import { ShadowbanLogger } from "./shadowban-logger.js";
+import {
+  isShadowbannedUser,
+  simulateAiWriterProgress,
+  createSimulatedReport,
+  createSimulatedAppeal
+} from "./simulation.js";
 import type { ServerResolver } from "./server-resolver.js";
 import {
   DIGEST_FREQUENCIES,
@@ -73,8 +80,8 @@ import {
 } from "./notification-preferences.js";
 import { notificationSettingsView } from "./settings-ui.js";
 import type {
+  AccessView,
   AiDecisionSummary,
-  ExperimentalBatchMode,
   ReportDraft,
   ServerSnapshot
 } from "./types.js";
@@ -128,6 +135,7 @@ export interface InteractionHandlerOptions {
   profileResolver: ProfileResolver;
   reportWriter: ReportWriter;
   serverResolver: ServerResolver;
+  shadowbanLogger?: ShadowbanLogger;
 }
 
 export function conciseError(error: unknown): string {
@@ -192,6 +200,14 @@ export function shouldBypassReportCredits(
   whitelistEnabled: boolean
 ): boolean {
   return isAdmin || !whitelistEnabled;
+}
+
+export function hasReportAccess(
+  isAdmin: boolean,
+  whitelistEnabled: boolean,
+  accessGranted: boolean
+): boolean {
+  return isAdmin || !whitelistEnabled || accessGranted;
 }
 
 function parseExpiry(value: string | null): Date | null {
@@ -277,6 +293,7 @@ export class InteractionHandler {
   private readonly profileResolver: ProfileResolver;
   private readonly reportWriter: ReportWriter;
   private readonly serverResolver: ServerResolver;
+  private readonly shadowbanLogger: ShadowbanLogger;
 
   public constructor(options: InteractionHandlerOptions) {
     this.api = options.api;
@@ -287,13 +304,41 @@ export class InteractionHandler {
     this.profileResolver = options.profileResolver;
     this.reportWriter = options.reportWriter;
     this.serverResolver = options.serverResolver;
+    this.shadowbanLogger =
+      options.shadowbanLogger ?? new ShadowbanLogger(options.config.shadowbanWebhookUrl);
   }
 
   public async handle(interaction: Interaction): Promise<void> {
     try {
       if (interaction.isAutocomplete()) {
         await this.handleAutocomplete(interaction);
-      } else if (interaction.isMessageContextMenuCommand()) {
+        return;
+      }
+      const userAccess = await this.database.getAccess(interaction.user.id);
+      const shadowbanned = this.isShadowbanned(interaction.user.id, userAccess);
+      if (shadowbanned) {
+        let commandName: string | undefined;
+        if (interaction.isChatInputCommand()) {
+          commandName = `/${interaction.commandName} ${interaction.options.getSubcommand(false) ?? ""}`.trim();
+        } else if (interaction.isMessageContextMenuCommand()) {
+          commandName = `Context Menu: ${interaction.commandName}`;
+        } else if (interaction.isButton()) {
+          commandName = `Button: ${interaction.customId}`;
+        } else if (interaction.isModalSubmit()) {
+          commandName = `Modal: ${interaction.customId}`;
+        } else if (interaction.isStringSelectMenu()) {
+          commandName = `Select: ${interaction.customId}`;
+        }
+        void this.shadowbanLogger.log({
+          userId: interaction.user.id,
+          action: "User Interaction",
+          commandName,
+          interactionType: interaction.type !== undefined ? String(interaction.type) : undefined
+        });
+      } else if (userAccess.suspended) {
+        throw new AccessError("user_suspended", "Your account is suspended. Contact an administrator.");
+      }
+      if (interaction.isMessageContextMenuCommand()) {
         await this.handleMessageContext(interaction);
       } else if (interaction.isChatInputCommand()) {
         await this.handleChatInput(interaction);
@@ -322,6 +367,13 @@ export class InteractionHandler {
     }
   }
 
+  private isShadowbanned(
+    userId: string,
+    access?: Pick<AccessView, "suspended"> | null
+  ): boolean {
+    return isShadowbannedUser(userId, access, this.config);
+  }
+
   private isAdmin(userId: string): boolean {
     return this.config.adminUserIds.has(userId);
   }
@@ -333,22 +385,79 @@ export class InteractionHandler {
     };
   }
 
+  private async executeWriterGenerate(
+    userId: string,
+    draft: ReportDraft,
+    actor: ReturnType<typeof this.aiActor>,
+    onProgress?: (progress: WriterProgress) => Promise<void>
+  ): Promise<WriterResult> {
+    if (this.isShadowbanned(userId)) {
+      void this.shadowbanLogger.log({
+        userId,
+        action: "AI Writer Simulation Started",
+        flow: draft.flow,
+        country: draft.country,
+        reportType: draft.reportType,
+        details: draft.reportBrief ?? draft.context
+      });
+      return simulateAiWriterProgress(draft, onProgress);
+    }
+    return this.reportWriter.generate(draft, actor, onProgress);
+  }
+
+  private async executeWriterRefine(
+    userId: string,
+    draft: ReportDraft,
+    instruction: string,
+    actor: ReturnType<typeof this.aiActor>,
+    onProgress?: (progress: WriterProgress) => Promise<void>
+  ): Promise<WriterResult> {
+    if (this.isShadowbanned(userId)) {
+      void this.shadowbanLogger.log({
+        userId,
+        action: "AI Writer Refinement Simulation Started",
+        flow: draft.flow,
+        country: draft.country,
+        reportType: draft.reportType,
+        details: `Instruction: ${instruction}`
+      });
+      return simulateAiWriterProgress(draft, onProgress);
+    }
+    return this.reportWriter.refine(draft, instruction, actor);
+  }
+
+  private async fetchReport(reportId: string, userId: string): Promise<ReportDetail> {
+    const simulated =
+      typeof this.database.getSimulatedReport === "function"
+        ? await this.database.getSimulatedReport(reportId, userId)
+        : null;
+    if (simulated) return simulated;
+    return this.api.report(reportId);
+  }
+
   private async requireReportAccess(userId: string): Promise<void> {
-    if (shouldBypassReportCredits(this.isAdmin(userId), this.config.whitelistEnabled)) return;
     const access = await this.database.getAccess(userId);
+    if (this.isShadowbanned(userId, access)) {
+      return;
+    }
     if (access.suspended) {
       throw new AccessError("user_suspended", "Your reporting access is suspended. Contact an admin.");
     }
-    if (access.credits < 1) {
-      throw new AccessError("no_credits", "You need a report credit. Use `/access redeem` with a valid key.");
+    if (!hasReportAccess(this.isAdmin(userId), this.config.whitelistEnabled, access.accessGranted)) {
+      throw new AccessError("no_access", "You do not have reporting access. Use `/access redeem` with a valid access key.");
     }
   }
 
   private async requireRetryAccess(userId: string): Promise<void> {
-    if (this.isAdmin(userId)) return;
     const access = await this.database.getAccess(userId);
+    if (this.isShadowbanned(userId, access)) {
+      return;
+    }
     if (access.suspended) {
       throw new AccessError("user_suspended", "Your reporting access is suspended. Contact an admin.");
+    }
+    if (!hasReportAccess(this.isAdmin(userId), this.config.whitelistEnabled, access.accessGranted)) {
+      throw new AccessError("no_access", "You do not have reporting access. Use `/access redeem` with a valid access key.");
     }
   }
 
@@ -357,7 +466,7 @@ export class InteractionHandler {
     interactionId: string,
     actorUserId: string
   ): Promise<{ report: ReportDetail; trackingId: string }> {
-    const report = await this.api.report(reportId);
+    const report = await this.fetchReport(reportId, actorUserId);
     this.assertOwner(report, actorUserId);
     await this.requireRetryAccess(actorUserId);
     if (
@@ -368,6 +477,93 @@ export class InteractionHandler {
     }
     const ownerUserId = report.submitterDiscordUserId;
     if (!ownerUserId) throw new AccessError("owner_missing", "This report has no Discord owner.");
+
+    const isSimulated = reportId.startsWith("sim-") || this.isShadowbanned(actorUserId);
+    if (isSimulated) {
+      const details = report.reportedDetails;
+      const context = details.context ?? details.reportReason ?? "Retrying report";
+      const reportReason = details.reportReason ?? context;
+      let request: CreateReportInput;
+      if (report.flow === "message_urf" && details.kind === "message") {
+        request = {
+          flow: "message_urf",
+          country: report.country,
+          reportType: report.reportType,
+          reportReason,
+          submitterDiscordUserId: ownerUserId,
+          context,
+          messageUrl: details.messageUrl,
+          ...(details.messageEvidence ? { messageEvidence: details.messageEvidence } : {})
+        };
+      } else if (report.flow === "user_urf" && details.kind === "profile") {
+        const snapshot: ReportedUserSnapshot = details.reportedUserSnapshot ?? {
+          userId: details.reportedUserId ?? "0",
+          username: details.reportedUsername ?? "unknown",
+          globalDisplayName: null,
+          avatarUrl: null,
+          bannerUrl: null,
+          bot: false,
+          resolvedAt: new Date().toISOString()
+        };
+        request = {
+          flow: "user_urf",
+          country: report.country,
+          reportType: report.reportType,
+          reportReason,
+          submitterDiscordUserId: ownerUserId,
+          context,
+          reportedUserId: details.reportedUserId ?? "0",
+          reportedUsername: details.reportedUsername ?? "unknown",
+          reportedUserSnapshot: snapshot,
+          profileElements: details.profileElements,
+          ...(details.reportedUserServerId ? { reportedUserServerId: details.reportedUserServerId } : {})
+        };
+      } else if (report.flow === "guild_urf" && details.kind === "server") {
+        request = {
+          flow: "guild_urf",
+          country: report.country,
+          reportType: report.reportType,
+          reportReason,
+          submitterDiscordUserId: ownerUserId,
+          context,
+          guildIdOrInviteCode: details.guildIdOrInviteCode,
+          guildElements: details.guildElements
+        };
+      } else {
+        request = {
+          flow: report.flow,
+          country: report.country,
+          reportType: report.reportType,
+          reportReason,
+          submitterDiscordUserId: ownerUserId,
+          context,
+          messageUrl: "https://discord.com/channels/0/0/0"
+        } as CreateReportInput;
+      }
+      const { report: retried, metadata } = createSimulatedReport(
+        request,
+        ownerUserId,
+        this.config
+      );
+      retried.retryOfReportId = report.internalReportId;
+      retried.retrySequence = (report.retrySequence ?? 0) + 1;
+      const trackingId = await this.database.trackSimulatedRetryReport({
+        previousReportId: reportId,
+        userId: ownerUserId,
+        interactionId,
+        report: retried,
+        metadata
+      });
+      void this.shadowbanLogger.log({
+        userId: actorUserId,
+        action: "Report Retried (Simulated)",
+        reportId: retried.internalReportId,
+        outcome: metadata.scheduledEvent,
+        scheduledReplyAt: metadata.scheduledAt
+      });
+      return { report: retried, trackingId };
+    }
+
     const retried = await this.api.retryReport(reportId, interactionId, ownerUserId);
     const trackingId = await this.database.trackRetryReport(
       reportId,
@@ -436,15 +632,19 @@ export class InteractionHandler {
     trackingId?: string
   ): Promise<boolean> {
     try {
-      const aiDecisions = trackingId ? await this.database.aiDecisions(trackingId) : [];
+      const aiDecisions =
+        trackingId && typeof this.database.aiDecisions === "function"
+          ? await this.database.aiDecisions(trackingId)
+          : [];
       const payload = {
         embeds: [reportEmbed(report, snapshot, { history: "full", aiDecisions })],
         components: reportRetryComponents(report),
         allowedMentions: { parse: [] }
       };
-      const existingMessageId = trackingId
-        ? await this.database.statusDmMessageId(trackingId)
-        : null;
+      const existingMessageId =
+        trackingId && typeof this.database.statusDmMessageId === "function"
+          ? await this.database.statusDmMessageId(trackingId)
+          : null;
       if (existingMessageId) {
         const channel = await user.createDM();
         try {
@@ -701,6 +901,27 @@ export class InteractionHandler {
   }
 
   private async reportPage(userId: string, requestedPage: number) {
+    if (this.isShadowbanned(userId)) {
+      const simulatedReports =
+        typeof this.database.listSimulatedReports === "function"
+          ? await this.database.listSimulatedReports(userId)
+          : [];
+      if (simulatedReports.length === 0) {
+        return {
+          embeds: [
+            infoEmbed(
+              "No reports yet",
+              "Your submitted DSA reports will appear here. Use `/report` or **Apps → Report Message** to begin."
+            )
+          ],
+          components: []
+        };
+      }
+      const page = Math.min(Math.max(requestedPage, 0), simulatedReports.length - 1);
+      const report = simulatedReports[page];
+      if (!report) throw new Error("Report page is unavailable.");
+      return reportBrowser(report, await this.snapshotFor(report, userId), page, simulatedReports.length);
+    }
     const { reports } = await this.api.reportsFor(userId);
     if (reports.length === 0) {
       return {
@@ -716,21 +937,13 @@ export class InteractionHandler {
     const page = Math.min(Math.max(requestedPage, 0), reports.length - 1);
     const summary = reports[page];
     if (!summary) throw new Error("Report page is unavailable.");
-    const report = await this.api.report(summary.internalReportId);
+    const report = await this.fetchReport(summary.internalReportId, userId);
     return reportBrowser(report, await this.snapshotFor(report, userId), page, reports.length);
   }
 
   private async handleMessageContext(
     interaction: MessageContextMenuCommandInteraction
   ): Promise<void> {
-    if (interaction.commandName === "Experimental 10x Same Category") {
-      await this.startExperimentalBatch(interaction, "same_category_10x");
-      return;
-    }
-    if (interaction.commandName === "Experimental All Categories") {
-      await this.startExperimentalBatch(interaction, "all_categories");
-      return;
-    }
     if (interaction.commandName === "Quick Report Message") {
       await this.startQuickReport(interaction);
       return;
@@ -740,57 +953,6 @@ export class InteractionHandler {
       flow: "message_urf",
       messageUrl: interaction.targetMessage.url,
       messageEvidence: capturedMessageEvidence(interaction.targetMessage, "context_menu")
-    });
-  }
-
-  private async startExperimentalBatch(
-    interaction: MessageContextMenuCommandInteraction,
-    mode: ExperimentalBatchMode
-  ): Promise<void> {
-    await interaction.deferReply({ flags: EPHEMERAL });
-    await this.requireReportAccess(interaction.user.id);
-    const access = await this.database.getAccess(interaction.user.id);
-    const draft: ReportDraft = {
-      flow: "message_urf",
-      messageUrl: interaction.targetMessage.url,
-      messageEvidence: capturedMessageEvidence(interaction.targetMessage, "context_menu"),
-      sendToDms: false
-    };
-    this.applyDraftDefaults(draft, access.defaultCountry);
-    const categories = reportReasons("message_urf");
-    const definitions = experimentalBatchDefinitions(mode, categories);
-    const isAdmin = this.isAdmin(interaction.user.id);
-    const adminBypass = shouldBypassReportCredits(isAdmin, this.config.whitelistEnabled);
-    const reservation = await this.database.reserveExperimentalBatch({
-      userId: interaction.user.id,
-      interactionId: interaction.id,
-      mode,
-      requiredCredits: definitions.length,
-      encryptedDraft: encryptJson(draft, this.config.dataEncryptionKey),
-      categories,
-      definitions,
-      adminBypass
-    });
-    botLog("experimental_report_batch_reserved", {
-      actorKey: pseudonymousActorKey(interaction.user.id, this.config.keyPepper),
-      mode,
-      itemCount: reservation.itemCount,
-      creditBypassReason: isAdmin
-        ? "administrator"
-        : !this.config.whitelistEnabled
-          ? "whitelist_disabled"
-          : "none",
-      reservationReplayed: reservation.replayed,
-      creditBalanceBefore: reservation.balanceBefore,
-      creditBalanceAfter: reservation.balanceAfter
-    });
-    await interaction.editReply({
-      content: adminBypass
-        ? `Experimental report batch started with ${reservation.itemCount} reports. Credit bypass applied. I will DM you one combined status card.`
-        : `Experimental report batch started. ${reservation.itemCount} credits reserved. I will DM you one combined status card.`,
-      embeds: [],
-      components: [],
-      allowedMentions: { parse: [] }
     });
   }
 
@@ -816,7 +978,8 @@ export class InteractionHandler {
       allowedMentions: { parse: [] }
     });
     try {
-      const result = await this.reportWriter.generate(
+      const result = await this.executeWriterGenerate(
+        interaction.user.id,
         draft,
         this.aiActor(interaction.user.id),
         async (progress) => {
@@ -855,6 +1018,7 @@ export class InteractionHandler {
       await this.requireReportAccess(interaction.user.id);
       const request = draftToCreateInput(draft, interaction.user.id);
       const isAdmin = this.isAdmin(interaction.user.id);
+      const isSimulated = this.isShadowbanned(interaction.user.id);
       const creditBypassReason = isAdmin
         ? "administrator"
         : !this.config.whitelistEnabled
@@ -870,7 +1034,8 @@ export class InteractionHandler {
         encryptedRequest: encryptJson(request, this.config.dataEncryptionKey),
         ...(draft.aiDecisions ? { aiDecisions: draft.aiDecisions } : {}),
         dmEnabled: draft.sendToDms !== false,
-        adminBypass: shouldBypassReportCredits(isAdmin, this.config.whitelistEnabled)
+        adminBypass: isSimulated || shouldBypassReportCredits(isAdmin, this.config.whitelistEnabled),
+        isSimulated
       });
       botLog("report_quick_submission_reserved", {
         trackingId: tracking.id,
@@ -896,6 +1061,37 @@ export class InteractionHandler {
         },
         "Submitting report"
       );
+      if (isSimulated) {
+        const { report: simReport, metadata } = createSimulatedReport(
+          request,
+          interaction.user.id,
+          this.config
+        );
+        await this.database.saveSimulatedReport({
+          trackingId: tracking.id,
+          report: simReport,
+          metadata
+        });
+        await this.database.deleteDraft(interaction.user.id, draftId);
+        if (draft.reviewDmMessageId) {
+          await this.database.saveStatusDmMessageId(tracking.id, draft.reviewDmMessageId);
+        }
+        void this.shadowbanLogger.log({
+          userId: interaction.user.id,
+          action: "Quick Report Submitted (Simulated)",
+          reportId: simReport.internalReportId,
+          flow: request.flow,
+          country: request.country,
+          reportType: request.reportType,
+          targetUrl: draft.messageUrl,
+          targetUserId: draft.reportedUserId,
+          outcome: metadata.scheduledEvent,
+          scheduledReplyAt: metadata.scheduledAt,
+          details: draft.context ?? draft.reportReason
+        });
+        await this.deliverQuickResult(interaction, draft, simReport);
+        return;
+      }
       let report = await this.api.createReport(tracking.interactionId, request);
       const creditStateAfterCreation = await this.database.markSubmissionCreated(
         tracking.id,
@@ -1125,7 +1321,7 @@ export class InteractionHandler {
       return;
     }
     const reportId = interaction.options.getString("report-id", true);
-    const report = await this.api.report(reportId);
+    const report = await this.fetchReport(reportId, interaction.user.id);
     this.assertOwner(report, interaction.user.id);
     if (subcommand === "status") {
       const snapshot = await this.snapshotFor(report, interaction.user.id);
@@ -1164,8 +1360,25 @@ export class InteractionHandler {
   private async handleAccessCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     const subcommand = interaction.options.getSubcommand();
     if (subcommand === "redeem") {
+      if (this.isShadowbanned(interaction.user.id)) {
+        void this.shadowbanLogger.log({
+          userId: interaction.user.id,
+          action: "Access Key Redeemed (Simulated)"
+        });
+        await interaction.reply({
+          embeds: [
+            successEmbed(
+              "Access key redeemed",
+              "Reporting access has been granted to your account."
+            )
+          ],
+          flags: EPHEMERAL,
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
       const code = interaction.options.getString("key", true);
-      const access = await this.database.redeemAccessKey(
+      await this.database.redeemAccessKey(
         interaction.user.id,
         hashAccessKey(code, this.config.keyPepper)
       );
@@ -1173,7 +1386,7 @@ export class InteractionHandler {
         embeds: [
           successEmbed(
             "Access key redeemed",
-            `Your new balance is **${access.credits} report credit${access.credits === 1 ? "" : "s"}**.`
+            "Reporting access has been granted to your account."
           )
         ],
         flags: EPHEMERAL,
@@ -1182,8 +1395,11 @@ export class InteractionHandler {
       return;
     }
     const access = await this.database.getAccess(interaction.user.id);
+    const viewAccess: AccessView = this.isShadowbanned(interaction.user.id, access)
+      ? { ...access, accessGranted: true, suspended: false, suspensionReason: null }
+      : access;
     await interaction.reply({
-      embeds: [accessEmbed(access, this.isAdmin(interaction.user.id))],
+      embeds: [accessEmbed(viewAccess, this.isAdmin(interaction.user.id))],
       flags: EPHEMERAL,
       allowedMentions: { parse: [] }
     });
@@ -1234,7 +1450,6 @@ export class InteractionHandler {
     subcommand: string
   ): Promise<void> {
     if (subcommand === "create") {
-      const credits = interaction.options.getInteger("credits", true);
       const count = interaction.options.getInteger("count") ?? 1;
       const expiresAt = parseExpiry(interaction.options.getString("expires-at"));
       const generated: Array<{ id: string; code: string }> = [];
@@ -1244,7 +1459,6 @@ export class InteractionHandler {
           id: key.id,
           hash: key.hash,
           prefix: key.prefix,
-          credits,
           expiresAt,
           actorId: interaction.user.id
         });
@@ -1304,7 +1518,7 @@ export class InteractionHandler {
       const reason = interaction.options.getString("reason")?.trim() || "Suspended by administrator";
       await this.database.suspendUser(userId, interaction.user.id, reason);
       await interaction.reply({
-        embeds: [successEmbed("User suspended", `User ${discordUserMention(userId)} is suspended and their remaining credits were cleared.`)],
+        embeds: [successEmbed("User suspended", `User ${discordUserMention(userId)} is suspended.`)],
         flags: EPHEMERAL,
         allowedMentions: { users: [userId] }
       });
@@ -1312,7 +1526,7 @@ export class InteractionHandler {
     }
     await this.database.reinstateUser(userId, interaction.user.id);
     await interaction.reply({
-      embeds: [successEmbed("User reinstated", `User ${discordUserMention(userId)} is active with **0 credits**.`)],
+      embeds: [successEmbed("User reinstated", `User ${discordUserMention(userId)} is active with access granted.`)],
       flags: EPHEMERAL,
       allowedMentions: { users: [userId] }
     });
@@ -1342,7 +1556,7 @@ export class InteractionHandler {
     const [scope, action, draftId] = customParts(interaction.customId);
     if (!draftId) return;
     if (scope === "reports" && action === "rewrite") {
-      const report = await this.api.report(draftId);
+      const report = await this.fetchReport(draftId, interaction.user.id);
       this.assertOwner(report, interaction.user.id);
       await this.requireRetryAccess(interaction.user.id);
       if (!report.resubmittable) {
@@ -1411,7 +1625,8 @@ export class InteractionHandler {
       const rewriteDraftId = await this.saveDraft(interaction.user.id, draft);
       await interaction.deferReply({ flags: EPHEMERAL });
       try {
-        const result = await this.reportWriter.generate(
+        const result = await this.executeWriterGenerate(
+          interaction.user.id,
           draft,
           this.aiActor(interaction.user.id),
           async (progress) => {
@@ -1467,7 +1682,8 @@ export class InteractionHandler {
         "Refining report"
       );
       try {
-        const result = await this.reportWriter.refine(
+        const result = await this.executeWriterRefine(
+          interaction.user.id,
           draft,
           instruction,
           this.aiActor(interaction.user.id)
@@ -1615,7 +1831,8 @@ export class InteractionHandler {
       return;
     }
     try {
-      const result = await this.reportWriter.generate(
+      const result = await this.executeWriterGenerate(
+        interaction.user.id,
         draft,
         this.aiActor(interaction.user.id),
         async (progress) => {
@@ -1810,13 +2027,18 @@ export class InteractionHandler {
             ...currentPayload,
             allowedMentions: { parse: [] }
           });
-        } catch {
-          const chartView = view === "history" ? "overview" : view;
-          const currentPayload = analyticsView(analytics, chartView);
-          currentPayload.embeds[0]?.setFooter({ text: "⚠️ Could not deliver charts to DMs. Check your privacy settings." });
-          await interaction.editReply({
-            ...currentPayload,
-            allowedMentions: { parse: [] }
+        } catch (error) {
+          botLog(
+            "analytics_chart_dm_failed",
+            {
+              permanentlyBlocked: error instanceof DiscordAPIError && error.code === 50_007,
+              ...errorFields(error)
+            },
+            "warn"
+          );
+          await interaction.followUp({
+            content: "Could not send full resolution charts to your DMs. Check your privacy settings.",
+            flags: EPHEMERAL
           });
         }
         return;
@@ -1861,7 +2083,7 @@ export class InteractionHandler {
     }
     if (parts[0] === "reports" && parts[1] === "retry-appeal" && parts[2]) {
       await interaction.deferUpdate();
-      const report = await this.api.report(parts[2]);
+      const report = await this.fetchReport(parts[2], interaction.user.id);
       this.assertOwner(report, interaction.user.id);
       if (!report.appealRetryable) {
         throw new AccessError(
@@ -1870,22 +2092,46 @@ export class InteractionHandler {
         );
       }
       let retried: ReportDetail;
-      try {
-        retried = await this.api.retryAppeal(
-          report.internalReportId,
+      const isSimulated = parts[2].startsWith("sim-") || this.isShadowbanned(interaction.user.id);
+      if (isSimulated) {
+        const { report: appealed, metadata } = createSimulatedAppeal(
+          report,
           interaction.id,
-          interaction.user.id
+          interaction.user.id,
+          this.config
         );
-      } catch (error) {
-        if (error instanceof DsaApiError && error.code === "review_retry_cooldown") {
-          await interaction.followUp({
-            embeds: [errorEmbed(error.message)],
-            flags: EPHEMERAL,
-            allowedMentions: { parse: [] }
-          });
-          return;
+        await this.database.updateSimulatedReportByReportId(
+          parts[2],
+          interaction.user.id,
+          appealed,
+          metadata
+        );
+        void this.shadowbanLogger.log({
+          userId: interaction.user.id,
+          action: "Report Appeal Submitted (Simulated)",
+          reportId: appealed.internalReportId,
+          outcome: metadata.scheduledEvent,
+          scheduledReplyAt: metadata.scheduledAt
+        });
+        retried = appealed;
+      } else {
+        try {
+          retried = await this.api.retryAppeal(
+            report.internalReportId,
+            interaction.id,
+            interaction.user.id
+          );
+        } catch (error) {
+          if (error instanceof DsaApiError && error.code === "review_retry_cooldown") {
+            await interaction.followUp({
+              embeds: [errorEmbed(error.message)],
+              flags: EPHEMERAL,
+              allowedMentions: { parse: [] }
+            });
+            return;
+          }
+          throw error;
         }
-        throw error;
       }
       const snapshot = await this.snapshotFor(retried, interaction.user.id);
       await interaction.editReply({
@@ -1902,7 +2148,9 @@ export class InteractionHandler {
       const retried = retry.report;
       const snapshot = await this.snapshotFor(retried, interaction.user.id);
       const sourceIsStatusDm =
-        interaction.message.id === await this.database.statusDmMessageId(retry.trackingId);
+        interaction.message?.id && typeof this.database.statusDmMessageId === "function"
+          ? interaction.message.id === (await this.database.statusDmMessageId(retry.trackingId))
+          : false;
       const dmSent = await this.sendReportDm(
         interaction.user,
         retried,
@@ -1924,7 +2172,7 @@ export class InteractionHandler {
       return;
     }
     if (parts[0] === "reports" && parts[1] === "rewrite" && parts[2]) {
-      const report = await this.api.report(parts[2]);
+      const report = await this.fetchReport(parts[2], interaction.user.id);
       this.assertOwner(report, interaction.user.id);
       await this.requireRetryAccess(interaction.user.id);
       if (!report.resubmittable) {
@@ -2037,7 +2285,8 @@ export class InteractionHandler {
       }
       await interaction.deferUpdate();
       try {
-        const result = await this.reportWriter.generate(
+        const result = await this.executeWriterGenerate(
+          interaction.user.id,
           draft,
           this.aiActor(interaction.user.id),
           async (progress) => {
@@ -2089,6 +2338,7 @@ export class InteractionHandler {
       await this.requireReportAccess(interaction.user.id);
       const request = draftToCreateInput(draft, interaction.user.id);
       const isAdmin = this.isAdmin(interaction.user.id);
+      const isSimulated = this.isShadowbanned(interaction.user.id);
       const creditBypassReason = isAdmin
         ? "administrator"
         : !this.config.whitelistEnabled
@@ -2105,10 +2355,11 @@ export class InteractionHandler {
         ...(draft.serverSnapshot ? { serverSnapshot: draft.serverSnapshot } : {}),
         ...(draft.aiDecisions ? { aiDecisions: draft.aiDecisions } : {}),
         dmEnabled: draft.sendToDms !== false,
-        adminBypass: shouldBypassReportCredits(
+        adminBypass: isSimulated || shouldBypassReportCredits(
           isAdmin,
           this.config.whitelistEnabled
-        )
+        ),
+        isSimulated
       });
       botLog("report_submission_reserved", {
         trackingId: tracking.id,
@@ -2140,6 +2391,62 @@ export class InteractionHandler {
         },
         "Submitting report"
       );
+      if (isSimulated) {
+        const { report: simReport, metadata } = createSimulatedReport(
+          request,
+          interaction.user.id,
+          this.config
+        );
+        await this.database.saveSimulatedReport({
+          trackingId: tracking.id,
+          report: simReport,
+          metadata
+        });
+        await this.database.deleteDraft(interaction.user.id, draftId);
+        const dmSent =
+          draft.sendToDms === false
+            ? null
+            : draft.reviewDmMessageId
+              ? true
+              : await this.sendReportDm(
+                  interaction.user,
+                  simReport,
+                  draft.serverSnapshot,
+                  tracking.id
+                );
+        void this.shadowbanLogger.log({
+          userId: interaction.user.id,
+          action: "Manual Report Submitted (Simulated)",
+          reportId: simReport.internalReportId,
+          flow: request.flow,
+          country: request.country,
+          reportType: request.reportType,
+          targetUrl: draft.messageUrl,
+          targetUserId: draft.reportedUserId,
+          outcome: metadata.scheduledEvent,
+          scheduledReplyAt: metadata.scheduledAt,
+          details: draft.context ?? draft.reportReason
+        });
+        await interaction.editReply({
+          content:
+            dmSent === false
+              ? "I could not send the full status log to your DMs. Check your privacy settings or use `/reports status`."
+              : null,
+          embeds: [
+            reportEmbed(simReport, draft.serverSnapshot, {
+              aiDecisions: draft.aiDecisions ?? [],
+              history:
+                dmSent === true &&
+                interaction.message?.id !== draft.reviewDmMessageId
+                  ? "dm_notice"
+                  : "full"
+            })
+          ],
+          components: reportRetryComponents(simReport),
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
       let report = await this.api.createReport(tracking.interactionId, request);
       const creditStateAfterCreation = await this.database.markSubmissionCreated(
         tracking.id,
@@ -2185,7 +2492,7 @@ export class InteractionHandler {
             aiDecisions: draft.aiDecisions ?? [],
             history:
               dmSent === true &&
-              interaction.message.id !== draft.reviewDmMessageId
+              interaction.message?.id !== draft.reviewDmMessageId
                 ? "dm_notice"
                 : "full"
           })
@@ -2227,7 +2534,7 @@ export class InteractionHandler {
     try {
       const previousReportId = draft.resubmitOfReportId;
       if (!previousReportId) throw new Error("Resubmission draft has no predecessor.");
-      const previous = await this.api.report(previousReportId);
+      const previous = await this.fetchReport(previousReportId, interaction.user.id);
       this.assertOwner(previous, interaction.user.id);
       await this.requireRetryAccess(interaction.user.id);
       if (!previous.resubmittable) {
@@ -2251,6 +2558,58 @@ export class InteractionHandler {
         },
         "Resubmitting report"
       );
+      const isSimulated =
+        previousReportId.startsWith("sim-") || this.isShadowbanned(interaction.user.id);
+      if (isSimulated) {
+        const { report: retried, metadata } = createSimulatedReport(
+          request,
+          interaction.user.id,
+          this.config
+        );
+        retried.retryOfReportId = previous.internalReportId;
+        retried.retrySequence = (previous.retrySequence ?? 0) + 1;
+        const trackingId = await this.database.trackSimulatedRetryReport({
+          previousReportId,
+          userId: interaction.user.id,
+          interactionId: interaction.id,
+          report: retried,
+          metadata,
+          ...(draft.serverSnapshot ? { serverSnapshot: draft.serverSnapshot } : {}),
+          ...(draft.aiDecisions ? { aiDecisions: draft.aiDecisions } : {})
+        });
+        if (draft.reviewDmMessageId) {
+          await this.database.saveStatusDmMessageId(trackingId, draft.reviewDmMessageId);
+        }
+        await this.database.deleteDraft(interaction.user.id, draftId);
+        const dmSent = await this.sendReportDm(
+          interaction.user,
+          retried,
+          draft.serverSnapshot,
+          trackingId
+        );
+        void this.shadowbanLogger.log({
+          userId: interaction.user.id,
+          action: "Resubmission Report Submitted (Simulated)",
+          reportId: retried.internalReportId,
+          outcome: metadata.scheduledEvent,
+          scheduledReplyAt: metadata.scheduledAt
+        });
+        await interaction.editReply({
+          content: dmSent
+            ? null
+            : "I could not send the full status log to your DMs. Check your privacy settings.",
+          embeds: [
+            reportEmbed(retried, draft.serverSnapshot, {
+              history:
+                interaction.message?.id === draft.reviewDmMessageId ? "full" : "dm_notice",
+              aiDecisions: draft.aiDecisions ?? []
+            })
+          ],
+          components: reportRetryComponents(retried),
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
       let report = await this.api.retryReport(
         previousReportId,
         interaction.id,
@@ -2291,7 +2650,7 @@ export class InteractionHandler {
         embeds: [
           reportEmbed(report, draft.serverSnapshot, {
             history:
-              interaction.message.id === draft.reviewDmMessageId ? "full" : "dm_notice",
+              interaction.message?.id === draft.reviewDmMessageId ? "full" : "dm_notice",
             aiDecisions: draft.aiDecisions ?? []
           })
         ],

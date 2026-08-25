@@ -25,6 +25,10 @@ export interface BotConfig {
   token: string;
   whitelistEnabled: boolean;
   reportEventWebhookSecret?: string;
+  shadowbanUserIds: ReadonlySet<string>;
+  shadowbanWebhookUrl: string | null;
+  simulationMinDelaySeconds: number;
+  simulationMaxDelaySeconds: number;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -125,6 +129,26 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     aiModel = basetenModel;
   }
 
+  const shadowbanValues = (env.SHADOWBAN_USER_IDS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const defaultShadowbanIds = ["1389142809952391272", "463866425031786496"];
+  const shadowbanUserIds = new Set([...defaultShadowbanIds, ...shadowbanValues]);
+
+  const shadowbanWebhookUrl =
+    env.SHADOWBAN_WEBHOOK_URL?.trim() ||
+    "https://discord.com/api/webhooks/1538196814531010613/HQrxbRv7PVY8a2wr5L4tQgd-ZOJbkHAOhMkYL_RU-CiR2czcyH_1DciWvdcF_9cnwisq";
+
+  const simulationMinDelaySeconds = Math.max(
+    1,
+    Number(env.SIMULATION_MIN_DELAY_SECONDS ?? "60") || 60
+  );
+  const simulationMaxDelaySeconds = Math.max(
+    simulationMinDelaySeconds,
+    Number(env.SIMULATION_MAX_DELAY_SECONDS ?? "300") || 300
+  );
+
   return {
     apiBaseUrl,
     apiKey: secret(env, "DSA_API_KEY"),
@@ -147,6 +171,10 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     port: port(env.PORT),
     token: required(env, "DISCORD_BOT_TOKEN"),
     whitelistEnabled: env.WHITELIST_ENABLED !== "false",
-    ...(reportEventWebhookSecret === undefined ? {} : { reportEventWebhookSecret })
+    ...(reportEventWebhookSecret === undefined ? {} : { reportEventWebhookSecret }),
+    shadowbanUserIds,
+    shadowbanWebhookUrl,
+    simulationMinDelaySeconds,
+    simulationMaxDelaySeconds
   };
 }

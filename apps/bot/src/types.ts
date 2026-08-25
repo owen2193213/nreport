@@ -162,7 +162,7 @@ export interface AccessView {
   aiReasoningTokens: number;
   aiRequestCount: number;
   aiSearchRequests: number;
-  credits: number;
+  accessGranted: boolean;
   defaultCountry: string | null;
   suspended: boolean;
   suspensionReason: string | null;
@@ -188,3 +188,18 @@ export interface NotificationPayload {
   internalReportId: string;
   occurredAt: string;
 }
+
+export type SimulatedLifecycleEvent =
+  | "discord:actioned"
+  | "discord:closed_no_action"
+  | "discord:review_not_approved";
+
+export interface SimulatedReportMetadata {
+  isSimulated: true;
+  originalUserId: string;
+  stage: "initial" | "appeal";
+  scheduledEvent: SimulatedLifecycleEvent;
+  scheduledAt: string;
+  outcomeDecidedAt?: string;
+}
+

@@ -6,7 +6,8 @@ import type {
   ReportReason,
   ReportLifecycleEvent,
   ReportStatus,
-  ReportView
+  ReportView,
+  ReportDetail
 } from "@discord-dsa/contracts";
 import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
@@ -20,7 +21,8 @@ import type {
   NotificationPayload,
   PollingTracking,
   SubmissionTracking,
-  ServerSnapshot
+  ServerSnapshot,
+  SimulatedReportMetadata
 } from "./types.js";
 import {
   experimentalItemIdentity,
@@ -115,6 +117,7 @@ const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS bot_users (
   discord_user_id text PRIMARY KEY,
   default_country char(2),
+  access_granted boolean NOT NULL DEFAULT false,
   credits integer NOT NULL DEFAULT 0 CHECK (credits >= 0),
   ai_request_count bigint NOT NULL DEFAULT 0,
   ai_input_tokens bigint NOT NULL DEFAULT 0,
@@ -222,6 +225,10 @@ CREATE TABLE IF NOT EXISTS report_tracking (
   dm_blocked boolean NOT NULL DEFAULT false,
   status_dm_message_id text,
   ai_decisions jsonb NOT NULL DEFAULT '[]'::jsonb,
+  is_simulated boolean NOT NULL DEFAULT false,
+  simulated_report jsonb,
+  simulation_metadata jsonb,
+  simulation_scheduled_at timestamptz,
   tracking_expires_at timestamptz NOT NULL DEFAULT
     (now() + interval '${REPORT_TRACKING_RETENTION_DAYS} days'),
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -328,6 +335,22 @@ ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_denied_reports boolean NOT
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_denied_appeals boolean NOT NULL DEFAULT true;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS notify_appeal_progress boolean NOT NULL DEFAULT true;
 ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS digest_frequency text NOT NULL DEFAULT 'weekly';
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS access_granted boolean NOT NULL DEFAULT false;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'bot_users' AND column_name = 'credits'
+  ) THEN
+    UPDATE bot_users
+       SET access_granted = true
+     WHERE access_granted = false
+       AND (credits > 0 OR discord_user_id IN (
+         SELECT redeemed_by FROM access_keys WHERE status = 'redeemed' AND redeemed_by IS NOT NULL
+       ));
+  END IF;
+END
+$$;
 DO $$
 BEGIN
   IF EXISTS (
@@ -381,7 +404,13 @@ UPDATE report_tracking
  WHERE tracking_expires_at IS NULL;
 ALTER TABLE report_tracking ALTER COLUMN tracking_expires_at SET DEFAULT
   (now() + interval '${REPORT_TRACKING_RETENTION_DAYS} days');
-ALTER TABLE report_tracking ALTER COLUMN tracking_expires_at SET NOT NULL;
+ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS is_simulated boolean NOT NULL DEFAULT false;
+ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS simulated_report jsonb;
+ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS simulation_metadata jsonb;
+ALTER TABLE report_tracking ADD COLUMN IF NOT EXISTS simulation_scheduled_at timestamptz;
+CREATE INDEX IF NOT EXISTS report_tracking_simulated_idx
+  ON report_tracking(is_simulated, simulation_scheduled_at, locked_at)
+  WHERE is_simulated = true;
 CREATE UNIQUE INDEX IF NOT EXISTS report_tracking_draft_idx
   ON report_tracking(draft_id) WHERE draft_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS report_drafts_expiry_idx ON report_drafts(expires_at);
@@ -398,6 +427,7 @@ CREATE INDEX IF NOT EXISTS digest_jobs_claim_idx
 `;
 
 interface UserRow extends QueryResultRow {
+  access_granted: boolean;
   ai_cost_credits: number | string;
   ai_input_tokens: number | string;
   ai_output_tokens: number | string;
@@ -436,6 +466,10 @@ export interface TrackingRow extends QueryResultRow {
   dm_enabled: boolean;
   status_dm_message_id: string | null;
   ai_decisions: AiDecisionSummary[];
+  is_simulated: boolean;
+  simulated_report: ReportDetail | null;
+  simulation_metadata: SimulatedReportMetadata | null;
+  simulation_scheduled_at: Date | null;
   tracking_expires_at: Date;
 }
 
@@ -583,13 +617,13 @@ export class AccessError extends Error {
 
 function accessView(row: UserRow): AccessView {
   return {
+    accessGranted: row.access_granted,
     aiCostCredits: Number(row.ai_cost_credits),
     aiInputTokens: Number(row.ai_input_tokens),
     aiOutputTokens: Number(row.ai_output_tokens),
     aiReasoningTokens: Number(row.ai_reasoning_tokens),
     aiRequestCount: Number(row.ai_request_count),
     aiSearchRequests: Number(row.ai_search_requests),
-    credits: row.credits,
     defaultCountry: row.default_country,
     suspended: row.suspended,
     suspensionReason: row.suspension_reason
@@ -650,7 +684,7 @@ export class BotDatabase {
       await client.query("BEGIN");
       await this.ensureUser(client, userId);
       const result = await client.query<UserRow>(
-        `SELECT credits, default_country, suspended, suspension_reason,
+        `SELECT access_granted, credits, default_country, suspended, suspension_reason,
                 ai_request_count, ai_input_tokens, ai_output_tokens,
                 ai_reasoning_tokens, ai_search_requests, ai_cost_credits
            FROM bot_users
@@ -836,7 +870,7 @@ export class BotDatabase {
     userId: string;
     interactionId: string;
     mode: ExperimentalBatchMode;
-    requiredCredits: number;
+    requiredCredits?: number;
     encryptedDraft: string;
     categories: readonly ReportReason[];
     definitions: readonly ExperimentalBatchDefinition[];
@@ -848,9 +882,6 @@ export class BotDatabase {
     balanceAfter: number | null;
     replayed: boolean;
   }> {
-    if (input.requiredCredits !== input.definitions.length || input.requiredCredits < 1) {
-      throw new Error("Experimental batch credit count does not match its items.");
-    }
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -873,23 +904,20 @@ export class BotDatabase {
 
       await this.ensureUser(client, input.userId);
       const userResult = await client.query<UserRow>(
-        `SELECT credits, default_country, suspended, suspension_reason
+        `SELECT access_granted, default_country, suspended, suspension_reason
          FROM bot_users WHERE discord_user_id = $1 FOR UPDATE`,
         [input.userId]
       );
       const user = userResult.rows[0];
       if (!user) throw new Error("User record was not created.");
-      if (!input.adminBypass && user.suspended) {
+      if (user.suspended) {
         throw new AccessError("user_suspended", "This account is suspended.");
+      }
+      if (!input.adminBypass && !user.access_granted) {
+        throw new AccessError("no_access", "You do not have reporting access. Use `/access redeem` with a valid access key.");
       }
 
       const batchId = randomUUID();
-      const balanceBefore = user.credits;
-      const balanceAfter = batchBalanceAfterReservation(
-        user.credits,
-        input.requiredCredits,
-        input.adminBypass
-      );
       await client.query(
         `INSERT INTO experimental_report_batches
            (id, discord_user_id, interaction_id, mode, item_count,
@@ -905,7 +933,7 @@ export class BotDatabase {
           jsonbParameter(input.categories)
         ]
       );
-      const creditState = input.adminBypass ? "none" : "reserved";
+      const creditState = "none";
       for (const definition of input.definitions) {
         await client.query(
           `INSERT INTO experimental_report_batch_items
@@ -922,24 +950,12 @@ export class BotDatabase {
           ]
         );
       }
-      if (!input.adminBypass) {
-        await client.query(
-          "UPDATE bot_users SET credits = $2, updated_at = now() WHERE discord_user_id = $1",
-          [input.userId, balanceAfter]
-        );
-        await client.query(
-          `INSERT INTO credit_ledger
-             (discord_user_id, delta, balance_after, reason, experimental_batch_id)
-           VALUES ($1, $2, $3, 'experimental_batch_reserved', $4)`,
-          [input.userId, -input.requiredCredits, balanceAfter, batchId]
-        );
-      }
       await client.query("COMMIT");
       return {
         batchId,
         itemCount: input.definitions.length,
-        balanceBefore,
-        balanceAfter,
+        balanceBefore: null,
+        balanceAfter: null,
         replayed: false
       };
     } catch (error) {
@@ -1001,45 +1017,24 @@ export class BotDatabase {
       );
       const item = result.rows[0];
       if (!item) throw new Error("Experimental batch item was not found.");
-      if (item.state === "failed" && item.credit_state === "released") {
+      if (item.state === "failed") {
         await client.query("COMMIT");
         return;
       }
 
-      let nextCreditState = item.credit_state;
-      if (item.credit_state === "reserved") {
-        const userResult = await client.query<Pick<UserRow, "credits">>(
-          "SELECT credits FROM bot_users WHERE discord_user_id = $1 FOR UPDATE",
-          [item.discord_user_id]
-        );
-        const user = userResult.rows[0];
-        if (!user) throw new Error("Experimental batch user was not found.");
-        const balance = user.credits + 1;
+      if (item.tracking_id) {
         await client.query(
-          "UPDATE bot_users SET credits = $2, updated_at = now() WHERE discord_user_id = $1",
-          [item.discord_user_id, balance]
+          `UPDATE report_tracking SET poll_at = NULL, locked_at = NULL, updated_at = now()
+           WHERE id = $1`,
+          [item.tracking_id]
         );
-        await client.query(
-          `INSERT INTO credit_ledger
-             (discord_user_id, delta, balance_after, reason, experimental_batch_id)
-           VALUES ($1, 1, $2, 'experimental_batch_released', $3)`,
-          [item.discord_user_id, balance, item.batch_id]
-        );
-        nextCreditState = "released";
-        if (item.tracking_id) {
-          await client.query(
-            `UPDATE report_tracking SET credit_state = 'released', poll_at = NULL,
-               locked_at = NULL, updated_at = now() WHERE id = $1`,
-            [item.tracking_id]
-          );
-        }
       }
       await client.query(
         `UPDATE experimental_report_batch_items
-         SET state = 'failed', credit_state = $2, safe_error_code = $3,
+         SET state = 'failed', safe_error_code = $2,
              run_at = NULL, locked_at = NULL, updated_at = now()
          WHERE id = $1`,
-        [itemId, nextCreditState, safeErrorCode.slice(0, 100)]
+        [itemId, safeErrorCode.slice(0, 100)]
       );
       await client.query("COMMIT");
     } catch (error) {
@@ -1443,7 +1438,7 @@ export class BotDatabase {
     id: string;
     hash: string;
     prefix: string;
-    credits: number;
+    credits?: number;
     expiresAt: Date | null;
     actorId: string;
   }): Promise<void> {
@@ -1451,10 +1446,9 @@ export class BotDatabase {
       `INSERT INTO access_keys
          (id, code_hash, code_prefix, credits_total, expires_at, created_by)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [input.id, input.hash, input.prefix, input.credits, input.expiresAt, input.actorId]
+      [input.id, input.hash, input.prefix, input.credits ?? 1, input.expiresAt, input.actorId]
     );
     await this.audit(input.actorId, "key_created", input.id, {
-      credits: input.credits,
       expiresAt: input.expiresAt?.toISOString() ?? null
     });
   }
@@ -1485,7 +1479,9 @@ export class BotDatabase {
       await client.query("BEGIN");
       await this.ensureUser(client, userId);
       const userResult = await client.query<UserRow>(
-        `SELECT credits, default_country, suspended, suspension_reason
+        `SELECT access_granted, default_country, suspended, suspension_reason,
+                ai_request_count, ai_input_tokens, ai_output_tokens,
+                ai_reasoning_tokens, ai_search_requests, ai_cost_credits
          FROM bot_users WHERE discord_user_id = $1 FOR UPDATE`,
         [userId]
       );
@@ -1506,24 +1502,17 @@ export class BotDatabase {
       if (key.expires_at !== null && key.expires_at.getTime() <= Date.now()) {
         throw new AccessError("key_expired", "That access key has expired.");
       }
-      const balance = user.credits + key.credits_total;
       await client.query(
         `UPDATE access_keys SET status = 'redeemed', redeemed_by = $2, redeemed_at = now()
          WHERE id = $1`,
         [key.id, userId]
       );
       await client.query(
-        "UPDATE bot_users SET credits = $2, updated_at = now() WHERE discord_user_id = $1",
-        [userId, balance]
-      );
-      await client.query(
-        `INSERT INTO credit_ledger
-           (discord_user_id, delta, balance_after, reason, key_id)
-         VALUES ($1, $2, $3, 'key_redeemed', $4)`,
-        [userId, key.credits_total, balance, key.id]
+        "UPDATE bot_users SET access_granted = true, updated_at = now() WHERE discord_user_id = $1",
+        [userId]
       );
       await client.query("COMMIT");
-      return { ...accessView(user), credits: balance };
+      return { ...accessView(user), accessGranted: true };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1573,25 +1562,17 @@ export class BotDatabase {
   ): Promise<void> {
     await this.ensureUser(client, userId);
     const result = await client.query<UserRow>(
-      "SELECT credits, default_country, suspended, suspension_reason FROM bot_users WHERE discord_user_id = $1 FOR UPDATE",
+      "SELECT access_granted, default_country, suspended, suspension_reason FROM bot_users WHERE discord_user_id = $1 FOR UPDATE",
       [userId]
     );
     const user = result.rows[0];
     if (!user) throw new Error("User record was not created.");
     await client.query(
-      `UPDATE bot_users SET credits = 0, suspended = true, suspension_reason = $2,
+      `UPDATE bot_users SET access_granted = false, suspended = true, suspension_reason = $2,
          suspended_at = now(), suspended_by = $3, updated_at = now()
        WHERE discord_user_id = $1`,
       [userId, reason, actorId]
     );
-    if (user.credits > 0) {
-      await client.query(
-        `INSERT INTO credit_ledger
-           (discord_user_id, delta, balance_after, reason, actor_discord_user_id)
-         VALUES ($1, $2, 0, 'user_suspended', $3)`,
-        [userId, -user.credits, actorId]
-      );
-    }
     await client.query("DELETE FROM report_drafts WHERE discord_user_id = $1", [userId]);
   }
 
@@ -1616,10 +1597,10 @@ export class BotDatabase {
 
   public async reinstateUser(userId: string, actorId: string): Promise<void> {
     await this.pool.query(
-      `INSERT INTO bot_users (discord_user_id) VALUES ($1)
-       ON CONFLICT (discord_user_id) DO UPDATE SET suspended = false,
+      `INSERT INTO bot_users (discord_user_id, access_granted) VALUES ($1, true)
+       ON CONFLICT (discord_user_id) DO UPDATE SET access_granted = true, suspended = false,
          suspension_reason = NULL, suspended_at = NULL, suspended_by = NULL,
-         credits = 0, updated_at = now()`,
+         updated_at = now()`,
       [userId]
     );
     await this.audit(actorId, "user_reinstated", userId, {});
@@ -1687,6 +1668,7 @@ export class BotDatabase {
     aiDecisions?: AiDecisionSummary[];
     dmEnabled: boolean;
     adminBypass: boolean;
+    isSimulated?: boolean;
   }): Promise<{
     id: string;
     interactionId: string;
@@ -1717,40 +1699,26 @@ export class BotDatabase {
       }
       await this.ensureUser(client, input.userId);
       const userResult = await client.query<UserRow>(
-        "SELECT credits, default_country, suspended, suspension_reason FROM bot_users WHERE discord_user_id = $1 FOR UPDATE",
+        "SELECT access_granted, default_country, suspended, suspension_reason FROM bot_users WHERE discord_user_id = $1 FOR UPDATE",
         [input.userId]
       );
       const user = userResult.rows[0];
       if (!user) throw new Error("User record was not created.");
-      if (!input.adminBypass && user.suspended) {
+      if (!input.isSimulated && user.suspended) {
         throw new AccessError("user_suspended", "This account is suspended.");
       }
-      if (!input.adminBypass && user.credits < 1) {
-        throw new AccessError("no_credits", "You do not have a report credit.");
+      if (!input.isSimulated && !input.adminBypass && !user.access_granted) {
+        throw new AccessError("no_access", "You do not have reporting access. Use `/access redeem` with a valid access key.");
       }
       const id = randomUUID();
-      const creditState = input.adminBypass ? "none" : "reserved";
-      const balanceBefore = user.credits;
-      const balanceAfter = creditBalanceAfterReservation(user.credits, input.adminBypass);
-      if (!input.adminBypass) {
-        await client.query(
-          "UPDATE bot_users SET credits = $2, updated_at = now() WHERE discord_user_id = $1",
-          [input.userId, balanceAfter]
-        );
-        await client.query(
-          `INSERT INTO credit_ledger
-             (discord_user_id, delta, balance_after, reason, tracking_id)
-           VALUES ($1, -1, $2, 'report_reserved', $3)`,
-          [input.userId, balanceAfter, id]
-        );
-      }
+      const creditState = "none";
       await client.query(
         `INSERT INTO report_tracking
            (id, draft_id, discord_user_id, interaction_id, idempotency_key, flow, country,
             report_type, encrypted_request, credit_state, server_snapshot, dm_enabled,
-            ai_decisions, poll_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-           now() + interval '1 minute')`,
+            ai_decisions, is_simulated, poll_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+           CASE WHEN $14 THEN NULL ELSE now() + interval '1 minute' END)`,
         [
           id,
           input.draftId,
@@ -1764,7 +1732,8 @@ export class BotDatabase {
           creditState,
           input.serverSnapshot ?? null,
           input.dmEnabled,
-          jsonbParameter(input.aiDecisions ?? [])
+          jsonbParameter(input.aiDecisions ?? []),
+          Boolean(input.isSimulated)
         ]
       );
       await client.query("COMMIT");
@@ -1773,8 +1742,8 @@ export class BotDatabase {
         interactionId: input.interactionId,
         creditState,
         replayed: false,
-        balanceBefore,
-        balanceAfter
+        balanceBefore: null,
+        balanceAfter: null
       };
     } catch (error) {
       await client.query("ROLLBACK");
@@ -1790,7 +1759,6 @@ export class BotDatabase {
   ): Promise<SubmissionTracking["creditState"]> {
     const result = await this.pool.query<Pick<TrackingRow, "credit_state">>(
       `UPDATE report_tracking SET internal_report_id = $2,
-         credit_state = CASE WHEN credit_state = 'reserved' THEN 'consumed' ELSE credit_state END,
          poll_at = now() + interval '30 seconds',
          locked_at = NULL, updated_at = now()
        WHERE id = $1
@@ -1802,48 +1770,13 @@ export class BotDatabase {
     return updated.credit_state;
   }
 
-  public async releaseReservation(trackingId: string, reason: string): Promise<void> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      const trackingResult = await client.query<TrackingRow>(
-        "SELECT * FROM report_tracking WHERE id = $1 FOR UPDATE",
-        [trackingId]
-      );
-      const tracking = trackingResult.rows[0];
-      if (!tracking || tracking.credit_state !== "reserved") {
-        await client.query("COMMIT");
-        return;
-      }
-      const userResult = await client.query<UserRow>(
-        "SELECT credits, default_country, suspended, suspension_reason FROM bot_users WHERE discord_user_id = $1 FOR UPDATE",
-        [tracking.discord_user_id]
-      );
-      const user = userResult.rows[0];
-      if (!user) throw new Error("Tracked user was not found.");
-      const balance = user.credits + 1;
-      await client.query(
-        "UPDATE bot_users SET credits = $2, updated_at = now() WHERE discord_user_id = $1",
-        [tracking.discord_user_id, balance]
-      );
-      await client.query(
-        `UPDATE report_tracking SET credit_state = 'released', poll_at = NULL,
-           locked_at = NULL, updated_at = now() WHERE id = $1`,
-        [trackingId]
-      );
-      await client.query(
-        `INSERT INTO credit_ledger
-           (discord_user_id, delta, balance_after, reason, tracking_id)
-         VALUES ($1, 1, $2, $3, $4)`,
-        [tracking.discord_user_id, balance, reason, trackingId]
-      );
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
+  public async releaseReservation(trackingId: string, reason?: string): Promise<void> {
+    void reason;
+    await this.pool.query(
+      `UPDATE report_tracking SET credit_state = 'released', poll_at = NULL,
+         locked_at = NULL, updated_at = now() WHERE id = $1`,
+      [trackingId]
+    );
   }
 
   public async claimDueTrackings(limit = 20): Promise<TrackingRow[]> {
@@ -1858,6 +1791,7 @@ export class BotDatabase {
         `SELECT * FROM report_tracking
          WHERE poll_at <= now()
            AND tracking_expires_at > now()
+           AND is_simulated = false
            AND (locked_at IS NULL OR locked_at < now() - interval '5 minutes')
            AND credit_state <> 'released'
          ORDER BY poll_at, created_at
@@ -1878,6 +1812,144 @@ export class BotDatabase {
     } finally {
       client.release();
     }
+  }
+
+  public async claimDueSimulatedTrackings(limit = 20): Promise<TrackingRow[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<TrackingRow>(
+        `SELECT * FROM report_tracking
+         WHERE is_simulated = true
+           AND simulation_scheduled_at IS NOT NULL
+           AND simulation_scheduled_at <= now()
+           AND tracking_expires_at > now()
+           AND (locked_at IS NULL OR locked_at < now() - interval '5 minutes')
+         ORDER BY simulation_scheduled_at, created_at
+         FOR UPDATE SKIP LOCKED LIMIT $1`,
+        [Math.min(Math.max(limit, 1), 100)]
+      );
+      if (result.rows.length > 0) {
+        await client.query(
+          "UPDATE report_tracking SET locked_at = now() WHERE id = ANY($1::uuid[])",
+          [result.rows.map((row) => row.id)]
+        );
+      }
+      await client.query("COMMIT");
+      return result.rows;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async saveSimulatedReport(input: {
+    trackingId: string;
+    report: ReportDetail;
+    metadata: SimulatedReportMetadata;
+  }): Promise<void> {
+    await this.pool.query(
+      `UPDATE report_tracking
+       SET is_simulated = true,
+           internal_report_id = $2,
+           simulated_report = $3,
+           simulation_metadata = $4,
+           simulation_scheduled_at = $5,
+           last_status = $6,
+           last_discord_status = $7,
+           poll_at = NULL,
+           updated_at = now()
+       WHERE id = $1`,
+      [
+        input.trackingId,
+        input.report.internalReportId,
+        jsonbParameter(input.report),
+        jsonbParameter(input.metadata),
+        input.metadata.scheduledAt,
+        input.report.status,
+        input.report.discordStatus
+      ]
+    );
+  }
+
+  public async updateSimulatedReport(input: {
+    trackingId: string;
+    report: ReportDetail;
+    metadata: SimulatedReportMetadata | null;
+  }): Promise<void> {
+    await this.pool.query(
+      `UPDATE report_tracking
+       SET simulated_report = $2,
+           simulation_metadata = $3,
+           simulation_scheduled_at = $4,
+           last_status = $5,
+           last_discord_status = $6,
+           locked_at = NULL,
+           updated_at = now()
+       WHERE id = $1`,
+      [
+        input.trackingId,
+        jsonbParameter(input.report),
+        input.metadata ? jsonbParameter(input.metadata) : null,
+        input.metadata?.scheduledAt ?? null,
+        input.report.status,
+        input.report.discordStatus
+      ]
+    );
+  }
+
+  public async getSimulatedReport(
+    reportId: string,
+    userId: string
+  ): Promise<ReportDetail | null> {
+    const result = await this.pool.query<{ simulated_report: ReportDetail }>(
+      `SELECT simulated_report FROM report_tracking
+       WHERE internal_report_id = $1 AND discord_user_id = $2 AND is_simulated = true
+       LIMIT 1`,
+      [reportId, userId]
+    );
+    return result.rows[0]?.simulated_report ?? null;
+  }
+
+  public async listSimulatedReports(userId: string): Promise<ReportDetail[]> {
+    const result = await this.pool.query<{ simulated_report: ReportDetail }>(
+      `SELECT simulated_report FROM report_tracking
+       WHERE discord_user_id = $1 AND is_simulated = true AND simulated_report IS NOT NULL
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [userId]
+    );
+    return result.rows.map((row) => row.simulated_report).filter(Boolean);
+  }
+
+  public async updateSimulatedReportByReportId(
+    reportId: string,
+    userId: string,
+    report: ReportDetail,
+    metadata: SimulatedReportMetadata | null
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE report_tracking
+       SET simulated_report = $3,
+           simulation_metadata = $4,
+           simulation_scheduled_at = $5,
+           last_status = $6,
+           last_discord_status = $7,
+           locked_at = NULL,
+           updated_at = now()
+       WHERE internal_report_id = $1 AND discord_user_id = $2 AND is_simulated = true`,
+      [
+        reportId,
+        userId,
+        jsonbParameter(report),
+        metadata ? jsonbParameter(metadata) : null,
+        metadata?.scheduledAt ?? null,
+        report.status,
+        report.discordStatus
+      ]
+    );
   }
 
   public async rescheduleTracking(trackingId: string, seconds: number): Promise<void> {
@@ -1949,6 +2021,58 @@ export class BotDatabase {
       );
       await client.query("COMMIT");
       return trackingId;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async trackSimulatedRetryReport(input: {
+    previousReportId: string;
+    userId: string;
+    interactionId: string;
+    report: ReportDetail;
+    metadata: SimulatedReportMetadata;
+    serverSnapshot?: ServerSnapshot;
+    aiDecisions?: AiDecisionSummary[];
+  }): Promise<string> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const id = randomUUID();
+      await client.query(
+        `INSERT INTO report_tracking
+           (id, discord_user_id, interaction_id, idempotency_key, internal_report_id,
+            flow, country, report_type, encrypted_request, credit_state, server_snapshot,
+            dm_enabled, ai_decisions, is_simulated, simulated_report, simulation_metadata,
+            simulation_scheduled_at, last_status, last_discord_status, poll_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NULL)`,
+        [
+          id,
+          input.userId,
+          input.interactionId,
+          `retry:${input.interactionId}`,
+          input.report.internalReportId,
+          input.report.flow,
+          input.report.country,
+          input.report.reportType,
+          "",
+          "none",
+          input.serverSnapshot ?? null,
+          true,
+          jsonbParameter(input.aiDecisions ?? []),
+          true,
+          jsonbParameter(input.report),
+          jsonbParameter(input.metadata),
+          input.metadata.scheduledAt,
+          input.report.status,
+          input.report.discordStatus
+        ]
+      );
+      await client.query("COMMIT");
+      return id;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -2143,6 +2267,21 @@ export class BotDatabase {
     } finally {
       client.release();
     }
+  }
+
+  public async enqueueNotification(input: {
+    trackingId: string;
+    discordUserId: string;
+    eventKey: string;
+    payload: NotificationPayload;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO notification_outbox
+         (tracking_id, discord_user_id, event_key, payload)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tracking_id, event_key) DO NOTHING`,
+      [input.trackingId, input.discordUserId, input.eventKey, input.payload]
+    );
   }
 
   public async reconciliationCursor(): Promise<string | null> {

@@ -26,7 +26,9 @@ function handler(api: DsaApi): InteractionHandler {
     api,
     config: { adminUserIds: new Set<string>(), whitelistEnabled: false } as unknown as BotConfig,
     countries: ["DE"],
-    database: {} as BotDatabase,
+    database: {
+      getAccess: vi.fn().mockResolvedValue({ suspended: false, accessGranted: true })
+    } as unknown as BotDatabase,
     messageResolver: {} as MessageResolver,
     profileResolver: {} as ProfileResolver,
     reportWriter: {} as ReportWriter,

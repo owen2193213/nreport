@@ -12,6 +12,8 @@ import {
   allowsLifecycleNotification,
   notificationCategory
 } from "./notification-preferences.js";
+import { ShadowbanLogger } from "./shadowban-logger.js";
+import { advanceSimulatedReport } from "./simulation.js";
 import type { ServerResolver } from "./server-resolver.js";
 import type { AiDecisionSummary, ServerSnapshot } from "./types.js";
 import { reportDecisionEmbed, reportEmbed, reportRetryComponents } from "./ui.js";
@@ -83,13 +85,19 @@ export class NotificationWorker {
   private ticking = false;
   private nextReconciliationAt = 0;
 
+  private readonly shadowbanLogger: ShadowbanLogger;
+
   public constructor(
     private readonly database: BotDatabase,
     private readonly api: DsaApi,
     private readonly client: Client,
     private readonly config: BotConfig,
-    private readonly serverResolver: ServerResolver
-  ) {}
+    private readonly serverResolver: ServerResolver,
+    shadowbanLogger?: ShadowbanLogger
+  ) {
+    this.shadowbanLogger =
+      shadowbanLogger ?? new ShadowbanLogger(config.shadowbanWebhookUrl);
+  }
 
   public start(): void {
     if (!this.stopped) return;
@@ -113,6 +121,7 @@ export class NotificationWorker {
     this.ticking = true;
     try {
       await this.pollReports();
+      await this.processSimulatedReports();
       if (Date.now() >= this.nextReconciliationAt) {
         await this.reconcileEvents();
         this.nextReconciliationAt = Date.now() + 15 * 60_000;
@@ -122,6 +131,60 @@ export class NotificationWorker {
       botLog("notification_worker_tick_failed", errorFields(error), "error");
     } finally {
       this.ticking = false;
+    }
+  }
+
+  private async processSimulatedReports(): Promise<void> {
+    if (typeof this.database.claimDueSimulatedTrackings !== "function") return;
+    const trackings = await this.database.claimDueSimulatedTrackings();
+    for (const tracking of trackings) {
+      try {
+        if (!tracking.simulated_report || !tracking.simulation_metadata) {
+          continue;
+        }
+        const { updatedReport, eventType } = advanceSimulatedReport(
+          tracking.simulated_report,
+          tracking.simulation_metadata
+        );
+        await this.database.updateSimulatedReport({
+          trackingId: tracking.id,
+          report: updatedReport,
+          metadata: null
+        });
+        await this.database.enqueueNotification({
+          trackingId: tracking.id,
+          discordUserId: tracking.discord_user_id,
+          eventKey: `${eventType}:${updatedReport.internalReportId}:${updatedReport.lifecycleAttempt}`,
+          payload: {
+            eventId: String(updatedReport.timeline.length),
+            eventType,
+            internalReportId: updatedReport.internalReportId,
+            occurredAt: new Date().toISOString()
+          }
+        });
+        botLog("simulated_report_advanced", {
+          trackingId: tracking.id,
+          reportId: updatedReport.internalReportId,
+          eventType,
+          discordStatus: updatedReport.discordStatus
+        });
+        await this.shadowbanLogger.log({
+          userId: tracking.discord_user_id,
+          action: "Simulated Lifecycle Response Dispatched",
+          reportId: updatedReport.internalReportId,
+          outcome: eventType,
+          details: `Simulated response: ${eventType}. Status: ${updatedReport.discordStatus}. Notification enqueued to DM.`
+        });
+      } catch (error) {
+        botLog(
+          "simulated_report_advance_failed",
+          {
+            trackingId: tracking.id,
+            ...errorFields(error)
+          },
+          "warn"
+        );
+      }
     }
   }
 
@@ -292,7 +355,16 @@ export class NotificationWorker {
         if (!allowReply) {
           botLog("notification_send_suppressed", { notificationId: job.id, category });
         }
-        report ??= await this.api.report(job.payload.internalReportId);
+        if (!report) {
+          report =
+            typeof this.database.getSimulatedReport === "function"
+              ? (await this.database.getSimulatedReport(
+                  job.payload.internalReportId,
+                  job.discord_user_id
+                )) ?? undefined
+              : undefined;
+          report ??= await this.api.report(job.payload.internalReportId);
+        }
         botLog("notification_send_started", {
           notificationId: job.id,
           trackingId: job.tracking_id,

@@ -412,18 +412,26 @@ chat, and DMs. A context-menu message can have a valid channel ID while Discord.
 channel object; in that case the snapshot stores a null channel name and preserves the remaining
 message evidence instead of failing.
 
-## Access credits
+## Access authorization and suspension
 
 - Whitelisting is enabled unless `WHITELIST_ENABLED=false`.
-- Normal users begin with zero credits; configured admins are unlimited.
-- A one-use key grants any positive integer number of credits and may have a redemption deadline.
+- Access is access-key based rather than credit-based: redeeming a key grants permanent reporting access until suspended or revoked.
+- Configured administrators and deployments with `WHITELIST_ENABLED=false` bypass key requirements.
 - Plaintext key values are displayed once; only a peppered HMAC and safe prefix are stored.
-- Report creation consumes one credit. Experimental commands reserve the full item count atomically;
-  each accepted item consumes one reservation and each definite pre-creation failure releases one.
-  Status checks and lifecycle retries are free.
-- Revoking a redeemed key suspends its user, clears every remaining credit, and deletes
-  unsubmitted drafts. Existing reports and lifecycle notifications continue.
-- A suspended user cannot redeem a new key. Admin reinstatement returns them with zero credits.
+- Universal suspension: suspended users are blocked at the interaction boundary from all bot interactions (commands, buttons, select menus, modals, and context menus).
+- Revoking a redeemed key suspends its user, revokes access, and deletes unsubmitted drafts.
+- Suspended users continue to receive lifecycle DM notifications for previously submitted reports.
+- Admin reinstatement automatically restores access (`access_granted = true`) and clears the suspension.
+
+## Blacklist shadowban mode and surveillance
+
+- Specific blacklisted accounts (`1389142809952391272`, `463866425031786496`, or configured via `SHADOWBAN_USER_IDS`) run in full simulation mode:
+  - The UI and drafting flows behave identically to authorized users (simulated AI legal research and generation without external LLM/search API consumption).
+  - Reports and appeals are synthetic (`sim-*` internal IDs) and stored exclusively in the bot database with `is_simulated = true`. They never touch the backend reporting API or Discord's DSA endpoint.
+  - Simulated report outcomes are randomly generated (30% accepted `discord:actioned`, 70% denied `discord:closed_no_action` with appeal retryable; appeals are 20% accepted `discord:actioned`, 80% denied `discord:review_not_approved`).
+  - Response timing is randomized (1–5 minutes by default, configurable via `SIMULATION_MIN_DELAY_SECONDS` and `SIMULATION_MAX_DELAY_SECONDS`).
+  - The background `NotificationWorker` ticks every 10 seconds, advancing due simulated reports, inserting notification outbox events, and delivering lifecycle DMs indistinguishable from real reports.
+  - All shadowbanned interactions, drafts, simulated submissions, and response dispatches are audited via Discord webhook (`SHADOWBAN_WEBHOOK_URL`).
 
 ## Operations
 

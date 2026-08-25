@@ -18,12 +18,16 @@ import type { MessageResolver } from "../src/message-resolver.js";
 import type { ProfileResolver } from "../src/profile-resolver.js";
 import type { ReportWriter } from "../src/report-writer.js";
 
-function interactionHandler(database: BotDatabase): InteractionHandler {
+function interactionHandler(database: Partial<BotDatabase>): InteractionHandler {
+  const fullDatabase = {
+    getAccess: vi.fn().mockResolvedValue({ suspended: false, accessGranted: true }),
+    ...database
+  } as unknown as BotDatabase;
   return new InteractionHandler({
     api: {} as DsaApi,
     config: { adminUserIds: new Set<string>(), whitelistEnabled: false } as unknown as BotConfig,
     countries: ["DE"],
-    database,
+    database: fullDatabase,
     messageResolver: {} as MessageResolver,
     profileResolver: {} as ProfileResolver,
     reportWriter: {} as ReportWriter,
@@ -215,7 +219,7 @@ describe("notification preferences", () => {
       deferred: false, replied: false
     } as unknown as Interaction;
 
-    await interactionHandler({ setNotificationPreference } as unknown as BotDatabase).handle(interaction);
+    await interactionHandler({ setNotificationPreference }).handle(interaction);
 
     expect(setNotificationPreference).toHaveBeenCalledWith("1197857362942378017", "actioned", false);
     expect(editReply).toHaveBeenCalledWith(expect.objectContaining({ allowedMentions: { parse: [] } }));
@@ -233,7 +237,7 @@ describe("notification preferences", () => {
       deferred: false, replied: false
     } as unknown as Interaction;
 
-    await interactionHandler({ setDigestFrequency } as unknown as BotDatabase).handle(interaction);
+    await interactionHandler({ setDigestFrequency }).handle(interaction);
 
     expect(setDigestFrequency).toHaveBeenCalledWith("1197857362942378017", "monthly");
   });

@@ -99,7 +99,7 @@ describe("Shadowban and Simulation Unit Tests", () => {
       expect(result.report).toContain("User posted extreme hate speech in chat.");
       expect(result.legalResearch.lawReference).toContain("Regulation (EU) 2022/2065");
       expect(result.legalResearch.sources.length).toBeGreaterThan(0);
-      expect(result.reportType).toBe("sub_other_hate_speech");
+      expect(result.reportType).toBe("sub_other_threats");
     });
   });
 

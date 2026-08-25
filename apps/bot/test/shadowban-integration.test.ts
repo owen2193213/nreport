@@ -227,6 +227,7 @@ describe("Shadowban Integration Tests", () => {
     expect(savedSimulatedReport).not.toBeNull();
     const createdReport = savedSimulatedReport;
     expect(createdReport?.internalReportId).toMatch(/^sim-/);
+    expect(createdReport?.reportType).toBe("sub_other_threats");
     const createdMetadata = savedMetadata;
     expect(createdMetadata?.isSimulated).toBe(true);
 

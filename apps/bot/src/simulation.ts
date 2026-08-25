@@ -45,31 +45,30 @@ export function randomSimulationDelaySeconds(
 export async function simulateAiWriterProgress(
   draft: ReportDraft,
   onProgress?: (progress: WriterProgress) => Promise<void>,
-  stepDelayMs = process.env.NODE_ENV === "test" || process.env.VITEST ? 1 : 1500
+  stepDelayMs?: number
 ): Promise<WriterResult> {
+  const isTest = process.env.NODE_ENV === "test" || process.env.VITEST !== undefined;
+  const researchDelay = stepDelayMs ?? (isTest ? 1 : Math.floor(Math.random() * 1500) + 2000);
+  const writeDelay = stepDelayMs ?? (isTest ? 1 : Math.floor(Math.random() * 1500) + 2500);
+
   const country = draft.country ?? "DE";
-  const reportType =
-    draft.reportType ??
-    (draft.flow === "guild_urf"
-      ? "guild_hate_speech"
-      : draft.flow === "user_urf"
-        ? "user_harassment"
-        : "sub_harassment_defamation");
+  // Always categorize as "Other: threats or harassment" (sub_other_threats)
+  const reportType = "sub_other_threats";
 
   await onProgress?.({
     stage: "research",
     country: draft.countrySelection === "auto" || !draft.country ? "Auto" : country,
     reportReason: draft.reportBrief ?? "Auto",
-    reportType: draft.reportType ? reportReasonLabel(draft.flow, draft.reportType) : "Auto"
+    reportType: reportReasonLabel(draft.flow, reportType)
   });
 
-  if (stepDelayMs > 0) {
-    await delay(stepDelayMs);
+  if (researchDelay > 0) {
+    await delay(researchDelay);
   }
 
   const reportReason =
     draft.reportBrief?.trim().slice(0, 400) ||
-    `Evidence evaluated under Regulation (EU) 2022/2065 (DSA). Prohibited conduct identified.`;
+    "Prohibited conduct identified under Digital Services Act (Regulation EU 2022/2065) Article 16 regarding illegal threats and harassment.";
 
   await onProgress?.({
     stage: "write",
@@ -78,23 +77,23 @@ export async function simulateAiWriterProgress(
     reportType: reportReasonLabel(draft.flow, reportType)
   });
 
-  if (stepDelayMs > 0) {
-    await delay(stepDelayMs);
+  if (writeDelay > 0) {
+    await delay(writeDelay);
   }
 
   const lawReference = "Regulation (EU) 2022/2065 (Digital Services Act), Article 16";
   const synthesisSummary =
-    "Notice prepared under Digital Services Act Article 16 requirements. Prohibited conduct identified.";
+    "Notice prepared under Digital Services Act Article 16 requirements for threats or harassment. Prohibited conduct identified.";
 
   const report =
     draft.context?.trim().slice(0, 480) ||
     (draft.reportBrief?.trim()
-      ? `DSA (EU 2022/2065) Art. 16 notice.\n\nContext: ${draft.reportBrief.trim().slice(0, 250)}\n\nBreaches platform safety rules and EU regulations. Review requested.`
-      : `Digital Services Act (EU 2022/2065) Art. 16 notification.\n\nThe submitted item violates safety policies and EU regulations. Action is requested.`);
+      ? `DSA (EU 2022/2065) Art. 16 notice — Threats / Harassment.\n\nContext: ${draft.reportBrief.trim().slice(0, 250)}\n\nBreaches platform safety rules and EU regulations against threats and harassment. Review and moderation action requested.`
+      : `Digital Services Act (EU 2022/2065) Art. 16 notification.\n\nThe reported item constitutes threats or harassment violating platform terms and applicable EU laws. Prompt review and moderation action are requested.`);
 
   return {
     conversation: [
-      { role: "user", content: "Prepare legal report under EU Digital Services Act." },
+      { role: "user", content: "Prepare legal report for threats or harassment under EU Digital Services Act." },
       { role: "assistant", content: report }
     ],
     country,

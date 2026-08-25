@@ -922,12 +922,24 @@ export class InteractionHandler {
     await this.requireReportAccess(interaction.user.id);
     const access = await this.database.getAccess(interaction.user.id);
     this.applyDraftDefaults(draft, access.defaultCountry);
-    if (draft.flow === "guild_urf" && draft.guildIdOrInviteCode && !draft.serverSnapshot) {
-      const snapshot = await this.serverResolver.resolve(
-        draft.guildIdOrInviteCode,
-        interaction.guild
-      );
-      if (snapshot) draft.serverSnapshot = snapshot;
+    if (draft.flow === "guild_urf" && draft.guildIdOrInviteCode) {
+      if (!draft.serverSnapshot) {
+        const snapshot = await this.serverResolver.resolve(
+          draft.guildIdOrInviteCode,
+          interaction.guild
+        );
+        if (snapshot) {
+          draft.serverSnapshot = snapshot;
+          draft.guildIdOrInviteCode = snapshot.id;
+        } else if (!SNOWFLAKE.test(draft.guildIdOrInviteCode)) {
+          throw new AccessError(
+            "invalid_server_invite",
+            "The invite code or link could not be resolved to a server. Check the invite or enter the server ID directly."
+          );
+        }
+      } else {
+        draft.guildIdOrInviteCode = draft.serverSnapshot.id;
+      }
     }
     return this.saveDraft(interaction.user.id, draft);
   }
@@ -1664,7 +1676,10 @@ export class InteractionHandler {
         );
         const snapshot =
           stored ?? (await this.serverResolver.resolve(draft.guildIdOrInviteCode));
-        if (snapshot) draft.serverSnapshot = snapshot;
+        if (snapshot) {
+          draft.serverSnapshot = snapshot;
+          draft.guildIdOrInviteCode = snapshot.id;
+        }
       }
       const rewriteDraftId = await this.saveDraft(interaction.user.id, draft);
       await interaction.deferReply({ flags: EPHEMERAL });
@@ -1856,11 +1871,16 @@ export class InteractionHandler {
     }
     if (draft.flow === "guild_urf") {
       if (draft.guildIdOrInviteCode) {
-        const snapshot = await this.serverResolver.resolve(
-          draft.guildIdOrInviteCode,
-          interaction.guild
-        );
-        if (snapshot) draft.serverSnapshot = snapshot;
+        const snapshot =
+          draft.serverSnapshot ??
+          (await this.serverResolver.resolve(
+            draft.guildIdOrInviteCode,
+            interaction.guild
+          ));
+        if (snapshot) {
+          draft.serverSnapshot = snapshot;
+          draft.guildIdOrInviteCode = snapshot.id;
+        }
       }
     }
     delete draft.context;
@@ -2462,6 +2482,7 @@ export class InteractionHandler {
           reportType: request.reportType,
           targetUrl: draft.messageUrl,
           targetUserId: draft.reportedUserId,
+          targetGuildId: draft.guildIdOrInviteCode,
           outcome: metadata.scheduledEvent,
           scheduledReplyAt: metadata.scheduledAt,
           details: draft.context ?? draft.reportReason

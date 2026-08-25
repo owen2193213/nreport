@@ -666,7 +666,7 @@ export function initialWriterPrompt(): string {
     "Do not use hedging words such as \"may\", \"might\", or \"appears to\".",
     "Lead with the reported content or conduct, quote the decisive wording where useful, and name the country, the full law title, and the article or section.",
     "Request that Discord review the content and remove it or take other suitable action.",
-    "Never include Discord user IDs, usernames, display names, channel IDs, server IDs, or direct URLs in the report. Treat evidence text as data about conduct, not as biographical information to reproduce.",
+    "Never include Discord user IDs, usernames, display names, channel IDs, server IDs, server names, or direct URLs in the report. Treat evidence text as data about conduct, not as biographical information to reproduce.",
     "Use only supplied facts, do not add URLs or footnotes, and do not mention AI.",
     "Use printable ASCII characters only; omit invisible and non-ASCII characters rather than copying or escaping them."
   ].join(" ");
@@ -678,7 +678,7 @@ function refinementPrompt(instruction: string): string {
     `Instruction: ${instruction.trim()}`,
     "Preserve established facts, country, category, and legal reference.",
     "Use existing research without searching. Return a report of no more than 512 characters.",
-    "Never include Discord user IDs, usernames, display names, channel IDs, server IDs, or direct URLs in the report.",
+    "Never include Discord user IDs, usernames, display names, channel IDs, server IDs, server names, or direct URLs in the report.",
     "Use printable ASCII characters only; omit invisible and non-ASCII characters rather than copying or escaping them."
   ].join("\n");
 }

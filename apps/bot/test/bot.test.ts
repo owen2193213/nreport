@@ -53,7 +53,7 @@ import {
   normalizeProfileTarget
 } from "../src/profile-resolver.js";
 import type { ReportWriter } from "../src/report-writer.js";
-import { ServerResolver } from "../src/server-resolver.js";
+import { inviteCode, ServerResolver } from "../src/server-resolver.js";
 import { DsaApiError } from "@discord-dsa/contracts";
 import type { DsaApi, ReportDetail } from "@discord-dsa/contracts";
 import {
@@ -409,6 +409,199 @@ describe("server resolution", () => {
       name: "Preview server",
       approximateMemberCount: 100
     });
+  });
+
+  it("extracts invite codes from various Discord URL and string formats", () => {
+    expect(inviteCode("https://discord.gg/upa")).toBe("upa");
+    expect(inviteCode("http://discord.gg/upa")).toBe("upa");
+    expect(inviteCode("discord.gg/upa")).toBe("upa");
+    expect(inviteCode("discord.gg/upa/")).toBe("upa");
+    expect(inviteCode("https://discord.com/invite/upa")).toBe("upa");
+    expect(inviteCode("https://discordapp.com/invite/upa")).toBe("upa");
+    expect(inviteCode("https://canary.discord.com/invite/upa?event=123")).toBe("upa");
+    expect(inviteCode("https://ptb.discord.com/invite/upa#section")).toBe("upa");
+    expect(inviteCode("<https://discord.gg/upa>")).toBe("upa");
+    expect(inviteCode("upa")).toBe("upa");
+    expect(inviteCode("1538368692151263273")).toBe("1538368692151263273");
+  });
+
+  it("resolves an invite to a server snapshot with snowflake ID", async () => {
+    const invite = {
+      guild: {
+        id: "1538368692151263273",
+        name: "UPA GROUP",
+        description: "Public community server",
+        iconURL: () => "https://cdn.discordapp.com/icons/1538368692151263273/icon.png",
+        bannerURL: () => null,
+        splashURL: () => null
+      },
+      memberCount: 125,
+      presenceCount: 30
+    };
+    const fetchInvite = vi.fn().mockResolvedValue(invite);
+    const client = {
+      guilds: { cache: new Map(), fetch: vi.fn() },
+      fetchInvite,
+      fetchGuildPreview: vi.fn()
+    } as unknown as Client;
+
+    const resolver = new ServerResolver(client);
+    const snapshot = await resolver.resolve("https://discord.gg/upa");
+    expect(snapshot).toMatchObject({
+      id: "1538368692151263273",
+      name: "UPA GROUP",
+      approximateMemberCount: 125,
+      approximatePresenceCount: 30
+    });
+    expect(fetchInvite).toHaveBeenCalledWith("upa");
+
+    // Resolving by server ID hits the dual-cached snapshot
+    const cachedById = await resolver.resolve("1538368692151263273");
+    expect(cachedById).toMatchObject({
+      id: "1538368692151263273",
+      name: "UPA GROUP"
+    });
+  });
+
+  it("returns null when an invite cannot be resolved", async () => {
+    const client = {
+      guilds: { cache: new Map(), fetch: vi.fn() },
+      fetchInvite: vi.fn().mockRejectedValue(new Error("Unknown Invite")),
+      fetchGuildPreview: vi.fn()
+    } as unknown as Client;
+
+    const snapshot = await new ServerResolver(client).resolve("invalid-invite-xyz");
+    expect(snapshot).toBeNull();
+  });
+});
+
+describe("server report details and embeds", () => {
+  const serverSnapshot = {
+    id: "1538368692151263273",
+    name: "UPA GROUP",
+    description: "Public community server",
+    iconUrl: "https://cdn.discordapp.com/icons/1538368692151263273/icon.png",
+    bannerUrl: null,
+    inviteSplashUrl: null,
+    discoverySplashUrl: null,
+    approximateMemberCount: 125,
+    approximatePresenceCount: 30,
+    resolvedAt: "2026-08-25T12:00:00.000Z"
+  };
+
+  it("does not duplicate server info in review Details code block", () => {
+    const review = buildReview("draft-1", {
+      flow: "guild_urf",
+      country: "DE",
+      reportReason: "The server promotes illegal content.",
+      reportType: "sub_other_child_safety",
+      guildIdOrInviteCode: serverSnapshot.id,
+      guildElements: ["other"],
+      serverSnapshot,
+      context: "The server promotes illegal content in violation of German law.",
+      legalResearch: {
+        country: "DE",
+        lawReference: "StGB Section 184b",
+        summary: "Prohibits child exploitation.",
+        sources: [],
+        researchedAt: "2026-08-25T12:00:00.000Z",
+        searchRequests: 1
+      }
+    });
+
+    const embed = review.embeds[0]?.toJSON();
+    const itemField = embed?.fields?.find((field) => field.name === "Item");
+    const detailsField = embed?.fields?.find((field) => field.name === "Details");
+
+    expect(itemField?.value).toContain("UPA GROUP");
+    expect(itemField?.value).toContain("1538368692151263273");
+    expect(itemField?.value).toContain("125");
+
+    // Details must NOT contain the server snapshot line again
+    expect(detailsField?.value).not.toContain("Members: **125**");
+    expect(detailsField?.value).not.toContain("`1538368692151263273`");
+    expect(detailsField?.value).toContain("The server promotes illegal content in violation of German law.");
+  });
+
+  it("does not duplicate server info in reportEmbed Details code block", () => {
+    const report: ReportDetail = {
+      internalReportId: "report-server-1",
+      country: "DE",
+      flow: "guild_urf",
+      reportType: "sub_other_child_safety",
+      submitterDiscordUserId: "1197857362942378017",
+      pseudonym: "Hans Mueller",
+      email: "hans@example.com",
+      locale: "de",
+      timezone: "Europe/Berlin",
+      lifecycleAttempt: 1,
+      retryable: false,
+      retryOfReportId: null,
+      retriedAsReportId: null,
+      retrySequence: 0,
+      failureStage: null,
+      status: "submitted",
+      discordReportId: "discord-rep-1",
+      discordStatus: "received",
+      discordStatusUpdatedAt: "2026-08-25T12:00:00.000Z",
+      reviewStatus: null,
+      reviewStatusUpdatedAt: null,
+      reviewError: null,
+      appealRetryable: false,
+      resubmittable: false,
+      error: null,
+      createdAt: "2026-08-25T12:00:00.000Z",
+      updatedAt: "2026-08-25T12:00:00.000Z",
+      reportedDetails: {
+        kind: "server",
+        guildIdOrInviteCode: serverSnapshot.id,
+        guildElements: ["other"],
+        reportReason: "The server promotes illegal content.",
+        context: "The server promotes illegal content in violation of German law."
+      },
+      timeline: []
+    };
+
+    const embed = reportEmbed(report, serverSnapshot).toJSON();
+    const itemField = embed.fields?.find((field) => field.name === "Item");
+    const detailsField = embed.fields?.find((field) => field.name === "Details");
+
+    expect(itemField?.value).toContain("UPA GROUP");
+    expect(itemField?.value).toContain("1538368692151263273");
+
+    // Details must NOT contain server name or members duplicate
+    expect(detailsField?.value).not.toContain("Members: **125**");
+    expect(detailsField?.value).not.toContain("`1538368692151263273`");
+    expect(detailsField?.value).toContain("The server promotes illegal content in violation of German law.");
+  });
+
+  it("resolves guild ID from server snapshot in draftToCreateInput", () => {
+    const input = draftToCreateInput(
+      {
+        flow: "guild_urf",
+        country: "DE",
+        reportReason: "The server promotes illegal content.",
+        reportType: "sub_other_child_safety",
+        guildIdOrInviteCode: "https://discord.gg/upa",
+        serverSnapshot,
+        guildElements: ["other"],
+        context: "Report text",
+        legalResearch: {
+          country: "DE",
+          lawReference: "StGB Section 184b",
+          summary: "Summary",
+          sources: [],
+          researchedAt: "2026-08-25T12:00:00.000Z",
+          searchRequests: 1
+        }
+      },
+      "1197857362942378017"
+    );
+
+    expect(input.flow).toBe("guild_urf");
+    if (input.flow === "guild_urf") {
+      expect(input.guildIdOrInviteCode).toBe("1538368692151263273");
+    }
   });
 });
 

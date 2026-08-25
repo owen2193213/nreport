@@ -667,7 +667,11 @@ function targetSummary(draft: ReportDraft): string {
         draft.reportedUserServerId ? ` in server ${draft.reportedUserServerId}` : ""
       }`;
     case "guild_urf":
-      return draft.guildIdOrInviteCode ?? "Missing server ID or invite";
+      return (
+        serverSnapshotText(draft.serverSnapshot) ??
+        draft.guildIdOrInviteCode ??
+        "Missing server ID"
+      );
   }
 }
 
@@ -709,7 +713,6 @@ export function buildReview(draftId: string, draft: ReportDraft): {
         ? draft.guildElements ?? []
         : [];
   const details = [
-    draft.flow === "guild_urf" ? serverSnapshotText(draft.serverSnapshot) : null,
     draft.flow === "user_urf" && draft.reportedUserServerId
       ? `Observed in server: \`${draft.reportedUserServerId}\``
       : null,
@@ -893,16 +896,18 @@ export function draftToCreateInput(draft: ReportDraft, userId: string): CreateRe
           ? {}
           : { reportedUserServerId: draft.reportedUserServerId })
       };
-    case "guild_urf":
-      if (!draft.guildIdOrInviteCode || !draft.guildElements?.length) {
+    case "guild_urf": {
+      const guildId = draft.serverSnapshot?.id ?? draft.guildIdOrInviteCode;
+      if (!guildId || !draft.guildElements?.length) {
         throw new Error("A server target and server element are required.");
       }
       return {
         ...common,
         flow: draft.flow,
-        guildIdOrInviteCode: draft.guildIdOrInviteCode,
+        guildIdOrInviteCode: guildId,
         guildElements: draft.guildElements
       };
+    }
   }
 }
 
@@ -1028,7 +1033,7 @@ export function reportDecisionEmbed(
   return embed;
 }
 
-function reportDetails(report: ReportView, snapshot?: ServerSnapshot | null): string {
+function reportDetails(report: ReportView): string {
   const details = report.reportedDetails;
   return (
     [
@@ -1038,7 +1043,6 @@ function reportDetails(report: ReportView, snapshot?: ServerSnapshot | null): st
       details.kind === "profile" && details.reportedUserSnapshot
         ? `Name submitted to Discord: \`@${details.reportedUsername}\`\nAccount information captured ${discordTimestamp(details.reportedUserSnapshot.resolvedAt)}`
         : null,
-      details.kind === "server" ? serverSnapshotText(snapshot) : null,
       details.context
     ]
       .filter((value): value is string => Boolean(value))
@@ -1258,7 +1262,7 @@ export function reportEmbed(
       { name: "Status", value: statusLabel(currentStatus), inline: true },
       { name: "Category", value: category, inline: true },
       { name: "Country", value: countryDisplay(report.country), inline: true },
-      ...splitField(reportDetails(report, snapshot), 1_016).map((value, index) => ({
+      ...splitField(reportDetails(report), 1_016).map((value, index) => ({
         name: index === 0 ? "Details" : `Details (${index + 1})`,
         value: codeBlock(value)
       })),

@@ -4,12 +4,17 @@ import type { ServerSnapshot } from "./types.js";
 
 const SNOWFLAKE = /^\d{15,22}$/;
 
-function inviteCode(value: string): string {
-  const trimmed = value.trim();
+export function inviteCode(value: string): string {
+  const trimmed = value.trim().replace(/^<|>$/g, "");
   const match = trimmed.match(
-    /^(?:https?:\/\/)?(?:www\.)?(?:discord\.gg|discord(?:app)?\.com\/invite)\/([\w-]+)$/i
+    /^(?:https?:\/\/)?(?:(?:canary\.|ptb\.|www\.)?discord(?:app)?\.(?:gg|com\/invite)\/)([\w-]+)(?:[/?#].*)?$/i
   );
-  return match?.[1] ?? trimmed;
+  if (match?.[1]) return match[1];
+  const shortMatch = trimmed.match(
+    /^(?:https?:\/\/)?(?:www\.)?discord\.gg\/([\w-]+)(?:[/?#].*)?$/i
+  );
+  if (shortMatch?.[1]) return shortMatch[1];
+  return trimmed;
 }
 
 function snapshot(input: Omit<ServerSnapshot, "resolvedAt">): ServerSnapshot {
@@ -27,7 +32,11 @@ export class ServerResolver {
     if (cached && cached.expiresAt > Date.now()) return cached.value;
 
     const resolved = await this.resolveUncached(normalized, currentGuild).catch(() => null);
-    if (resolved) this.cache.set(normalized, { expiresAt: Date.now() + 60 * 60_000, value: resolved });
+    if (resolved) {
+      const expiresAt = Date.now() + 60 * 60_000;
+      this.cache.set(normalized, { expiresAt, value: resolved });
+      this.cache.set(resolved.id, { expiresAt, value: resolved });
+    }
     return resolved;
   }
 

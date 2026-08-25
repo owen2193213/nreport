@@ -109,6 +109,8 @@ function sensitiveDraftValues(draft: ReportDraft): string[] {
     draft.reportedUserId,
     draft.reportedUsername,
     draft.guildIdOrInviteCode,
+    draft.serverSnapshot?.id,
+    draft.serverSnapshot?.name,
     draft.messageUrl,
     draft.profileTargetRaw,
     draft.reportedUserServerId,

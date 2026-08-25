@@ -226,7 +226,7 @@ describe("Shadowban Integration Tests", () => {
 
     expect(savedSimulatedReport).not.toBeNull();
     const createdReport = savedSimulatedReport;
-    expect(createdReport?.internalReportId).toMatch(/^sim-/);
+    expect(createdReport?.internalReportId).toMatch(/^[a-z0-9-]+-[0-9a-hjkmnp-tv-z]{16}$/);
     expect(createdReport?.reportType).toBe("sub_other_threats");
     const createdMetadata = savedMetadata;
     expect(createdMetadata?.isSimulated).toBe(true);
@@ -526,5 +526,75 @@ describe("Shadowban Integration Tests", () => {
     expect(savedRetryReport).not.toBeNull();
     expect(savedRetryReport?.retryOfReportId).toBe("sim-resub-123456");
     expect(loggedActivities.some((a) => a.embeds?.[0]?.title?.includes("Report Retried (Simulated)"))).toBe(true);
+  });
+
+  it("shadowbanned user views /analytics without calling external API", async () => {
+    const config = createTestConfig();
+    const shadowbannedUserId = "1389142809952391272";
+    const apiAnalyticsFor = vi.fn();
+    const apiCommunityAnalytics = vi.fn();
+    const api = {
+      analyticsFor: apiAnalyticsFor,
+      communityAnalytics: apiCommunityAnalytics
+    } as unknown as DsaApi;
+
+    const database = {
+      getAccess: vi.fn().mockResolvedValue({
+        accessGranted: false,
+        suspended: true,
+        suspensionReason: "Revoked",
+        defaultCountry: null,
+        aiCostCredits: 0,
+        aiInputTokens: 0,
+        aiOutputTokens: 0,
+        aiReasoningTokens: 0,
+        aiRequestCount: 0,
+        aiSearchRequests: 0,
+        creditBalance: 0
+      }),
+      listSimulatedReports: vi.fn().mockResolvedValue([])
+    } as unknown as BotDatabase;
+
+    const handler = new InteractionHandler({
+      api,
+      config,
+      countries: ["DE", "FR"],
+      database,
+      messageResolver: {} as MessageResolver,
+      profileResolver: {} as ProfileResolver,
+      reportWriter: {} as ReportWriter,
+      serverResolver: {} as ServerResolver,
+      shadowbanLogger: { log: vi.fn() } as unknown as ShadowbanLogger
+    });
+
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const deferReply = vi.fn().mockResolvedValue(undefined);
+
+    const interaction = {
+      id: "interaction-analytics-1",
+      commandName: "analytics",
+      user: { id: shadowbannedUserId, username: "Shadowbanned" },
+      options: {
+        getString: vi.fn().mockReturnValue("7d"),
+        getSubcommand: vi.fn().mockReturnValue(null)
+      },
+      isAutocomplete: () => false,
+      isMessageContextMenuCommand: () => false,
+      isChatInputCommand: () => true,
+      isModalSubmit: () => false,
+      isStringSelectMenu: () => false,
+      isButton: () => false,
+      isRepliable: () => true,
+      deferred: false,
+      replied: false,
+      deferReply,
+      editReply
+    } as unknown as Interaction;
+
+    await handler.handle(interaction);
+
+    expect(apiAnalyticsFor).not.toHaveBeenCalled();
+    expect(apiCommunityAnalytics).not.toHaveBeenCalled();
+    expect(editReply).toHaveBeenCalled();
   });
 });

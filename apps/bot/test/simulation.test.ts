@@ -121,7 +121,9 @@ describe("Shadowban and Simulation Unit Tests", () => {
 
       const { report, metadata } = createSimulatedReport(input, "1389142809952391272", config);
 
-      expect(report.internalReportId).toMatch(/^sim-[a-f0-9]{16}$/);
+      expect(report.internalReportId).toMatch(/^[a-z0-9-]+-[0-9a-hjkmnp-tv-z]{16}$/);
+      expect(report.pseudonym).toBeTruthy();
+      expect(report.email).toContain("@mail.discord-dsa.eu");
       expect(report.discordReportId).toBeTruthy();
       expect(report.country).toBe("FR");
       expect(report.status).toBe("submitted");

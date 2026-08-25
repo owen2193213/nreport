@@ -8,11 +8,13 @@ import {
   reportReasonLabel
 } from "@discord-dsa/contracts";
 import type {
+  ActionHistoryPage,
   AnalyticsPeriod,
   AnalyticsScope,
   CreateReportInput,
   DsaApi,
   GuildElement,
+  ReportAnalytics,
   ReportDetail,
   ReportedUserSnapshot,
   ReportView,
@@ -70,7 +72,9 @@ import {
   isShadowbannedUser,
   simulateAiWriterProgress,
   createSimulatedReport,
-  createSimulatedAppeal
+  createSimulatedAppeal,
+  createSimulatedAnalytics,
+  createSimulatedActionHistory
 } from "./simulation.js";
 import type { ServerResolver } from "./server-resolver.js";
 import {
@@ -426,12 +430,52 @@ export class InteractionHandler {
     return this.reportWriter.refine(draft, instruction, actor);
   }
 
+  private async getAnalytics(
+    userId: string,
+    period: AnalyticsPeriod,
+    scope: AnalyticsScope = "personal"
+  ): Promise<ReportAnalytics> {
+    if (this.isShadowbanned(userId)) {
+      const simulatedReports =
+        typeof this.database.listSimulatedReports === "function"
+          ? await this.database.listSimulatedReports(userId)
+          : [];
+      return createSimulatedAnalytics(period, scope, simulatedReports);
+    }
+    return scope === "community"
+      ? this.api.communityAnalytics(period)
+      : this.api.analyticsFor(userId, period);
+  }
+
+  private async getActionHistory(
+    userId: string,
+    query: { period?: AnalyticsPeriod; startAt?: string; endAt?: string; limit?: number }
+  ): Promise<ActionHistoryPage> {
+    if (this.isShadowbanned(userId)) {
+      const simulatedReports =
+        typeof this.database.listSimulatedReports === "function"
+          ? await this.database.listSimulatedReports(userId)
+          : [];
+      return createSimulatedActionHistory(simulatedReports);
+    }
+    return this.api.actionHistory(userId, query);
+  }
+
+  private async isReportSimulated(reportId: string, userId: string): Promise<boolean> {
+    if (this.isShadowbanned(userId)) return true;
+    if (typeof this.database.getSimulatedReport !== "function") return false;
+    return (await this.database.getSimulatedReport(reportId, userId)) !== null;
+  }
+
   private async fetchReport(reportId: string, userId: string): Promise<ReportDetail> {
     const simulated =
       typeof this.database.getSimulatedReport === "function"
         ? await this.database.getSimulatedReport(reportId, userId)
         : null;
     if (simulated) return simulated;
+    if (this.isShadowbanned(userId)) {
+      throw new Error("Report page is unavailable.");
+    }
     return this.api.report(reportId);
   }
 
@@ -478,7 +522,7 @@ export class InteractionHandler {
     const ownerUserId = report.submitterDiscordUserId;
     if (!ownerUserId) throw new AccessError("owner_missing", "This report has no Discord owner.");
 
-    const isSimulated = reportId.startsWith("sim-") || this.isShadowbanned(actorUserId);
+    const isSimulated = await this.isReportSimulated(reportId, actorUserId);
     if (isSimulated) {
       const details = report.reportedDetails;
       const context = details.context ?? details.reportReason ?? "Retrying report";
@@ -1244,7 +1288,7 @@ export class InteractionHandler {
   private async handleAnalyticsCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     const period = approvedAnalyticsPeriod(interaction.options.getString("period"));
     await interaction.deferReply({ flags: EPHEMERAL });
-    const analytics = await this.api.analyticsFor(interaction.user.id, period);
+    const analytics = await this.getAnalytics(interaction.user.id, period);
     await interaction.editReply({
       ...analyticsView(analytics, "overview"),
       allowedMentions: { parse: [] }
@@ -1546,7 +1590,7 @@ export class InteractionHandler {
         interaction.fields.getTextInputValue("end_date").trim()
       );
       await interaction.deferReply({ flags: EPHEMERAL });
-      const page = await this.api.actionHistory(interaction.user.id, { ...range, limit: 25 });
+      const page = await this.getActionHistory(interaction.user.id, { ...range, limit: 25 });
       await interaction.editReply({
         ...actionHistoryView(page, "7d"),
         allowedMentions: { parse: [] }
@@ -1880,7 +1924,7 @@ export class InteractionHandler {
       const period = approvedAnalyticsPeriod(interaction.values[0]);
       await interaction.deferUpdate();
       if (view === "history") {
-        const page = await this.api.actionHistory(interaction.user.id, {
+        const page = await this.getActionHistory(interaction.user.id, {
           period,
           limit: 25
         });
@@ -1891,9 +1935,7 @@ export class InteractionHandler {
         });
         return;
       }
-      const analytics = analyticsScope === "community"
-        ? await this.api.communityAnalytics(period)
-        : await this.api.analyticsFor(interaction.user.id, period);
+      const analytics = await this.getAnalytics(interaction.user.id, period, analyticsScope);
       await interaction.editReply({
         ...analyticsView(analytics, view),
         allowedMentions: { parse: [] }
@@ -1942,7 +1984,8 @@ export class InteractionHandler {
       return;
     }
     try {
-      const result = await this.reportWriter.generate(
+      const result = await this.executeWriterGenerate(
+        interaction.user.id,
         draft,
         this.aiActor(interaction.user.id),
         async (progress) => {
@@ -1998,9 +2041,7 @@ export class InteractionHandler {
         const scope = approvedAnalyticsScope(parts[3]);
         const period = approvedAnalyticsPeriod(parts[4]);
         await interaction.deferUpdate();
-        const analytics = scope === "community"
-          ? await this.api.communityAnalytics(period)
-          : await this.api.analyticsFor(interaction.user.id, period);
+        const analytics = await this.getAnalytics(interaction.user.id, period, scope);
 
         try {
           const [volume, reply] = await Promise.all([
@@ -2061,7 +2102,7 @@ export class InteractionHandler {
       }
       await interaction.deferUpdate();
       if (view === "history") {
-        const page = await this.api.actionHistory(interaction.user.id, {
+        const page = await this.getActionHistory(interaction.user.id, {
           period,
           limit: 25
         });
@@ -2072,9 +2113,7 @@ export class InteractionHandler {
         });
         return;
       }
-      const analytics = scope === "community"
-        ? await this.api.communityAnalytics(period)
-        : await this.api.analyticsFor(interaction.user.id, period);
+      const analytics = await this.getAnalytics(interaction.user.id, period, scope);
       await interaction.editReply({
         ...analyticsView(analytics, view),
         allowedMentions: { parse: [] }
@@ -2092,7 +2131,7 @@ export class InteractionHandler {
         );
       }
       let retried: ReportDetail;
-      const isSimulated = parts[2].startsWith("sim-") || this.isShadowbanned(interaction.user.id);
+      const isSimulated = await this.isReportSimulated(parts[2], interaction.user.id);
       if (isSimulated) {
         const { report: appealed, metadata } = createSimulatedAppeal(
           report,
@@ -2558,8 +2597,7 @@ export class InteractionHandler {
         },
         "Resubmitting report"
       );
-      const isSimulated =
-        previousReportId.startsWith("sim-") || this.isShadowbanned(interaction.user.id);
+      const isSimulated = await this.isReportSimulated(previousReportId, interaction.user.id);
       if (isSimulated) {
         const { report: retried, metadata } = createSimulatedReport(
           request,

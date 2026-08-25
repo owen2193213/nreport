@@ -1,10 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   reportReasonLabel,
+  type ActionHistoryItem,
+  type ActionHistoryPage,
+  type AnalyticsPeriod,
+  type AnalyticsScope,
   type CreateReportInput,
   type DiscordReportStatus,
   type DiscordReviewStatus,
+  type ReportAnalytics,
   type ReportDetail,
   type ReportedDetails,
   type ReportTimelineEvent
@@ -18,6 +23,112 @@ import type {
   SimulatedReportMetadata
 } from "./types.js";
 import type { WriterProgress, WriterResult } from "./report-writer.js";
+
+const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";
+
+interface CountryNameProfile {
+  firstNames: readonly string[];
+  lastNames: readonly string[];
+  locale: string;
+  timezone: string;
+}
+
+const COUNTRY_NAME_PROFILES: Readonly<Record<string, CountryNameProfile>> = {
+  DE: {
+    firstNames: ["Lukas", "Maximilian", "Felix", "Leon", "Jonas", "Hannah", "Mia", "Emma", "Sophia", "Anna", "Timo"],
+    lastNames: ["Muller", "Schmidt", "Schneider", "Fischer", "Weber", "Meyer", "Wagner", "Becker", "Hoffmann", "Schulz", "Schmitt"],
+    locale: "de-DE",
+    timezone: "Europe/Berlin"
+  },
+  FR: {
+    firstNames: ["Lucas", "Gabriel", "Leo", "Louis", "Arthur", "Emma", "Jade", "Louise", "Alice", "Chloe", "Hugo"],
+    lastNames: ["Martin", "Bernard", "Thomas", "Petit", "Robert", "Richard", "Durand", "Dubois", "Moreau", "Laurent"],
+    locale: "fr-FR",
+    timezone: "Europe/Paris"
+  },
+  ES: {
+    firstNames: ["Hugo", "Mateo", "Martin", "Lucas", "Leo", "Lucia", "Sofia", "Martina", "Maria", "Paula", "Elena"],
+    lastNames: ["Garcia", "Rodriguez", "Gonzalez", "Fernandez", "Lopez", "Martinez", "Sanchez", "Perez", "Gomez"],
+    locale: "es-ES",
+    timezone: "Europe/Madrid"
+  },
+  IT: {
+    firstNames: ["Leonardo", "Francesco", "Alessandro", "Lorenzo", "Mattia", "Sofia", "Giulia", "Aurora", "Alice", "Ginevra"],
+    lastNames: ["Rossi", "Russo", "Ferrari", "Esposito", "Bianchi", "Romano", "Colombo", "Ricci", "Marino", "Greco"],
+    locale: "it-IT",
+    timezone: "Europe/Rome"
+  },
+  NL: {
+    firstNames: ["Noah", "Sem", "Liam", "Lucas", "Daan", "Emma", "Mila", "Sophie", "Julia", "Tess"],
+    lastNames: ["De Jong", "Jansen", "De Vries", "Van de Berg", "Van Dijk", "Bakker", "Janssen", "Visser", "Smit"],
+    locale: "nl-NL",
+    timezone: "Europe/Amsterdam"
+  },
+  PL: {
+    firstNames: ["Antoni", "Jan", "Aleksander", "Franciszek", "Nikodem", "Zofia", "Zuzanna", "Hanna", "Maja", "Laura"],
+    lastNames: ["Nowak", "Kowalski", "Wisniewski", "Wojcik", "Kowalczyk", "Kaminski", "Lewandowski", "Zielinski"],
+    locale: "pl-PL",
+    timezone: "Europe/Warsaw"
+  },
+  SE: {
+    firstNames: ["William", "Liam", "Noah", "Hugo", "Oliver", "Alice", "Maja", "Elsa", "Astrid", "Wilma"],
+    lastNames: ["Andersson", "Johansson", "Karlsson", "Nilsson", "Eriksson", "Larsson", "Olsson", "Persson"],
+    locale: "sv-SE",
+    timezone: "Europe/Stockholm"
+  },
+  AT: {
+    firstNames: ["Paul", "David", "Jakob", "Maximilian", "Felix", "Anna", "Marie", "Emma", "Sophia", "Emilia"],
+    lastNames: ["Gruber", "Huber", "Bauer", "Wagner", "Muller", "Pichler", "Steiner", "Moser", "Mayer", "Hofer"],
+    locale: "de-AT",
+    timezone: "Europe/Vienna"
+  },
+  BE: {
+    firstNames: ["Arthur", "Noah", "Jules", "Louis", "Lucas", "Olivia", "Emma", "Mila", "Louise", "Alice"],
+    lastNames: ["Peeters", "Janssens", "Maes", "Jacobs", "Mertens", "Willems", "Claes", "Goossens", "Wouters"],
+    locale: "nl-BE",
+    timezone: "Europe/Brussels"
+  },
+  IE: {
+    firstNames: ["Jack", "James", "Noah", "Daniel", "Conor", "Emily", "Grace", "Fiadh", "Sophie", "Hannah"],
+    lastNames: ["Murphy", "Kelly", "O'Brien", "Ryan", "Walsh", "O'Sullivan", "O'Connor", "Doyle", "McCarthy"],
+    locale: "en-IE",
+    timezone: "Europe/Dublin"
+  }
+};
+
+export function generateRealisticIdentity(countryCode = "DE"): {
+  pseudonym: string;
+  internalReportId: string;
+  email: string;
+  locale: string;
+  timezone: string;
+} {
+  const code = countryCode.toUpperCase();
+  const profile = COUNTRY_NAME_PROFILES[code] ?? COUNTRY_NAME_PROFILES["DE"]!;
+  const first = profile.firstNames[Math.floor(Math.random() * profile.firstNames.length)]!;
+  const last = profile.lastNames[Math.floor(Math.random() * profile.lastNames.length)]!;
+  const pseudonym = `${first} ${last}`;
+  const slug = `${first}-${last}`.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
+  const bytes = randomBytes(10);
+  let value = BigInt(`0x${bytes.toString("hex")}`);
+  let suffix = "";
+  for (let index = 0; index < 16; index += 1) {
+    suffix = CROCKFORD[Number(value & 31n)] + suffix;
+    value >>= 5n;
+  }
+
+  const internalReportId = `${slug}-${suffix}`;
+  const email = `${slug.replace(/-/g, ".")}.${suffix}@mail.discord-dsa.eu`;
+
+  return {
+    pseudonym,
+    internalReportId,
+    email,
+    locale: profile.locale,
+    timezone: profile.timezone
+  };
+}
 
 export function isShadowbannedUser(
   userId: string,
@@ -124,8 +235,8 @@ export function createSimulatedReport(
 ): { report: ReportDetail; metadata: SimulatedReportMetadata } {
   const now = new Date();
   const nowIso = now.toISOString();
-  const internalReportId =
-    customReportId ?? `sim-${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const identity = generateRealisticIdentity(request.country);
+  const internalReportId = customReportId ?? identity.internalReportId;
   const discordReportId = String(
     Math.floor(100_000_000_000_000_000 + Math.random() * 900_000_000_000_000_000)
   );
@@ -183,10 +294,10 @@ export function createSimulatedReport(
     flow: request.flow,
     reportType: request.reportType,
     submitterDiscordUserId: userId,
-    pseudonym: "EU DSA Reporter",
-    email: `dsa-report-${randomUUID().slice(0, 8)}@mail.discord-dsa.eu`,
-    locale: "en-US",
-    timezone: "Europe/Berlin",
+    pseudonym: identity.pseudonym,
+    email: identity.email,
+    locale: identity.locale,
+    timezone: identity.timezone,
     lifecycleAttempt: 1,
     retryable: false,
     retryOfReportId: null,
@@ -320,4 +431,108 @@ export function advanceSimulatedReport(
   };
 
   return { updatedReport, eventType };
+}
+
+export function createSimulatedAnalytics(
+  period: AnalyticsPeriod = "7d",
+  scope: AnalyticsScope = "personal",
+  simulatedReports: readonly ReportDetail[] = []
+): ReportAnalytics {
+  const total = simulatedReports.length;
+  const actioned = simulatedReports.filter((r) => r.discordStatus === "actioned").length;
+  const closedNoAction = simulatedReports.filter(
+    (r) => r.discordStatus === "closed_no_action" || r.discordStatus === "review_not_approved"
+  ).length;
+  const pending = Math.max(0, total - actioned - closedNoAction);
+
+  const now = new Date();
+  const startAt = new Date(now.getTime() - 7 * 86400000).toISOString();
+  const endAt = now.toISOString();
+
+  return {
+    availability: "available",
+    scope,
+    interval: {
+      period,
+      startAt,
+      endAt,
+      asOf: endAt,
+      timezone: "UTC"
+    },
+    volume: {
+      newCases: total,
+      attempts: total,
+      retries: 0,
+      sentAttempts: total,
+      pendingAttempts: pending,
+      failedAttempts: 0
+    },
+    outcomes: {
+      awaitingResponse: pending,
+      awaitingDecision: 0,
+      directActioned: actioned,
+      closedNoAction,
+      appealsStarted: 0,
+      appealActioned: 0,
+      appealsDenied: 0
+    },
+    rates: {
+      submission: { numerator: total, denominator: total, percentage: total > 0 ? 100 : null },
+      action: { numerator: actioned, denominator: total, percentage: total > 0 ? Math.round((actioned / total) * 100) : null },
+      appealAction: { numerator: 0, denominator: 0, percentage: null }
+    },
+    timing: {
+      reply: { sampleSize: actioned + closedNoAction, medianSeconds: 180, p90Seconds: 300 },
+      decision: { sampleSize: actioned + closedNoAction, medianSeconds: 180, p90Seconds: 300 },
+      appealDecision: { sampleSize: 0, medianSeconds: null, p90Seconds: null }
+    },
+    breakdowns: {
+      flows: [{ key: "message_urf", label: "Message Report", count: total, percentage: 100 }],
+      categories: [{ key: "sub_other_threats", label: "Other: threats or harassment", count: total, percentage: 100 }],
+      countries: [{ key: "DE", label: "Germany", count: total, percentage: 100 }]
+    },
+    series: [
+      {
+        bucketStart: startAt,
+        reportCount: total,
+        medianReplySeconds: 180
+      }
+    ],
+    patterns: []
+  };
+}
+
+export function createSimulatedActionHistory(
+  simulatedReports: readonly ReportDetail[] = []
+): ActionHistoryPage {
+  const now = new Date();
+  const startAt = new Date(now.getTime() - 30 * 86400000).toISOString();
+  const endAt = now.toISOString();
+
+  const items: ActionHistoryItem[] = simulatedReports
+    .filter((r) => r.discordStatus === "actioned")
+    .map((r) => ({
+      internalReportId: r.internalReportId,
+      discordReportId: r.discordReportId,
+      flow: r.flow,
+      category: r.reportType,
+      country: r.country,
+      submittedText: r.reportedDetails.reportReason ?? "Threats or harassment report",
+      messageUrl: r.reportedDetails.kind === "message" ? (r.reportedDetails.messageUrl ?? null) : null,
+      submittedAt: r.createdAt,
+      actionedAt: r.discordStatusUpdatedAt ?? r.updatedAt,
+      actionSource: r.reviewStatus === "approved" ? "appeal" : "direct"
+    }));
+
+  return {
+    interval: {
+      period: "30d",
+      startAt,
+      endAt,
+      asOf: endAt,
+      timezone: "UTC"
+    },
+    items,
+    nextCursor: null
+  };
 }

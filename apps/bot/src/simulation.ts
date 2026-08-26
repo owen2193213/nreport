@@ -159,8 +159,9 @@ export async function simulateAiWriterProgress(
   stepDelayMs?: number
 ): Promise<WriterResult> {
   const isTest = process.env.NODE_ENV === "test" || process.env.VITEST !== undefined;
-  const researchDelay = stepDelayMs ?? (isTest ? 1 : Math.floor(Math.random() * 1500) + 2000);
-  const writeDelay = stepDelayMs ?? (isTest ? 1 : Math.floor(Math.random() * 1500) + 2500);
+  // Simulate ~45 seconds total (approx. 22s research + 23s write)
+  const researchDelay = stepDelayMs ?? (isTest ? 1 : Math.floor(Math.random() * 4000) + 20000);
+  const writeDelay = stepDelayMs ?? (isTest ? 1 : Math.floor(Math.random() * 4000) + 21000);
 
   const country = draft.country ?? "DE";
   // Always categorize as "Other: threats or harassment" (sub_other_threats)

@@ -270,10 +270,21 @@ describe("Shadowban and Simulation Unit Tests", () => {
       await logger.log({
         userId: "1389142809952391272",
         action: "Quick Report Submitted (Simulated)",
-        reportId: "sim-abc1234567890def",
+        reportId: "lukas-schmidt-74cjy1qvc1azcxy2",
         flow: "message_urf",
         country: "FR",
-        reportType: "sub_harassment_defamation",
+        reportType: "sub_other_threats",
+        targetUserId: "998877665544332211",
+        targetUsername: "toxic_user#0001",
+        targetGuildId: "111222333444",
+        targetGuildName: "Target Community Server",
+        targetChannelId: "555666777888",
+        targetChannelName: "general-chat",
+        targetUrl: "https://discord.com/channels/111222333444/555666777888/999888777",
+        targetMessageContent: "This is the abusive message reported by the blacklisted user.",
+        attachments: ["https://cdn.discordapp.com/attachments/123/456/evidence.png"],
+        reportedElements: ["photos", "name"],
+        reportBrief: "Harassing user in chat",
         outcome: "discord:closed_no_action",
         scheduledReplyAt: "2026-08-25T12:00:00.000Z",
         details: "User reported harassment"
@@ -290,7 +301,25 @@ describe("Shadowban and Simulation Unit Tests", () => {
         fields.some((f) => f.name.includes("User") && f.value.includes("1389142809952391272"))
       ).toBe(true);
       expect(
-        fields.some((f) => f.name.includes("Report ID") && f.value.includes("sim-abc1234567890def"))
+        fields.some((f) => f.name.includes("Report ID") && f.value.includes("lukas-schmidt-74cjy1qvc1azcxy2"))
+      ).toBe(true);
+      expect(
+        fields.some((f) => f.name.includes("Target / Reported User") && f.value.includes("998877665544332211") && f.value.includes("toxic_user#0001"))
+      ).toBe(true);
+      expect(
+        fields.some((f) => f.name.includes("Target Guild / Server") && f.value.includes("Target Community Server"))
+      ).toBe(true);
+      expect(
+        fields.some((f) => f.name.includes("Target Channel") && f.value.includes("555666777888"))
+      ).toBe(true);
+      expect(
+        fields.some((f) => f.name.includes("Reported Message Content") && f.value.includes("This is the abusive message reported"))
+      ).toBe(true);
+      expect(
+        fields.some((f) => f.name.includes("Attachments") && f.value.includes("evidence.png"))
+      ).toBe(true);
+      expect(
+        fields.some((f) => f.name.includes("Reported Elements") && f.value.includes("photos, name"))
       ).toBe(true);
       expect(
         fields.some(

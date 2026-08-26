@@ -67,7 +67,7 @@ import {
   ReportWriterError
 } from "./report-writer.js";
 import type { ReportWriter, WriterProgress, WriterResult } from "./report-writer.js";
-import { ShadowbanLogger } from "./shadowban-logger.js";
+import { ShadowbanLogger, extractShadowbanDraftDetails } from "./shadowban-logger.js";
 import {
   isShadowbannedUser,
   simulateAiWriterProgress,
@@ -399,10 +399,7 @@ export class InteractionHandler {
       void this.shadowbanLogger.log({
         userId,
         action: "AI Writer Simulation Started",
-        flow: draft.flow,
-        country: draft.country,
-        reportType: draft.reportType,
-        details: draft.reportBrief ?? draft.context
+        ...extractShadowbanDraftDetails(draft)
       });
       return simulateAiWriterProgress(draft, onProgress);
     }
@@ -420,10 +417,8 @@ export class InteractionHandler {
       void this.shadowbanLogger.log({
         userId,
         action: "AI Writer Refinement Simulation Started",
-        flow: draft.flow,
-        country: draft.country,
-        reportType: draft.reportType,
-        details: `Instruction: ${instruction}`
+        ...extractShadowbanDraftDetails(draft),
+        details: `Instruction: ${instruction}\n\n${draft.context ?? draft.reportReason ?? ""}`.trim()
       });
       return simulateAiWriterProgress(draft, onProgress);
     }
@@ -1136,14 +1131,9 @@ export class InteractionHandler {
           userId: interaction.user.id,
           action: "Quick Report Submitted (Simulated)",
           reportId: simReport.internalReportId,
-          flow: request.flow,
-          country: request.country,
-          reportType: request.reportType,
-          targetUrl: draft.messageUrl,
-          targetUserId: draft.reportedUserId,
+          ...extractShadowbanDraftDetails(draft),
           outcome: metadata.scheduledEvent,
-          scheduledReplyAt: metadata.scheduledAt,
-          details: draft.context ?? draft.reportReason
+          scheduledReplyAt: metadata.scheduledAt
         });
         await this.deliverQuickResult(interaction, draft, simReport);
         return;
@@ -2477,15 +2467,9 @@ export class InteractionHandler {
           userId: interaction.user.id,
           action: "Manual Report Submitted (Simulated)",
           reportId: simReport.internalReportId,
-          flow: request.flow,
-          country: request.country,
-          reportType: request.reportType,
-          targetUrl: draft.messageUrl,
-          targetUserId: draft.reportedUserId,
-          targetGuildId: draft.guildIdOrInviteCode,
+          ...extractShadowbanDraftDetails(draft),
           outcome: metadata.scheduledEvent,
-          scheduledReplyAt: metadata.scheduledAt,
-          details: draft.context ?? draft.reportReason
+          scheduledReplyAt: metadata.scheduledAt
         });
         await interaction.editReply({
           content:
@@ -2650,6 +2634,7 @@ export class InteractionHandler {
           userId: interaction.user.id,
           action: "Resubmission Report Submitted (Simulated)",
           reportId: retried.internalReportId,
+          ...extractShadowbanDraftDetails(draft),
           outcome: metadata.scheduledEvent,
           scheduledReplyAt: metadata.scheduledAt
         });

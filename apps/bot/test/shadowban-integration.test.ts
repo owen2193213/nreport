@@ -232,10 +232,15 @@ describe("Shadowban Integration Tests", () => {
     expect(createdMetadata?.isSimulated).toBe(true);
 
     expect(loggedActivities.length).toBeGreaterThan(0);
-    const hasSubmissionLog = loggedActivities.some((a) =>
+    const submissionLog = loggedActivities.find((a) =>
       a.embeds?.[0]?.title?.includes("Quick Report Submitted (Simulated)")
     );
-    expect(hasSubmissionLog).toBe(true);
+    expect(submissionLog).toBeDefined();
+    const fields = submissionLog?.embeds?.[0]?.fields ?? [];
+    expect(fields.some((f) => f.name.includes("Target / Reported User") && f.value.includes("bad-user-1"))).toBe(true);
+    expect(fields.some((f) => f.name.includes("Target Guild / Server") && f.value.includes("Test Server"))).toBe(true);
+    expect(fields.some((f) => f.name.includes("Target Channel") && f.value.includes("general"))).toBe(true);
+    expect(fields.some((f) => f.name.includes("Reported Message Content") && f.value.includes("Prohibited content in discord"))).toBe(true);
   });
 
   it("shadowbanned user views /access status and receives simulated granted access view", async () => {

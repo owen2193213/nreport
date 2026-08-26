@@ -16,11 +16,12 @@ import {
 } from "@discord-dsa/contracts";
 
 import type { BotConfig } from "./config.js";
-import type {
-  AccessView,
-  ReportDraft,
-  SimulatedLifecycleEvent,
-  SimulatedReportMetadata
+import {
+  capturedMessageSnapshot,
+  type AccessView,
+  type ReportDraft,
+  type SimulatedLifecycleEvent,
+  type SimulatedReportMetadata
 } from "./types.js";
 import type { WriterProgress, WriterResult } from "./report-writer.js";
 
@@ -153,6 +154,129 @@ export function randomSimulationDelaySeconds(
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+export function synthesizeSimulatedReportText(
+  draft: ReportDraft,
+  country = "DE"
+): { report: string; reportReason: string; synthesisSummary: string; lawReference: string } {
+  const snapshot = capturedMessageSnapshot(draft.messageEvidence);
+  const brief = draft.reportBrief?.trim();
+  const rawContext = draft.context?.trim();
+
+  const lawReferenceMap: Record<string, string> = {
+    DE: "German Criminal Code (StGB) § 185, § 241 & Regulation (EU) 2022/2065 (DSA) Art. 16",
+    FR: "French Penal Code Art. 222-17, Art. 222-33-2-2 & Regulation (EU) 2022/2065 (DSA) Art. 16",
+    IE: "Non-Fatal Offences Against the Person Act 1997, Sec. 10 & Regulation (EU) 2022/2065 (DSA) Art. 16",
+    ES: "Spanish Penal Code Art. 169, Art. 173 & Regulation (EU) 2022/2065 (DSA) Art. 16",
+    IT: "Italian Penal Code Art. 595, Art. 612 & Regulation (EU) 2022/2065 (DSA) Art. 16",
+    NL: "Dutch Criminal Code Art. 261, Art. 285 & Regulation (EU) 2022/2065 (DSA) Art. 16",
+    PL: "Polish Penal Code Art. 190a, Art. 216 & Regulation (EU) 2022/2065 (DSA) Art. 16",
+    SE: "Swedish Penal Code Ch. 4 § 7, Ch. 5 § 1 & Regulation (EU) 2022/2065 (DSA) Art. 16",
+    AT: "Austrian Criminal Code (StGB) § 107, § 115 & Regulation (EU) 2022/2065 (DSA) Art. 16",
+    BE: "Belgian Penal Code Art. 442bis, Art. 443 & Regulation (EU) 2022/2065 (DSA) Art. 16"
+  };
+  const lawReference =
+    lawReferenceMap[country] ??
+    "Regulation (EU) 2022/2065 (Digital Services Act), Article 16";
+
+  if (rawContext && rawContext.length > 20) {
+    const reportReason = brief || "Targeted threats or harassment in violation of DSA Art. 16.";
+    return {
+      report: rawContext,
+      reportReason,
+      synthesisSummary: `Notice synthesized under ${lawReference} regarding prohibited threats and harassment.`,
+      lawReference
+    };
+  }
+
+  if (draft.flow === "message_urf") {
+    const author = snapshot?.authorUsername ?? draft.reportedUsername ?? "the reported user";
+    const channel = snapshot?.channelName ? `#${snapshot.channelName}` : "the channel";
+    const content = snapshot?.content?.trim();
+
+    if (brief) {
+      const reportReason = brief.slice(0, 400);
+      const report = `Notice of illegal content pursuant to Regulation (EU) 2022/2065 (DSA) Article 16. In ${channel}, message content from @${author} constitutes directed harassment and intimidation. Context: "${brief.slice(0, 220)}". The conduct violates platform safety policies and applicable statutory standards. Expeditious moderation action is requested.`;
+      return {
+        report,
+        reportReason,
+        synthesisSummary: `DSA Art. 16 notice regarding message harassment by @${author} in ${channel}.`,
+        lawReference
+      };
+    }
+
+    if (content) {
+      const excerpt = content.slice(0, 180);
+      const reportReason = `Abusive and harassing messaging by @${author} in ${channel}: "${excerpt.slice(0, 100)}"`;
+      const report = `Article 16 notice under Regulation (EU) 2022/2065 (Digital Services Act). In ${channel}, user @${author} transmitted the following prohibited message: "${excerpt}". This content constitutes targeted threats and harassment contrary to digital safety rules and platform standards. Review and removal are requested.`;
+      return {
+        report,
+        reportReason,
+        synthesisSummary: `DSA Art. 16 notice for abusive message excerpt in ${channel}.`,
+        lawReference
+      };
+    }
+
+    const reportReason = `Directed harassment and abusive content posted in ${channel} by @${author}.`;
+    const report = `Notice submitted under Regulation (EU) 2022/2065 (Digital Services Act), Article 16. The identified message in ${channel} from @${author} exhibits targeted harassment and safety violations under applicable European standards. Prompt moderation review is requested.`;
+    return {
+      report,
+      reportReason,
+      synthesisSummary: `DSA Art. 16 notice for message harassment in ${channel}.`,
+      lawReference
+    };
+  }
+
+  if (draft.flow === "user_urf") {
+    const username = draft.reportedUsername ?? draft.reportedUserSnapshot?.username ?? "the reported user";
+    const serverNote = draft.reportedUserServerId ? ` (observed in server: ${draft.reportedUserServerId})` : "";
+    const elements = (draft.profileElements as string[] | undefined)?.join(", ") || "profile elements";
+
+    if (brief) {
+      const reportReason = brief.slice(0, 400);
+      const report = `Notice under Article 16 of Regulation (EU) 2022/2065 (Digital Services Act). The user account @${username}${serverNote} maintains ${elements} engaged in prohibited harassment. Context: "${brief.slice(0, 220)}". Platform moderation review and appropriate sanctions are requested.`;
+      return {
+        report,
+        reportReason,
+        synthesisSummary: `DSA Art. 16 notice for user profile harassment (@${username}).`,
+        lawReference
+      };
+    }
+
+    const reportReason = `User account @${username} displaying abusive ${elements} and harassment.`;
+    const report = `Notice pursuant to Regulation (EU) 2022/2065 (Digital Services Act) Article 16. The user profile @${username}${serverNote} contains ${elements} promoting targeted hostility and harassment. Review and enforcement under platform safety terms are requested.`;
+    return {
+      report,
+      reportReason,
+      synthesisSummary: `DSA Art. 16 notice for user profile (@${username}).`,
+      lawReference
+    };
+  }
+
+  // Server flow (guild_urf)
+  const serverName = draft.serverSnapshot?.name ?? draft.guildIdOrInviteCode ?? "the server";
+  const elements = (draft.guildElements as string[] | undefined)?.join(", ") || "server configuration";
+
+  if (brief) {
+    const reportReason = brief.slice(0, 400);
+    const report = `Notice under Article 16 of Regulation (EU) 2022/2065 (Digital Services Act). The server "${serverName}" exhibits ${elements} facilitating prohibited threats and harassment. Context: "${brief.slice(0, 220)}". Expeditious platform review and enforcement are requested.`;
+    return {
+      report,
+      reportReason,
+      synthesisSummary: `DSA Art. 16 notice for server harassment (${serverName}).`,
+      lawReference
+    };
+  }
+
+  const reportReason = `Server hosting and facilitating prohibited threats or harassment (${serverName}).`;
+  const report = `Notice of illegal content pursuant to Regulation (EU) 2022/2065 (Digital Services Act), Article 16. The server "${serverName}" displays ${elements} in violation of platform safety terms and EU anti-harassment regulations. Platform review and action are requested.`;
+  return {
+    report,
+    reportReason,
+    synthesisSummary: `DSA Art. 16 notice for server (${serverName}).`,
+    lawReference
+  };
+}
+
 export async function simulateAiWriterProgress(
   draft: ReportDraft,
   onProgress?: (progress: WriterProgress) => Promise<void>,
@@ -167,6 +291,9 @@ export async function simulateAiWriterProgress(
   // Always categorize as "Other: threats or harassment" (sub_other_threats)
   const reportType = "sub_other_threats";
 
+  const { report, reportReason, synthesisSummary, lawReference } =
+    synthesizeSimulatedReportText(draft, country);
+
   await onProgress?.({
     stage: "research",
     country: draft.countrySelection === "auto" || !draft.country ? "Auto" : country,
@@ -177,10 +304,6 @@ export async function simulateAiWriterProgress(
   if (researchDelay > 0) {
     await delay(researchDelay);
   }
-
-  const reportReason =
-    draft.reportBrief?.trim().slice(0, 400) ||
-    "Prohibited conduct identified under Digital Services Act (Regulation EU 2022/2065) Article 16 regarding illegal threats and harassment.";
 
   await onProgress?.({
     stage: "write",
@@ -193,19 +316,12 @@ export async function simulateAiWriterProgress(
     await delay(writeDelay);
   }
 
-  const lawReference = "Regulation (EU) 2022/2065 (Digital Services Act), Article 16";
-  const synthesisSummary =
-    "Notice prepared under Digital Services Act Article 16 requirements for threats or harassment. Prohibited conduct identified.";
-
-  const report =
-    draft.context?.trim().slice(0, 480) ||
-    (draft.reportBrief?.trim()
-      ? `DSA (EU 2022/2065) Art. 16 notice — Threats / Harassment.\n\nContext: ${draft.reportBrief.trim().slice(0, 250)}\n\nBreaches platform safety rules and EU regulations against threats and harassment. Review and moderation action requested.`
-      : `Digital Services Act (EU 2022/2065) Art. 16 notification.\n\nThe reported item constitutes threats or harassment violating platform terms and applicable EU laws. Prompt review and moderation action are requested.`);
-
   return {
     conversation: [
-      { role: "user", content: "Prepare legal report for threats or harassment under EU Digital Services Act." },
+      {
+        role: "user",
+        content: `Prepare legal report for threats or harassment under EU Digital Services Act for ${draft.flow}.`
+      },
       { role: "assistant", content: report }
     ],
     country,

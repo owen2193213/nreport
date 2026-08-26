@@ -103,9 +103,9 @@ describe("Shadowban and Simulation Unit Tests", () => {
       );
 
       expect(progressSteps).toEqual(["research", "write"]);
-      expect(result.report).toContain("DSA (EU 2022/2065)");
+      expect(result.report).toContain("Regulation (EU) 2022/2065");
       expect(result.report).toContain("User posted extreme hate speech in chat.");
-      expect(result.legalResearch.lawReference).toContain("Regulation (EU) 2022/2065");
+      expect(result.legalResearch.lawReference).toContain("German Criminal Code");
       expect(result.legalResearch.sources.length).toBeGreaterThan(0);
       expect(result.reportType).toBe("sub_other_threats");
     });

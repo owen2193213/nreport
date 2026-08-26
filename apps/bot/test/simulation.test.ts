@@ -252,7 +252,7 @@ describe("Shadowban and Simulation Unit Tests", () => {
         { simulationMinDelaySeconds: 60, simulationMaxDelaySeconds: 300 }
       );
 
-      appealMetadata.scheduledEvent = "discord:review_not_approved";
+      expect(appealMetadata.scheduledEvent).toBe("discord:review_not_approved");
       const { updatedReport, eventType } = advanceSimulatedReport(appealedReport, appealMetadata);
 
       expect(eventType).toBe("discord:review_not_approved");

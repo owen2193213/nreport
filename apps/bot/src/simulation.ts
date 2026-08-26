@@ -343,9 +343,8 @@ export function createSimulatedAppeal(
   const now = new Date();
   const nowIso = now.toISOString();
 
-  const roll = Math.random();
-  const scheduledEvent: SimulatedLifecycleEvent =
-    roll < 0.2 ? "discord:actioned" : "discord:review_not_approved";
+  // Simulated appeals for blacklisted/shadowbanned users always result in appeal denial
+  const scheduledEvent: SimulatedLifecycleEvent = "discord:review_not_approved";
 
   const delaySeconds = randomSimulationDelaySeconds(
     config.simulationMinDelaySeconds,

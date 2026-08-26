@@ -145,8 +145,8 @@ export function isShadowbannedUser(
 }
 
 export function randomSimulationDelaySeconds(
-  minSeconds = 60,
-  maxSeconds = 300
+  minSeconds = 1200,
+  maxSeconds = 172800
 ): number {
   const min = Math.max(1, Math.min(minSeconds, maxSeconds));
   const max = Math.max(min, maxSeconds);

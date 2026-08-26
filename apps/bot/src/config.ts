@@ -142,11 +142,11 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
 
   const simulationMinDelaySeconds = Math.max(
     1,
-    Number(env.SIMULATION_MIN_DELAY_SECONDS ?? "60") || 60
+    Number(env.SIMULATION_MIN_DELAY_SECONDS ?? "1200") || 1200
   );
   const simulationMaxDelaySeconds = Math.max(
     simulationMinDelaySeconds,
-    Number(env.SIMULATION_MAX_DELAY_SECONDS ?? "300") || 300
+    Number(env.SIMULATION_MAX_DELAY_SECONDS ?? "172800") || 172800
   );
 
   return {

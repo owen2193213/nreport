@@ -60,7 +60,15 @@ describe("Shadowban and Simulation Unit Tests", () => {
   });
 
   describe("randomSimulationDelaySeconds", () => {
-    it("generates delays within the given bounds", () => {
+    it("generates delays within default 20m to 2d bounds", () => {
+      for (let i = 0; i < 20; i++) {
+        const delay = randomSimulationDelaySeconds();
+        expect(delay).toBeGreaterThanOrEqual(1200);
+        expect(delay).toBeLessThanOrEqual(172800);
+      }
+    });
+
+    it("generates delays within the given custom bounds", () => {
       for (let i = 0; i < 20; i++) {
         const delay = randomSimulationDelaySeconds(60, 300);
         expect(delay).toBeGreaterThanOrEqual(60);

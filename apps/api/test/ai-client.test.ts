@@ -8,7 +8,6 @@ import {
 
 const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
 const BASETEN_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731";
-const OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";
 
 function success(
   content = '{"ok":true}',
@@ -20,7 +19,7 @@ function success(
       id: "chatcmpl-safe-id",
       object: "chat.completion",
       created: 1,
-      model: OPENROUTER_MODEL,
+      model: BASETEN_MODEL,
       choices: [
         {
           index: 0,
@@ -56,79 +55,10 @@ function headers(request: ReturnType<typeof vi.fn>): Record<string, string> {
 }
 
 describe("AiClient", () => {
-  describe("OpenRouter provider", () => {
-    it("sends requests to OpenRouter endpoint with required headers, fallback routing, and DeepSeek V4 Flash", async () => {
-      const request = vi.fn().mockResolvedValue(success());
-      const client = new AiClient("openrouter-secret", OPENROUTER_MODEL, {
-        provider: "openrouter",
-        request: request as unknown as typeof fetch
-      });
-
-      const result = await client.complete(
-        {
-          messages: [{ role: "user", content: "Return JSON" }],
-          max_completion_tokens: 8_192,
-          reasoning_effort: "high"
-        },
-        Date.now() + 5_000,
-        ACTOR,
-        "plan"
-      );
-
-      expect(request.mock.calls[0]?.[0]).toBe(
-        "https://openrouter.ai/api/v1/chat/completions"
-      );
-      const reqHeaders = headers(request);
-      expect(reqHeaders.Authorization).toBe("Bearer openrouter-secret");
-      expect(reqHeaders["HTTP-Referer"]).toBe("https://discord.com");
-      expect(reqHeaders["X-Title"]).toBe("Discord DSA");
-      expect(body(request)).toMatchObject({
-        model: OPENROUTER_MODEL,
-        provider: { allow_fallbacks: true },
-        max_completion_tokens: 8_192,
-        reasoning_effort: "high",
-        stream: false
-      });
-      expect(result).toEqual({
-        content: '{"ok":true}',
-        finishReason: "stop",
-        usage: {
-          costCredits: 0,
-          inputTokens: 120,
-          outputTokens: 35,
-          reasoningTokens: 12,
-          searchRequests: 0
-        }
-      });
-    });
-
-    it("handles upstream error object in response payload", async () => {
-      const request = vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            error: { message: "Provider returned 504 gateway timeout", code: 504 }
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
-        )
-      );
-
-      await expect(
-        new AiClient("key", OPENROUTER_MODEL, {
-          provider: "openrouter",
-          request: request as unknown as typeof fetch
-        }).complete({}, Date.now() + 5_000, ACTOR, "plan")
-      ).rejects.toMatchObject({
-        kind: "provider",
-        message: "Provider returned 504 gateway timeout"
-      });
-    });
-  });
-
-  describe("Baseten provider", () => {
+  describe("Baseten transport", () => {
     it("sends reasoning request directly to Baseten endpoint", async () => {
       const request = vi.fn().mockResolvedValue(success());
       const client = new AiClient("baseten-secret", BASETEN_MODEL, {
-        provider: "baseten",
         request: request as unknown as typeof fetch
       });
 
@@ -168,17 +98,36 @@ describe("AiClient", () => {
       });
     });
 
-    it("auto-detects baseten provider when model starts with deepseek-ai/", () => {
+    it("always exposes the Baseten endpoint and provider name", () => {
       const client = new AiClient("baseten-secret", BASETEN_MODEL);
-      expect(client.provider).toBe("baseten");
       expect(client.endpoint).toBe("https://inference.baseten.co/v1/chat/completions");
       expect(client.providerName).toBe("Baseten");
+    });
+
+    it("handles upstream error objects in response payloads", async () => {
+      const request = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: { message: "Provider returned 504 gateway timeout", code: 504 }
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      );
+
+      await expect(
+        new AiClient("key", BASETEN_MODEL, {
+          request: request as unknown as typeof fetch
+        }).complete({}, Date.now() + 5_000, ACTOR, "plan")
+      ).rejects.toMatchObject({
+        kind: "provider",
+        message: "Provider returned 504 gateway timeout"
+      });
     });
   });
 
   it("uses zero separate reasoning tokens when the response omits the detail", async () => {
     const request = vi.fn().mockResolvedValue(success('{"ok":true}', "stop", null));
-    const result = await new AiClient("key", OPENROUTER_MODEL, {
+    const result = await new AiClient("key", BASETEN_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({ messages: [] }, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -190,7 +139,7 @@ describe("AiClient", () => {
     const request = vi.fn().mockResolvedValue(success('{"ok":', "length"));
 
     await expect(
-      new AiClient("key", OPENROUTER_MODEL, {
+      new AiClient("key", BASETEN_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind: "incomplete" });
@@ -212,7 +161,7 @@ describe("AiClient", () => {
     );
 
     await expect(
-      new AiClient("key", OPENROUTER_MODEL, {
+      new AiClient("key", BASETEN_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({ messages: [] }, Date.now() + 5_000, ACTOR, "synthesize")
     ).rejects.toMatchObject({ kind: "refusal" });
@@ -230,7 +179,7 @@ describe("AiClient", () => {
     );
 
     await expect(
-      new AiClient("key", OPENROUTER_MODEL, {
+      new AiClient("key", BASETEN_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind });
@@ -243,7 +192,7 @@ describe("AiClient", () => {
       .mockResolvedValueOnce(new Response("temporary", { status }))
       .mockResolvedValueOnce(success());
 
-    const result = await new AiClient("key", OPENROUTER_MODEL, {
+    const result = await new AiClient("key", BASETEN_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -258,7 +207,7 @@ describe("AiClient", () => {
       .mockRejectedValueOnce(new Error("temporary network failure"))
       .mockResolvedValueOnce(success());
 
-    const result = await new AiClient("key", OPENROUTER_MODEL, {
+    const result = await new AiClient("key", BASETEN_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -275,7 +224,7 @@ describe("AiClient", () => {
     );
 
     await expect(
-      new AiClient("key", OPENROUTER_MODEL, {
+      new AiClient("key", BASETEN_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind: "malformed" });
@@ -284,7 +233,7 @@ describe("AiClient", () => {
 
   it("rejects exhausted deadlines without making a request", async () => {
     const request = vi.fn();
-    const client = new AiClient("key", OPENROUTER_MODEL, {
+    const client = new AiClient("key", BASETEN_MODEL, {
       request: request as unknown as typeof fetch
     });
 

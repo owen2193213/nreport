@@ -151,7 +151,7 @@ describe("API account security primitives", () => {
     expect(client.query.mock.calls.some(([sql, values]) => String(sql).includes("account_suspended") && values?.includes("retry-1"))).toBe(true);
   });
 
-  it("requires independent administrator and API-key hashing secrets", () => {
+  it("requires Baseten and defaults to DeepSeek V4 Flash", () => {
     const base = {
       DATABASE_URL: "postgres://localhost/test",
       REPORT_EMAIL_DOMAIN: "reports.example.test",
@@ -159,17 +159,20 @@ describe("API account security primitives", () => {
       CLOUDFLARE_EMAIL_WEBHOOK_SECRET: "c".repeat(32),
       NREPORT_ADMIN_KEY: "a".repeat(32),
       API_KEY_PEPPER: "p".repeat(32),
-      OPENROUTER_API_KEY: "openrouter-secret",
+      BASETEN_API_KEY: "baseten-secret",
       BRAVE_SEARCH_API_KEY: "brave-secret"
     };
 
     expect(loadConfig(base)).toMatchObject({
       adminApiKey: "a".repeat(32),
-      apiKeyPepper: "p".repeat(32)
+      apiKeyPepper: "p".repeat(32),
+      aiApiKey: "baseten-secret",
+      aiModel: "deepseek-ai/DeepSeek-V4-Flash-0731"
     });
     expect(() => loadConfig({ ...base, API_KEY_PEPPER: "short" })).toThrow(
       /API_KEY_PEPPER/
     );
+    expect(() => loadConfig({ ...base, BASETEN_API_KEY: "" })).toThrow(/BASETEN_API_KEY/);
   });
 
   it("authenticates account and administrator routes independently", async () => {
@@ -202,7 +205,6 @@ describe("API account security primitives", () => {
       apiKeyPepper: "p".repeat(32),
       aiApiKey: "ai-key",
       aiModel: "model",
-      aiProvider: "openrouter",
       braveSearchApiKey: "brave-key",
       preparationConcurrency: 2,
       databaseUrl: "postgres://unused",

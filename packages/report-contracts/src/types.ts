@@ -1,3 +1,12 @@
+export const DSA_API_BASE_PATH = "/v1/discord/dsa" as const;
+export const DSA_ADMIN_BASE_PATH = "/v1/admin/discord/dsa" as const;
+export const NREPORT_DISCORD_DSA_SERVICE = {
+  category: "discord",
+  type: "dsa",
+  version: "v1"
+} as const;
+export type NreportServiceDescriptor = typeof NREPORT_DISCORD_DSA_SERVICE;
+
 export const REPORT_FLOWS = ["message", "profile", "server"] as const;
 export type ReportFlow = (typeof REPORT_FLOWS)[number];
 

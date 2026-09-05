@@ -26,9 +26,9 @@ describe("analytics contracts", () => {
     });
 
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
-      "https://api.example.test/v1/analytics?period=7d",
-      "https://api.example.test/v1/analytics/community?period=30d",
-      "https://api.example.test/v1/action-history?period=7d&limit=10"
+      "https://api.example.test/v1/discord/dsa/analytics?period=7d",
+      "https://api.example.test/v1/discord/dsa/analytics/community?period=30d",
+      "https://api.example.test/v1/discord/dsa/action-history?period=7d&limit=10"
     ]);
   });
 
@@ -46,8 +46,8 @@ describe("analytics contracts", () => {
     await api.digestActivity(startAt, endAt);
 
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
-      "https://api.example.test/v1/analytics?startAt=2026-08-03T00%3A00%3A00.000Z&endAt=2026-08-10T00%3A00%3A00.000Z",
-      "https://api.example.test/v1/digest-activity?startAt=2026-08-03T00%3A00%3A00.000Z&endAt=2026-08-10T00%3A00%3A00.000Z"
+      "https://api.example.test/v1/discord/dsa/analytics?startAt=2026-08-03T00%3A00%3A00.000Z&endAt=2026-08-10T00%3A00%3A00.000Z",
+      "https://api.example.test/v1/discord/dsa/digest-activity?startAt=2026-08-03T00%3A00%3A00.000Z&endAt=2026-08-10T00%3A00%3A00.000Z"
     ]);
   });
 });

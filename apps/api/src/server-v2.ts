@@ -6,11 +6,14 @@ import {
   createReportBodySchema,
   createWebhookDestinationBodySchema,
   creditAdjustmentBodySchema,
+  DSA_ADMIN_BASE_PATH,
+  DSA_API_BASE_PATH,
   errorEnvelopeSchema,
   GUILD_ELEMENTS,
   GUILD_REPORT_REASONS,
   PROFILE_ELEMENTS,
   keyRotationBodySchema,
+  NREPORT_DISCORD_DSA_SERVICE,
   reportLifecycleEventSchema,
   retryReportBodySchema,
   updateWebhookDestinationBodySchema,
@@ -123,7 +126,13 @@ function publicReport(row: AccountReportRow): ReportDetail {
 
 const openApiDocument = {
   openapi: "3.1.0",
-  info: { title: "Discord DSA Reporting API", version: "2.0.0" },
+  info: { title: "NReport API", version: "1.0.0" },
+  tags: [
+    { name: "Discord / DSA / Account" },
+    { name: "Discord / DSA / Reports" },
+    { name: "Discord / DSA / Analytics" },
+    { name: "Administration / Discord / DSA" }
+  ],
   components: {
     securitySchemes: {
       personalApiKey: { type: "http", scheme: "bearer" },
@@ -145,9 +154,9 @@ const openApiDocument = {
     }
   },
   paths: {
-    "/v1/account": { get: { security: [{ personalApiKey: [] }], responses: { "200": { description: "Account" } } } },
-    "/v1/catalog": { get: { security: [{ personalApiKey: [] }], responses: { "200": { description: "Catalog" } } } },
-    "/v1/reports": {
+    [`${DSA_API_BASE_PATH}/account`]: { get: { tags: ["Discord / DSA / Account"], security: [{ personalApiKey: [] }], responses: { "200": { description: "Account" } } } },
+    [`${DSA_API_BASE_PATH}/catalog`]: { get: { tags: ["Discord / DSA / Account"], security: [{ personalApiKey: [] }], responses: { "200": { description: "Catalog" } } } },
+    [`${DSA_API_BASE_PATH}/reports`]: {
       get: { security: [{ personalApiKey: [] }], responses: { "200": { description: "Account report history" } } },
       post: {
         security: [{ personalApiKey: [] }],
@@ -156,35 +165,35 @@ const openApiDocument = {
         responses: { "202": { description: "Queued report" } }
       }
     },
-    "/v1/reports/{reportId}": { get: { security: [{ personalApiKey: [] }], parameters: [reportIdParameter], responses: { "200": { description: "Owned report" }, "404": { description: "Not found" } } } },
-    "/v1/reports/{reportId}/retries": { post: { security: [{ personalApiKey: [] }], parameters: [reportIdParameter, idempotencyKeyParameter], requestBody: { required: true, content: { "application/json": { schema: retryReportBodySchema } } }, responses: { "202": { description: "Queued retry" } } } },
-    "/v1/events": { get: { security: [{ personalApiKey: [] }], responses: { "200": { description: "Replayable account event feed" } } } },
-    "/v1/analytics": { get: { security: [{ personalApiKey: [] }], responses: { "200": { description: "Personal analytics" } } } },
-    "/v1/analytics/community": { get: { security: [{ personalApiKey: [] }], responses: { "200": { description: "Anonymized community analytics" } } } },
-    "/v1/action-history": { get: { security: [{ personalApiKey: [] }], responses: { "200": { description: "Personal action history" } } } },
-    "/v1/digest-activity": { get: { security: [{ personalApiKey: [] }], responses: { "200": { description: "Personal digest activity" } } } },
-    "/v1/admin/accounts": {
+    [`${DSA_API_BASE_PATH}/reports/{reportId}`]: { get: { tags: ["Discord / DSA / Reports"], security: [{ personalApiKey: [] }], parameters: [reportIdParameter], responses: { "200": { description: "Owned report" }, "404": { description: "Not found" } } } },
+    [`${DSA_API_BASE_PATH}/reports/{reportId}/retries`]: { post: { tags: ["Discord / DSA / Reports"], security: [{ personalApiKey: [] }], parameters: [reportIdParameter, idempotencyKeyParameter], requestBody: { required: true, content: { "application/json": { schema: retryReportBodySchema } } }, responses: { "202": { description: "Queued retry" } } } },
+    [`${DSA_API_BASE_PATH}/events`]: { get: { tags: ["Discord / DSA / Reports"], security: [{ personalApiKey: [] }], responses: { "200": { description: "Replayable account event feed" } } } },
+    [`${DSA_API_BASE_PATH}/analytics`]: { get: { tags: ["Discord / DSA / Analytics"], security: [{ personalApiKey: [] }], responses: { "200": { description: "Personal analytics" } } } },
+    [`${DSA_API_BASE_PATH}/analytics/community`]: { get: { tags: ["Discord / DSA / Analytics"], security: [{ personalApiKey: [] }], responses: { "200": { description: "Anonymized community analytics" } } } },
+    [`${DSA_API_BASE_PATH}/action-history`]: { get: { tags: ["Discord / DSA / Analytics"], security: [{ personalApiKey: [] }], responses: { "200": { description: "Personal action history" } } } },
+    [`${DSA_API_BASE_PATH}/digest-activity`]: { get: { tags: ["Discord / DSA / Analytics"], security: [{ personalApiKey: [] }], responses: { "200": { description: "Personal digest activity" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/accounts`]: {
       get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Accounts" } } },
       post: { security: [{ administratorKey: [] }], requestBody: jsonRequest(adminCreateAccountBodySchema), responses: { "201": { description: "Created account" } } }
     },
-    "/v1/admin/accounts/{accountId}": { get: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], responses: { "200": { description: "Account" }, "404": { description: "Not found" } } } },
-    "/v1/admin/accounts/{accountId}/keys": {
+    [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}`]: { get: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], responses: { "200": { description: "Account" }, "404": { description: "Not found" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/keys`]: {
       get: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], responses: { "200": { description: "Keys without plaintext secrets" } } },
       post: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], responses: { "201": { description: "One-time plaintext key" } } }
     },
-    "/v1/admin/accounts/{accountId}/keys/rotate": { post: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(keyRotationBodySchema), responses: { "201": { description: "Rotated one-time plaintext key" } } } },
-    "/v1/admin/accounts/{accountId}/keys/{keyId}": { delete: { security: [{ administratorKey: [] }], parameters: [accountIdParameter, keyIdParameter], requestBody: jsonRequest(auditReasonBodySchema), responses: { "204": { description: "Revoked" } } } },
-    "/v1/admin/accounts/{accountId}/credits": { post: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(creditAdjustmentBodySchema), responses: { "200": { description: "Adjusted account" } } } },
-    "/v1/admin/accounts/{accountId}/suspend": { post: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(auditReasonBodySchema), responses: { "200": { description: "Suspended account" } } } },
-    "/v1/admin/accounts/{accountId}/reinstate": { post: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(auditReasonBodySchema), responses: { "200": { description: "Reinstated account" } } } },
-    "/v1/admin/accounts/{accountId}/webhook-destination": { put: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(assignWebhookDestinationBodySchema), responses: { "204": { description: "Assignment updated" } } } },
-    "/v1/admin/usage": { get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Global account usage" } } } },
-    "/v1/admin/diagnostics": { get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Operational diagnostics" } } } },
-    "/v1/admin/webhook-destinations": {
+    [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/keys/rotate`]: { post: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(keyRotationBodySchema), responses: { "201": { description: "Rotated one-time plaintext key" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/keys/{keyId}`]: { delete: { security: [{ administratorKey: [] }], parameters: [accountIdParameter, keyIdParameter], requestBody: jsonRequest(auditReasonBodySchema), responses: { "204": { description: "Revoked" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/credits`]: { post: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(creditAdjustmentBodySchema), responses: { "200": { description: "Adjusted account" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/suspend`]: { post: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(auditReasonBodySchema), responses: { "200": { description: "Suspended account" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/reinstate`]: { post: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(auditReasonBodySchema), responses: { "200": { description: "Reinstated account" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/webhook-destination`]: { put: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(assignWebhookDestinationBodySchema), responses: { "204": { description: "Assignment updated" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/usage`]: { get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Global account usage" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/diagnostics`]: { get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Operational diagnostics" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/webhook-destinations`]: {
       get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Webhook destinations" } } },
       post: { security: [{ administratorKey: [] }], requestBody: jsonRequest(createWebhookDestinationBodySchema), responses: { "201": { description: "Created destination" } } }
     },
-    "/v1/admin/webhook-destinations/{destinationId}": { patch: { security: [{ administratorKey: [] }], parameters: [destinationIdParameter], requestBody: jsonRequest(updateWebhookDestinationBodySchema), responses: { "200": { description: "Updated destination" } } } }
+    [`${DSA_ADMIN_BASE_PATH}/webhook-destinations/{destinationId}`]: { patch: { security: [{ administratorKey: [] }], parameters: [destinationIdParameter], requestBody: jsonRequest(updateWebhookDestinationBodySchema), responses: { "200": { description: "Updated destination" } } } }
   }
 } as const;
 
@@ -254,20 +263,21 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     return reply.send({ status: "ok" });
   });
   app.get("/openapi.json", async (_request, reply) => reply.send(openApiDocument));
-  app.get("/v1/account", { preHandler: accountAuth }, async (request, reply) => {
+  app.get(`${DSA_API_BASE_PATH}/account`, { preHandler: accountAuth }, async (request, reply) => {
     const principal = (request as AuthenticatedRequest).accountPrincipal;
     if (principal === undefined) return;
     return reply.send(await dependencies.accounts.accountView(principal));
   });
-  app.get("/v1/catalog", { preHandler: accountAuth }, async (_request, reply) =>
+  app.get(`${DSA_API_BASE_PATH}/catalog`, { preHandler: accountAuth }, async (_request, reply) =>
     reply.send({
+      service: NREPORT_DISCORD_DSA_SERVICE,
       countries: supportedCountries(),
       categories: { message: USER_MESSAGE_REPORT_REASONS, profile: USER_MESSAGE_REPORT_REASONS, server: GUILD_REPORT_REASONS },
       elements: { profile: PROFILE_ELEMENTS, server: GUILD_ELEMENTS }
     })
   );
   app.post(
-    "/v1/reports",
+    `${DSA_API_BASE_PATH}/reports`,
     {
       preHandler: accountAuth,
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
@@ -304,7 +314,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     }
   );
   app.get<{ Params: { reportId: string } }>(
-    "/v1/reports/:reportId",
+    `${DSA_API_BASE_PATH}/reports/:reportId`,
     { preHandler: accountAuth },
     async (request, reply) => {
       const principal = (request as AuthenticatedRequest).accountPrincipal;
@@ -322,7 +332,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     }
   );
   app.get<{ Querystring: { after?: string; limit?: string } }>(
-    "/v1/reports",
+    `${DSA_API_BASE_PATH}/reports`,
     { preHandler: accountAuth },
     async (request, reply) => {
       const principal = (request as AuthenticatedRequest).accountPrincipal;
@@ -343,7 +353,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     }
   );
   app.get<{ Querystring: { after?: string; limit?: string } }>(
-    "/v1/events",
+    `${DSA_API_BASE_PATH}/events`,
     { preHandler: accountAuth },
     async (request, reply) => {
       const principal = (request as AuthenticatedRequest).accountPrincipal;
@@ -357,7 +367,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     }
   );
   app.post<{ Params: { reportId: string }; Body: { mode?: unknown } }>(
-    "/v1/reports/:reportId/retries",
+    `${DSA_API_BASE_PATH}/reports/:reportId/retries`,
     {
       preHandler: accountAuth,
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
@@ -402,7 +412,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       }
     }
   );
-  app.post("/v1/admin/accounts", { preHandler: adminAuth, schema: { body: adminCreateAccountBodySchema } }, async (request, reply) => {
+  app.post(`${DSA_ADMIN_BASE_PATH}/accounts`, { preHandler: adminAuth, schema: { body: adminCreateAccountBodySchema } }, async (request, reply) => {
     const body = request.body as Partial<AdminCreateAccountInput>;
     if (typeof body?.username !== "string") {
       return apiError(reply, request, 400, "invalid_request", "Username is required.");
@@ -414,31 +424,31 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     });
     return reply.code(201).send(created);
   });
-  app.get("/v1/admin/accounts", { preHandler: adminAuth }, async (_request, reply) =>
+  app.get(`${DSA_ADMIN_BASE_PATH}/accounts`, { preHandler: adminAuth }, async (_request, reply) =>
     reply.send({ items: await dependencies.accounts.listAccounts() })
   );
-  app.get("/v1/admin/usage", { preHandler: adminAuth }, async (_request, reply) =>
+  app.get(`${DSA_ADMIN_BASE_PATH}/usage`, { preHandler: adminAuth }, async (_request, reply) =>
     reply.send(await dependencies.accounts.globalUsage())
   );
-  app.get("/v1/admin/diagnostics", { preHandler: adminAuth }, async (_request, reply) =>
+  app.get(`${DSA_ADMIN_BASE_PATH}/diagnostics`, { preHandler: adminAuth }, async (_request, reply) =>
     reply.send(await dependencies.reports.operationalDiagnostics())
   );
-  app.get<{ Params: { accountId: string } }>("/v1/admin/accounts/:accountId", { preHandler: adminAuth }, async (request, reply) => {
+  app.get<{ Params: { accountId: string } }>(`${DSA_ADMIN_BASE_PATH}/accounts/:accountId`, { preHandler: adminAuth }, async (request, reply) => {
     if (!UUID_PATTERN.test(request.params.accountId)) return apiError(reply, request, 404, "account_not_found", "Account was not found.");
     const account = await dependencies.accounts.adminAccount(request.params.accountId);
     return account === null ? apiError(reply, request, 404, "account_not_found", "Account was not found.") : reply.send(account);
   });
-  app.post<{ Params: { accountId: string } }>("/v1/admin/accounts/:accountId/keys", { preHandler: adminAuth }, async (request, reply) => {
+  app.post<{ Params: { accountId: string } }>(`${DSA_ADMIN_BASE_PATH}/accounts/:accountId/keys`, { preHandler: adminAuth }, async (request, reply) => {
     if (!UUID_PATTERN.test(request.params.accountId)) return apiError(reply, request, 404, "account_not_found", "Account was not found.");
     const issued = await dependencies.accounts.issueKey(request.params.accountId);
     return reply.code(201).send({ keyId: issued.keyId, prefix: issued.prefix, apiKey: issued.plaintext });
   });
-  app.get<{ Params: { accountId: string } }>("/v1/admin/accounts/:accountId/keys", { preHandler: adminAuth }, async (request, reply) =>
+  app.get<{ Params: { accountId: string } }>(`${DSA_ADMIN_BASE_PATH}/accounts/:accountId/keys`, { preHandler: adminAuth }, async (request, reply) =>
     UUID_PATTERN.test(request.params.accountId)
       ? reply.send({ items: await dependencies.accounts.listKeys(request.params.accountId) })
       : apiError(reply, request, 404, "account_not_found", "Account was not found.")
   );
-  app.post<{ Params: { accountId: string }; Body: { overlapSeconds?: unknown } }>("/v1/admin/accounts/:accountId/keys/rotate", { preHandler: adminAuth, schema: { body: keyRotationBodySchema } }, async (request, reply) => {
+  app.post<{ Params: { accountId: string }; Body: { overlapSeconds?: unknown } }>(`${DSA_ADMIN_BASE_PATH}/accounts/:accountId/keys/rotate`, { preHandler: adminAuth, schema: { body: keyRotationBodySchema } }, async (request, reply) => {
     if (!UUID_PATTERN.test(request.params.accountId)) return apiError(reply, request, 404, "account_not_found", "Account was not found.");
     const overlapSeconds = request.body?.overlapSeconds;
     if (overlapSeconds !== undefined && (!Number.isSafeInteger(overlapSeconds) || Number(overlapSeconds) < 0)) {
@@ -447,14 +457,14 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     const issued = await dependencies.accounts.rotateKey(request.params.accountId, overlapSeconds as number | undefined);
     return reply.code(201).send({ keyId: issued.keyId, prefix: issued.prefix, apiKey: issued.plaintext });
   });
-  app.delete<{ Params: { accountId: string; keyId: string }; Body: { reason?: unknown } }>("/v1/admin/accounts/:accountId/keys/:keyId", { preHandler: adminAuth, schema: { body: auditReasonBodySchema } }, async (request, reply) => {
+  app.delete<{ Params: { accountId: string; keyId: string }; Body: { reason?: unknown } }>(`${DSA_ADMIN_BASE_PATH}/accounts/:accountId/keys/:keyId`, { preHandler: adminAuth, schema: { body: auditReasonBodySchema } }, async (request, reply) => {
     if (!UUID_PATTERN.test(request.params.accountId) || !UUID_PATTERN.test(request.params.keyId)) return apiError(reply, request, 404, "key_not_found", "API key was not found.");
     const reason = request.body?.reason;
     if (typeof reason !== "string" || reason.trim().length < 3) return apiError(reply, request, 400, "invalid_request", "An audit reason is required.");
     const revoked = await dependencies.accounts.revokeKey(request.params.accountId, request.params.keyId, reason.trim());
     return revoked ? reply.code(204).send() : apiError(reply, request, 404, "key_not_found", "API key was not found.");
   });
-  app.post<{ Params: { accountId: string }; Body: { delta?: unknown; reason?: unknown } }>("/v1/admin/accounts/:accountId/credits", { preHandler: adminAuth, schema: { body: creditAdjustmentBodySchema } }, async (request, reply) => {
+  app.post<{ Params: { accountId: string }; Body: { delta?: unknown; reason?: unknown } }>(`${DSA_ADMIN_BASE_PATH}/accounts/:accountId/credits`, { preHandler: adminAuth, schema: { body: creditAdjustmentBodySchema } }, async (request, reply) => {
     if (!UUID_PATTERN.test(request.params.accountId)) return apiError(reply, request, 404, "account_not_found", "Account was not found.");
     const { delta, reason } = request.body ?? {};
     if (!Number.isSafeInteger(delta) || Number(delta) === 0 || typeof reason !== "string" || reason.trim().length < 3) {
@@ -465,14 +475,14 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     return account === null ? apiError(reply, request, 404, "account_not_found", "Account was not found.") : reply.send(account);
   });
   for (const [path, status] of [["suspend", "suspended"], ["reinstate", "active"]] as const) {
-    app.post<{ Params: { accountId: string }; Body: { reason?: unknown } }>(`/v1/admin/accounts/:accountId/${path}`, { preHandler: adminAuth, schema: { body: auditReasonBodySchema } }, async (request, reply) => {
+    app.post<{ Params: { accountId: string }; Body: { reason?: unknown } }>(`${DSA_ADMIN_BASE_PATH}/accounts/:accountId/${path}`, { preHandler: adminAuth, schema: { body: auditReasonBodySchema } }, async (request, reply) => {
       if (!UUID_PATTERN.test(request.params.accountId)) return apiError(reply, request, 404, "account_not_found", "Account was not found.");
       const reason = request.body?.reason;
       if (typeof reason !== "string" || reason.trim().length < 3) return apiError(reply, request, 400, "invalid_request", "An audit reason is required.");
       return reply.send(await dependencies.accounts.setAccountStatus(request.params.accountId, status, reason.trim()));
     });
   }
-  app.post<{ Body: { name?: unknown; url?: unknown; signingSecret?: unknown } }>("/v1/admin/webhook-destinations", { preHandler: adminAuth, schema: { body: createWebhookDestinationBodySchema } }, async (request, reply) => {
+  app.post<{ Body: { name?: unknown; url?: unknown; signingSecret?: unknown } }>(`${DSA_ADMIN_BASE_PATH}/webhook-destinations`, { preHandler: adminAuth, schema: { body: createWebhookDestinationBodySchema } }, async (request, reply) => {
     const { name, url, signingSecret } = request.body ?? {};
     if (dependencies.destinations === undefined) throw new Error("Webhook destination administration is unavailable.");
     if (typeof name !== "string" || typeof url !== "string" || typeof signingSecret !== "string") {
@@ -480,11 +490,11 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     }
     return reply.code(201).send(await dependencies.destinations.create(name, url, signingSecret));
   });
-  app.get("/v1/admin/webhook-destinations", { preHandler: adminAuth }, async (_request, reply) => {
+  app.get(`${DSA_ADMIN_BASE_PATH}/webhook-destinations`, { preHandler: adminAuth }, async (_request, reply) => {
     if (dependencies.destinations === undefined) throw new Error("Webhook destination administration is unavailable.");
     return reply.send({ items: await dependencies.destinations.list() });
   });
-  app.patch<{ Params: { destinationId: string }; Body: { name?: unknown; url?: unknown; signingSecret?: unknown; status?: unknown } }>("/v1/admin/webhook-destinations/:destinationId", { preHandler: adminAuth, schema: { body: updateWebhookDestinationBodySchema } }, async (request, reply) => {
+  app.patch<{ Params: { destinationId: string }; Body: { name?: unknown; url?: unknown; signingSecret?: unknown; status?: unknown } }>(`${DSA_ADMIN_BASE_PATH}/webhook-destinations/:destinationId`, { preHandler: adminAuth, schema: { body: updateWebhookDestinationBodySchema } }, async (request, reply) => {
     if (!UUID_PATTERN.test(request.params.destinationId)) return apiError(reply, request, 404, "destination_not_found", "Webhook destination was not found.");
     if (dependencies.destinations === undefined) throw new Error("Webhook destination administration is unavailable.");
     const body = request.body ?? {};
@@ -499,7 +509,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     });
     return updated === null ? apiError(reply, request, 404, "destination_not_found", "Webhook destination was not found.") : reply.send(updated);
   });
-  app.put<{ Params: { accountId: string }; Body: { destinationId?: unknown } }>("/v1/admin/accounts/:accountId/webhook-destination", { preHandler: adminAuth, schema: { body: assignWebhookDestinationBodySchema } }, async (request, reply) => {
+  app.put<{ Params: { accountId: string }; Body: { destinationId?: unknown } }>(`${DSA_ADMIN_BASE_PATH}/accounts/:accountId/webhook-destination`, { preHandler: adminAuth, schema: { body: assignWebhookDestinationBodySchema } }, async (request, reply) => {
     if (!UUID_PATTERN.test(request.params.accountId)) return apiError(reply, request, 404, "account_not_found", "Account was not found.");
     if (dependencies.destinations === undefined) throw new Error("Webhook destination administration is unavailable.");
     const destinationId = request.body?.destinationId;
@@ -509,7 +519,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     const assigned = await dependencies.destinations.assign(request.params.accountId, destinationId);
     return assigned ? reply.code(204).send() : apiError(reply, request, 404, "account_or_destination_not_found", "Account or destination was not found.");
   });
-  app.get<{ Querystring: AnalyticsQuery }>("/v1/analytics", { preHandler: accountAuth }, async (request, reply) => {
+  app.get<{ Querystring: AnalyticsQuery }>(`${DSA_API_BASE_PATH}/analytics`, { preHandler: accountAuth }, async (request, reply) => {
     const principal = (request as AuthenticatedRequest).accountPrincipal;
     if (principal === undefined) return;
     if (dependencies.analytics === undefined) throw new Error("Analytics are unavailable.");
@@ -517,13 +527,13 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     if (interval === null) return apiError(reply, request, 400, "invalid_interval", "Analytics interval is invalid.");
     return reply.send(await dependencies.analytics.analytics(principal.accountId, interval, "personal"));
   });
-  app.get<{ Querystring: AnalyticsQuery }>("/v1/analytics/community", { preHandler: accountAuth }, async (request, reply) => {
+  app.get<{ Querystring: AnalyticsQuery }>(`${DSA_API_BASE_PATH}/analytics/community`, { preHandler: accountAuth }, async (request, reply) => {
     if (dependencies.analytics === undefined) throw new Error("Analytics are unavailable.");
     const interval = analyticsInterval(request.query);
     if (interval === null) return apiError(reply, request, 400, "invalid_interval", "Analytics interval is invalid.");
     return reply.send(await dependencies.analytics.analytics(null, interval, "community"));
   });
-  app.get<{ Querystring: AnalyticsQuery & { after?: string; limit?: string } }>("/v1/action-history", { preHandler: accountAuth }, async (request, reply) => {
+  app.get<{ Querystring: AnalyticsQuery & { after?: string; limit?: string } }>(`${DSA_API_BASE_PATH}/action-history`, { preHandler: accountAuth }, async (request, reply) => {
     const principal = (request as AuthenticatedRequest).accountPrincipal;
     if (principal === undefined) return;
     if (dependencies.analytics === undefined) throw new Error("Analytics are unavailable.");
@@ -535,7 +545,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     }
     return reply.send(await dependencies.analytics.actionHistory(principal.accountId, interval, after, limit));
   });
-  app.get<{ Querystring: AnalyticsQuery }>("/v1/digest-activity", { preHandler: accountAuth }, async (request, reply) => {
+  app.get<{ Querystring: AnalyticsQuery }>(`${DSA_API_BASE_PATH}/digest-activity`, { preHandler: accountAuth }, async (request, reply) => {
     const principal = (request as AuthenticatedRequest).accountPrincipal;
     if (principal === undefined) return;
     if (dependencies.analytics === undefined) throw new Error("Analytics are unavailable.");

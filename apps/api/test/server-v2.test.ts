@@ -64,9 +64,14 @@ describe("v2 account-owned server", () => {
     } as never);
 
     const openapi = await server.inject({ method: "GET", url: "/openapi.json" });
+    const catalog = await server.inject({
+      method: "GET",
+      url: "/v1/discord/dsa/catalog",
+      headers: { authorization: "Bearer personal-key" }
+    });
     const response = await server.inject({
       method: "POST",
-      url: "/v1/reports",
+      url: "/v1/discord/dsa/reports",
       headers: {
         authorization: "Bearer personal-key",
         "idempotency-key": "create:interaction-1"
@@ -81,10 +86,13 @@ describe("v2 account-owned server", () => {
     });
 
     expect(openapi.statusCode).toBe(200);
-    expect(openapi.json().paths["/v1/reports"].post).toBeDefined();
-    expect(openapi.json().paths["/v1/reports/{reportId}"].get.parameters).toContainEqual(
+    expect(openapi.json().info.title).toBe("NReport API");
+    expect(openapi.json().paths["/v1/discord/dsa/reports"].post).toBeDefined();
+    expect(openapi.json().paths["/v1/discord/dsa/reports/{reportId}"].get.parameters).toContainEqual(
       expect.objectContaining({ in: "path", name: "reportId", required: true })
     );
+    expect(openapi.json().paths["/v1/reports"]).toBeUndefined();
+    expect(catalog.json().service).toEqual({ category: "discord", type: "dsa", version: "v1" });
     expect(response.statusCode).toBe(202);
     expect(response.json()).toMatchObject({ status: "queued", accountId: principal.accountId });
     expect(create).toHaveBeenCalledOnce();
@@ -101,7 +109,7 @@ describe("v2 account-owned server", () => {
 
     const response = await server.inject({
       method: "GET",
-      url: "/v1/reports/not-a-uuid",
+      url: "/v1/discord/dsa/reports/not-a-uuid",
       headers: { authorization: "Bearer personal-key" }
     });
 
@@ -152,7 +160,7 @@ describe("v2 account-owned server", () => {
 
     const response = await server.inject({
       method: "GET",
-      url: `/v1/reports/${report.id}`,
+      url: `/v1/discord/dsa/reports/${report.id}`,
       headers: { authorization: "Bearer personal-key" }
     });
     expect(response.body).toContain("proof.txt");
@@ -178,10 +186,10 @@ describe("v2 account-owned server", () => {
         })
       }
     } as never);
-    const unauthorized = await server.inject({ method: "GET", url: "/v1/account" });
+    const unauthorized = await server.inject({ method: "GET", url: "/v1/discord/dsa/account" });
     const exhausted = await server.inject({
       method: "POST",
-      url: "/v1/reports",
+      url: "/v1/discord/dsa/reports",
       headers: { authorization: "Bearer personal-key", "idempotency-key": "create:1" },
       payload: {
         flow: "message",
@@ -233,9 +241,9 @@ describe("v2 account-owned server", () => {
       reports: { create: vi.fn(), findOwned, timeline, listEvents }
     } as never);
 
-    const found = await server.inject({ method: "GET", url: `/v1/reports/${report.id}`, headers: { authorization: "Bearer personal-key" } });
-    const hidden = await server.inject({ method: "GET", url: "/v1/reports/33333333-3333-4333-8333-333333333333", headers: { authorization: "Bearer personal-key" } });
-    const events = await server.inject({ method: "GET", url: "/v1/events?after=0&limit=25", headers: { authorization: "Bearer personal-key" } });
+    const found = await server.inject({ method: "GET", url: `/v1/discord/dsa/reports/${report.id}`, headers: { authorization: "Bearer personal-key" } });
+    const hidden = await server.inject({ method: "GET", url: "/v1/discord/dsa/reports/33333333-3333-4333-8333-333333333333", headers: { authorization: "Bearer personal-key" } });
+    const events = await server.inject({ method: "GET", url: "/v1/discord/dsa/events?after=0&limit=25", headers: { authorization: "Bearer personal-key" } });
 
     expect(found.statusCode).toBe(200);
     expect(found.json().timeline).toHaveLength(1);
@@ -262,7 +270,7 @@ describe("v2 account-owned server", () => {
 
     const response = await server.inject({
       method: "POST",
-      url: "/v1/reports/22222222-2222-4222-8222-222222222222/retries",
+      url: "/v1/discord/dsa/reports/22222222-2222-4222-8222-222222222222/retries",
       headers: { authorization: "Bearer personal-key", "idempotency-key": "retry:interaction-1" },
       payload: { mode: "reuse" }
     });

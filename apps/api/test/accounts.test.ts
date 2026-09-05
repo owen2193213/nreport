@@ -221,18 +221,18 @@ describe("API account security primitives", () => {
 
     const accountResponse = await server.inject({
       method: "GET",
-      url: "/v1/account",
+      url: "/v1/discord/dsa/account",
       headers: { authorization: "Bearer personal-key" }
     });
     const rejectedAdmin = await server.inject({
       method: "POST",
-      url: "/v1/admin/accounts",
+      url: "/v1/admin/discord/dsa/accounts",
       headers: { authorization: "Bearer personal-key" },
       payload: { username: "Alice" }
     });
     const acceptedAdmin = await server.inject({
       method: "POST",
-      url: "/v1/admin/accounts",
+      url: "/v1/admin/discord/dsa/accounts",
       headers: { authorization: "Bearer admin-key" },
       payload: { username: "Alice" }
     });

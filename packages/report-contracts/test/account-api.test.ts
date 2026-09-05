@@ -1,8 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { DsaAdminApi, DsaApi, DsaApiError } from "../src/index.js";
+import {
+  DSA_ADMIN_BASE_PATH,
+  DSA_API_BASE_PATH,
+  DsaAdminApi,
+  DsaApi,
+  DsaApiError,
+  NREPORT_DISCORD_DSA_SERVICE
+} from "../src/index.js";
 
 describe("account-owned API client", () => {
+  it("exports the stable NReport Discord DSA namespace", () => {
+    expect(DSA_API_BASE_PATH).toBe("/v1/discord/dsa");
+    expect(DSA_ADMIN_BASE_PATH).toBe("/v1/admin/discord/dsa");
+    expect(NREPORT_DISCORD_DSA_SERVICE).toEqual({
+      category: "discord",
+      type: "dsa",
+      version: "v1"
+    });
+  });
+
   it("creates an AI report with an explicit caller idempotency key and no submitter identity", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ reportId: "report-1", status: "queued" }), {
@@ -26,7 +43,7 @@ describe("account-owned API client", () => {
     });
 
     const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(url instanceof URL ? url.pathname : undefined).toBe("/v1/reports");
+    expect(url instanceof URL ? url.pathname : undefined).toBe("/v1/discord/dsa/reports");
     expect(new Headers(init?.headers).get("idempotency-key")).toBe(
       "create:interaction-1"
     );
@@ -49,7 +66,7 @@ describe("account-owned API client", () => {
 
     const [url] = fetchMock.mock.calls[0] ?? [];
     expect(url instanceof URL ? url.href : undefined).toBe(
-      "https://api.example.test/v1/reports?after=cursor-1&limit=25"
+      "https://api.example.test/v1/discord/dsa/reports?after=cursor-1&limit=25"
     );
   });
 
@@ -69,7 +86,7 @@ describe("account-owned API client", () => {
     await admin.createAccount({ username: "alice" });
 
     const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(url instanceof URL ? url.pathname : undefined).toBe("/v1/admin/accounts");
+    expect(url instanceof URL ? url.pathname : undefined).toBe("/v1/admin/discord/dsa/accounts");
     expect(new Headers(init?.headers).get("authorization")).toBe(
       "Bearer admin-secret"
     );
@@ -86,7 +103,7 @@ describe("account-owned API client", () => {
     await expect(admin.assignWebhookDestination("account-1", null)).resolves.toBeUndefined();
 
     const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(url instanceof URL ? url.pathname : undefined).toBe("/v1/admin/accounts/account-1/webhook-destination");
+    expect(url instanceof URL ? url.pathname : undefined).toBe("/v1/admin/discord/dsa/accounts/account-1/webhook-destination");
     expect(JSON.parse(init?.body as string)).toEqual({ destinationId: null });
   });
 

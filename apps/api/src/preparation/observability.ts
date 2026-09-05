@@ -5,7 +5,7 @@ export function preparationLog(event: string, fields: LogFields = {}, level: Log
   const record = JSON.stringify({
     timestamp: new Date().toISOString(),
     level,
-    service: "discord-dsa-api",
+    service: "nreport-discord-dsa-api",
     event,
     ...fields
   });

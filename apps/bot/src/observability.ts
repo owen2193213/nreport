@@ -24,7 +24,7 @@ export function botLog(event: string, fields: LogFields = {}, level: LogLevel = 
   const record = JSON.stringify({
     timestamp: new Date().toISOString(),
     level,
-    service: "discord-dsa-bot",
+    service: "nreport-discord-dsa-bot",
     event,
     ...fields
   });

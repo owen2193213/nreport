@@ -39,18 +39,20 @@ so workspace dependencies resolve from the same committed `package-lock.json`.
 
 ### API: `apps/api`
 
-The API is the source of truth for reports and report lifecycle. `main.ts` migrates PostgreSQL,
-starts Fastify, the report `JobRunner`, and the durable API-to-bot `EventDeliveryWorker`.
+The API is the source of truth for accounts, credits, reports, preparation, and report lifecycle.
+`main.ts` migrates PostgreSQL and starts Fastify plus separate preparation, Discord lifecycle, and
+durable event-delivery workers.
 
-- `server.ts` defines `/healthz`, authenticated `/v1` endpoints, the Cloudflare raw-email webhook,
+- `server-v2.ts` defines `/healthz`, authenticated `/v1` endpoints, the Cloudflare raw-email webhook,
   and API event feed.
-- `database.ts` owns API schema, report/job/event/outbox state transitions, idempotency, retries,
-  and verification deadlines.
-- `job-runner.ts` owns the Discord lifecycle: request verification email, verify code, fetch the
-  current report menu, submit, and close the client session.
+- `accounts.ts`, `report-repository.ts`, `analytics-repository.ts`, and
+  `webhook-destinations.ts` own focused persistence concerns.
+- `preparation-worker.ts` and `preparation/` own AI planning, bounded Brave research, writing, and
+  usage. `lifecycle-runner-v2.ts` owns verification, submission, and automatic appeals.
 - `email.ts` parses and classifies trusted Discord mail. It must never log raw mail, verification
   codes, or sensitive report context.
-- `event-delivery.ts` posts signed lifecycle events to the bot and retries delivery durably.
+- `event-delivery-v2.ts` posts minimal signed lifecycle events to assigned destinations and retries
+  each event/destination pair durably.
 - `pseudonyms.ts`, `security.ts`, and `validation.ts` own generated identity data, cryptography,
   and request validation.
 
@@ -59,26 +61,22 @@ Only the API imports `@discord-dsa/client`. The bot must call the API through
 
 ### Bot: `apps/bot`
 
-The bot owns Discord interactions, user access, credits, encrypted drafts, private report views,
-and Discord DM delivery. It has its own PostgreSQL database and cannot access API tables.
+The bot owns Discord interactions, encrypted personal API keys, the local Discord-user/account
+mapping, pending operations, private report views, and Discord DM delivery. It has its own
+PostgreSQL database and cannot access API tables.
 
 - `main.ts` loads configuration, migrates the bot database, starts the private health/webhook
   server, logs in to Discord, and starts notification/reconciliation work.
 - `commands.ts` and `command-registration.ts` define and register global user-installed commands.
-- `interactions.ts` owns command/modal/select/button flows, ownership checks, credit reservation,
-  API calls, and ephemeral responses.
-- `database.ts` owns access keys, credit ledger, drafts, report tracking, lifecycle inbox, and
-  notification outbox. Credit reservation is transactional; admins and
-  `WHITELIST_ENABLED=false` intentionally bypass credits.
+- `account-interactions.ts` owns account, report, retry, analytics, and administration flows.
+- `account-database.ts` owns encrypted connections, pending idempotent operations, report links,
+  lifecycle inbox, cursors, preferences, and digest-delivery state. Credits live only in the API.
 - `health.ts` serves `/healthz` and `/internal/report-events`. The latter verifies API HMAC
   signatures and is private-network only.
-- `notifier.ts` ingests lifecycle events, reconciles the API event feed every 15 minutes, performs
-  short active-creation polling, and sends lifecycle DMs. Submitted reports do not receive
-  individual long-term polling; webhooks plus reconciliation handle their later updates.
-- `ui.ts` is the shared private-embed and component layer. `profile-resolver.ts` and
-  `server-resolver.ts` perform best-effort Discord enrichment.
-- `crypto.ts`, `countries.ts`, `presence.ts`, and `observability.ts` hold cryptography, country
-  display/autocomplete, online presence, and structured safe logging.
+- `account-notifier.ts` ingests lifecycle events, replays uncertain creates/retries, reconciles
+  each account feed every 15 minutes, and edits one private DM card per report.
+- `profile-resolver.ts` and `message-resolver.ts` perform best-effort Discord enrichment.
+- `crypto.ts`, `presence.ts`, and `observability.ts` hold cryptography, online presence, and safe logging.
 
 All interaction replies—including errors and administration—must be ephemeral. Lifecycle DMs are
 ordinary private Discord messages because Discord does not support ephemeral DMs.
@@ -112,21 +110,22 @@ Discord SDK, PostgreSQL, Fastify, or worker-runtime dependencies.
 
 ## Report lifecycle
 
-1. The bot validates access and country, encrypts a 30-minute draft, shows an ephemeral review,
-   then atomically reserves one normal-user credit and calls `POST /v1/reports` with
-   `create:<interaction-id>`.
-2. The API creates the report, generated pseudonym/email alias/proxy session, job, report event,
-   and delivery-outbox record. The bot consumes a reserved credit only after creation succeeds.
-3. The API requests a verification email through the low-level client. Cloudflare forwards only
+1. A client authenticates with a personal key and submits immutable evidence plus AI/manual
+   preferences using a stable idempotency key.
+2. The API transactionally reserves an account credit and creates the report, retry chain,
+   preparation job, event, and applicable deliveries, then returns `202` before external work.
+3. Preparation resolves omitted fields, optionally researches/writes, persists the result, and
+   only then creates the country-specific identity and session.
+4. The API requests a verification email through the low-level client. Cloudflare forwards only
    trusted Discord mail to the signed API webhook; the API correlates a code and enqueues
    verification/submission.
-4. The API submits to Discord and stores report status/timeline/events. A final HTTP outcome with
+5. The API consumes the chain entitlement at the final submission boundary, submits to Discord,
+   and stores status/timeline/events. A final HTTP outcome with
    ambiguous submission state is never automatically retried.
-5. The API signs lifecycle webhooks to the bot. The bot records them idempotently, sends the
-   required private DM, and reconciles the paginated API event feed every 15 minutes. Tracking
-   expires after 60 days; report history remains available from the API.
-6. A retry is a new report lifecycle with a fresh report ID/session/email alias and does not spend
-   another credit. It preserves the predecessor/successor relationship.
+6. The API signs lifecycle webhooks to assigned destinations. The bot records them idempotently,
+   edits one private DM card, and reconciles the paginated account event feed every 15 minutes.
+7. Retries form a serial chain. Consumed chains reuse their entitlement; released chains reserve a
+   current credit. Each retry has a fresh report ID, identity, and session.
 
 ## Security and privacy rules
 
@@ -141,18 +140,18 @@ Discord SDK, PostgreSQL, Fastify, or worker-runtime dependencies.
   sensitive operational data. Structured logs use safe diagnostics only.
 - Preserve idempotency keys. Do not replace an ambiguous network failure with an automatic final
   Discord resubmission.
-- Do not make the bot's private webhook endpoint public. Use Railway private networking for
-  `BOT_EVENT_WEBHOOK_URL`.
+- Do not make the bot's private webhook endpoint public. Assign its destination through the admin
+  API and use Railway private networking when available.
 
 ## Configuration and deployment
 
 Copy environment shapes from `apps/api/.env.example` and `apps/bot/.env.example`; never copy real
 values into the repository.
 
-- Railway API: [`apps/api/railway.json`](apps/api/railway.json), API PostgreSQL, proxy/email/API
-  secrets, and optionally the bot private webhook URL/secret.
+- Railway API: [`apps/api/railway.json`](apps/api/railway.json), API PostgreSQL, personal-key
+  pepper, administrator/provider/proxy/email secrets, and administrator-managed destinations.
 - Railway bot: [`apps/bot/railway.json`](apps/bot/railway.json), a separate bot PostgreSQL,
-  Discord credentials, access/encryption secrets, and API URL/key. `/healthz` is healthy only
+  Discord credentials, bot encryption secret, API URL, and administrator key. `/healthz` is healthy only
   after the database and Discord gateway are ready.
 - Cloudflare: deploy `apps/email-worker` independently with Wrangler and set
   `INGEST_SHARED_SECRET` to the API email webhook secret. The worker's `INGEST_URL` targets the

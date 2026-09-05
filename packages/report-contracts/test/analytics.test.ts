@@ -7,46 +7,47 @@ describe("analytics contracts", () => {
   });
 
   it("encodes personal, community, and history requests", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ availability: "available" })
-    });
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ availability: "available" }), {
+        headers: { "content-type": "application/json" }
+      }))
+    );
     const api = new DsaApi({
       baseUrl: "https://api.example.test",
       apiKey: "test-key",
       fetch: fetchMock as typeof fetch
     });
 
-    await api.analyticsFor("1197857362942378017", "7d");
+    await api.analytics({ period: "7d" });
     await api.communityAnalytics("30d");
-    await api.actionHistory("1197857362942378017", {
+    await api.actionHistory({
       period: "7d",
       limit: 10
     });
 
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
-      "https://api.example.test/v1/users/1197857362942378017/analytics?period=7d",
+      "https://api.example.test/v1/analytics?period=7d",
       "https://api.example.test/v1/analytics/community?period=30d",
-      "https://api.example.test/v1/users/1197857362942378017/action-history?period=7d&limit=10"
+      "https://api.example.test/v1/action-history?period=7d&limit=10"
     ]);
   });
 
   it("encodes exact-range analytics and digest activity requests", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response("{}", { headers: { "content-type": "application/json" } }))
+    );
     const api = new DsaApi({
       baseUrl: "https://api.example.test", apiKey: "test-key", fetch: fetchMock as typeof fetch
     });
     const startAt = "2026-08-03T00:00:00.000Z";
     const endAt = "2026-08-10T00:00:00.000Z";
 
-    await api.analyticsForRange("1197857362942378017", startAt, endAt);
-    await api.communityAnalyticsForRange(startAt, endAt);
-    await api.digestActivity("1197857362942378017", startAt, endAt);
+    await api.analytics({ startAt, endAt });
+    await api.digestActivity(startAt, endAt);
 
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
-      "https://api.example.test/v1/users/1197857362942378017/analytics?startAt=2026-08-03T00%3A00%3A00.000Z&endAt=2026-08-10T00%3A00%3A00.000Z",
-      "https://api.example.test/v1/analytics/community?startAt=2026-08-03T00%3A00%3A00.000Z&endAt=2026-08-10T00%3A00%3A00.000Z",
-      "https://api.example.test/v1/users/1197857362942378017/digest-activity?startAt=2026-08-03T00%3A00%3A00.000Z&endAt=2026-08-10T00%3A00%3A00.000Z"
+      "https://api.example.test/v1/analytics?startAt=2026-08-03T00%3A00%3A00.000Z&endAt=2026-08-10T00%3A00%3A00.000Z",
+      "https://api.example.test/v1/digest-activity?startAt=2026-08-03T00%3A00%3A00.000Z&endAt=2026-08-10T00%3A00%3A00.000Z"
     ]);
   });
 });

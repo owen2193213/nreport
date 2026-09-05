@@ -1,196 +1,275 @@
+import type { ActionHistoryPage, AnalyticsPeriod, DigestActivity, ReportAnalytics } from "./analytics.js";
 import type {
+  AdminAccountView,
+  AdminApiKeyView,
+  AdminCreateAccountInput,
+  ApiAccountView,
+  ApiErrorEnvelope,
   CreateReportInput,
+  CursorPage,
+  GlobalUsageView,
   ReportDetail,
   ReportLifecycleEvent,
+  ReportRetryMode,
   ReportSummary,
-  ReportRetryMode
+  WebhookDestinationView
 } from "./types.js";
-import type {
-  ActionHistoryPage,
-  AnalyticsPeriod,
-  DigestActivity,
-  ReportAnalytics
-} from "./analytics.js";
-
-interface ApiErrorBody {
-  error?: { code?: string; message?: string };
-}
 
 export class DsaApiError extends Error {
   public constructor(
     public readonly status: number,
     public readonly code: string,
-    message: string
+    message: string,
+    public readonly requestId?: string
   ) {
     super(message);
     this.name = "DsaApiError";
   }
 }
 
-export interface DsaApiOptions {
+interface HttpClientOptions {
   baseUrl: string;
-  apiKey: string;
   fetch?: typeof fetch;
   timeoutMs?: number;
 }
 
-export class DsaApi {
+class HttpClient {
   private readonly baseUrl: URL;
-  private readonly apiKey: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
 
-  public constructor(options: DsaApiOptions) {
+  public constructor(options: HttpClientOptions, private readonly credential: string) {
     this.baseUrl = new URL(options.baseUrl);
-    this.apiKey = options.apiKey;
     this.fetchImpl = options.fetch ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 15_000;
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  protected async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await this.fetchImpl(new URL(path, this.baseUrl), {
       ...init,
       headers: {
-        authorization: `Bearer ${this.apiKey}`,
+        authorization: `Bearer ${this.credential}`,
         accept: "application/json",
         ...init.headers
       },
       signal: AbortSignal.timeout(this.timeoutMs)
     });
-    const body = (await response.json()) as T | ApiErrorBody;
+    if (response.status === 204 && response.ok) return undefined as T;
+    const rawBody = await response.text();
+    let body: T | Partial<ApiErrorEnvelope> | undefined;
+    try {
+      body = rawBody.length === 0 ? undefined : JSON.parse(rawBody) as T | Partial<ApiErrorEnvelope>;
+    } catch {
+      body = undefined;
+    }
     if (!response.ok) {
-      const apiError = body as ApiErrorBody;
+      const detail = (body as Partial<ApiErrorEnvelope> | undefined)?.error;
       throw new DsaApiError(
         response.status,
-        apiError.error?.code ?? "unknown_error",
-        apiError.error?.message ?? `HTTP ${response.status}`
+        detail?.code ?? "unknown_error",
+        detail?.message ?? `HTTP ${response.status}`,
+        detail?.requestId
       );
+    }
+    if (body === undefined) {
+      throw new DsaApiError(response.status, "invalid_response", "API returned an invalid JSON response.");
     }
     return body as T;
   }
+}
 
-  public countries(): Promise<{ countries: string[] }> {
-    return this.request("/v1/countries");
+export interface DsaApiOptions extends HttpClientOptions { apiKey: string }
+
+export class DsaApi extends HttpClient {
+  public constructor(options: DsaApiOptions) {
+    super(options, options.apiKey);
   }
 
-  public createReport(interactionId: string, input: CreateReportInput): Promise<ReportDetail> {
+  public account(): Promise<ApiAccountView> {
+    return this.request("/v1/account");
+  }
+
+  public catalog(): Promise<Record<string, unknown>> {
+    return this.request("/v1/catalog");
+  }
+
+  /** @deprecated Use catalog(). */
+  public countries(): Promise<{ countries: string[] }> {
+    return this.request<Record<string, unknown>>("/v1/catalog").then((value) => ({
+      countries: value.countries as string[]
+    }));
+  }
+
+  public createReport(idempotencyKey: string, input: CreateReportInput): Promise<ReportDetail> {
     return this.request("/v1/reports", {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "idempotency-key": `create:${interactionId}`
-      },
+      headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
       body: JSON.stringify(input)
     });
   }
 
-  public report(internalReportId: string): Promise<ReportDetail> {
-    return this.request(`/v1/reports/${encodeURIComponent(internalReportId)}`);
+  public report(reportId: string): Promise<ReportDetail> {
+    return this.request(`/v1/reports/${encodeURIComponent(reportId)}`);
   }
 
-  public reportsFor(discordUserId: string): Promise<{ reports: ReportSummary[] }> {
-    return this.request(`/v1/users/${encodeURIComponent(discordUserId)}/reports`);
+  public reports(query: { after?: string; limit?: number } = {}): Promise<CursorPage<ReportSummary>> {
+    const search = paginationQuery(query);
+    return this.request(`/v1/reports${search}`);
   }
 
-  public analyticsFor(discordUserId: string, period: AnalyticsPeriod): Promise<ReportAnalytics> {
-    const query = new URLSearchParams({ period });
-    return this.request(
-      `/v1/users/${encodeURIComponent(discordUserId)}/analytics?${query.toString()}`
-    );
-  }
-
-  public communityAnalytics(period: AnalyticsPeriod): Promise<ReportAnalytics> {
-    const query = new URLSearchParams({ period });
-    return this.request(`/v1/analytics/community?${query.toString()}`);
-  }
-
-  public analyticsForRange(
-    discordUserId: string,
-    startAt: string,
-    endAt: string
-  ): Promise<ReportAnalytics> {
-    const query = new URLSearchParams({ startAt, endAt });
-    return this.request(`/v1/users/${encodeURIComponent(discordUserId)}/analytics?${query.toString()}`);
-  }
-
-  public communityAnalyticsForRange(startAt: string, endAt: string): Promise<ReportAnalytics> {
-    const query = new URLSearchParams({ startAt, endAt });
-    return this.request(`/v1/analytics/community?${query.toString()}`);
-  }
-
-  public digestActivity(
-    discordUserId: string,
-    startAt: string,
-    endAt: string
-  ): Promise<DigestActivity> {
-    const query = new URLSearchParams({ startAt, endAt });
-    return this.request(
-      `/v1/users/${encodeURIComponent(discordUserId)}/digest-activity?${query.toString()}`
-    );
-  }
-
-  public actionHistory(
-    discordUserId: string,
-    query: {
-      period?: AnalyticsPeriod;
-      startAt?: string;
-      endAt?: string;
-      after?: string;
-      limit?: number;
-    }
-  ): Promise<ActionHistoryPage> {
-    const search = new URLSearchParams();
-    if (query.period !== undefined) search.set("period", query.period);
-    if (query.startAt !== undefined) search.set("startAt", query.startAt);
-    if (query.endAt !== undefined) search.set("endAt", query.endAt);
-    if (query.after !== undefined) search.set("after", query.after);
-    if (query.limit !== undefined) search.set("limit", query.limit.toString());
-    const suffix = search.size > 0 ? `?${search.toString()}` : "";
-    return this.request(
-      `/v1/users/${encodeURIComponent(discordUserId)}/action-history${suffix}`
-    );
-  }
-
-  public retryReport(
-    internalReportId: string,
-    interactionId: string,
-    discordUserId: string,
-    overrides: { reportReason?: string; context?: string } = {},
-    mode: ReportRetryMode = "manual"
-  ): Promise<ReportDetail> {
-    return this.request(`/v1/reports/${encodeURIComponent(internalReportId)}/retry`, {
+  public retryReport(reportId: string, idempotencyKey: string, mode: ReportRetryMode): Promise<ReportDetail> {
+    return this.request(`/v1/reports/${encodeURIComponent(reportId)}/retries`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "idempotency-key": `retry:${interactionId}`
-      },
-      body: JSON.stringify({ submitterDiscordUserId: discordUserId, mode, ...overrides })
+      headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
+      body: JSON.stringify({ mode })
     });
   }
 
-  public retryAppeal(
-    internalReportId: string,
-    interactionId: string,
-    discordUserId: string
-  ): Promise<ReportDetail> {
-    return this.request(
-      `/v1/reports/${encodeURIComponent(internalReportId)}/retry-appeal`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "idempotency-key": `appeal-retry:${interactionId}`
-        },
-        body: JSON.stringify({ submitterDiscordUserId: discordUserId })
-      }
-    );
+  public events(query: { after?: string; limit?: number } = {}): Promise<CursorPage<ReportLifecycleEvent>> {
+    return this.request(`/v1/events${paginationQuery(query)}`);
   }
 
-  public lifecycleEvents(
-    afterEventId: string,
-    limit = 100
-  ): Promise<{ events: ReportLifecycleEvent[] }> {
-    const query = new URLSearchParams({ after: afterEventId, limit: limit.toString() });
-    return this.request(`/v1/report-events?${query.toString()}`);
+  public analytics(query: { period?: AnalyticsPeriod; startAt?: string; endAt?: string }): Promise<ReportAnalytics> {
+    return this.request(`/v1/analytics${dateQuery(query)}`);
   }
+
+  public communityAnalytics(period: AnalyticsPeriod): Promise<ReportAnalytics> {
+    return this.request(`/v1/analytics/community?${new URLSearchParams({ period })}`);
+  }
+
+  public digestActivity(startAt: string, endAt: string): Promise<DigestActivity> {
+    return this.request(`/v1/digest-activity${dateQuery({ startAt, endAt })}`);
+  }
+
+  public actionHistory(query: { period?: AnalyticsPeriod; startAt?: string; endAt?: string; after?: string; limit?: number }): Promise<ActionHistoryPage> {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) if (value !== undefined) search.set(key, String(value));
+    return this.request(`/v1/action-history${search.size === 0 ? "" : `?${search}`}`);
+  }
+}
+
+export interface DsaAdminApiOptions extends HttpClientOptions { adminKey: string }
+
+export class DsaAdminApi extends HttpClient {
+  public constructor(options: DsaAdminApiOptions) {
+    super(options, options.adminKey);
+  }
+
+  public createAccount(input: AdminCreateAccountInput): Promise<AdminAccountView> {
+    return this.request("/v1/admin/accounts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input)
+    });
+  }
+
+  public accounts(): Promise<{ items: AdminAccountView[] }> {
+    return this.request("/v1/admin/accounts");
+  }
+
+  public account(accountId: string): Promise<AdminAccountView> {
+    return this.request(`/v1/admin/accounts/${encodeURIComponent(accountId)}`);
+  }
+
+  public issueKey(accountId: string): Promise<{ keyId: string; apiKey: string; prefix: string }> {
+    return this.request(`/v1/admin/accounts/${encodeURIComponent(accountId)}/keys`, { method: "POST" });
+  }
+
+  public rotateKey(accountId: string, overlapSeconds = 600): Promise<{ keyId: string; apiKey: string; prefix: string }> {
+    return this.request(`/v1/admin/accounts/${encodeURIComponent(accountId)}/keys/rotate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ overlapSeconds })
+    });
+  }
+
+  public keys(accountId: string): Promise<{ items: AdminApiKeyView[] }> {
+    return this.request(`/v1/admin/accounts/${encodeURIComponent(accountId)}/keys`);
+  }
+
+  public async revokeKey(accountId: string, keyId: string, reason: string): Promise<void> {
+    await this.request(`/v1/admin/accounts/${encodeURIComponent(accountId)}/keys/${encodeURIComponent(keyId)}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason })
+    });
+  }
+
+  public suspendAccount(accountId: string, reason: string): Promise<AdminAccountView> {
+    return this.accountStatus(accountId, "suspend", reason);
+  }
+
+  public reinstateAccount(accountId: string, reason: string): Promise<AdminAccountView> {
+    return this.accountStatus(accountId, "reinstate", reason);
+  }
+
+  public adjustCredits(accountId: string, delta: number, reason: string): Promise<AdminAccountView> {
+    return this.request(`/v1/admin/accounts/${encodeURIComponent(accountId)}/credits`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ delta, reason })
+    });
+  }
+
+  public usage(): Promise<GlobalUsageView> {
+    return this.request("/v1/admin/usage");
+  }
+
+  public diagnostics(): Promise<Record<string, number>> {
+    return this.request("/v1/admin/diagnostics");
+  }
+
+  public webhookDestinations(): Promise<{ items: WebhookDestinationView[] }> {
+    return this.request("/v1/admin/webhook-destinations");
+  }
+
+  public createWebhookDestination(input: { name: string; url: string; signingSecret: string }): Promise<WebhookDestinationView> {
+    return this.request("/v1/admin/webhook-destinations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input)
+    });
+  }
+
+  public updateWebhookDestination(
+    destinationId: string,
+    input: { name?: string; url?: string; signingSecret?: string; status?: "active" | "disabled" }
+  ): Promise<WebhookDestinationView> {
+    return this.request(`/v1/admin/webhook-destinations/${encodeURIComponent(destinationId)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input)
+    });
+  }
+
+  public async assignWebhookDestination(accountId: string, destinationId: string | null): Promise<void> {
+    await this.request(`/v1/admin/accounts/${encodeURIComponent(accountId)}/webhook-destination`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ destinationId })
+    });
+  }
+
+  private accountStatus(accountId: string, action: "suspend" | "reinstate", reason: string): Promise<AdminAccountView> {
+    return this.request(`/v1/admin/accounts/${encodeURIComponent(accountId)}/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason })
+    });
+  }
+}
+
+function paginationQuery(query: { after?: string; limit?: number }): string {
+  const search = new URLSearchParams();
+  if (query.after !== undefined) search.set("after", query.after);
+  if (query.limit !== undefined) search.set("limit", String(query.limit));
+  return search.size === 0 ? "" : `?${search}`;
+}
+
+function dateQuery(query: { period?: AnalyticsPeriod; startAt?: string; endAt?: string }): string {
+  const search = new URLSearchParams();
+  if (query.period !== undefined) search.set("period", query.period);
+  if (query.startAt !== undefined) search.set("startAt", query.startAt);
+  if (query.endAt !== undefined) search.set("endAt", query.endAt);
+  return search.size === 0 ? "" : `?${search}`;
 }

@@ -47,7 +47,7 @@ export interface AnalyticsSourceReport {
   flow: ReportFlow;
   category: string;
   country: string;
-  submitterDiscordUserId: string | null;
+  accountId: string | null;
   submittedText: string;
   inCaseCohort?: boolean;
   inAttemptWindow?: boolean;
@@ -76,6 +76,27 @@ const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "in", "is",
   "it", "of", "on", "or", "that", "the", "this", "to", "was", "were", "with", "you", "your"
 ]);
+
+export interface ActionHistoryCursor {
+  actionedAt: string;
+  id: string;
+}
+
+export function encodeActionHistoryCursor(cursor: ActionHistoryCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+export function decodeActionHistoryCursor(value: string): ActionHistoryCursor {
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Record<string, unknown>;
+    if (typeof parsed.actionedAt !== "string" || typeof parsed.id !== "string" || !Number.isFinite(Date.parse(parsed.actionedAt))) {
+      throw new Error("invalid");
+    }
+    return { actionedAt: parsed.actionedAt, id: parsed.id };
+  } catch {
+    throw new Error("Invalid action history cursor.");
+  }
+}
 
 export function resolveAnalyticsInterval(period: AnalyticsPeriod, now = new Date()): AnalyticsInterval {
   const endAt = now.toISOString();
@@ -237,7 +258,7 @@ function breakdownRows(
     const key = select(report);
     const value = values.get(key) ?? { reports: 0, users: new Set<string>() };
     value.reports += 1;
-    if (report.submitterDiscordUserId !== null) value.users.add(report.submitterDiscordUserId);
+    if (report.accountId !== null) value.users.add(report.accountId);
     values.set(key, value);
   }
   return [...values.entries()]
@@ -378,7 +399,7 @@ export function aggregateAnalyticsRows(input: AggregateAnalyticsInput): ReportAn
   );
   const attemptReports = input.reports.filter((report) => report.inAttemptWindow ?? true);
   const communityUsers = new Set(cohortReports.flatMap((report) =>
-    report.submitterDiscordUserId === null ? [] : [report.submitterDiscordUserId]
+    report.accountId === null ? [] : [report.accountId]
   ));
   if (scope === "community" && (cohortReports.length < 10 || communityUsers.size < 5)) {
     return emptyAnalytics(scope, interval);
@@ -506,13 +527,13 @@ export function aggregateAnalyticsRows(input: AggregateAnalyticsInput): ReportAn
     series: buildTimeSeriesBuckets(interval, cohortReports, replySecondsByRoot),
     patterns: recurringPatterns(latestCaseReports
       .filter((report) => {
-        if (scope === "community" && report.submitterDiscordUserId === null) return false;
+        if (scope === "community" && report.accountId === null) return false;
         const chain = reportsByRoot.get(report.rootId) ?? [report];
         return ["direct_actioned", "appeal_actioned"].includes(classifyCaseOutcome(
           chain.flatMap((item) => eventsByReport.get(item.id) ?? [])
             .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt))
         ));
       })
-      .map((report) => ({ userId: report.submitterDiscordUserId ?? "unknown", text: report.submittedText })), scope)
+      .map((report) => ({ userId: report.accountId ?? "unknown", text: report.submittedText })), scope)
   };
 }

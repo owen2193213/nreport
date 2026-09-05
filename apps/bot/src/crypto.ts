@@ -5,32 +5,10 @@ import {
   createHash,
   createHmac,
   randomBytes,
-  randomUUID,
   timingSafeEqual
 } from "node:crypto";
 
 const ALGORITHM = "aes-256-gcm";
-
-export interface GeneratedAccessKey {
-  code: string;
-  hash: string;
-  id: string;
-  prefix: string;
-}
-
-export function hashAccessKey(code: string, pepper: string): string {
-  return createHmac("sha256", pepper).update(code.trim()).digest("hex");
-}
-
-export function generateAccessKey(pepper: string): GeneratedAccessKey {
-  const code = `dsa_${randomBytes(32).toString("base64url")}`;
-  return {
-    code,
-    hash: hashAccessKey(code, pepper),
-    id: randomUUID(),
-    prefix: `${code.slice(0, 12)}…`
-  };
-}
 
 export function encryptJson(value: unknown, key: Buffer): string {
   const iv = randomBytes(12);

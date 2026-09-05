@@ -1,7 +1,13 @@
 import { Buffer } from "node:buffer";
 
 export interface AppConfig {
-  apiKey: string;
+  adminApiKey: string;
+  apiKeyPepper: string;
+  aiApiKey: string;
+  aiModel: string;
+  aiProvider: "openrouter" | "baseten";
+  braveSearchApiKey: string;
+  preparationConcurrency: number;
   databaseUrl: string;
   emailDomain: string;
   environment: string;
@@ -10,8 +16,7 @@ export interface AppConfig {
   sessionEncryptionKey: Buffer;
   webhookSecret: string;
   workerEnabled: boolean;
-  botEventWebhookUrl?: string;
-  botEventWebhookSecret?: string;
+  allowRailwayPrivateHttpWebhooks?: boolean;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -43,29 +48,37 @@ function parsePort(value: string | undefined): number {
   return port;
 }
 
+function positiveInteger(value: string | undefined, fallback: number, name: string): number {
+  const parsed = Number(value ?? String(fallback));
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 16) {
+    throw new Error(`${name} must be an integer between 1 and 16.`);
+  }
+  return parsed;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  const adminApiKey = secret(env, "ADMIN_API_KEY");
+  const apiKeyPepper = secret(env, "API_KEY_PEPPER");
+  const configuredProvider = env.AI_PROVIDER?.trim().toLowerCase() ?? "openrouter";
+  if (configuredProvider !== "openrouter" && configuredProvider !== "baseten") {
+    throw new Error("AI_PROVIDER must be either 'openrouter' or 'baseten'.");
+  }
+  const aiProvider = configuredProvider;
+  const aiApiKey = required(
+    env,
+    aiProvider === "openrouter" ? "OPENROUTER_API_KEY" : "BASETEN_API_KEY"
+  );
+  const aiModel =
+    env.AI_MODEL?.trim() ||
+    (aiProvider === "openrouter"
+      ? "deepseek/deepseek-v4-flash-0731"
+      : "deepseek-ai/DeepSeek-V4-Flash-0731");
   const emailDomain = required(env, "REPORT_EMAIL_DOMAIN").toLowerCase();
   if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(emailDomain)) {
     throw new Error("REPORT_EMAIL_DOMAIN must be a valid domain name.");
   }
 
   const proxyUrlTemplate = env.DSA_PROXY_URL_TEMPLATE?.trim();
-  const botEventWebhookUrl = env.BOT_EVENT_WEBHOOK_URL?.trim();
-  const botEventWebhookSecret = env.BOT_EVENT_WEBHOOK_SECRET?.trim();
-  if ((botEventWebhookUrl === undefined) !== (botEventWebhookSecret === undefined)) {
-    throw new Error("BOT_EVENT_WEBHOOK_URL and BOT_EVENT_WEBHOOK_SECRET must be configured together.");
-  }
-  if (botEventWebhookUrl !== undefined) new URL(botEventWebhookUrl);
-  if (botEventWebhookSecret !== undefined && botEventWebhookSecret.length < 32) {
-    throw new Error("BOT_EVENT_WEBHOOK_SECRET must contain at least 32 characters.");
-  }
-  const botEventDelivery =
-    botEventWebhookUrl === undefined
-      ? {}
-      : {
-          botEventWebhookUrl,
-          botEventWebhookSecret: botEventWebhookSecret as string
-        };
   if (
     proxyUrlTemplate !== undefined &&
     (!proxyUrlTemplate.includes("{country}") || !proxyUrlTemplate.includes("{session}"))
@@ -76,7 +89,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   return {
-    apiKey: secret(env, "API_KEY"),
+    adminApiKey,
+    apiKeyPepper,
+    aiApiKey,
+    aiModel,
+    aiProvider,
+    braveSearchApiKey: required(env, "BRAVE_SEARCH_API_KEY"),
+    preparationConcurrency: positiveInteger(env.PREPARATION_CONCURRENCY, 2, "PREPARATION_CONCURRENCY"),
     databaseUrl: required(env, "DATABASE_URL"),
     emailDomain,
     environment: env.NODE_ENV?.trim() || "development",
@@ -85,6 +104,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     sessionEncryptionKey: encryptionKey(env),
     webhookSecret: secret(env, "CLOUDFLARE_EMAIL_WEBHOOK_SECRET"),
     workerEnabled: env.WORKER_ENABLED !== "false",
-    ...botEventDelivery
+    allowRailwayPrivateHttpWebhooks: env.ALLOW_RAILWAY_PRIVATE_HTTP_WEBHOOKS === "true"
   };
 }

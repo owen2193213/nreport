@@ -1,93 +1,70 @@
-import type { DsaApi } from "@discord-dsa/contracts";
-import { DiscordAPIError, type Client } from "discord.js";
+import { setTimeout as delay } from "node:timers/promises";
 
-import type { BotDatabase, DigestJob } from "./database.js";
-import { closedDigestPeriod } from "./digest-periods.js";
-import { digestMessage } from "./digest-ui.js";
-import { botLog, errorFields } from "./observability.js";
+import { DsaApi } from "@discord-dsa/contracts";
+import type { Client } from "discord.js";
 
-function permanentDmFailure(error: unknown): boolean {
-  return error instanceof DiscordAPIError && (error.code === 50_007 || error.code === 10_013);
-}
-
-function safeDigestError(error: unknown): string {
-  if (permanentDmFailure(error)) return "Discord user cannot receive this digest.";
-  return "Digest delivery failed temporarily.";
-}
+import type { AccountBotDatabase, ApiConnection } from "./account-database.js";
+import type { BotConfig } from "./config.js";
+import { decryptJson } from "./crypto.js";
 
 export class DigestWorker {
-  private timer: NodeJS.Timeout | null = null;
-  private running = false;
+  private stopping = false;
+  private running: Promise<void> | undefined;
 
   public constructor(
-    private readonly database: BotDatabase,
-    private readonly api: DsaApi,
-    private readonly client: Client
+    private readonly database: AccountBotDatabase,
+    private readonly client: Client,
+    private readonly config: BotConfig
   ) {}
 
   public start(): void {
-    if (this.timer !== null) return;
-    void this.runOnce();
-    this.timer = setInterval(() => void this.runOnce(), 5 * 60_000);
-    this.timer.unref();
+    if (this.running !== undefined) return;
+    this.stopping = false;
+    this.running = this.loop();
   }
 
-  public stop(): void {
-    if (this.timer !== null) clearInterval(this.timer);
-    this.timer = null;
+  public async stop(): Promise<void> {
+    this.stopping = true;
+    await this.running;
+    this.running = undefined;
   }
 
-  public async runOnce(now = new Date()): Promise<void> {
-    if (this.running) return;
-    this.running = true;
-    try {
-      for (const user of await this.database.listDigestUsers()) {
-        await this.database.ensureDigestJob(
-          user.discordUserId,
-          user.frequency,
-          closedDigestPeriod(user.frequency, now)
+  public async processConnection(connection: ApiConnection, now = new Date()): Promise<void> {
+    const preferences = await this.database.notificationPreferences(connection.discord_user_id);
+    const periods: Array<{ kind: "daily" | "weekly"; start: Date; end: Date }> = [];
+    const dayEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    if (preferences.dailyDigest) periods.push({ kind: "daily", start: new Date(dayEnd.getTime() - 86_400_000), end: dayEnd });
+    if (preferences.weeklyDigest && now.getUTCDay() === 1) periods.push({ kind: "weekly", start: new Date(dayEnd.getTime() - 7 * 86_400_000), end: dayEnd });
+    const api = new DsaApi({
+      baseUrl: this.config.apiBaseUrl,
+      apiKey: decryptJson<string>(connection.encrypted_api_key, this.config.dataEncryptionKey)
+    });
+    for (const period of periods) {
+      const startAt = period.start.toISOString();
+      const endAt = period.end.toISOString();
+      if (!(await this.database.claimDigest(connection.discord_user_id, period.kind, startAt, endAt))) continue;
+      try {
+        const activity = await api.digestActivity(startAt, endAt);
+        if (!activity.eligible) {
+          await this.database.completeDigest(connection.discord_user_id, period.kind, startAt, "skipped");
+          continue;
+        }
+        const user = await this.client.users.fetch(connection.discord_user_id);
+        await user.send(
+          `${period.kind === "daily" ? "Daily" : "Weekly"} DSA activity: ${activity.newReports} new reports and ${activity.outcomeChanges.total} outcome changes.`
         );
+        await this.database.completeDigest(connection.discord_user_id, period.kind, startAt, "sent");
+      } catch {
+        await this.database.completeDigest(connection.discord_user_id, period.kind, startAt, "failed");
       }
-      for (const job of await this.database.claimDigestJobs()) await this.deliver(job);
-    } catch (error) {
-      botLog("digest_worker_run_failed", errorFields(error), "error");
-    } finally {
-      this.running = false;
     }
   }
 
-  private async deliver(job: DigestJob): Promise<void> {
-    try {
-      const preferences = await this.database.getNotificationPreferences(job.discordUserId);
-      if (preferences.digestFrequency !== job.frequency) {
-        await this.database.completeDigestJob(job.id, "skipped");
-        return;
-      }
-      const startAt = job.periodStart.toISOString();
-      const endAt = job.periodEnd.toISOString();
-      const activity = await this.api.digestActivity(job.discordUserId, startAt, endAt);
-      if (!activity.eligible) {
-        await this.database.completeDigestJob(job.id, "skipped");
-        botLog("digest_delivery_skipped", { digestJobId: job.id, reason: "below_threshold" });
-        return;
-      }
-      const [personal, community] = await Promise.all([
-        this.api.analyticsForRange(job.discordUserId, startAt, endAt),
-        this.api.communityAnalyticsForRange(startAt, endAt)
-      ]);
-      const payload = await digestMessage({ frequency: job.frequency, activity, personal, community });
-      const user = await this.client.users.fetch(job.discordUserId);
-      const message = await user.send(payload);
-      await this.database.completeDigestJob(job.id, "sent", message.id);
-      botLog("digest_delivery_completed", { digestJobId: job.id, frequency: job.frequency });
-    } catch (error) {
-      const permanent = permanentDmFailure(error);
-      await this.database.failDigestJob(job, safeDigestError(error), permanent);
-      botLog(
-        "digest_delivery_failed",
-        { digestJobId: job.id, frequency: job.frequency, permanent, ...errorFields(error) },
-        permanent ? "warn" : "error"
-      );
+  private async loop(): Promise<void> {
+    while (!this.stopping) {
+      const connections = await this.database.connections().catch(() => []);
+      for (const connection of connections) await this.processConnection(connection).catch(() => undefined);
+      for (let second = 0; second < 3_600 && !this.stopping; second += 1) await delay(1_000);
     }
   }
 }

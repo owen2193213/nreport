@@ -1,187 +1,123 @@
-# Discord DSA Reporting Monorepo
+# Discord DSA reporting monorepo
 
-An internal TypeScript monorepo for authorized EU Digital Services Act reports involving
-Discord users, messages, and servers. A user-installed Discord app calls an independently
-deployed authenticated Railway API;
-the backend owns reporter pseudonyms, catch-all email addresses, country-matched sticky
-proxy sessions, verification email processing, live menu resolution, submission, retries,
-and status history.
-
-The production lifecycle has been verified end to end: create report, receive and verify
-the email code, submit to Discord, persist the Discord report ID, and process the received
-confirmation email.
+An internal TypeScript monorepo for authorized EU Digital Services Act reports involving Discord
+messages, profiles, and servers. The account-owned HTTP API performs the entire durable workflow;
+the Discord user-installed app is one thin client of that API.
 
 ## Start here
 
-- **Bot developers:** [`docs/BOT_API.md`](docs/BOT_API.md) is the canonical API contract,
-  with request schemas, status handling, errors, report types, and a TypeScript adapter.
-- **Bot operators:** [`docs/BOT_IMPLEMENTATION.md`](docs/BOT_IMPLEMENTATION.md) documents
-  commands, access credits, lifecycle DMs, and deployment.
-- **Service operators:** use the deployment configuration below.
-- **Backend maintainers:** see [`BACKEND_DESIGN.md`](BACKEND_DESIGN.md).
-- **Low-level client maintainers:** see [`CLIENT_DESIGN.md`](CLIENT_DESIGN.md) and
-  [`HEADER_TEST_RESULTS.md`](HEADER_TEST_RESULTS.md).
-- **Protocol history:** [`DISCORD_DSA_API_HANDOFF.md`](DISCORD_DSA_API_HANDOFF.md) preserves
-  the original workflow capture. It is not the bot-facing contract.
+- [`docs/BOT_API.md`](docs/BOT_API.md): public account/admin contract, credits, retries, events,
+  errors, and client behavior.
+- [`docs/BOT_IMPLEMENTATION.md`](docs/BOT_IMPLEMENTATION.md): Discord commands, encrypted account
+  connection, DM updates, and reconciliation.
+- [`docs/AI_REPORTING_FLOW.md`](docs/AI_REPORTING_FLOW.md): API-side preparation and research.
+- [`BACKEND_DESIGN.md`](BACKEND_DESIGN.md) and [`CLIENT_DESIGN.md`](CLIENT_DESIGN.md): backend and
+  low-level Discord transport design.
+- Historical protocol and transport evidence remain in `DISCORD_DSA_API_HANDOFF.md`,
+  `HEADER_TEST_RESULTS.md`, and `IPOASIS_PROXY_NOTES.md`.
 
 ## Architecture
 
-- `apps/api`: Railway Fastify service, authenticated report API, signed email webhook, and jobs.
-- `apps/bot`: separate Railway Discord service, access credits, report UI, and lifecycle DMs.
-- `packages/discord-dsa-client`: low-level Discord reporting client used only by the API.
-- `packages/report-contracts`: shared API DTOs, semantic catalogs, and typed HTTP adapter.
-- Two PostgreSQL services: one for authoritative reports and one for bot access/notification state.
-- Cloudflare Email Routing: whole-domain catch-all delivered to an Email Worker.
-- IPOasis: one country-specific sticky residential proxy session per lifecycle attempt.
+- `apps/api`: Fastify account/admin API, PostgreSQL preparation and Discord lifecycle workers,
+  signed email ingest, durable events, and per-destination delivery.
+- `apps/bot`: Discord UI, encrypted personal-key mapping, pending operation reconciliation, and one
+  evolving private status card per report.
+- `apps/email-worker`: Cloudflare worker forwarding trusted raw Discord mail to the new API.
+- `packages/report-contracts`: shared DTOs, schemas, catalogs, `DsaApi`, and `DsaAdminApi`.
+- `packages/discord-dsa-client`: low-level Discord transport used only by the API.
 
-All 27 EU member states are supported. Localized, version-locked Faker data generates
-organization-controlled pseudonyms where available; Bulgaria, Estonia, Lithuania, and
-Malta use Faker's generic fallback. Names stay in Unicode in reports and are transliterated
-only for readable internal IDs and email local-parts. Nothing is scraped at runtime.
+The API and bot have separate PostgreSQL databases and encryption keys. The API never accepts the
+submitting Discord user's ID. It can serve other bots because ownership derives solely from each
+personal API key. The bot alone maps a Discord user to the stable API account ID.
 
-The selected country controls the pseudonym profile, proxy country, locale,
-`Accept-Language`, and IANA timezone. Discord's verification-email request and current form payload
-both explicitly use the supported fixed language value `en`; it is intentionally not derived from
-the country.
+## Report lifecycle
 
-## Railway configuration
+A client calls `POST /v1/reports` with a personal key and stable idempotency key. The API
+transactionally reserves a credit, stores the immutable input, creates the retry chain, job, and
+event, and returns `202` before external network work. The preparation worker optionally plans,
+researches, and writes; then the API creates the localized identity/session, completes Discord
+email verification, consumes the credit immediately before final submission, tracks decisions,
+and automatically handles eligible appeals.
 
-Connect the same GitHub repository to two Railway services and leave each service root at
-the repository root so npm workspaces and the root lockfile remain available.
+Clients recover every visible state through account-scoped report reads and the cursor event feed.
+Administrator-assigned signed webhooks reduce latency but are optional. Ambiguous final Discord
+submissions are never retried automatically.
 
-| Service | Railway config path |
+## New deployment
+
+This generation must coexist with the historical Railway system. Create all of the following new:
+
+- API and bot Railway services;
+- independent API and bot PostgreSQL databases;
+- session and bot-data encryption keys, API-key pepper, and administrator key;
+- Discord application and bot token;
+- report email domain, Cloudflare email route/worker destination, and ingest secret;
+- provider/search credentials and webhook signing secret.
+
+Do not mutate or redeploy the historical services or share their databases, Discord application,
+or report email route.
+
+Both Railway services use the repository root so npm workspaces and the root lockfile are present:
+
+| Service | Railway configuration |
 |---|---|
-| DSA API | `/apps/api/railway.json` |
-| Discord bot | `/apps/bot/railway.json` |
+| API | `apps/api/railway.json` |
+| Bot | `apps/bot/railway.json` |
 
-The config files define independent build/start commands, health checks, and watch paths.
-API-only commits do not rebuild the bot, and bot-only commits do not rebuild the API.
+Use `apps/api/.env.example` and `apps/bot/.env.example` as variable checklists. Provider and Brave
+secrets exist only on the API. The bot carries the administrator key only for commands restricted
+to configured Discord administrators; all normal work uses a connected personal key.
 
-### API service
+Deploy safely in this order:
 
-Connect this repository and a PostgreSQL service in the same Railway EU environment. Set:
+1. Create the new databases, Discord application, email domain/worker route, and independent secrets.
+2. Deploy and migrate the new API with `WORKER_ENABLED=false`; verify `/healthz` and
+   `/openapi.json`.
+3. Create a webhook destination and test account through the admin API; assign the destination.
+4. Deploy the new bot, register its user-install commands, connect the test account, and validate
+   mocked flows plus only explicitly authorized live flows.
+5. Enable the API workers and verify event-feed recovery as well as webhook delivery.
 
-```text
-NODE_ENV=production
-DATABASE_URL=${{Postgres.DATABASE_URL}}
-API_KEY=<at least 32 random characters>
-SESSION_ENCRYPTION_KEY=<Base64-encoded 32-byte key>
-CLOUDFLARE_EMAIL_WEBHOOK_SECRET=<at least 32 random characters>
-REPORT_EMAIL_DOMAIN=<Cloudflare Email Routing domain>
-DSA_PROXY_URL_TEMPLATE=<sticky proxy URL containing {country} and {session}>
-WORKER_ENABLED=true
-BOT_EVENT_WEBHOOK_URL=http://${{Discord-Bot.RAILWAY_PRIVATE_DOMAIN}}:3000/internal/report-events
-BOT_EVENT_WEBHOOK_SECRET=<at least 32 random characters>
-```
+Public webhook destinations require HTTPS. Railway private HTTP destinations require
+`ALLOW_RAILWAY_PRIVATE_HTTP_WEBHOOKS=true`. The event feed remains authoritative when no destination
+is assigned or all deliveries fail.
 
-Generate independent secrets locally and never commit them:
+## Cloudflare email worker
 
-```powershell
-node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
-node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
-```
-
-Use the Base64 value only for `SESSION_ENCRYPTION_KEY`. Use separate hexadecimal values
-for `API_KEY`, `CLOUDFLARE_EMAIL_WEBHOOK_SECRET`, and `BOT_EVENT_WEBHOOK_SECRET`.
-
-[`apps/api/railway.json`](apps/api/railway.json) defines the build, start, `/healthz`
-health check, and restart policy. The
-application creates or updates its database schema idempotently during startup.
-
-### Bot service
-
-Use [`apps/bot/.env.example`](apps/bot/.env.example) as the variable checklist. The bot
-uses its own PostgreSQL service, stores access keys only as HMAC hashes, encrypts temporary
-report drafts, and calls the API through `DSA_API_BASE_URL`. Production startup synchronizes
-the global commands automatically. Set `AI_PROVIDER` (defaults to `openrouter`, or `baseten`),
-with `OPENROUTER_API_KEY` (`OPENROUTER_MODEL` defaults to `deepseek/deepseek-v4-flash-0731`) or
-`BASETEN_API_KEY` (`BASETEN_MODEL` defaults to `deepseek-ai/DeepSeek-V4-Flash-0731`),
-and `BRAVE_SEARCH_API_KEY` for the bot-side report writer.
-
-The first DeepSeek call resolves omitted Auto fields and decides independently whether
-the evidence needs terminology research, legal research, both, or neither. The bot runs only the
-chosen Brave requests: Web Search for unfamiliar terms and LLM Context for country-specific law.
-If both are needed, they run together. DeepSeek then writes the report from compact search excerpts
-and may ask for one additional bounded search before producing the final result. Fixed reporter values
-remain application-owned and are omitted from AI output contracts. Once Auto values are resolved,
-synthesis cannot return or change them.
-The bot records per-user request/token/reasoning/search totals and operational workflow metadata
-such as flow, category, country mode, selected elements, counts, lengths, latency, and validation
-failures. Logs are intended to support development diagnostics and may include report and lifecycle
-identifiers, state transitions, and error codes. Do not log credentials, verification codes, or raw
-email. To synchronize commands manually, set only the
-Discord token and application ID and run:
-
-AI media processing is temporarily disabled for every report category. The bot never attaches
-images, GIFs, videos, avatars, banners, server art, or attachment/embed media URLs to Baseten or Brave.
-Attachment names and content types may remain as text metadata.
-
-Every `/report` subcommand also accepts optional `dont-use-ai:true`. It defaults to AI when
-omitted. Manual mode sends nothing to Baseten or Brave, limits the reporter's final text to 512
-characters, and requires a saved or explicit country because Auto normally depends on AI.
-
-```powershell
-npm.cmd run register -w @discord-dsa/bot
-```
-
-In the Discord Developer Portal, enable **User Install** and disable **Guild Install** for
-this application. The bot health endpoint becomes ready only after both PostgreSQL and the
-Discord Gateway connection are available.
-
-Set `REPORT_EVENT_WEBHOOK_SECRET` on the bot to the same value as the API's
-`BOT_EVENT_WEBHOOK_SECRET`. The API pushes events to the bot's Railway private domain, so
-the bot needs no public domain. Failed webhook deliveries retry durably, and a 15-minute
-event-feed reconciliation provides an additional recovery path.
-
-## Cloudflare Email Worker
-
-Deploy [`apps/email-worker/src/index.ts`](apps/email-worker/src/index.ts) and
-configure:
+Configure the new worker independently:
 
 ```text
-INGEST_URL=https://discord-dsa-production.up.railway.app/webhooks/cloudflare-email
+INGEST_URL=https://<new-api-domain>/webhooks/cloudflare-email
 INGEST_SHARED_SECRET=<same value as CLOUDFLARE_EMAIL_WEBHOOK_SECRET>
 ```
 
-Store `INGEST_SHARED_SECRET` as an encrypted Worker secret. Route the domain catch-all to
-the Worker. It accepts SMTP envelope senders only when their domain is exactly `discord.com` or a
-true subdomain of it, then requires the generated recipient format. The API independently requires
-the parsed message sender to be exactly `noreply@discord.com`. Accepted mail is signed and posted
-to Railway; it does not forward report mail to a personal inbox. HTTP requests receive a normal
-`404` response because this deployment exposes no public HTTP endpoint.
+Route only the new report domain to it. The worker forwards raw RFC 822 data without storing or
+parsing report codes; the API validates the exact sender and correlates generated aliases.
 
-## Local development and validation
+## Development and validation
+
+Run from the repository root:
 
 ```powershell
-npm.cmd install
+npm.cmd ci
 npm.cmd run lint
 npm.cmd run typecheck
 npm.cmd test
 npm.cmd run build
-npm.cmd audit --audit-level=high
+npm.cmd run audit:high
 ```
 
-The read-only header and client diagnostics are:
+Do not run `test:headers`, `test:client-readonly`, or `test:post-headers` as normal verification.
+Those scripts touch Discord's reporting transport and require an explicitly authorized controlled
+environment and EU proxy.
 
-```powershell
-npm.cmd run test:headers
-npm.cmd run test:client-readonly
-```
+## Security rules
 
-They require a correctly configured EU proxy for meaningful results. Do not put proxy
-credentials, fingerprints, verification tokens, or API keys in source control or logs.
-
-## Operational rules
-
-- Callers never supply a reporter name or email address.
-- Bots always set `submitterDiscordUserId` from the authenticated interaction user.
-- Use a stable `Idempotency-Key` for every create or retry request.
-- Resolve semantic report types through the live Discord menu; never persist breadcrumbs.
-- Do not automatically retry an ambiguous final submission.
-- Automatically appeal an original no-action decision through the API-owned encrypted review-link
-  flow. Retry Discord's first explicit ineligibility response once after 10 seconds, then allow
-  owner-triggered retries with idempotency and cooldown protection. Never expose or log the link or
-  token, and never repeat an ambiguous review POST.
-- Keep credentials, verification codes, and raw mail out of logs and source control.
-- Discord lifecycle email updates change `discordStatus`; they do not replace the successful
-  API status `submitted`.
+- Never commit or log personal/admin keys, provider credentials, signing/encryption secrets,
+  cookies, proxy details, verification codes, raw mail, prompts, or report evidence.
+- Callers never supply reporter identity or the submitting Discord user's identity.
+- Keep original evidence immutable and exclude media content/URLs from AI and search.
+- Preserve idempotency keys across uncertain responses.
+- Treat ownership/nonexistence identically and derive personal analytics only from authentication.
+- Consume credit at the final Discord-attempt boundary; never refund or automatically repeat an
+  ambiguous attempt.

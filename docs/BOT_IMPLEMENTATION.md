@@ -1,749 +1,106 @@
-# Discord DSA Bot Implementation
+# Discord bot implementation
 
-Status: implemented user-installed app design
+Status: thin account client
 API contract: [`BOT_API.md`](BOT_API.md)
 
-## Deployment boundary
+The bot is a separately deployed Discord user-installed application. It owns Discord
+interactions, encrypted personal API credentials, the local Discord-user/account mapping, pending
+forms, report-to-DM links, notification preferences, and delivery deduplication. The API owns
+reports, credits, AI/search, identities, verification, submission, decisions, appeals, analytics,
+and history.
 
-The bot is the `@discord-dsa/bot` npm workspace and deploys independently from the API.
-It imports API DTOs and the HTTP adapter from `@discord-dsa/contracts`; it never imports
-the API database, job runner, proxy, email, or low-level Discord reporting client.
+The services use independent PostgreSQL databases and encryption keys. The bot never imports API
+database/job internals or `@discord-dsa/client`, and contains no AI-provider or Brave credential.
 
-The API and bot use separate PostgreSQL services. The API database remains authoritative
-for every report. The bot database contains only access state, encrypted temporary drafts,
-idempotency reconciliation records, notification cursors, and a durable DM outbox.
+## Account access
 
-## Discord installation and commands
+- `/access connect` opens an ephemeral modal for a personal key. The bot validates it with
+  `GET /v1/account`, encrypts it, and stores the stable account ID, immutable username, prefix, and
+  connection time.
+- `/access status` displays the API username, key prefix, status, available/reserved credits, and
+  cumulative usage.
+- `/access disconnect` deletes the encrypted credential and pending forms. Existing API reports
+  remain account-owned, but local background refreshes stop until reconnection.
 
-All commands are global and use `USER_INSTALL` only. They support guild channels, the
-app's bot DM, ordinary DMs, and group DMs:
+The bot enforces one API account per local Discord user and one local Discord user per API account.
+Connecting a rotated key for the same account updates the encrypted credential. It never sends the
+Discord user's ID to the API. A revoked key pauses detailed refreshes and prompts the user privately
+to reconnect.
 
-When `NODE_ENV=production`, bot startup synchronizes this complete command set through
-Discord's bulk global-command endpoint before connecting to the Gateway. The standalone
-registration script requires only `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_ID`.
+## Reporting experience
 
-```text
-/report message message-link
-/report profile target [server-id]
-/report server [server-or-invite]
-/reports list
-/reports status report-id
-/reports retry report-id
-/access redeem key
-/access status
-/settings country country
-/settings notifications
-/analytics [period]
-/admin key create|list|inspect|revoke
-/admin user inspect|suspend|reinstate
-Apps -> Report Message
-Apps -> Quick Report Message
-Apps -> Experimental 10x Same Category
-Apps -> Experimental All Categories
-```
+Commands support message, profile, and server flows plus the message context-menu actions. The
+normal modal is the final action; there is no AI review/refine screen.
 
-Admin commands are visible in every supported context but authorize against the exact
-IDs in `DISCORD_ADMIN_USER_IDS`. All command responses, errors, forms, and administrative
-results are ephemeral. A report review is ephemeral when DM delivery is cleared; otherwise the
-review and its confirmation controls are sent as an ordinary private bot DM.
+- AI is enabled by default. Country, category, and description may be hints or left for the API.
+- Manual mode requires country, category, and final text of at most 512 characters.
+- Quick Report immediately submits captured message evidence with `useAi: true`.
+- The bot resolves only evidence available through Discord's supported bot interface.
+- Images and media URLs are never sent to the AI/search services by the bot; those services exist
+  only in the API.
 
-### Analytics hub
+Before calling create, the bot persists the account, stable idempotency key, encrypted request, and
+local report/DM mapping. This ordering lets the webhook endpoint return `409` only during the narrow
+linking race, which asks the API to retry. A timeout or lost create response is reconciled by
+replaying the same body and key. Definite client errors abandon that pending operation.
 
-`/analytics` opens one ephemeral hub and defaults to the user's Personal results for the last seven
-days. The available periods are 24 hours, 7 days, 30 days, year to date, 365 days, and all time.
-The hub has four consolidated views: Overview, Trends, Outcomes, and Action History. Navigation is
-stateless; component IDs contain only approved view, scope, and period values, never a user ID.
-Every personal API call derives ownership from `interaction.user.id`.
+The bot sends one private DM card and edits it as the API advances through queued, preparation,
+verification, submission, and decision/appeal states. If Discord returns error `50007`, the bot
+warns in the ephemeral interaction response that it could not DM the user; the API report continues.
 
-Personal analytics distinguish new root cases from retry attempts and show submission reliability,
-Actioned and closed-without-action outcomes, appeal outcomes, and Discord response and decision
-times. Community analytics contain only API-filtered aggregates: at least 10 reports from 5 users
-overall, 3 reports from 3 users per breakdown bucket, and 5 reports from 3 users per recurring
-phrase. The bot never receives suppressed raw community rows.
+## Notifications and recovery
 
-Action History is personal-only and shows the explanation the user submitted, plus the submitted
-message link for message reports. The canonical API report also retains structured message evidence
-when Discord exposes it; Action History does not currently display that evidence.
-Users can filter it by the standard periods or enter inclusive `YYYY-MM-DD` dates; the bot converts
-the inclusive end date to the following UTC midnight, limits a range to 3,660 days, and shows up to
-25 results without pagination controls. All charts are rendered locally as PNGs from numeric
-aggregates. Missing reply-time samples are charted as gaps rather than zero-duration replies. If
-chart rendering fails, the same textual totals remain available. User-facing outcome language says
-“Actioned” or “Action taken,” never claims that Discord imposed a ban.
+The private `/internal/report-events` endpoint verifies the timestamped HMAC over the exact body,
+rejects stale/replayed deliveries, and records each event idempotently. Payloads contain identifiers
+and state type only; the notifier fetches authoritative details with the connected personal key.
 
-### Notification preferences
+The bot also polls each connected account's cursor-based event feed every 15 minutes. It does not
+advance a cursor past an event that cannot yet be linked. Webhook and polling ingestion share the
+same event inbox so duplicate delivery cannot create duplicate DMs. Pending create/retry calls are
+replayed with their original idempotency key before normal feed reconciliation.
 
-`/settings notifications` opens an ephemeral settings card with five lifecycle-DM toggles and a
-digest frequency selector. All lifecycle categories default to Enabled for new and migrated users:
+Notification preferences control lifecycle updates and daily/weekly digests. Digest summaries come
+from the authenticated account's API endpoint and have local idempotent delivery records.
 
-- Submission results: `report_submitted`, `report_failed`, and `discord:received`.
-- Actioned: `discord:actioned`.
-- Denied reports: `discord:closed_no_action`.
-- Denied appeals: `discord:review_not_approved`.
-- Appeal progress: requested, received, confirmation timeout, request failed, ineligible, and
-  ambiguous appeal events.
+## History, retry, and analytics
 
-Digest choices are Off, Daily, Weekly, and Monthly; Weekly is the default. Preferences are evaluated
-immediately before delivery, so changing a toggle also affects already queued but unsent DMs. When
-a lifecycle category is disabled, the tracked DM status embed is still edited in place with the latest
-status and timeline, but no new reply message or decision card is sent. The bot continues to ingest,
-deduplicate, reconcile, and retain authorized lifecycle events when a DM is disabled. A report's own
-`dm_enabled` value remains an additional restriction. Settings and confirmation interactions are
-ephemeral with mentions disabled, and suppressed notification logs contain only the notification ID
-and semantic category.
+Report history, status, eligible retry modes, personal analytics, action history, and digest
+activity are fetched using the connected personal key. Community analytics uses the same key but
+returns only protected aggregate data. The bot never relies on a Discord ID field inside an API
+report for ownership; the local connection and report link are authoritative.
 
-Digests cover the most recently closed UTC period: the previous calendar day, Monday-to-Monday
-week, or previous calendar month. They are sent only when that user created at least three new root
-reports or had at least three qualifying outcome changes during the period. Qualifying changes are
-direct Actioned, closed without action, appeal then Actioned, and appeal denied. Community activity
-never makes a user eligible; when the API privacy thresholds are met, anonymized Community totals,
-breakdowns, and trend charts enrich an otherwise eligible personal digest.
+Retries require a user-selected `reuse` or `regenerate` mode and a stable operation key. The bot
+displays only modes returned by the API and does not implement automatic report retries.
 
-The scheduler stores one durable job for each user, frequency, and closed period. It creates only
-the latest closed period rather than backfilling missed historical digests, rechecks the user's
-current frequency immediately before delivery, and retries temporary failures up to five times.
-Discord errors that mean the user cannot receive DMs end that job permanently. Digest messages
-contain aggregate metrics and locally rendered charts only—never submitted explanations, message
-links, recurring phrases, or Action History entries. If chart rendering fails, the textual totals
-are still delivered. Delivery is at-least-once: if Discord accepts a DM but the process or database
-fails before the job is marked sent, the stale job can be retried and produce a duplicate. This
-narrow window is retained so a completion failure cannot silently discard an unsent digest.
-Structured digest logs contain only safe job, frequency, result, and error classification fields.
+## Administration
 
-## Report lifecycle
+Discord administrator commands are restricted to configured Discord IDs and use `DsaAdminApi` for
+account creation, one-time key issuance, rotation, credit adjustments, suspension, and
+reinstatement. All interaction replies, including administration, are ephemeral. The administrator
+credential is never used for ordinary reports.
 
-1. Enforce access or configured-admin bypass.
-2. Open one combined report modal shared by all three `/report` flows and
-   **Apps -> Report Message**. There is no intermediate setup embed. Use AI and Send review to DMs
-   are selected by default. Country starts from the saved
-   `/settings country` value or Auto, and the reporter can choose another supported country
-   through the paginated picker. A saved `NULL` country means Auto.
-3. Collect the flow-specific elements in that modal. Report fields appear first; country and the
-   AI/DM preferences appear below them. Category and explanation are optional in the AI flow: their
-   help text says that AI fills a blank field when Use AI is enabled.
-   Both are validated as required when Use AI is cleared.
-   Profile targets accept only a raw Discord user ID. The bot resolves the account and requires
-   confirmation before collecting the report details; unresolved IDs can be retried or cancelled.
-   The profile's optional observed server and the server report's optional server/invite remain
-   slash-command parameters. A server report without either a slash target or current server is rejected.
-4. Encrypt the draft and its compact AI context at rest with a 30-minute expiry.
-5. Ask Baseten DeepSeek for a JSON plan that resolves omitted Auto fields and decides whether term and
-   law research are necessary. Run only the selected Brave searches, concurrently when both are
-   needed, then synthesize a completed result. DeepSeek may request one bounded follow-up search. The
-   final writer receives only compact resolved evidence and research context. When DM delivery is
-   selected, the Researching stage creates one structured
-   report card in DMs; Writing, Refining, Regenerating, review, submission, and resubmission edit
-   that same message. The ephemeral interaction points to the DM and remains the fallback if DM
-   delivery fails. When DM delivery is cleared, the same cards remain ephemeral. Then ask the
-   configured Baseten model to write a factual report of at most 512 characters that naturally names
-   the researched law or provision.
-6. Atomically reserve one credit and create the API report with the interaction ID.
-7. Consume the reservation after HTTP 202 or idempotent HTTP 200.
-8. Release it after a definite pre-creation rejection; reconcile ambiguous responses with
-   the exact body and idempotency key.
-9. Poll briefly in the interaction, then let the durable worker continue.
-10. When Send review to DMs is selected, persist the drafting DM's message ID and turn that same
-    message into the review and then the complete current report card. Later lifecycle events edit
-    the same card, so drafting, review, and submission do not create duplicate DMs. Clearing
-    the option durably suppresses that report's lifecycle DMs and shows the complete status in the
-    ephemeral interaction instead. Receipt updates are silent; final
-    accepted/denied outcomes edit the card and send a short plain-text reply to it.
-11. If Discord does not confirm receipt within two minutes after returning a report ID, the API
-    fails the report with `discord_receipt_timeout`, edits the saved card, and offers the existing
-    immutable new-report retry.
-12. If Discord closes the original report without action and supplies a review link, the API
-    encrypts the link and automatically submits the appeal with bounded attempts. The first
-    explicit Discord `521004` ineligibility response retries once after 10 seconds. Each
-    attempt first tests a fresh proxy session in the report's selected country, then uses that same
-    session to resolve the link and submit. The original sticky IP and Discord session do not need
-    to remain valid; the bot never receives the link, token, or a Discord account authorization
-    credential.
-13. A successful appeal POST or Discord code `521002` (**already requested**) is authoritative.
-    Transient network, rate-limit, and server failures rotate to another same-country proxy with
-    bounded backoff. Initial report submission POSTs remain single-shot because Discord provides no
-    equivalent duplicate protection. After appeal acceptance, the API waits two minutes for the
-    review-request confirmation email; a missing email becomes an explicit unconfirmed diagnostic
-    and never submits the appeal again.
-14. If the second attempt remains explicitly ineligible, the private report card exposes
-    **Retry appeal**. The API verifies ownership, idempotency, retained-job availability, and a
-    30-second cooldown before resetting the same encrypted appeal job for another two-attempt cycle.
-    The button can return after another definitive ineligible result, but is never shown for an
-    ambiguous POST outcome.
-15. If Discord denies the appeal, the report card exposes **Resend same report** and
-    **Rewrite & resend**. The rewrite path uses the existing AI drafting workflow, remains
-    editable and review-first, enforces 512 characters, creates a fresh linked report, and does
-    not reserve another credit.
+Bot-local redeemable access keys, credit balances, provider usage, experimental batches, shadowban
+simulation, and surveillance webhooks have been removed.
 
-Draft and report cards share Item, Status, Category, Country, code-blocked Details, AI decisions,
-References, Dates, and Appeal. Submitted cards add Retry, Resubmission, errors, and History when applicable.
-There is no separate Reason field because the reviewed report text is the clearer Details value. Interaction embeds replace
-the timeline with `Check your DMs for the full status log.` The DM card uses relative Discord
-timestamps and compresses the API timeline into user-facing phases: submission, the original
-Discord result, appeal submission, and the appeal result. Request, verification, receipt, and queue
-transport events are deliberately hidden. The latest stage or final outcome is bold while its
-timestamp remains unbolded. Original results and appeal results are explicitly distinguished, such
-as `Original report: Closed without action` followed by `Appeal denied — Discord upheld no action`.
-Up to the three latest retry attempts are summarized; the API remains the source of truth for older
-attempts and the complete technical timeline. History is not wrapped in a code block, so Discord
-renders each timestamp. Verification codes are never displayed.
-Only submission, failure, receipt, and final-result notifications edit the saved DM card; internal
-transitions remain available from the API without causing an embed edit for every event. The API
-retains the complete technical timeline. Server metadata and ID-backed profile metadata are
-resolved best-effort and captured at submission time. DMs include full report details but omit the
-generated reporter identity and email. A Discord 50007 response permanently disables DM
-attempts for that tracked report; `/reports` remains available.
+## Local database
 
-## Quick report
+The bot database contains:
 
-**Apps -> Quick Report Message** reports the targeted message immediately, with no modal, review,
-or confirmation. Access and credit enforcement are identical to the normal flow. The bot builds an
-all-Auto draft from the target message: country is the saved `/settings country` default when set,
-otherwise Auto, and category and report text are always decided by the AI writer. The interaction
-answers ephemerally with a single "Quick report started" notice; nothing else is shown in chat.
-Writer progress, submission progress, and the final report card are delivered in one DM message
-that is edited in place and registered as the tracked status card, so later lifecycle events edit
-the same message. A writer failure keeps the encrypted draft and DMs the error card with the usual
-Retry / Change country / Edit details / Cancel recovery controls. A definite pre-creation rejection
-releases the reservation and DMs the same recovery card; an ambiguous failure keeps the reservation
-for reconciliation and DMs the error without retry controls. When DM delivery is blocked, the
-ephemeral interaction becomes the fallback surface for progress and results.
+- encrypted API connections and the one-to-one ownership constraints;
+- short-lived encrypted pending forms;
+- pre-created report/idempotency/DM links used for reconciliation;
+- a deduplicated lifecycle-event inbox and per-account feed cursor;
+- notification preferences and digest delivery records.
 
-## Experimental report batches
+It does not duplicate report evidence as readable columns, maintain credits, or become an
+alternative source of report truth.
 
-The two experimental message commands are access-key gated like every other report command. The
-interaction immediately snapshots the target message, encrypts the draft, transactionally reserves
-the entire batch, and returns an ephemeral acknowledgement. It performs no inline AI or API work.
-Configured admins and deployments with `WHITELIST_ENABLED=false` keep the existing credit bypass.
+## Deployment
 
-- **Apps -> Experimental 10x Same Category** reserves ten credits. The first item uses Auto to
-  choose the category; the other nine inherit that exact category. Every item receives a distinct
-  AI reason, stable create identity, and API report ID.
-- **Apps -> Experimental All Categories** snapshots every current `message_urf` category in catalog
-  order, reserves that full count, and creates exactly one item for each snapshot entry. It is not
-  capped at ten categories.
+Use a new Discord application, bot database, and `BOT_DATA_ENCRYPTION_KEY`. Configure
+`DSA_API_BASE_URL`, `DSA_ADMIN_API_KEY`, and optionally `REPORT_EVENT_WEBHOOK_SECRET`; see
+`apps/bot/.env.example`. Register global commands after the new API and test account are ready.
+Do not point the new bot at the historical API or database.
 
-PostgreSQL owns batch and item state, encrypted request inputs, leases, retry counters, per-item
-credit state, and the aggregate DM ID. The experimental worker claims no more than two item
-pipelines at once and runs every five seconds, making the interaction non-blocking and restart-safe.
-AI preparation receives one retry and compares against previously accepted reasons without treating
-them as evidence; an exact normalized duplicate is rejected by a database uniqueness constraint.
-A definite failure before API creation releases that item's credit once. API creation consumes the
-item reservation after an accepted or idempotently replayed report.
-
-Each create uses `experimental:<batch-id>:<ordinal>` as its stable identity. A 429 is retried once.
-Server and unknown transport outcomes re-enter reconciliation with the same identity and encrypted
-body rather than creating a replacement identity. After a report exists, the worker creates one
-successor only when the API marks the failed report `retryable=true`; this lifecycle retry uses a
-stable retry identity and no additional credit. `ambiguous_submission_state`, other non-retryable
-results, and a failed successor are terminal for the item.
-
-The worker creates one private aggregate embed and edits that same message after meaningful state
-changes. Near the top it decrypts and shows a bounded preview of the original targeted message
-once; message content is never copied into a plaintext database column or structured log. Each
-item shows its category, bounded reason preview, original/current report IDs, successor ID, safe
-failure code, and one latest outcome selected in appeal, Discord report, API report, then worker
-state precedence. Batch tracking rows set `dm_enabled=false`, so webhook and 15-minute feed events
-wake the owning batch item, fetch authoritative API detail, and edit the aggregate card without
-creating individual lifecycle DMs. A deleted card is replaced once; Discord error 50007 permanently
-disables further aggregate DM attempts without stopping report processing.
-
-## AI report writing
-
-The bot calls the configured AI provider (OpenRouter or Baseten) and Brave directly; the API
-and low-level Discord client never receive the reporter's brief or AI context. `AI_PROVIDER`
-selects the provider (`openrouter` [default] or `baseten`). `OPENROUTER_API_KEY` (with model
-`deepseek/deepseek-v4-flash-0731`) or `BASETEN_API_KEY` (with model
-`deepseek-ai/DeepSeek-V4-Flash-0731`) and `BRAVE_SEARCH_API_KEY` are required.
-DeepSeek handles planning, synthesis, refinement, and repair. The bot validates every returned value
-locally. The complete generation workflow is capped at 90 seconds.
-
-Unicode evidence remains available to the model so it can identify obfuscation such as zero-width
-characters. The planner, synthesis, refinement, and repair prompts request printable ASCII-only
-prose, and the bot enforces that rule after parsing every AI-owned text field before validation or
-submission. Invisible and other non-ASCII output is removed rather than copied or rendered as a
-Unicode escape. This does not affect intentional bot UI Unicode, such as country flags and arrows.
-
-Generation starts with a strict-JSON plan. Fixed country, category, and reason values remain
-application-owned and are omitted from the planner output schema; only missing Auto fields may be
-selected. The bot merges those selections with fixed inputs into immutable resolved state. A
-case-insensitive literal `Auto` in the reason field is normalized to omitted. The active flow's
-category catalog is supplied only when category is Auto. Auto country results accept an exact
-supported code or defensively normalize a supported English country name before validation. The
-plan has independent `termResearchRequired` and `lawResearchRequired` decisions with nullable
-queries, so an explicit case can skip either search.
-The internal law reference has no length limit; validation distinguishes an invalid country,
-missing reference, and missing research summary.
-Terminology research uses Brave Web Search with at most three results. Legal research uses Brave
-LLM Context with at most five source candidates, three returned URLs, and a 2,048-token context
-budget; official EU legal domains receive an inline ranking boost. Brave receives the selected
-country only when it supports that target; otherwise both search paths use `ALL` while the
-country-specific query remains unchanged. If both searches are needed they start together. Each
-query is capped at 400 characters and 50 words and is rejected if it contains
-a URL, email address, Discord snowflake, or known sensitive draft value. Search results are untrusted
-source material. The model receives only compact titles, HTTPS URLs, and excerpts, not full pages.
-
-Synthesis either returns the completed structured result or requests one additional term or law
-search. The bot executes at most one such follow-up and synthesizes once more; a second request is
-an error. Brave retries one transient network, rate-limit, or server failure. Baseten and Brave have no
-cross-provider fallback.
-
-The AI integration remains bot-local and single-model. It assumes normal interactive bot traffic,
-keeps the existing 90-second workflow budget, and adds no fallback model, local search index, queue,
-database table, or background worker. Media processing remains disabled.
-
-The research prompt contains the supplied or Auto-selectable semantic reason, reporter brief, and
-only useful resolved target data. Message reports include the accessible message content, author, timestamp,
-server/channel context, embed summary, and attachment names/content types. Link-based reports fall
-back to the link and brief when Discord does not allow the bot to fetch the message. Profile
-reports include the ID, username, global display name, and bot status. A supplied server ID remains
-report context, but a user-installed-only bot does not attempt to resolve server-member profiles
-from it. Selecting profile photos or server media records the selected report element, but no media
-or media URL is sent to Baseten or Brave while processing is disabled. Discord's supported bot API does not expose profile About Me text,
-so the bot does not claim or attempt to retrieve it.
-
-AI media processing is temporarily disabled for every report category. No images, GIFs, videos,
-avatars, banners, server art, or attachment/embed media URLs are attached or included in
-Baseten or Brave requests. This prevents child-safety media, gore, and other potentially prohibited
-media from reaching the provider. Attachment names and content types may remain as factual text
-metadata.
-
-**Apps -> Report Message** and **Apps -> Quick Report Message** snapshot the selected message
-directly. `/report message` performs a best-effort lookup: success records captured link evidence;
-failure records an explicit unavailable state and does not invent author information from the URL.
-Captured evidence includes exact text, message/channel/server metadata, author identity and avatar,
-attachment filename/content type/size/URL/spoiler state, and embed title/description/URL. Attachment
-binaries are not downloaded. The API stores this structure in PostgreSQL `reports.input jsonb`;
-indexed author and message IDs support later analysis. PostgreSQL cannot store the literal NUL
-character, so API validation removes only that character from free-form captured message and embed
-text before persistence; other Unicode, including zero-width characters, is retained.
-
-Message review, status, history, browser, and lifecycle-DM cards show **Author info** with the
-display name, `@username`, Discord ID, and author avatar thumbnail. Historical or inaccessible
-messages show `Author information unavailable.` Retries and rewrite/resend preserve an existing
-snapshot; only historical reports with no evidence may attempt a fresh lookup. Snapshot text and
-URLs are sensitive evidence and must never appear in structured logs. Avatar, attachment, and embed
-URLs remain excluded from Baseten and Brave while AI media processing is disabled.
-
-The shared combined report modal enables Use AI and Send review to DMs by default and lets the
-reporter use Auto, their saved/current country, or the paginated country picker. Report category,
-flow-specific elements, and report details appear before country and preferences. Category and
-details are optional, use the placeholder `Auto`, and explain that AI fills a blank field when Use
-AI is enabled. When Use AI is cleared, interaction validation requires both category and
-final report text and performs no Baseten or Brave
-request, and shows the normal review with Submit, Edit manually, Change country, and Cancel.
-Refine and Regenerate are omitted. Because Auto country selection requires AI, a manual report
-with no saved country must select a country before review. The message context-menu command opens
-the same combined modal with the selected-message target as the slash flow.
-
-The review has no submission disclaimer and uses the shared draft/report field structure. Auto
-country is labeled `Auto-selected` without naming the model. The researched
-law or provision appears naturally inside the 512-character report;
-brackets, URLs, footnotes, and separate source fields are not required.
-The structured `lawReference` and final report name the country, clear full law title, and
-provision instead of relying on an unexplained abbreviation or section number. The internal
-`lawReference` is required but has no report-length limit; only the submitted report is capped at
-512 characters.
-Every AI-enabled drafting card includes an `AI decisions` field. During work it shows the observable
-parameters still being resolved. After completion it records the operation time and concise
-before/after values for country, category, and details handling, for example `Country: Auto →
-Germany`. It never exposes model reasoning, prompts, evidence, sources, or report text. Generate,
-refine, regenerate, and rewrite decisions are retained as a five-entry bounded log in the encrypted
-draft and copied into bot-owned report tracking so later lifecycle DM edits can still display the
-latest three entries after draft deletion. Manual reports explicitly say that AI was disabled.
-After research, the writer receives a compact context containing only evidence, resolved category,
-reason, country, law reference, and legal summary. It does not receive the supported-country list,
-category catalog, search instructions, or raw research transcript. Country, category, and reason
-are context only: synthesis cannot return them and the bot attaches the immutable resolved values
-to its result. Synthesis owns only follow-up requests, law reference, research summary, and report
-text. This compact context is retained for refinement. Changing country clears the AI conversation and research before running both again. Refine appends
-the instruction and report-only result to the same encrypted conversation and reuses the existing
-research without web search or country changes. Regenerate starts a new conversation, resolves any
-missing Auto fields, and reruns research; Auto may choose a
-different country. Manual edits become the current assistant answer so a later refinement
-continues from that text. Repair also
-continues the same conversation, performs no search, and is attempted only once.
-
-Planning uses DeepSeek's low reasoning mode and a 4,096-token completion budget. Synthesis uses
-medium reasoning with 6,144 tokens only when Brave research must be interpreted. Refinement uses low
-reasoning with 2,048 tokens. No-research synthesis and repair disable reasoning and use 2,048 tokens. These limits include
-thinking and visible JSON. Reasoning calls receive the complete JSON Schema in the prompt;
-non-reasoning calls use Baseten-enforced JSON Schema. The model is told to keep the report
-naturally concise without counting characters or optimizing the exact count, while local validation
-still enforces the 512-character limit.
-Reasoning, input/output tokens, Baseten request counts, and actual Brave request counts are accumulated
-per user in `bot_users` and displayed by `/access status`. The former provider-cost field remains in
-the database for compatibility but is not estimated or shown. Safe logs use a keyed pseudonymous
-actor value plus stage, model, latency, usage, and failure category.
-
-If a report-writing result is empty, malformed, or exceeds 512 characters, the bot asks once for a repair.
-If the repaired result is still invalid, the encrypted draft retains the latest AI text and
-conversation. The manual-edit modal shows the AI draft in a copyable read-only text display and
-provides a separate required 512-character input. Drafts already within the limit prefill that
-input; overlength drafts leave it blank for the user to shorten and paste. Insufficient
-Baseten or Brave rate limits, timeouts, malformed output, unsupported Auto countries, and unusable
-legal research use the safe AI failure screen. Errors identify planning, term research, legal
-research, writing,
-refinement, or repair as the failed stage. Retry, country override, detail editing,
-manual editing when candidate text is available, and cancel remain available. The bot asks AI
-to include the researched law but does not reject reviewed text for omitting it or attempt to
-verify that the law exists.
-No report is created and no credit is reserved until valid reviewed text is submitted. Drafts hold
-the country choice, optional source annotations, research summary, and conversation only until
-normal expiry. Logs include pseudonymous actor keys, report flow/category, country mode, selected
-element names, evidence/image/attachment counts or lengths, request/response lengths, usage, cost,
-latency, media-allowed status, and failure category. They never contain raw user IDs, queries,
-sources, evidence, images, prompts, research, reports, AI responses, or secrets.
-Failed provider requests log only an allowlisted diagnostic summary: provider, stage or research
-kind, categorized failure, HTTP status, latency, and attempt count. Raw queries, search results,
-response bodies, evidence, and provider messages are never logged.
-
-The initial writer prompt distinguishes direct, obvious content from slang, abbreviations, and
-coded wording. Direct content receives only a concise statement of what the cited provision
-prohibits and why the content violates it; ambiguous wording also gets a brief meaning explanation.
-The prompt contains concrete examples of both structures. They appear once in the retained
-conversation and are explicitly examples of tone and organization, not reusable facts or legal
-conclusions. Refine and Repair append compact instructions to that
-same conversation instead of adding another copy of the examples.
-The writer system prompt, initial writer prompt, and the Refine and Repair instructions all
-require the report text to be written entirely in English.
-
-Message snapshots support ordinary text channels, threads, forum posts, Stage chat, voice-channel
-chat, and DMs. A context-menu message can have a valid channel ID while Discord.js has no hydrated
-channel object; in that case the snapshot stores a null channel name and preserves the remaining
-message evidence instead of failing.
-
-## Access authorization and suspension
-
-- Whitelisting is enabled unless `WHITELIST_ENABLED=false`.
-- Access is access-key based rather than credit-based: redeeming a key grants permanent reporting access until suspended or revoked.
-- Configured administrators and deployments with `WHITELIST_ENABLED=false` bypass key requirements.
-- Plaintext key values are displayed once; only a peppered HMAC and safe prefix are stored.
-- Universal suspension: suspended users are blocked at the interaction boundary from all bot interactions (commands, buttons, select menus, modals, and context menus).
-- Revoking a redeemed key suspends its user, revokes access, and deletes unsubmitted drafts.
-- Suspended users continue to receive lifecycle DM notifications for previously submitted reports.
-- Admin reinstatement automatically restores access (`access_granted = true`) and clears the suspension.
-
-## Blacklist shadowban mode and surveillance
-
-- Specific blacklisted accounts (`1389142809952391272`, `463866425031786496`, or configured via `SHADOWBAN_USER_IDS`) run in full simulation mode:
-  - The UI and drafting flows behave identically to authorized users (simulated AI legal research and generation without external LLM/search API consumption).
-  - Reports and appeals are synthetic (`sim-*` internal IDs) and stored exclusively in the bot database with `is_simulated = true`. They never touch the backend reporting API or Discord's DSA endpoint.
-  - Simulated report outcomes are randomly generated (30% accepted `discord:actioned`, 70% denied `discord:closed_no_action` with appeal retryable; appeals are 20% accepted `discord:actioned`, 80% denied `discord:review_not_approved`).
-  - Response timing is randomized (1–5 minutes by default, configurable via `SIMULATION_MIN_DELAY_SECONDS` and `SIMULATION_MAX_DELAY_SECONDS`).
-  - The background `NotificationWorker` ticks every 10 seconds, advancing due simulated reports, inserting notification outbox events, and delivering lifecycle DMs indistinguishable from real reports.
-  - All shadowbanned interactions, drafts, simulated submissions, and response dispatches are audited via Discord webhook (`SHADOWBAN_WEBHOOK_URL`).
-
-## Operations
-
-The notification worker uses leased PostgreSQL rows and `SKIP LOCKED`, so restarts and additional
-replicas can process work safely. Pending creation and submission work polls approximately every
-30 seconds; individual polling stops after submission. The API owns the two-minute receipt
-deadline and emits a durable failure event if it expires. Signed private webhooks provide fast
-delivery, with full 15-minute event-feed reconciliation as a safety net. DMs use a per-attempt
-unique `(tracking_id, event_key)` key, persist the successful status-card message ID, and retry
-transient failures with a bounded exponential delay.
-
-### Notification decision log
-
-- Understanding: one user-owned DM card must explain drafting choices and lifecycle outcomes without
-  exposing internal transport noise or hidden model reasoning. Normal interactive scale and the
-  existing PostgreSQL deployment are assumed; the API contract and submission semantics are out of
-  scope.
-- Chosen: persist a bounded, non-sensitive AI decision summary in bot `report_tracking`. Keeping it
-  only in the encrypted draft would lose it after submission; adding it to the API request would
-  cross the bot/API ownership boundary without improving report processing.
-- Chosen: acknowledge a DM-enabled modal with only `Check your DMs.` Discord interactions still need
-  a completed response, so sending no acknowledgement is not reliable.
-- Chosen: render phase-based history and bold only the current/final stage text, leaving Discord's
-  relative timestamp outside the bold span. The API retains the complete event history for
-  diagnostics.
-
-- API creation immediately creates the lifecycle status embed and stores its Discord message ID
-  on the tracking row.
-- `discord:received`, timeout, and outcome events edit that saved embed instead of sending another
-  report card. Receipt is a silent edit. `actioned`, `closed_no_action`, and
-  `review_not_approved` additionally send a plain-text reply to the saved card so the user receives
-  a new Discord notification.
-- `review_requested`, `review_received`, `review_confirmation_timeout`,
-  `review_request_failed`, `review_ineligible`, and `review_request_ambiguous` update the same saved
-  card. A missing confirmation explicitly says that the appeal was not sent again. Discord error
-  `521004` is shown as **DSA report ineligible for review**, not as a generic automatic-appeal
-  failure. After the automatic 10-second retry is exhausted, it exposes only the owner-checked
-  **Retry appeal** control; it does not expose new-report resend controls.
-- Pre-submission failures edit the same full report embed and add the retry control when the API
-  marks the failure safe to retry.
-- A missing or user-deleted saved status message is replaced only when Discord had already
-  returned a report ID.
-- Chosen: persist the message ID on `report_tracking`, keeping Discord delivery metadata in the
-  bot database and report lifecycle state in the API database.
-- Chosen: enforce the 120-second receipt deadline in the API and make that explicit timeout
-  retryable, even though Discord returned a report ID. A late authenticated Discord update
-  recovers the timed-out record to submitted and disables further retry from that record.
-
-## Bounded lifecycle polling
-
-### Understanding and assumptions
-
-- Signed webhooks provide immediate lifecycle delivery and the paginated event feed reconciles
-  missed webhook deliveries every 15 minutes with one request for all tracked reports.
-- Per-report polling is a fallback and must not grow into a high-frequency request stream as the
-  report history grows.
-- Report history remains available after tracking expires; expiration only stops background
-  polling and lifecycle DMs.
-
-### Final design
-
-Active creation states are polled every 30 seconds. Individual polling stops as soon as a report
-is submitted; signed webhooks provide immediate updates and the cursor feed provides durable
-recovery with a constant baseline of one request every 15 minutes. Each tracking row expires 60
-days after its original creation time. Expired rows are excluded from polling, lifecycle-event
-ingestion, and notification delivery, while existing report records and user-facing history remain
-intact. Existing rows are migrated using their original `created_at`.
-
-Webhook ingestion distinguishes accepted, expired, and not-yet-tracked events. Accepted and
-expired events receive HTTP `202`; expired events are intentionally discarded. Only a genuine
-creation/linking race receives HTTP `409`, allowing the API outbox to retry without retrying events
-that have deliberately aged out.
-
-### Decision log
-
-- Chosen: active-only per-report polling plus webhook/feed delivery and 60-day retention. Silent
-  submitted reports perform no report-specific work while retaining immediate updates.
-- Rejected: six-hour or age-tiered submitted polling. It duplicates the durable event pipeline and
-  continues to scale with unresolved report count.
-- Deferred: a batch integrity endpoint. Add it only if production evidence shows report state and
-  lifecycle events diverging.
-- Rejected: retaining 15-minute per-report polling. It duplicates the event feed and scales
-  linearly with unresolved reports.
-
-## Verification timeout and immutable retries
-
-### Understanding and assumptions
-
-- A report must not remain in `awaiting_verification` indefinitely when Discord's verification
-  email never reaches the Cloudflare worker.
-- The API waits for at most 60 seconds after requesting verification, then marks the report failed
-  with `verification_email_timeout` and makes it retryable.
-- The initial verification job tests the report's same-country proxy before requesting email and
-  rotates to a fresh session on each of at most three transient-failure attempts. Once one attempt
-  succeeds, the API persists that proxy identity with the Discord session. While the same report is
-  still waiting, resends at 20 and 40 seconds reuse that persisted sticky proxy, email alias, and
-  session. Resends never extend the original 60-second deadline.
-- An email may reach the inbound worker before the initial request job finishes saving its Discord
-  session. Persisting the session must therefore preserve an already-recorded
-  `verification_received` state rather than moving the report backwards to
-  `awaiting_verification`. The same preservation rule applies if mail arrives while a resend is
-  refreshing that session.
-- A manual retry is free, remains owner/admin protected, and is unavailable to suspended users.
-- Each retry creates a new internal report ID, generated identity/email, proxy session, API row,
-  bot tracking row, and timeline. The failed report remains immutable and links to its successor.
-- Safe manual retries have no numeric ceiling. Ownership, suspension, idempotency, rate limiting,
-  immutable predecessor/successor links, and the API's `retryable` flag still prevent unsafe
-  retries or branches from the same failed report.
-
-### Final design
-
-The initial request transaction schedules a three-attempt durable initial `request_code` job and
-two single-attempt resend jobs. A resend is a
-no-op unless the report is still `awaiting_verification`, has a saved session, and remains inside
-its original deadline. This makes restarts safe and stops both resending and report correlation as
-soon as mail arrives or the deadline expires. The Cloudflare catch-all itself remains online for
-other reports; late mail for the expired alias is recorded as unmatched and cannot revive it.
-
-The API worker sweeps expired verification deadlines every few seconds. Expiration and the
-`report_failed` lifecycle event are committed together, so the bot receives a durable failure DM.
-The existing retry endpoint creates a successor report transactionally and returns that new report;
-idempotent replays return the same successor. The bot creates separate tracking for the successor,
-so lifecycle notification keys and polling state cannot collide with the failed report.
-
-Failed report views and failure DMs include a **Retry as new report** button. `/reports retry`
-uses the same operation. Both surfaces update to the successor's new report card after creation.
-
-Final denied-review views instead include **Resend same report** and **Rewrite & resend**.
-Resend uses the stored report input unchanged. Rewrite opens a guidance modal, seeds a new
-reviewable draft from the denied report, and calls the same successor endpoint with only the
-edited `reportReason` and `context`. The predecessor permits one successor branch, preserving the
-same immutable audit relationship as failure retries.
-
-### Decision log
-
-- Chosen: deadline sweep over a permanent timeout job. This avoids expanding the job-kind schema
-  and safely recovers deadlines created before a worker restart.
-- Chosen: durable same-session resends at 20 and 40 seconds, with a fixed 60-second deadline, over
-  in-memory timers or a sliding deadline. This survives restarts without monitoring indefinitely.
-- Chosen: session persistence that preserves `verification_received`, because inbound email and
-  the request job can finish in either order.
-- Chosen: immutable successor rows over resetting a failed row. This preserves audit history and
-  gives every manual retry the new ID requested by the product flow.
-- Chosen: the same immutable successor model for a denied appeal. Resubmission remains explicit
-  user action even though the preceding eligible appeal is automatic.
-- Rejected: creating a fresh Discord session for each resend. It could pair an inbound code with
-  the wrong session; all resends instead continue from the saved session.
-
-## Access-key presentation and credit accounting
-
-### Understanding and assumptions
-
-- Plaintext access keys remain visible only in the one-time creation response.
-- The database UUID is an administrative implementation detail and is omitted from that creation
-  response; administrators can obtain it from the key list when inspection or revocation is needed.
-- Key list and inspection views identify the redeeming Discord user ID and redemption time, or say
-  explicitly that the key is unredeemed.
-- Normal report submission reserves and then consumes one credit. Configured admins retain the
-  documented unlimited-access bypass, and `WHITELIST_ENABLED=false` intentionally bypasses credits
-  for every user.
-- Credit reservation remains transactional and suitable for concurrent submissions; no new schema
-  or additional external service is required.
-- Administrative key views display the immutable number of credits originally granted by a key;
-  they are not a live user-balance view.
-- Reservation logs record whether the operation was an idempotent replay and the safe numeric
-  balance before and after the transaction. Creation logs record the persisted post-creation
-  credit state rather than the stale in-memory reservation state.
-
-### Decision log
-
-- Chosen: hide internal IDs only in the one-time generated-key response, preserving the ID in
-  administrative list/inspect output because those commands address keys by ID.
-- Chosen: render raw Discord user IDs without mentions so administrative output cannot ping users.
-- Chosen: preserve the established admin and disabled-whitelist bypass policy. Operators who want
-  to exercise credit accounting must test with a non-admin while whitelisting is enabled.
-- Chosen: clarify the key grant label and log transactional balance changes instead of adding a
-  second balance store or an administrative ledger command without evidence that either is needed.
-
-## Verification resend cleanup
-
-### Understanding and assumptions
-
-- Verification resend jobs are useful only while a report is awaiting its verification email.
-- Once a code is accepted, the report times out, or processing fails, pending resend jobs cannot
-  help and should not later wake merely to log that they were skipped.
-- A resend already claimed by a worker may still finish its status check; this race remains safe.
-
-### Decision log
-
-- Chosen: complete only pending resend jobs in the same transaction that advances or fails the
-  report. This removes stale work while preserving claimed-job concurrency and report history.
-
-## Operational lifecycle logging
-
-### Understanding and assumptions
-
-- Railway logs must reconstruct a report from creation through email correlation, Discord
-  verification/submission, bot tracking, and notification delivery without database access.
-- Expected production volume is modest, but repeated status polling can be noisy; state-changing
-  boundaries are logged at `info`, recoverable anomalies at `warn`, and terminal failures at
-  `error`.
-- Logs may contain internal report, job, event, notification, and tracking IDs, report state,
-  country, flow, category, selected elements, counts, lengths, timings, and diagnostic error
-  classifications. They must not contain credentials, verification codes, access-key plaintext,
-  encryption material, Discord interaction tokens, or raw email.
-- Logging failures must not affect report processing. A failure while replying to an expired
-  Discord interaction is contained and logged rather than escaping the event handler.
-
-### Event vocabulary
-
-- API: `report_create_accepted`, `report_retry_accepted`, `report_job_started`,
-  `report_job_stage_started`, `report_job_stage_completed`, `report_job_completed`,
-  `report_job_stage_failed`, `report_job_retry_scheduled`, `report_job_failed`,
-  `verification_resend_completed`, `verification_resend_skipped`,
-  `verification_resend_failed`, `verification_wait_expired`, `discord_receipt_wait_expired`,
-  `review_confirmation_wait_expired`, `proxy_attempt_started`, `proxy_attempt_succeeded`,
-  `proxy_rotation_scheduled`,
-  `review_link_resolution_failed`, `review_link_resolved`, `review_request_submitted`,
-  `review_request_already_requested`, `review_request_failed`, `review_ineligible`,
-  `review_request_ambiguous`,
-  `review_report_id_mismatch`,
-  `inbound_email_rejected`,
-  `inbound_email_ignored`, and `inbound_email_correlated`.
-- Bot: `interaction_failed`, `interaction_error_response_failed`,
-  `report_submission_reserved`, `report_submission_created`, and
-  `report_submission_observed` or `report_submission_failed`, in addition to the existing polling,
-  reconciliation, webhook, and notification events.
-- Email worker: `email_ignored`, `email_forward_started`, `email_forward_completed`, and
-  `email_forward_failed`. Forwarding events use the same one-way message-ID digest recorded by the
-  API; ignored events record only the routing reason.
-- Discord delivers verification mail through multiple SMTP envelope formats, including
-  `postmaster@*.discord.com` and bounce addresses at `mail.discord.com`, even though the parsed
-  message sender is `noreply@discord.com`. The worker accepts any local part only at the exact
-  `discord.com` domain or its true subdomains; the API retains the exact parsed-sender check.
-- Inbound-email correlation records the parsed email kind, database result, correlated report ID
-  when available, and a one-way message-ID digest. It does not record recipient or email content.
-- Original closure emails use the trusted HTML `here` anchor associated with Discord's review
-  sentence as the appeal-link source. The plain-text URL is fallback-only because MIME text
-  conversion can corrupt the opaque signed tracking value while leaving the URL structurally valid.
-- Ignored inbound email records a stable failure classification, sender addresses, sanitized
-  subject, and a sanitized 500-character text preview. Email addresses and verification-code
-  candidates are redacted, and raw MIME or HTML is never logged.
-- Job stage records include duration so an operator can distinguish email delay, Discord network
-  delay, and bot polling delay.
-- Appeal diagnostics identify the exact stage, job attempt, flow, country, fresh-proxy use, HTTP
-  status, Discord error code and bounded response summary, retry delay, safe network-cause
-  classification, duration, token length/segment count, report type and text lengths, and safe
-  target shape such as message scope/age or selected-element count. They also record explicitly
-  that no Discord account authorization is sent. They never include the review URL or token,
-  target ID, generated email, authorization, cookies, IP address, proxy session ID, or proxy URL.
-
-### Decision log
-
-- Chosen: create one DM report card at the first drafting stage and reuse its message ID through
-  review, submission, resubmission, and lifecycle notifications. Separate progress and review DMs
-  were rejected because they fragment one report across multiple messages; a new database mapping
-  was rejected because the encrypted draft and existing tracking message ID already provide the
-  required handoff.
-- Chosen: prefer the eligible closure email's trusted HTML review anchor over its generated
-  plain-text representation, while retaining text-only compatibility. Selecting by URL length or
-  decoding Discord's opaque `upn` value would be brittle and cross the transport boundary.
-- Chosen: emit one self-contained, redacted structured record for each appeal boundary and terminal
-  result. Raw request/response dumps were rejected because review tokens, account credentials,
-  cookies, and proxy credentials must remain unavailable to Railway logs.
-- Chosen: retry the first exact Discord API code `521004` once after 10 seconds, then classify a
-  second response as the terminal `ineligible` review state. Reusing `request_failed` was rejected
-  because it conflates Discord eligibility with transport/API faults. A private manual retry reuses
-  only the encrypted API job and is protected by ownership, idempotency, one-pending-attempt, and
-  30-second cooldown checks; ambiguous review POSTs remain non-retryable.
-- Chosen: treat Discord API code `521002` as successful appeal convergence and retry transient
-  appeal submission failures through a fresh same-country proxy. Initial report submission remains
-  non-retryable after its final POST starts because it has no equivalent duplicate guard.
-- Chosen: call Baseten directly with configurable
-  `deepseek-ai/DeepSeek-V4-Flash-0731` for planning, synthesis, refinement, and repair. No
-  model fallback is used. One
-  retry handles network errors, rate limits, and server failures within the workflow deadline;
-  refusals, malformed provider payloads, and token-limit completions remain terminal. Malformed or
-  oversized synthesis JSON receives one non-reasoning repair attempt after transport succeeds.
-- Chosen: use Brave Web Search for terminology and Brave LLM Context for law. The planner can skip
-  either request, both initial requests run concurrently when needed, and synthesis may request one
-  bounded follow-up.
-- Chosen: give every AI field one owner. Fixed country/category/reason values are omitted from the
-  planner output schema; only missing Auto fields are returned and merged into immutable bot state.
-  Synthesis cannot output those resolved fields, eliminating mutation errors by construction.
-- Chosen: hand the writer a compact resolved context instead of replaying the research prompt and
-  response. This avoids resending country lists, category catalogs, and tool instructions.
-- Chosen: count actual Brave request attempts and retry only one transient search failure. Search
-  query validation prevents sensitive identifiers or full evidence URLs from reaching Brave.
-- Rejected: OpenRouter search plugins, Brave Answers, Exa, provider fallback, and an unbounded
-  client-side tool loop. They add routing uncertainty, cost, or operational state without improving
-  this bounded report workflow.
-- Chosen: validate only the Cloudflare envelope domain (`discord.com` or a true subdomain) and the
-  generated recipient shape in the email worker. The API remains the sole MIME parser and exact
-  visible-sender validator, avoiding duplicated checks for Discord's changing bounce formats.
-- Chosen: lifecycle boundary events plus structured operational metadata over logging response
-  bodies. The structured fields are sufficient for correlation without making logs unwieldy or
-  risking accidental credential disclosure.
-- Chosen: a short SHA-256 message-ID digest over raw IDs or recipient addresses for duplicate-mail
-  investigation without exposing mailbox identifiers.
-- Chosen: exact localized verification-template phrases over a language-agnostic six-character
-  scan. English, German, and the observed German `Ã¼` decoding variant are accepted without turning
-  ordinary body text into a verification code.
-- Chosen: a sender-gated subject-ending token as the final fallback for other locales. It requires
-  the exact Discord sender, exactly six uppercase alphanumeric characters with at least one letter,
-  and subject-final position; numeric references, lowercase prose, non-Discord senders, and generic
-  body tokens remain rejected.
-- Chosen: send `language: "en"` in the verification-code request body as the primary email-language
-  control. Localized parsing remains as defense against Discord ignoring or changing the hint.
-- Chosen: contain secondary Discord response errors in the interaction handler so an expired
-  interaction cannot terminate the bot process.
-- Rejected: logging every successful report-status GET beyond Fastify's existing access log; bot
-  state-change and polling logs already provide the useful status signal.
-
-Do not register production commands or enable production reporting workers in pull-request
-environments. Use a separate Discord application and mocked API for staging.
+The health endpoint becomes ready only when PostgreSQL and the Discord gateway are ready. The bot
+webhook is intended for Railway private networking and does not need a public domain.

@@ -3,18 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   aggregateAnalyticsRows,
   classifyCaseOutcome,
+  decodeActionHistoryCursor,
   digestEligible,
   durationMetric,
+  encodeActionHistoryCursor,
   rateMetric,
   recurringPatterns,
   resolveAnalyticsInterval,
   sanitizePatternText,
   suppressCommunityBreakdown
 } from "../src/analytics.js";
-import {
-  decodeActionHistoryCursor,
-  encodeActionHistoryCursor
-} from "../src/database.js";
 
 describe("analytics rules", () => {
   it.each([
@@ -32,10 +30,10 @@ describe("analytics rules", () => {
           createdAt: "2026-08-05T00:00:00.000Z",
           status: "failed",
           discordReportId: null,
-          flow: "message_urf",
+          flow: "message",
           category: "illegal_content",
           country: "DE",
-          submitterDiscordUserId: "user-1",
+          accountId: "account-1",
           submittedText: "first attempt"
         },
         {
@@ -45,10 +43,10 @@ describe("analytics rules", () => {
           createdAt: "2026-08-05T01:00:00.000Z",
           status: "submitted",
           discordReportId: "discord-1",
-          flow: "message_urf",
+          flow: "message",
           category: "illegal_content",
           country: "DE",
-          submitterDiscordUserId: "user-1",
+          accountId: "account-1",
           submittedText: "second attempt"
         }
       ],
@@ -82,10 +80,10 @@ describe("analytics rules", () => {
           createdAt: "2026-08-05T00:00:00.000Z",
           status: "submitted",
           discordReportId: "discord-1",
-          flow: "message_urf",
+          flow: "message",
           category: "illegal_content",
           country: "DE",
-          submitterDiscordUserId: "user-1",
+          accountId: "account-1",
           submittedText: "submitted explanation"
         }
       ],
@@ -131,10 +129,10 @@ describe("analytics rules", () => {
         createdAt: "2026-08-05T00:00:00.000Z",
         status: "submitted",
         discordReportId: `discord-${index}`,
-        flow: "message_urf" as const,
+        flow: "message" as const,
         category: "illegal_content",
         country: "DE",
-        submitterDiscordUserId: `user-${index % 5}`,
+        accountId: `account-${index % 5}`,
         submittedText: "repeated threat"
       })),
       events: []
@@ -153,10 +151,10 @@ describe("analytics rules", () => {
       createdAt: "2026-08-05T00:00:00.000Z",
       status: "submitted" as const,
       discordReportId: `discord-${index}`,
-      flow: "message_urf" as const,
+      flow: "message" as const,
       category: "illegal_content",
       country: "DE",
-      submitterDiscordUserId: index < 3 ? null : `user-${index - 3}`,
+      accountId: index < 3 ? null : `account-${index - 3}`,
       submittedText: index < 5 ? "coordinated hateful threat" : `unrelated report ${index}`
     }));
     const result = aggregateAnalyticsRows({
@@ -345,10 +343,10 @@ describe("analytics rules", () => {
           createdAt: "2026-08-10T14:30:00.000Z",
           status: "submitted",
           discordReportId: "d1",
-          flow: "message_urf",
+          flow: "message",
           category: "illegal_content",
           country: "DE",
-          submitterDiscordUserId: "user-1",
+          accountId: "account-1",
           submittedText: "threat"
         },
         {
@@ -358,10 +356,10 @@ describe("analytics rules", () => {
           createdAt: "2026-08-10T14:45:00.000Z",
           status: "submitted",
           discordReportId: "d2",
-          flow: "message_urf",
+          flow: "message",
           category: "illegal_content",
           country: "DE",
-          submitterDiscordUserId: "user-1",
+          accountId: "account-1",
           submittedText: "threat 2"
         }
       ],

@@ -1,67 +1,34 @@
-import { DsaApi } from "@discord-dsa/contracts";
 import { Client, Events, GatewayIntentBits } from "discord.js";
 
+import { AccountBotDatabase } from "./account-database.js";
+import { AccountInteractionHandler } from "./account-interactions.js";
+import { AccountNotificationWorker } from "./account-notifier.js";
 import { registerGlobalCommands } from "./command-registration.js";
 import { loadBotConfig } from "./config.js";
-import { BotDatabase } from "./database.js";
-import { DigestWorker } from "./digest-worker.js";
-import { ExperimentalBatchWorker } from "./experimental-batch-worker.js";
 import { HealthServer } from "./health.js";
-import { InteractionHandler } from "./interactions.js";
 import { MessageResolver } from "./message-resolver.js";
-import { NotificationWorker } from "./notifier.js";
 import { BOT_PRESENCE } from "./presence.js";
 import { ProfileResolver } from "./profile-resolver.js";
-import { ReportWriter } from "./report-writer.js";
-import { ServerResolver } from "./server-resolver.js";
+import { DigestWorker } from "./digest-worker.js";
 
 async function main(): Promise<void> {
   const config = loadBotConfig();
-  process.stdout.write(
-    `Starting Discord DSA bot (AI Provider: ${config.aiProvider}, Model: ${config.aiModel})...\n`
-  );
-  if (!config.reportEventWebhookSecret) {
-    process.stderr.write(
-      "REPORT_EVENT_WEBHOOK_SECRET is not configured; lifecycle DMs will use reconciliation and fallback polling.\n"
-    );
-  }
   if (config.environment === "production") {
-    const count = await registerGlobalCommands({
-      applicationId: config.applicationId,
-      token: config.token
-    });
+    const count = await registerGlobalCommands({ applicationId: config.applicationId, token: config.token });
     process.stdout.write(`Synchronized ${count} global Discord commands.\n`);
   }
-  const database = new BotDatabase(config.databaseUrl);
+  const database = new AccountBotDatabase(config.databaseUrl);
   await database.migrate();
-  const api = new DsaApi({ baseUrl: config.apiBaseUrl, apiKey: config.apiKey });
-  const { countries } = await api.countries();
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
     presence: BOT_PRESENCE
   });
-  const serverResolver = new ServerResolver(client);
-  const profileResolver = new ProfileResolver(client);
-  const messageResolver = new MessageResolver(client);
-  const reportWriter = new ReportWriter(
-    config.aiApiKey,
-    config.aiModel,
-    config.braveSearchApiKey,
-    countries,
-    {
-      provider: config.aiProvider,
-      recordUsage: (userId, usage) => database.recordAiUsage(userId, usage)
-    }
-  );
-  const handler = new InteractionHandler({
-    api,
+  const handler = new AccountInteractionHandler({
+    client,
     config,
-    countries,
     database,
-    messageResolver,
-    profileResolver,
-    reportWriter,
-    serverResolver
+    messageResolver: new MessageResolver(client),
+    profileResolver: new ProfileResolver(client)
   });
   client.on(Events.InteractionCreate, (interaction) => void handler.handle(interaction));
 
@@ -70,34 +37,21 @@ async function main(): Promise<void> {
     discordReady = true;
     process.stdout.write(`Discord app ready as ${readyClient.user.username}.\n`);
   });
-  const health = new HealthServer(
-    database,
-    () => discordReady && client.isReady(),
-    config.reportEventWebhookSecret
-  );
+  const health = new HealthServer(database, () => discordReady && client.isReady(), config.reportEventWebhookSecret);
   await health.listen(config.port);
   await client.login(config.token);
-  const notifier = new NotificationWorker(database, api, client, config, serverResolver);
-  const digests = new DigestWorker(database, api, client);
-  const experimentalBatches = new ExperimentalBatchWorker(
-    database,
-    api,
-    client,
-    config,
-    reportWriter
-  );
+  const notifier = new AccountNotificationWorker(database, client, config);
+  const digests = new DigestWorker(database, client, config);
   notifier.start();
   digests.start();
-  experimentalBatches.start();
 
   let stopping = false;
   const stop = async (signal: string): Promise<void> => {
     if (stopping) return;
     stopping = true;
     process.stdout.write(`Shutting down after ${signal}.\n`);
-    notifier.stop();
-    digests.stop();
-    experimentalBatches.stop();
+    await notifier.stop();
+    await digests.stop();
     await client.destroy();
     await health.close();
     await database.close();
@@ -107,7 +61,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : "Unknown startup error";
-  process.stderr.write(`Bot startup failed: ${message}\n`);
+  process.stderr.write(`Bot startup failed: ${error instanceof Error ? error.message : "Unknown startup error"}\n`);
   process.exitCode = 1;
 });

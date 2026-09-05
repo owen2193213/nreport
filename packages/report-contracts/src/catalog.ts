@@ -1,5 +1,7 @@
 import type { GuildElement, ReportFlow, UserProfileElement } from "./types.js";
 
+type CatalogFlow = ReportFlow | "message_urf" | "user_urf" | "guild_urf";
+
 export interface ReportReason {
   label: string;
   value: string;
@@ -57,10 +59,10 @@ export const GUILD_ELEMENT_LABELS: Record<GuildElement, string> = {
   other: "Other"
 };
 
-export function reportReasons(flow: ReportFlow): readonly ReportReason[] {
-  return flow === "guild_urf" ? GUILD_REPORT_REASONS : USER_MESSAGE_REPORT_REASONS;
+export function reportReasons(flow: CatalogFlow): readonly ReportReason[] {
+  return flow === "server" || flow === "guild_urf" ? GUILD_REPORT_REASONS : USER_MESSAGE_REPORT_REASONS;
 }
 
-export function reportReasonLabel(flow: ReportFlow, value: string): string {
+export function reportReasonLabel(flow: CatalogFlow, value: string): string {
   return reportReasons(flow).find((reason) => reason.value === value)?.label ?? value;
 }

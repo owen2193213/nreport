@@ -1,24 +1,73 @@
 import { loadConfig } from "./config.js";
-import { Database } from "./database.js";
-import { EventDeliveryWorker } from "./event-delivery.js";
-import { JobRunner } from "./job-runner.js";
-import { buildServer } from "./server.js";
+import { AccountRepository } from "./accounts.js";
+import { LifecycleRunner } from "./lifecycle-runner-v2.js";
+import { AccountEventDeliveryWorker } from "./event-delivery-v2.js";
+import { PostgresDatabase } from "./postgres.js";
+import { PreparationWorker } from "./preparation-worker.js";
+import { ApiReportPreparer } from "./preparation/api-report-preparer.js";
+import { createProxySessionId, generateIdentity, supportedCountries } from "./pseudonyms.js";
+import { ReportRepository } from "./report-repository.js";
+import { buildV2Server } from "./server-v2.js";
+import { decryptJson } from "./security.js";
+import { WebhookDestinationRepository } from "./webhook-destinations.js";
+import { AnalyticsRepository } from "./analytics-repository.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const database = new Database(config.databaseUrl);
+  const database = new PostgresDatabase(config.databaseUrl);
   await database.migrate();
-  const app = await buildServer(config, database);
-  const runner = new JobRunner(database, config, app.log);
-  const eventDelivery = new EventDeliveryWorker(database, config, app.log);
+  const accounts = new AccountRepository(database.pool, config.apiKeyPepper);
+  const reports = new ReportRepository(database.pool);
+  const destinations = new WebhookDestinationRepository(
+    database.pool,
+    config.sessionEncryptionKey,
+    config.allowRailwayPrivateHttpWebhooks ?? false
+  );
+  const analytics = new AnalyticsRepository(database.pool);
+  await reports.recoverInterruptedJobs();
+  const app = await buildV2Server(config, {
+    healthcheck: () => database.healthcheck(),
+    accounts,
+    reports,
+    destinations,
+    analytics
+  });
+  const preparer = new ApiReportPreparer({
+    aiApiKey: config.aiApiKey,
+    aiModel: config.aiModel,
+    braveSearchApiKey: config.braveSearchApiKey,
+    supportedCountries: supportedCountries(),
+    provider: config.aiProvider
+  });
+  const preparationWorker = new PreparationWorker(
+    reports,
+    preparer,
+    (country) => {
+      const identity = generateIdentity(country, config.emailDomain);
+      return {
+        legalName: identity.displayName,
+        email: identity.email,
+        locale: identity.locale,
+        timezone: identity.timezone,
+        language: identity.language,
+        proxySessionId: createProxySessionId()
+      };
+    },
+    config.preparationConcurrency,
+    undefined,
+    (error) => app.log.error(
+      { errorName: error instanceof Error ? error.name : "UnknownError" },
+      "Preparation worker iteration failed"
+    )
+  );
+  const lifecycleRunner = new LifecycleRunner(reports, config);
+  const eventDeliveryWorker = new AccountEventDeliveryWorker(reports, {
+    decrypt: (value) => decryptJson<string>(value, config.sessionEncryptionKey)
+  });
   if (config.workerEnabled) {
-    if (!config.botEventWebhookUrl) {
-      app.log.warn(
-        "BOT_EVENT_WEBHOOK_URL is not configured; lifecycle DMs will use reconciliation and fallback polling."
-      );
-    }
-    runner.start();
-    eventDelivery.start();
+    preparationWorker.start();
+    lifecycleRunner.start();
+    eventDeliveryWorker.start();
   }
 
   let stopping = false;
@@ -28,8 +77,9 @@ async function main(): Promise<void> {
     app.log.info({ signal }, "Shutting down");
     await app.close();
     if (config.workerEnabled) {
-      await eventDelivery.stop();
-      await runner.stop();
+      await preparationWorker.stop();
+      await lifecycleRunner.stop();
+      await eventDeliveryWorker.stop();
     }
     await database.close();
   };

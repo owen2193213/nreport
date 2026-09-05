@@ -46,10 +46,7 @@ async function diagnosticResponse(response: Response, sensitiveValues: string[])
 }
 
 function isDiscordEnvelopeSender(address: string): boolean {
-  const separator = address.lastIndexOf("@");
-  if (separator <= 0) return false;
-  const domain = address.slice(separator + 1).toLowerCase();
-  return domain === "discord.com" || domain.endsWith(".discord.com");
+  return address.trim().toLowerCase() === "noreply@discord.com";
 }
 
 export default {

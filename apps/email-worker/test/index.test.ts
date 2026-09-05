@@ -20,11 +20,17 @@ describe("email worker", () => {
     fetchSpy.mockRestore(); logSpy.mockRestore();
   });
 
-  it.each(["noreply@discord.com", "postmaster@o15.ptr9908.discord.com", "bounces+12551241-recipient=example.org@mail.discord.com"])("accepts Discord envelope sender %s", async (from) => {
+  it("accepts the exact trusted Discord envelope sender", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 202 }));
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    await worker.email(emailMessage({ from }), { INGEST_URL: "https://example.com/ingest", INGEST_SHARED_SECRET: "test-secret" });
+    await worker.email(emailMessage({ from: "noreply@discord.com" }), { INGEST_URL: "https://example.com/ingest", INGEST_SHARED_SECRET: "test-secret" });
     expect(fetchSpy).toHaveBeenCalledOnce(); fetchSpy.mockRestore(); logSpy.mockRestore();
+  });
+
+  it.each(["support@discord.com", "noreply@mail.discord.com", "postmaster@o15.ptr9908.discord.com", "noreply@evil-discord.com", "NOREPLY@discord.com.evil.example"])("rejects untrusted Discord-like envelope sender %s", async (from) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch"); const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await worker.email(emailMessage({ from }), { INGEST_URL: "https://example.com/ingest", INGEST_SHARED_SECRET: "test-secret" });
+    expect(fetchSpy).not.toHaveBeenCalled(); fetchSpy.mockRestore(); logSpy.mockRestore();
   });
 
   it("rejects lookalike domains outside discord.com", async () => {

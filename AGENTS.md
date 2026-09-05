@@ -1,7 +1,8 @@
-# Discord DSA Monorepo Guide
+# NReport Discord DSA Monorepo Guide
 
-This repository is an internal TypeScript npm-workspace monorepo for authorized EU Digital
-Services Act reports involving Discord users, messages, and servers. It is composed of separate
+This repository is the NReport TypeScript npm-workspace monorepo. Discord is a service category and
+DSA reporting is the `discord.dsa` service type for authorized reports involving Discord users,
+messages, and servers. It is composed of separate
 deployments that communicate over authenticated HTTP; do not collapse their boundaries by importing
 one application's database or job internals into another.
 
@@ -43,7 +44,8 @@ The API is the source of truth for accounts, credits, reports, preparation, and 
 `main.ts` migrates PostgreSQL and starts Fastify plus separate preparation, Discord lifecycle, and
 durable event-delivery workers.
 
-- `server-v2.ts` defines `/healthz`, authenticated `/v1` endpoints, the Cloudflare raw-email webhook,
+- `server-v2.ts` defines `/healthz`, authenticated `/v1/discord/dsa` and
+  `/v1/admin/discord/dsa` endpoints, the Cloudflare raw-email webhook,
   and API event feed.
 - `accounts.ts`, `report-repository.ts`, `analytics-repository.ts`, and
   `webhook-destinations.ts` own focused persistence concerns.

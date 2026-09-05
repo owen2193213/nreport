@@ -8,7 +8,7 @@ default concurrency of two, so long model requests cannot block verification or 
 ## Workflow
 
 ```text
-POST /v1/reports
+POST /v1/discord/dsa/reports
   -> reserve credit and persist original input
   -> queued
   -> planning

@@ -1,8 +1,8 @@
-# Discord DSA reporting monorepo
+# NReport
 
-An internal TypeScript monorepo for authorized EU Digital Services Act reports involving Discord
-messages, profiles, and servers. The account-owned HTTP API performs the entire durable workflow;
-the Discord user-installed app is one thin client of that API.
+NReport is an internal TypeScript platform for authorized reporting workflows. Discord is a service
+category and DSA reporting is the first service type, identified as `discord.dsa`. Its account-owned
+HTTP API performs the entire durable workflow; the Discord user-installed app is one thin client.
 
 ## Start here
 
@@ -32,7 +32,7 @@ personal API key. The bot alone maps a Discord user to the stable API account ID
 
 ## Report lifecycle
 
-A client calls `POST /v1/reports` with a personal key and stable idempotency key. The API
+A client calls `POST /v1/discord/dsa/reports` with a personal key and stable idempotency key. The API
 transactionally reserves a credit, stores the immutable input, creates the retry chain, job, and
 event, and returns `202` before external network work. The preparation worker optionally plans,
 researches, and writes; then the API creates the localized identity/session, completes Discord
@@ -84,15 +84,17 @@ is assigned or all deliveries fail.
 
 ## Cloudflare email worker
 
-Configure the new worker independently:
+Deploy the new Worker as `nreport-discord-dsa-email` and configure both values as Cloudflare
+secrets so no deployment-specific API hostname is committed:
 
 ```text
 INGEST_URL=https://<new-api-domain>/webhooks/cloudflare-email
 INGEST_SHARED_SECRET=<same value as CLOUDFLARE_EMAIL_WEBHOOK_SECRET>
 ```
 
-Route only the new report domain to it. The worker forwards raw RFC 822 data without storing or
-parsing report codes; the API validates the exact sender and correlates generated aliases.
+Route only the new report domain to it. The Worker accepts only the exact envelope sender
+`noreply@discord.com` and forwards raw RFC 822 data without storing or parsing report codes; the API
+validates the message and correlates generated aliases.
 
 ## Development and validation
 

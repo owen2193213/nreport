@@ -15,7 +15,7 @@ database/job internals or `@discord-dsa/client`, and contains no AI-provider or 
 ## Account access
 
 - `/access connect` opens an ephemeral modal for a personal key. The bot validates it with
-  `GET /v1/account`, encrypts it, and stores the stable account ID, immutable username, prefix, and
+  `GET /v1/discord/dsa/account`, encrypts it, and stores the stable account ID, immutable username, prefix, and
   connection time.
 - `/access status` displays the API username, key prefix, status, available/reserved credits, and
   cumulative usage.
@@ -98,7 +98,7 @@ alternative source of report truth.
 ## Deployment
 
 Use a new Discord application, bot database, and `BOT_DATA_ENCRYPTION_KEY`. Configure
-`DSA_API_BASE_URL`, `DSA_ADMIN_API_KEY`, and optionally `REPORT_EVENT_WEBHOOK_SECRET`; see
+`NREPORT_API_URL`, `NREPORT_ADMIN_KEY`, and optionally `REPORT_EVENT_WEBHOOK_SECRET`; see
 `apps/bot/.env.example`. Register global commands after the new API and test account are ready.
 Do not point the new bot at the historical API or database.
 

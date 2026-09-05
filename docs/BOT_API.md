@@ -1,7 +1,8 @@
-# Account-owned reporting API
+# NReport Discord DSA API
 
 Status: canonical public and bot-facing contract
-Version: v1 account API (architecture generation 2)
+Service: `discord.dsa`
+Version: v1
 
 The API owns preparation, legal research, generated identity, email verification, Discord
 submission, decisions, appeals, credits, and durable lifecycle history. Any authorized bot or
@@ -23,7 +24,7 @@ Keys are shown once, stored server-side only as a lookup prefix and peppered HMA
 may briefly overlap during rotation. A suspended account retains read-only access but receives
 `403` for create and retry operations.
 
-Administrator endpoints use the independent `ADMIN_API_KEY`. An ordinary key cannot call them.
+Administrator endpoints use the independent `NREPORT_ADMIN_KEY`. An ordinary key cannot call them.
 Never put either credential in URLs, Discord command options, logs, or client-side code.
 
 All JSON failures use:
@@ -46,9 +47,10 @@ reports, `409` for state/idempotency conflicts, and `429` with `Retry-After` for
 
 - `GET /openapi.json` is unauthenticated and publishes OpenAPI 3.1 from the exported route schemas.
 - `GET /healthz` is unauthenticated.
-- `GET /v1/account` returns the authenticated account ID, immutable username, status, available
+- `GET /v1/discord/dsa/account` returns the authenticated account ID, immutable username, status, available
   and reserved credits, current key prefix, and cumulative AI request/token/search totals.
-- `GET /v1/catalog` returns supported countries, semantic categories, and flow-specific elements.
+- `GET /v1/discord/dsa/catalog` returns `{ service: { category: "discord", type: "dsa", version: "v1" } }`
+  with supported countries, semantic categories, and flow-specific elements.
 
 Default account limits are five report mutations per minute, twenty AI preparations per hour, and
 120 reads per minute. Limits are enforced at the API and are not reset by running more bot workers.
@@ -56,7 +58,7 @@ Default account limits are five report mutations per minute, twenty AI preparati
 ## Creating a report
 
 ```http
-POST /v1/reports
+POST /v1/discord/dsa/reports
 Authorization: Bearer <personal-api-key>
 Content-Type: application/json
 Idempotency-Key: create:<stable-client-operation-id>
@@ -132,14 +134,14 @@ Manual and `reuse` preparation skip AI-only states. Any pre-submission stage may
 `discordStatus` and `reviewStatus` separately describe later Discord decisions and the automatic
 appeal lifecycle.
 
-`GET /v1/reports/:reportId` returns the account ID, report ID, timestamps, flow, AI mode, status,
+`GET /v1/discord/dsa/reports/:reportId` returns the account ID, report ID, timestamps, flow, AI mode, status,
 credit state, sanitized target/evidence, prepared country/category/description/final text, legal
 reference, compact research summary, source annotations, Discord report/decision/appeal state,
 safe failure details, retry modes, predecessor/successor IDs, and the durable timeline. Generated
 identity, email alias, proxy/session details, provider payloads, prompts, and model conversation are
 never returned.
 
-`GET /v1/reports?after=&limit=` returns account-owned summaries with an opaque cursor. A foreign
+`GET /v1/discord/dsa/reports?after=&limit=` returns account-owned summaries with an opaque cursor. A foreign
 report ID produces the same `404` as a nonexistent one.
 
 ## Credits and retries
@@ -154,7 +156,7 @@ marks the report `submitting`, consumes that entitlement, and emits the boundary
 - Suspending an account fails eligible pre-boundary reports and releases their reservations.
 
 ```http
-POST /v1/reports/<report-id>/retries
+POST /v1/discord/dsa/reports/<report-id>/retries
 Authorization: Bearer <personal-api-key>
 Content-Type: application/json
 Idempotency-Key: retry:<stable-client-operation-id>
@@ -171,7 +173,7 @@ one currently available credit. Actioned and ambiguous-final-submission reports 
 
 ## Events, webhooks, and recovery
 
-`GET /v1/events?after=&limit=` is the authoritative, replayable, account-scoped event feed. Events
+`GET /v1/discord/dsa/events?after=&limit=` is the authoritative, replayable, account-scoped event feed. Events
 contain only `eventId`, `accountId`, `reportId`, `type`, `occurredAt`, and `lifecycleAttempt`—never
 evidence or report text. Clients should persist the cursor only after all items are linked and
 processed, then recover state through report reads. This provides durable recovery; clients still
@@ -189,17 +191,17 @@ returns `409`; other successful duplicates return `2xx`.
 
 ## Analytics
 
-- `GET /v1/analytics`
-- `GET /v1/action-history`
-- `GET /v1/digest-activity`
-- `GET /v1/analytics/community`
+- `GET /v1/discord/dsa/analytics`
+- `GET /v1/discord/dsa/action-history`
+- `GET /v1/discord/dsa/digest-activity`
+- `GET /v1/discord/dsa/analytics/community`
 
 Personal scope always comes from the authenticated account. Community analytics remain anonymized
 and retain insufficient-data protection.
 
 ## Administrator API
 
-The `/v1/admin` surface creates/lists/inspects accounts; suspends or reinstates them; issues,
+The `/v1/admin/discord/dsa` surface creates/lists/inspects accounts; suspends or reinstates them; issues,
 rotates, lists, and revokes keys; adjusts credits with a signed integer delta and mandatory reason;
 creates, updates, disables, and assigns webhook destinations; and exposes global usage plus legacy
 operational diagnostics. Account usernames are immutable and case-insensitively unique. Plaintext
@@ -207,7 +209,7 @@ personal keys are returned only on issue or rotation.
 
 ## Client behavior
 
-Use `DsaApi` from `@discord-dsa/contracts` with a personal key and `DsaAdminApi` only for trusted
+Use `DsaApi` from `@nreport/contracts` with a personal key and `DsaAdminApi` only for trusted
 administration. Preserve idempotency keys across timeouts. Do not automatically retry the final
 Discord submission, infer ownership from caller-provided data, or rely on webhooks as the only
 recovery mechanism.

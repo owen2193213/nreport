@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
-import type { AdminAccountView, AdminCreateAccountInput, ApiAccountView } from "@discord-dsa/contracts";
+import type { AdminAccountView, AdminCreateAccountInput, ApiAccountView } from "@nreport/contracts";
 
 const API_KEY_PATTERN = /^dsa_live_([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})_([A-Za-z0-9_-]{43})$/;
 const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/;

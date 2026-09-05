@@ -5,7 +5,7 @@ import {
   type CreateReportInput,
   type ReportDetail,
   type ReportTarget
-} from "@discord-dsa/contracts";
+} from "@nreport/contracts";
 import {
   ActionRowBuilder,
   EmbedBuilder,

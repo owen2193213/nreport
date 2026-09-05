@@ -9,7 +9,7 @@ import type {
   RateMetric,
   ReportAnalytics,
   ReportFlow
-} from "@discord-dsa/contracts";
+} from "@nreport/contracts";
 
 export interface AnalyticsEvent {
   type: string;

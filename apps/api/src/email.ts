@@ -1,9 +1,9 @@
 import { simpleParser } from "mailparser";
 import type { ParsedMail } from "mailparser";
 
-import type { DiscordReportStatus } from "@discord-dsa/contracts";
+import type { DiscordReportStatus } from "@nreport/contracts";
 
-export type { DiscordReportStatus } from "@discord-dsa/contracts";
+export type { DiscordReportStatus } from "@nreport/contracts";
 
 export type ParsedDiscordEmail =
   | { kind: "verification"; code: string }

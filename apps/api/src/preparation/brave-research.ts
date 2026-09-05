@@ -1,5 +1,5 @@
 import { preparationLog as botLog } from "./observability.js";
-import { readDiagnosticResponse } from "@discord-dsa/contracts";
+import { readDiagnosticResponse } from "@nreport/contracts";
 import type { AiRequestContext } from "./ai-client.js";
 import { capturedMessageSnapshot, type ReportDraft } from "./types.js";
 

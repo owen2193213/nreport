@@ -47,8 +47,8 @@ export function loadBotConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     throw new Error("REPORT_EVENT_WEBHOOK_SECRET must contain at least 32 characters.");
   }
   return {
-    apiBaseUrl: new URL(required(env, "DSA_API_BASE_URL")).toString(),
-    adminApiKey: secret(env, "DSA_ADMIN_API_KEY"),
+    apiBaseUrl: new URL(required(env, "NREPORT_API_URL")).toString(),
+    adminApiKey: secret(env, "NREPORT_ADMIN_KEY"),
     applicationId: snowflake(required(env, "DISCORD_APPLICATION_ID"), "DISCORD_APPLICATION_ID"),
     adminUserIds: new Set(adminUserIds),
     databaseUrl: required(env, "BOT_DATABASE_URL"),

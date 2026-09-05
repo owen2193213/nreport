@@ -6,7 +6,7 @@ import type {
   ReportLifecycleEvent,
   ReportStatus,
   ReportTimelineEvent
-} from "@discord-dsa/contracts";
+} from "@nreport/contracts";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import type { LifecycleJob, LifecycleReport } from "./lifecycle-runner-v2.js";
 import type { AccountEventDelivery } from "./event-delivery-v2.js";

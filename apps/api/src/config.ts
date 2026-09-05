@@ -57,7 +57,7 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  const adminApiKey = secret(env, "ADMIN_API_KEY");
+  const adminApiKey = secret(env, "NREPORT_ADMIN_KEY");
   const apiKeyPepper = secret(env, "API_KEY_PEPPER");
   const configuredProvider = env.AI_PROVIDER?.trim().toLowerCase() ?? "openrouter";
   if (configuredProvider !== "openrouter" && configuredProvider !== "baseten") {

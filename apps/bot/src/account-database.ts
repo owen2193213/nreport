@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { ApiAccountView, ReportLifecycleEvent } from "@discord-dsa/contracts";
+import type { ApiAccountView, ReportLifecycleEvent } from "@nreport/contracts";
 import { Pool, type QueryResultRow } from "pg";
 
 export const BOT_ACCOUNT_SCHEMA_SQL = `

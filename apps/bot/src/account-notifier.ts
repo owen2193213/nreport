@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import { DsaApi, DsaApiError, type CreateReportInput } from "@discord-dsa/contracts";
+import { DsaApi, DsaApiError, type CreateReportInput } from "@nreport/contracts";
 import type { Client, Message } from "discord.js";
 
 import type { AccountBotDatabase, ApiConnection, ClaimedNotification } from "./account-database.js";

@@ -4,7 +4,7 @@ import type {
   ReportedMessageSnapshot,
   ReportedUserSnapshot,
   UserProfileElement
-} from "@discord-dsa/contracts";
+} from "@nreport/contracts";
 
 export interface AiUsage {
   costCredits: number;

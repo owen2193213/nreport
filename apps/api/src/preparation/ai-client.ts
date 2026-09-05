@@ -1,4 +1,4 @@
-import { readDiagnosticResponse } from "@discord-dsa/contracts";
+import { readDiagnosticResponse } from "@nreport/contracts";
 import { preparationLog as botLog } from "./observability.js";
 import type { AiUsage } from "./types.js";
 

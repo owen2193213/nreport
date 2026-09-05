@@ -3,7 +3,7 @@ import type {
   ReportedMessageSnapshot,
   ReportedReferencedMessageSnapshot,
   UnavailableMessageEvidence
-} from "@discord-dsa/contracts";
+} from "@nreport/contracts";
 import type { Client, Message } from "discord.js";
 
 

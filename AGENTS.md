@@ -57,7 +57,7 @@ durable event-delivery workers.
   and request validation.
 
 Only the API imports `@discord-dsa/client`. The bot must call the API through
-`@discord-dsa/contracts`'s `DsaApi` HTTP adapter.
+`@nreport/contracts`'s `DsaApi` HTTP adapter.
 
 ### Bot: `apps/bot`
 
@@ -177,9 +177,9 @@ Focused commands:
 ```powershell
 npm.cmd run dev:api
 npm.cmd run dev:bot
-npm.cmd run register -w @discord-dsa/bot
-npm.cmd test -w @discord-dsa/api
-npm.cmd test -w @discord-dsa/bot
+npm.cmd run register -w @nreport/discord-dsa-bot
+npm.cmd test -w @nreport/api
+npm.cmd test -w @nreport/discord-dsa-bot
 npm.cmd run test:headers
 npm.cmd run test:client-readonly
 ```

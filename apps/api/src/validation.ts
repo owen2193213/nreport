@@ -8,7 +8,7 @@ import type {
   ReportedUserSnapshot,
   ReportRetryMode,
   UserProfileElement
-} from "@discord-dsa/contracts";
+} from "@nreport/contracts";
 import { supportedCountries } from "./pseudonyms.js";
 
 const FLOW_VALUES = new Set(["message", "profile", "server"] as const);

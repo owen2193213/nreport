@@ -1,4 +1,4 @@
-import { ANALYTICS_PERIODS } from "@discord-dsa/contracts";
+import { ANALYTICS_PERIODS } from "@nreport/contracts";
 import {
   ApplicationCommandType,
   ApplicationIntegrationType,

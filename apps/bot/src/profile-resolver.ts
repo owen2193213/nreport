@@ -1,6 +1,6 @@
 import type { Client, User } from "discord.js";
 
-import type { ReportedUserSnapshot } from "@discord-dsa/contracts";
+import type { ReportedUserSnapshot } from "@nreport/contracts";
 
 const SNOWFLAKE = /^\d{15,22}$/;
 

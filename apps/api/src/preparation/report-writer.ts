@@ -1,4 +1,4 @@
-import { createTraceId, reportReasonLabel, reportReasons } from "@discord-dsa/contracts";
+import { createTraceId, reportReasonLabel, reportReasons } from "@nreport/contracts";
 
 import {
   BraveResearchClient,

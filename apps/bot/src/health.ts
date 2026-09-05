@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import type { ReportLifecycleEvent } from "@discord-dsa/contracts";
+import type { ReportLifecycleEvent } from "@nreport/contracts";
 
 import type { AccountBotDatabase, EventIngestionResult } from "./account-database.js";
 import { verifyReportEventSignature } from "./crypto.js";

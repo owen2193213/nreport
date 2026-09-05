@@ -3,7 +3,7 @@ import type {
   AnalyticsInterval,
   DigestActivity,
   ReportAnalytics
-} from "@discord-dsa/contracts";
+} from "@nreport/contracts";
 import type { Pool, QueryResultRow } from "pg";
 
 import {

@@ -1,5 +1,5 @@
 {
-  "name": "discord-dsa-monorepo",
+  "name": "nreport",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,10 +8,10 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @discord-dsa/contracts && npm run build -w @discord-dsa/client && npm run build -w @discord-dsa/api && npm run build -w @discord-dsa/bot --if-present",
-    "start": "npm run start -w @discord-dsa/api",
-    "dev:api": "npm run dev -w @discord-dsa/api",
-    "dev:bot": "npm run dev -w @discord-dsa/bot",
+    "build": "npm run build -w @nreport/contracts && npm run build -w @discord-dsa/client && npm run build -w @nreport/api && npm run build -w @nreport/discord-dsa-bot --if-present",
+    "start": "npm run start -w @nreport/api",
+    "dev:api": "npm run dev -w @nreport/api",
+    "dev:bot": "npm run dev -w @nreport/discord-dsa-bot",
     "lint": "eslint --no-error-on-unmatched-pattern \"apps/**/*.ts\" \"packages/**/*.ts\" \"scripts/**/*.ts\"",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",

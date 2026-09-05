@@ -5,13 +5,13 @@ import { AccountBotDatabase } from "../src/account-database.js";
 import { AccountNotificationWorker } from "../src/account-notifier.js";
 import { loadBotConfig } from "../src/config.js";
 import { reportEventIngestionStatus } from "../src/health.js";
-import { DsaApiError } from "@discord-dsa/contracts";
+import { DsaApiError } from "@nreport/contracts";
 
 describe("thin account client configuration", () => {
   it("requires only API administration, Discord, database, encryption, and webhook secrets", () => {
     const config = loadBotConfig({
-      DSA_API_BASE_URL: "https://api.example.test",
-      DSA_ADMIN_API_KEY: "a".repeat(32),
+      NREPORT_API_URL: "https://api.example.test",
+      NREPORT_ADMIN_KEY: "a".repeat(32),
       DISCORD_APPLICATION_ID: "123456789012345678",
       DISCORD_ADMIN_USER_IDS: "123456789012345678",
       BOT_DATABASE_URL: "postgres://localhost/bot",

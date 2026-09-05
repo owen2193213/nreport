@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type { CreateReportInput } from "@discord-dsa/contracts";
+import type { CreateReportInput } from "@nreport/contracts";
 
 import type { PreparedResult, ReportPreparer } from "../preparation-worker.js";
 import { ReportWriter } from "./report-writer.js";

@@ -157,7 +157,7 @@ describe("API account security primitives", () => {
       REPORT_EMAIL_DOMAIN: "reports.example.test",
       SESSION_ENCRYPTION_KEY: Buffer.alloc(32).toString("base64"),
       CLOUDFLARE_EMAIL_WEBHOOK_SECRET: "c".repeat(32),
-      ADMIN_API_KEY: "a".repeat(32),
+      NREPORT_ADMIN_KEY: "a".repeat(32),
       API_KEY_PEPPER: "p".repeat(32),
       OPENROUTER_API_KEY: "openrouter-secret",
       BRAVE_SEARCH_API_KEY: "brave-secret"

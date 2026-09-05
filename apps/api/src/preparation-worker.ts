@@ -1,4 +1,4 @@
-import type { CreateReportInput, LegalSourceAnnotation, ReportStatus } from "@discord-dsa/contracts";
+import type { CreateReportInput, LegalSourceAnnotation, ReportStatus } from "@nreport/contracts";
 
 import type { AccountReportRow } from "./report-repository.js";
 

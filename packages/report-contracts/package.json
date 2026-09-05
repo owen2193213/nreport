@@ -1,5 +1,5 @@
 {
-  "name": "@discord-dsa/contracts",
+  "name": "@nreport/contracts",
   "version": "0.1.0",
   "private": true,
   "type": "module",

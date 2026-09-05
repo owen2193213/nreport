@@ -18,9 +18,9 @@ import {
   retryReportBodySchema,
   updateWebhookDestinationBodySchema,
   USER_MESSAGE_REPORT_REASONS
-} from "@discord-dsa/contracts";
+} from "@nreport/contracts";
 import { createHash } from "node:crypto";
-import type { AdminCreateAccountInput, ApiAccountView, CreateReportInput, PublicReportTarget, ReportDetail, ReportTarget } from "@discord-dsa/contracts";
+import type { AdminCreateAccountInput, ApiAccountView, CreateReportInput, PublicReportTarget, ReportDetail, ReportTarget } from "@nreport/contracts";
 import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
@@ -35,7 +35,7 @@ import { supportedCountries } from "./pseudonyms.js";
 import type { WebhookDestinationRepository } from "./webhook-destinations.js";
 import type { AnalyticsRepository } from "./analytics-repository.js";
 import { resolveAnalyticsInterval } from "./analytics.js";
-import type { AnalyticsInterval, AnalyticsPeriod } from "@discord-dsa/contracts";
+import type { AnalyticsInterval, AnalyticsPeriod } from "@nreport/contracts";
 
 interface AccountStore {
   authenticate(key: string): Promise<AccountPrincipal | null>;

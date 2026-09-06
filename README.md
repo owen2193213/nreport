@@ -92,9 +92,10 @@ INGEST_URL=https://<new-api-domain>/webhooks/cloudflare-email
 INGEST_SHARED_SECRET=<same value as CLOUDFLARE_EMAIL_WEBHOOK_SECRET>
 ```
 
-Route only the new report domain to it. The Worker accepts only the exact envelope sender
-`noreply@discord.com` and forwards raw RFC 822 data without storing or parsing report codes; the API
-validates the message and correlates generated aliases.
+Route only the new report domain to it. The Worker accepts SMTP envelope senders only at
+`discord.com` or true subdomains such as `mail.discord.com`, then forwards raw RFC 822 data without
+storing or parsing report codes. The API independently requires the parsed sender to be exactly
+`noreply@discord.com` before validating the message and correlating generated aliases.
 
 ## Development and validation
 

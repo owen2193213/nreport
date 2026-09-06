@@ -85,10 +85,12 @@ ordinary private Discord messages because Discord does not support ephemeral DMs
 
 ### Email Worker: `apps/email-worker`
 
-The Cloudflare worker accepts only mail whose sender is exactly `noreply@discord.com` and whose
-recipient matches a generated report alias. It signs and forwards untouched raw RFC 822 content to
-the API. It must not parse report codes, keep mail, forward to a personal mailbox, or expose a
-public HTTP handler unless separately needed.
+The Cloudflare worker accepts SMTP envelope senders only when their domain is exactly `discord.com`
+or a true subdomain such as `mail.discord.com`, and only when the recipient matches a generated
+report alias. It signs and forwards untouched raw RFC 822 content to the API. The API independently
+requires the parsed message sender to be exactly `noreply@discord.com`. The worker must not parse
+report codes, keep mail, forward to a personal mailbox, or expose a public HTTP handler unless
+separately needed.
 
 ### Low-level client: `packages/discord-dsa-client`
 

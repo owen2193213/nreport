@@ -53,18 +53,13 @@ function isDiscordEnvelopeSender(address: string): boolean {
   return domain === "discord.com" || domain.endsWith(".discord.com");
 }
 
-function isTrustedVisibleSender(value: string | null): boolean {
-  return value?.trim().toLowerCase() === "discord <noreply@discord.com>" ||
-    value?.trim().toLowerCase() === "noreply@discord.com";
-}
-
 export default {
   fetch(): Response {
     return new Response("Not found", { status: 404 });
   },
 
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
-    if (!isDiscordEnvelopeSender(message.from) || !isTrustedVisibleSender(message.headers.get("from"))) {
+    if (!isDiscordEnvelopeSender(message.from)) {
       console.log(JSON.stringify({
         event: "email_ignored",
         reason: "untrusted_sender"

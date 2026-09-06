@@ -27,12 +27,12 @@ describe("email worker", () => {
     expect(fetchSpy).toHaveBeenCalledOnce(); fetchSpy.mockRestore(); logSpy.mockRestore();
   });
 
-  it("accepts Discord's bounce envelope only with the trusted visible sender", async () => {
+  it("accepts Discord's bounce envelope regardless of visible sender formatting", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 202 }));
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     await worker.email(emailMessage({
       from: "bounces+12551241-92b7-omar.kuznetsov.23456789abcdefgh=example.com@mail.discord.com",
-      headers: new Headers({ from: "Discord <noreply@discord.com>" })
+      headers: new Headers()
     }), { INGEST_URL: "https://example.com/ingest", INGEST_SHARED_SECRET: "test-secret" });
     expect(fetchSpy).toHaveBeenCalledOnce(); fetchSpy.mockRestore(); logSpy.mockRestore();
   });
@@ -43,10 +43,11 @@ describe("email worker", () => {
     expect(fetchSpy).not.toHaveBeenCalled(); fetchSpy.mockRestore(); logSpy.mockRestore();
   });
 
-  it("rejects a Discord envelope when the visible sender is not noreply@discord.com", async () => {
+  it("accepts other valid Discord subdomain envelopes", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch"); const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    await worker.email(emailMessage({ from: "bounces+id@mail.discord.com", headers: new Headers({ from: "Discord <support@discord.com>" }) }), { INGEST_URL: "https://example.com/ingest", INGEST_SHARED_SECRET: "test-secret" });
-    expect(fetchSpy).not.toHaveBeenCalled(); expect(logSpy).toHaveBeenCalledWith(JSON.stringify({ event: "email_ignored", reason: "untrusted_sender" }));
+    fetchSpy.mockResolvedValue(new Response(null, { status: 202 }));
+    await worker.email(emailMessage({ from: "postmaster@o15.ptr9908.discord.com", headers: new Headers() }), { INGEST_URL: "https://example.com/ingest", INGEST_SHARED_SECRET: "test-secret" });
+    expect(fetchSpy).toHaveBeenCalledOnce();
     fetchSpy.mockRestore(); logSpy.mockRestore();
   });
 

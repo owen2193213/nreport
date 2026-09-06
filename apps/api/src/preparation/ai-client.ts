@@ -2,8 +2,8 @@ import { readDiagnosticResponse } from "@nreport/contracts";
 import { preparationLog as botLog } from "./observability.js";
 import type { AiUsage } from "./types.js";
 
-export const BASETEN_CHAT_COMPLETIONS_URL =
-  "https://inference.baseten.co/v1/chat/completions";
+export const OPENROUTER_CHAT_COMPLETIONS_URL =
+  "https://openrouter.ai/api/v1/chat/completions";
 const REQUEST_TIMEOUT_MS = 150_000;
 
 export interface AiRequestContext {
@@ -84,11 +84,11 @@ export class AiClient {
   }
 
   public get endpoint(): string {
-    return BASETEN_CHAT_COMPLETIONS_URL;
+    return OPENROUTER_CHAT_COMPLETIONS_URL;
   }
 
   public get providerName(): string {
-    return "Baseten";
+    return "OpenRouter";
   }
 
   public async complete(
@@ -102,9 +102,12 @@ export class AiClient {
       model: this.model,
       stream: false
     };
+    if (!body.provider) requestBody.provider = { allow_fallbacks: true };
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://discord.com",
+      "X-Title": "Discord DSA"
     };
     let attempts = 0;
     for (;;) {
@@ -270,7 +273,7 @@ export class AiClient {
         latencyMs: Date.now() - startedAt,
         model: this.model,
         outputTokens: usage.outputTokens,
-        provider: "baseten",
+        provider: "openrouter",
         reasoningTokens: usage.reasoningTokens,
         responseLength: choice.message.content.length,
         searchRequests: 0,
@@ -297,7 +300,7 @@ export class AiClient {
         ...(httpStatus === undefined ? {} : { httpStatus }),
         latencyMs,
         model: this.model,
-        provider: "baseten",
+        provider: "openrouter",
         stage,
         ...(attempts === undefined ? {} : { attempts }),
         ...(actor.traceId === undefined ? {} : { traceId: actor.traceId }),

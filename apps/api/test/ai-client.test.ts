@@ -7,7 +7,7 @@ import {
 } from "../src/preparation/ai-client.js";
 
 const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
-const BASETEN_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731";
+const OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";
 
 function success(
   content = '{"ok":true}',
@@ -19,7 +19,7 @@ function success(
       id: "chatcmpl-safe-id",
       object: "chat.completion",
       created: 1,
-      model: BASETEN_MODEL,
+      model: OPENROUTER_MODEL,
       choices: [
         {
           index: 0,
@@ -55,10 +55,10 @@ function headers(request: ReturnType<typeof vi.fn>): Record<string, string> {
 }
 
 describe("AiClient", () => {
-  describe("Baseten transport", () => {
-    it("sends reasoning request directly to Baseten endpoint", async () => {
+  describe("OpenRouter transport", () => {
+    it("sends reasoning requests to OpenRouter with fallback routing", async () => {
       const request = vi.fn().mockResolvedValue(success());
-      const client = new AiClient("baseten-secret", BASETEN_MODEL, {
+      const client = new AiClient("ai-secret", OPENROUTER_MODEL, {
         request: request as unknown as typeof fetch
       });
 
@@ -74,17 +74,18 @@ describe("AiClient", () => {
       );
 
       expect(request.mock.calls[0]?.[0]).toBe(
-        "https://inference.baseten.co/v1/chat/completions"
+        "https://openrouter.ai/api/v1/chat/completions"
       );
-      expect(headers(request).Authorization).toBe("Bearer baseten-secret");
-      expect(headers(request)["HTTP-Referer"]).toBeUndefined();
+      expect(headers(request).Authorization).toBe("Bearer ai-secret");
+      expect(headers(request)["HTTP-Referer"]).toBe("https://discord.com");
+      expect(headers(request)["X-Title"]).toBe("Discord DSA");
       expect(body(request)).toMatchObject({
-        model: BASETEN_MODEL,
+        model: OPENROUTER_MODEL,
         max_completion_tokens: 8_192,
         reasoning_effort: "high",
         stream: false
       });
-      expect(body(request).provider).toBeUndefined();
+      expect(body(request).provider).toEqual({ allow_fallbacks: true });
       expect(result).toEqual({
         content: '{"ok":true}',
         finishReason: "stop",
@@ -98,10 +99,10 @@ describe("AiClient", () => {
       });
     });
 
-    it("always exposes the Baseten endpoint and provider name", () => {
-      const client = new AiClient("baseten-secret", BASETEN_MODEL);
-      expect(client.endpoint).toBe("https://inference.baseten.co/v1/chat/completions");
-      expect(client.providerName).toBe("Baseten");
+    it("always exposes the OpenRouter endpoint and provider name", () => {
+      const client = new AiClient("ai-secret", OPENROUTER_MODEL);
+      expect(client.endpoint).toBe("https://openrouter.ai/api/v1/chat/completions");
+      expect(client.providerName).toBe("OpenRouter");
     });
 
     it("handles upstream error objects in response payloads", async () => {
@@ -115,7 +116,7 @@ describe("AiClient", () => {
       );
 
       await expect(
-        new AiClient("key", BASETEN_MODEL, {
+        new AiClient("key", OPENROUTER_MODEL, {
           request: request as unknown as typeof fetch
         }).complete({}, Date.now() + 5_000, ACTOR, "plan")
       ).rejects.toMatchObject({
@@ -127,7 +128,7 @@ describe("AiClient", () => {
 
   it("uses zero separate reasoning tokens when the response omits the detail", async () => {
     const request = vi.fn().mockResolvedValue(success('{"ok":true}', "stop", null));
-    const result = await new AiClient("key", BASETEN_MODEL, {
+    const result = await new AiClient("key", OPENROUTER_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({ messages: [] }, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -139,7 +140,7 @@ describe("AiClient", () => {
     const request = vi.fn().mockResolvedValue(success('{"ok":', "length"));
 
     await expect(
-      new AiClient("key", BASETEN_MODEL, {
+      new AiClient("key", OPENROUTER_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind: "incomplete" });
@@ -161,7 +162,7 @@ describe("AiClient", () => {
     );
 
     await expect(
-      new AiClient("key", BASETEN_MODEL, {
+      new AiClient("key", OPENROUTER_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({ messages: [] }, Date.now() + 5_000, ACTOR, "synthesize")
     ).rejects.toMatchObject({ kind: "refusal" });
@@ -179,7 +180,7 @@ describe("AiClient", () => {
     );
 
     await expect(
-      new AiClient("key", BASETEN_MODEL, {
+      new AiClient("key", OPENROUTER_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind });
@@ -192,7 +193,7 @@ describe("AiClient", () => {
       .mockResolvedValueOnce(new Response("temporary", { status }))
       .mockResolvedValueOnce(success());
 
-    const result = await new AiClient("key", BASETEN_MODEL, {
+    const result = await new AiClient("key", OPENROUTER_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -207,7 +208,7 @@ describe("AiClient", () => {
       .mockRejectedValueOnce(new Error("temporary network failure"))
       .mockResolvedValueOnce(success());
 
-    const result = await new AiClient("key", BASETEN_MODEL, {
+    const result = await new AiClient("key", OPENROUTER_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -224,7 +225,7 @@ describe("AiClient", () => {
     );
 
     await expect(
-      new AiClient("key", BASETEN_MODEL, {
+      new AiClient("key", OPENROUTER_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind: "malformed" });
@@ -233,7 +234,7 @@ describe("AiClient", () => {
 
   it("rejects exhausted deadlines without making a request", async () => {
     const request = vi.fn();
-    const client = new AiClient("key", BASETEN_MODEL, {
+    const client = new AiClient("key", OPENROUTER_MODEL, {
       request: request as unknown as typeof fetch
     });
 

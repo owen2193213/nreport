@@ -7,7 +7,6 @@ import {
 } from "../src/preparation/ai-client.js";
 
 const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
-const BASETEN_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731";
 const OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";
 
 function success(
@@ -56,11 +55,10 @@ function headers(request: ReturnType<typeof vi.fn>): Record<string, string> {
 }
 
 describe("AiClient", () => {
-  describe("OpenRouter provider", () => {
-    it("sends requests to OpenRouter endpoint with required headers, fallback routing, and DeepSeek V4 Flash", async () => {
+  describe("OpenRouter transport", () => {
+    it("sends reasoning requests to OpenRouter with fallback routing", async () => {
       const request = vi.fn().mockResolvedValue(success());
-      const client = new AiClient("openrouter-secret", OPENROUTER_MODEL, {
-        provider: "openrouter",
+      const client = new AiClient("ai-secret", OPENROUTER_MODEL, {
         request: request as unknown as typeof fetch
       });
 
@@ -78,17 +76,16 @@ describe("AiClient", () => {
       expect(request.mock.calls[0]?.[0]).toBe(
         "https://openrouter.ai/api/v1/chat/completions"
       );
-      const reqHeaders = headers(request);
-      expect(reqHeaders.Authorization).toBe("Bearer openrouter-secret");
-      expect(reqHeaders["HTTP-Referer"]).toBe("https://discord.com");
-      expect(reqHeaders["X-Title"]).toBe("Discord DSA");
+      expect(headers(request).Authorization).toBe("Bearer ai-secret");
+      expect(headers(request)["HTTP-Referer"]).toBe("https://discord.com");
+      expect(headers(request)["X-Title"]).toBe("Discord DSA");
       expect(body(request)).toMatchObject({
         model: OPENROUTER_MODEL,
-        provider: { allow_fallbacks: true },
         max_completion_tokens: 8_192,
         reasoning_effort: "high",
         stream: false
       });
+      expect(body(request).provider).toEqual({ allow_fallbacks: true });
       expect(result).toEqual({
         content: '{"ok":true}',
         finishReason: "stop",
@@ -102,7 +99,13 @@ describe("AiClient", () => {
       });
     });
 
-    it("handles upstream error object in response payload", async () => {
+    it("always exposes the OpenRouter endpoint and provider name", () => {
+      const client = new AiClient("ai-secret", OPENROUTER_MODEL);
+      expect(client.endpoint).toBe("https://openrouter.ai/api/v1/chat/completions");
+      expect(client.providerName).toBe("OpenRouter");
+    });
+
+    it("handles upstream error objects in response payloads", async () => {
       const request = vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
@@ -114,65 +117,12 @@ describe("AiClient", () => {
 
       await expect(
         new AiClient("key", OPENROUTER_MODEL, {
-          provider: "openrouter",
           request: request as unknown as typeof fetch
         }).complete({}, Date.now() + 5_000, ACTOR, "plan")
       ).rejects.toMatchObject({
         kind: "provider",
         message: "Provider returned 504 gateway timeout"
       });
-    });
-  });
-
-  describe("Baseten provider", () => {
-    it("sends reasoning request directly to Baseten endpoint", async () => {
-      const request = vi.fn().mockResolvedValue(success());
-      const client = new AiClient("baseten-secret", BASETEN_MODEL, {
-        provider: "baseten",
-        request: request as unknown as typeof fetch
-      });
-
-      const result = await client.complete(
-        {
-          messages: [{ role: "user", content: "Return JSON" }],
-          max_completion_tokens: 8_192,
-          reasoning_effort: "high"
-        },
-        Date.now() + 5_000,
-        ACTOR,
-        "plan"
-      );
-
-      expect(request.mock.calls[0]?.[0]).toBe(
-        "https://inference.baseten.co/v1/chat/completions"
-      );
-      expect(headers(request).Authorization).toBe("Bearer baseten-secret");
-      expect(headers(request)["HTTP-Referer"]).toBeUndefined();
-      expect(body(request)).toMatchObject({
-        model: BASETEN_MODEL,
-        max_completion_tokens: 8_192,
-        reasoning_effort: "high",
-        stream: false
-      });
-      expect(body(request).provider).toBeUndefined();
-      expect(result).toEqual({
-        content: '{"ok":true}',
-        finishReason: "stop",
-        usage: {
-          costCredits: 0,
-          inputTokens: 120,
-          outputTokens: 35,
-          reasoningTokens: 12,
-          searchRequests: 0
-        }
-      });
-    });
-
-    it("auto-detects baseten provider when model starts with deepseek-ai/", () => {
-      const client = new AiClient("baseten-secret", BASETEN_MODEL);
-      expect(client.provider).toBe("baseten");
-      expect(client.endpoint).toBe("https://inference.baseten.co/v1/chat/completions");
-      expect(client.providerName).toBe("Baseten");
     });
   });
 

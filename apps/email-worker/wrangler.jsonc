@@ -2,5 +2,11 @@
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "nreport-discord-dsa-email",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-19"
+  "compatibility_date": "2026-07-19",
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
 }

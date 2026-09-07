@@ -12,7 +12,6 @@ import {
   AiClient,
   AiClientError,
   type AiClientOptions,
-  type AiProvider,
   type AiRequestContext,
   type AiStage
 } from "./ai-client.js";
@@ -59,7 +58,6 @@ const PLANNER_SYSTEM_PROMPT = [
 type UsageRecorder = (userId: string, usage: AiUsage) => Promise<void>;
 
 export interface ReportWriterOptions {
-  provider?: AiProvider;
   recordUsage?: UsageRecorder;
   request?: typeof globalThis.fetch;
 }
@@ -730,7 +728,6 @@ export class ReportWriter {
   ) {
     this.recordUsage = options.recordUsage ?? (() => Promise.resolve());
     const clientOptions: AiClientOptions = {
-      ...(options.provider ? { provider: options.provider } : {}),
       ...(options.request ? { request: options.request } : {})
     };
     this.ai = new AiClient(aiApiKey, aiModel, clientOptions);

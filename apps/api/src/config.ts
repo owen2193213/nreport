@@ -5,7 +5,6 @@ export interface AppConfig {
   apiKeyPepper: string;
   aiApiKey: string;
   aiModel: string;
-  aiProvider: "openrouter" | "baseten";
   braveSearchApiKey: string;
   preparationConcurrency: number;
   databaseUrl: string;
@@ -59,20 +58,8 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const adminApiKey = secret(env, "NREPORT_ADMIN_KEY");
   const apiKeyPepper = secret(env, "API_KEY_PEPPER");
-  const configuredProvider = env.AI_PROVIDER?.trim().toLowerCase() ?? "openrouter";
-  if (configuredProvider !== "openrouter" && configuredProvider !== "baseten") {
-    throw new Error("AI_PROVIDER must be either 'openrouter' or 'baseten'.");
-  }
-  const aiProvider = configuredProvider;
-  const aiApiKey = required(
-    env,
-    aiProvider === "openrouter" ? "OPENROUTER_API_KEY" : "BASETEN_API_KEY"
-  );
-  const aiModel =
-    env.AI_MODEL?.trim() ||
-    (aiProvider === "openrouter"
-      ? "deepseek/deepseek-v4-flash-0731"
-      : "deepseek-ai/DeepSeek-V4-Flash-0731");
+  const aiApiKey = required(env, "AI_API_KEY");
+  const aiModel = env.AI_MODEL?.trim() || "deepseek/deepseek-v4-flash-0731";
   const emailDomain = required(env, "REPORT_EMAIL_DOMAIN").toLowerCase();
   if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(emailDomain)) {
     throw new Error("REPORT_EMAIL_DOMAIN must be a valid domain name.");
@@ -93,7 +80,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     apiKeyPepper,
     aiApiKey,
     aiModel,
-    aiProvider,
     braveSearchApiKey: required(env, "BRAVE_SEARCH_API_KEY"),
     preparationConcurrency: positiveInteger(env.PREPARATION_CONCURRENCY, 2, "PREPARATION_CONCURRENCY"),
     databaseUrl: required(env, "DATABASE_URL"),

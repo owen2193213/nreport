@@ -36,8 +36,7 @@ async function main(): Promise<void> {
     aiApiKey: config.aiApiKey,
     aiModel: config.aiModel,
     braveSearchApiKey: config.braveSearchApiKey,
-    supportedCountries: supportedCountries(),
-    provider: config.aiProvider
+    supportedCountries: supportedCountries()
   });
   const preparationWorker = new PreparationWorker(
     reports,

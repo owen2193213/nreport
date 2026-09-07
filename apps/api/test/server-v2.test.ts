@@ -9,7 +9,6 @@ const config = {
   apiKeyPepper: "p".repeat(32),
   aiApiKey: "ai-key",
   aiModel: "model",
-  aiProvider: "openrouter",
   braveSearchApiKey: "brave-key",
   preparationConcurrency: 2,
   databaseUrl: "postgres://unused",

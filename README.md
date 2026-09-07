@@ -52,7 +52,7 @@ This generation must coexist with the historical Railway system. Create all of t
 - session and bot-data encryption keys, API-key pepper, and administrator key;
 - Discord application and bot token;
 - report email domain, Cloudflare email route/worker destination, and ingest secret;
-- provider/search credentials and webhook signing secret.
+- AI/Brave credentials and webhook signing secret.
 
 Do not mutate or redeploy the historical services or share their databases, Discord application,
 or report email route.
@@ -64,7 +64,7 @@ Both Railway services use the repository root so npm workspaces and the root loc
 | API | `apps/api/railway.json` |
 | Bot | `apps/bot/railway.json` |
 
-Use `apps/api/.env.example` and `apps/bot/.env.example` as variable checklists. Provider and Brave
+Use `apps/api/.env.example` and `apps/bot/.env.example` as variable checklists. AI and Brave
 secrets exist only on the API. The bot carries the administrator key only for commands restricted
 to configured Discord administrators; all normal work uses a connected personal key.
 
@@ -92,9 +92,10 @@ INGEST_URL=https://<new-api-domain>/webhooks/cloudflare-email
 INGEST_SHARED_SECRET=<same value as CLOUDFLARE_EMAIL_WEBHOOK_SECRET>
 ```
 
-Route only the new report domain to it. The Worker accepts only the exact envelope sender
-`noreply@discord.com` and forwards raw RFC 822 data without storing or parsing report codes; the API
-validates the message and correlates generated aliases.
+Route only the new report domain to it. The Worker accepts SMTP envelope senders only at
+`discord.com` or true subdomains such as `mail.discord.com`, then forwards raw RFC 822 data without
+storing or parsing report codes. The API independently requires the parsed sender to be exactly
+`noreply@discord.com` before validating the message and correlating generated aliases.
 
 ## Development and validation
 

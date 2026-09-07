@@ -2,12 +2,8 @@ import { readDiagnosticResponse } from "@nreport/contracts";
 import { preparationLog as botLog } from "./observability.js";
 import type { AiUsage } from "./types.js";
 
-export type AiProvider = "openrouter" | "baseten";
-
 export const OPENROUTER_CHAT_COMPLETIONS_URL =
   "https://openrouter.ai/api/v1/chat/completions";
-export const BASETEN_CHAT_COMPLETIONS_URL =
-  "https://inference.baseten.co/v1/chat/completions";
 const REQUEST_TIMEOUT_MS = 150_000;
 
 export interface AiRequestContext {
@@ -73,35 +69,26 @@ function usageFrom(value: ChatCompletionResponse["usage"]): AiUsage {
 }
 
 export interface AiClientOptions {
-  provider?: AiProvider;
   request?: typeof globalThis.fetch;
 }
 
 export class AiClient {
   private readonly request: typeof globalThis.fetch;
-  public readonly provider: AiProvider;
 
   public constructor(
     private readonly apiKey: string,
     private readonly model: string,
     options: AiClientOptions = {}
   ) {
-    this.provider =
-      options.provider ??
-      (model.startsWith("deepseek-ai/") || model.includes("baseten")
-        ? "baseten"
-        : "openrouter");
     this.request = options.request ?? globalThis.fetch;
   }
 
   public get endpoint(): string {
-    return this.provider === "baseten"
-      ? BASETEN_CHAT_COMPLETIONS_URL
-      : OPENROUTER_CHAT_COMPLETIONS_URL;
+    return OPENROUTER_CHAT_COMPLETIONS_URL;
   }
 
   public get providerName(): string {
-    return this.provider === "baseten" ? "Baseten" : "OpenRouter";
+    return "OpenRouter";
   }
 
   public async complete(
@@ -115,19 +102,13 @@ export class AiClient {
       model: this.model,
       stream: false
     };
-    if (this.provider === "openrouter" && !body.provider) {
-      requestBody.provider = { allow_fallbacks: true };
-    }
-
+    if (!body.provider) requestBody.provider = { allow_fallbacks: true };
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://discord.com",
+      "X-Title": "Discord DSA"
     };
-    if (this.provider === "openrouter") {
-      headers["HTTP-Referer"] = "https://discord.com";
-      headers["X-Title"] = "Discord DSA";
-    }
-
     let attempts = 0;
     for (;;) {
       const remaining = deadline - Date.now();
@@ -292,7 +273,7 @@ export class AiClient {
         latencyMs: Date.now() - startedAt,
         model: this.model,
         outputTokens: usage.outputTokens,
-        provider: this.provider,
+        provider: "openrouter",
         reasoningTokens: usage.reasoningTokens,
         responseLength: choice.message.content.length,
         searchRequests: 0,
@@ -319,7 +300,7 @@ export class AiClient {
         ...(httpStatus === undefined ? {} : { httpStatus }),
         latencyMs,
         model: this.model,
-        provider: this.provider,
+        provider: "openrouter",
         stage,
         ...(attempts === undefined ? {} : { attempts }),
         ...(actor.traceId === undefined ? {} : { traceId: actor.traceId }),

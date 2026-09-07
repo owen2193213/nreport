@@ -18,7 +18,6 @@ export interface ProviderPreparationConfig {
   aiModel: string;
   braveSearchApiKey: string;
   supportedCountries: readonly string[];
-  provider?: "openrouter" | "baseten";
 }
 
 export class ApiReportPreparer implements ReportPreparer {
@@ -32,7 +31,7 @@ export class ApiReportPreparer implements ReportPreparer {
           options.aiModel,
           options.braveSearchApiKey,
           options.supportedCountries,
-          { recordUsage, ...(options.provider === undefined ? {} : { provider: options.provider }) }
+          { recordUsage }
         );
   }
 

@@ -6,22 +6,18 @@ import {
   InteractionContextType,
   SlashCommandBuilder,
   type RESTPostAPIApplicationCommandsJSONBody,
-  type SlashCommandSubcommandBuilder
 } from "discord.js";
 
 const contexts = [InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel] as const;
 const installed = () => new SlashCommandBuilder().setIntegrationTypes(ApplicationIntegrationType.UserInstall).setContexts(...contexts);
-const aiOption = (command: SlashCommandSubcommandBuilder): SlashCommandSubcommandBuilder =>
-  command.addBooleanOption((option) => option.setName("use-ai").setDescription("Let the API research and write the report (default: yes)"));
-
 const report = installed().setName("report").setDescription("Submit a Discord DSA report")
-  .addSubcommand((command) => aiOption(command.setName("message").setDescription("Report a Discord message")
-    .addStringOption((option) => option.setName("message-link").setDescription("Full Discord message link").setRequired(true).setMaxLength(300))))
-  .addSubcommand((command) => aiOption(command.setName("profile").setDescription("Report a Discord profile")
+  .addSubcommand((command) => command.setName("message").setDescription("Report a Discord message")
+    .addStringOption((option) => option.setName("message-link").setDescription("Full Discord message link").setRequired(true).setMaxLength(300)))
+  .addSubcommand((command) => command.setName("profile").setDescription("Report a Discord profile")
     .addStringOption((option) => option.setName("target").setDescription("Discord user ID").setRequired(true).setMinLength(15).setMaxLength(22))
-    .addStringOption((option) => option.setName("server-id").setDescription("Optional server ID").setMinLength(15).setMaxLength(22))))
-  .addSubcommand((command) => aiOption(command.setName("server").setDescription("Report a Discord server")
-    .addStringOption((option) => option.setName("server-or-invite").setDescription("Server ID or invite code").setMaxLength(100))));
+    .addStringOption((option) => option.setName("server-id").setDescription("Optional server ID").setMinLength(15).setMaxLength(22)))
+  .addSubcommand((command) => command.setName("server").setDescription("Report a Discord server")
+    .addStringOption((option) => option.setName("server-or-invite").setDescription("Server ID or invite code").setMaxLength(100)));
 
 const reports = installed().setName("reports").setDescription("View and manage your API reports")
   .addSubcommand((command) => command.setName("list").setDescription("List recent reports"))
@@ -39,7 +35,9 @@ const access = installed().setName("access").setDescription("Connect your person
 
 const settings = installed().setName("settings").setDescription("Configure private notifications")
   .addSubcommand((command) => command.setName("notifications").setDescription("Update notification preferences")
-    .addBooleanOption((option) => option.setName("lifecycle").setDescription("Lifecycle DM updates"))
+    .addBooleanOption((option) => option.setName("decisions").setDescription("DM when Discord accepts a report/appeal or denies an appeal"))
+    .addBooleanOption((option) => option.setName("report-denied").setDescription("DM when the original report is denied before automatic appeal"))
+    .addBooleanOption((option) => option.setName("problems").setDescription("DM when a report needs attention or cannot continue"))
     .addBooleanOption((option) => option.setName("daily-digest").setDescription("Daily activity digest"))
     .addBooleanOption((option) => option.setName("weekly-digest").setDescription("Weekly activity digest")));
 

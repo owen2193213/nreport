@@ -63,4 +63,36 @@ describe("ApiReportPreparer", () => {
     });
     expect(result).not.toHaveProperty("conversation");
   });
+
+  it("passes the autonomous denial rewrite goal to the writer without changing captured evidence", async () => {
+    const generate = vi.fn(async (draft: unknown, actor: unknown, progress?: unknown) => {
+      void draft; void actor; void progress;
+      return {
+        country: "DE",
+        reportType: "sub_other_hate_speech",
+        reportReason: "Rewritten evidence summary",
+        report: "Rewritten final report.",
+        legalResearch: { country: "DE", lawReference: null, summary: "Research", sources: [], researchedAt: new Date().toISOString(), searchRequests: 0 }
+      };
+    });
+    const preparer = new ApiReportPreparer({ writerFactory: () => ({ generate }) as never });
+    const input = {
+      flow: "message",
+      useAi: true,
+      target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" },
+      rewriteDirective: {
+        instruction: "Rewrite the report autonomously to address likely weaknesses after Discord denied the appeal. Use only the immutable captured evidence; improve clarity, legal relevance, specificity, and category fit. Do not invent facts or claim to know Discord's denial reason.",
+        previousReportReason: "Previous evidence summary",
+        previousContext: "Previous final report"
+      }
+    };
+
+    await preparer.prepare(input as never, async () => undefined, new AbortController().signal);
+
+    expect(generate.mock.calls[0]?.[0]).toMatchObject({
+      flow: "message_urf",
+      messageUrl: input.target.messageUrl,
+      rewriteRequest: input.rewriteDirective
+    });
+  });
 });

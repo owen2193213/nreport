@@ -4,7 +4,9 @@ import {
   createReportBodySchema,
   GUILD_REPORT_REASONS,
   REPORT_FLOWS,
+  REPORT_RETRY_MODES,
   REPORT_STATUSES,
+  retryReportBodySchema,
   USER_MESSAGE_REPORT_REASONS
 } from "../src/index.js";
 
@@ -24,5 +26,18 @@ describe("report contracts", () => {
       "writing"
     ]);
     expect(createReportBodySchema.required).toEqual(["flow", "useAi", "target"]);
+  });
+
+  it("publishes distinct appeal-denial replacement modes", () => {
+    expect(REPORT_RETRY_MODES).toEqual(["reuse", "regenerate", "rewrite_ai", "edit_manual"]);
+    expect(retryReportBodySchema).toMatchObject({
+      oneOf: [
+        { properties: { mode: { enum: ["reuse", "regenerate", "rewrite_ai"] } } },
+        {
+          required: ["mode", "country", "category", "finalText"],
+          properties: { mode: { const: "edit_manual" } }
+        }
+      ]
+    });
   });
 });

@@ -139,7 +139,8 @@ credit state, sanitized target/evidence, prepared country/category/description/f
 reference, compact research summary, source annotations, Discord report/decision/appeal state,
 safe failure details, retry modes, predecessor/successor IDs, and the durable timeline. Generated
 identity, email alias, proxy/session details, provider payloads, prompts, and model conversation are
-never returned.
+never returned. For AI reports, `finalText` is the AI-written text that was submitted to Discord;
+clients do not need to reconstruct it from evidence or provider output.
 
 `GET /v1/discord/dsa/reports?after=&limit=` returns account-owned summaries with an opaque cursor. A foreign
 report ID produces the same `404` as a nonexistent one.
@@ -170,6 +171,21 @@ completed. `regenerate` reruns preparation from original evidence and supplied h
 unavailable for manual reports. Each report has at most one successor, retries are serial, and a
 30-second cooldown applies. A consumed chain reuses its entitlement; a released chain must reserve
 one currently available credit. Actioned and ambiguous-final-submission reports are not retryable.
+
+After an appeal denial, the API may instead expose `rewrite_ai` and `edit_manual`. `rewrite_ai`
+creates a new AI preparation from the same immutable target/evidence and directs the writer to
+address likely weaknesses through clearer, more specific, better-categorized legal reasoning. It
+must not invent evidence or assert a Discord denial rationale that Discord did not provide.
+`edit_manual` requires `country`, `category`, `finalText`, and the applicable profile/server element
+selection; it changes those prepared fields but not the captured target/evidence. Neither mode is a
+resend-as-is operation.
+
+An ineligible appeal, ambiguous final submission, or report/appeal confirmation timeout exposes no
+retry mode. The confirmation deadline is two minutes. Clients must not automatically resubmit after
+that deadline because the target message may have been deleted or become inaccessible. The API
+reports original-report and appeal outcomes separately through `discordStatus`, `reviewStatus`, and
+timeline events; clients must not collapse report denied with appeal denied, or report accepted with
+appeal accepted.
 
 ## Events, webhooks, and recovery
 

@@ -30,12 +30,18 @@ to reconnect.
 ## Reporting experience
 
 Commands support message, profile, and server flows plus the message context-menu actions. The
-normal modal is the final action; there is no AI review/refine screen.
+normal modal is the final action; there is no target-preview, confirmation, or AI review/refine
+screen. It uses Discord's current modal components: a radio group for AI/manual mode, select menus
+for the report category and profile/server elements, and text inputs for details and country.
 
-- AI is enabled by default. Country, category, and description may be hints or left for the API.
+- AI is enabled by default. Country and category may be left blank as Auto; report details are an
+  optional evidence/guidance hint. The API selects omitted values and returns its written report as
+  `finalText`.
 - Manual mode requires country, category, and final text of at most 512 characters.
-- Quick Report immediately submits captured message evidence with `useAi: true`.
+- Quick Report immediately submits captured message evidence with `useAi: true`; it opens no
+  modal or review step.
 - The bot resolves only evidence available through Discord's supported bot interface.
+- Referenced/replied-to messages are not captured, displayed as evidence, or supplied to AI.
 - Images and media URLs are never sent to the AI/search services by the bot; those services exist
   only in the API.
 
@@ -44,9 +50,19 @@ local report/DM mapping. This ordering lets the webhook endpoint return `409` on
 linking race, which asks the API to retry. A timeout or lost create response is reconciled by
 replaying the same body and key. Definite client errors abandon that pending operation.
 
-The bot sends one private DM card and edits it as the API advances through queued, preparation,
-verification, submission, and decision/appeal states. If Discord returns error `50007`, the bot
-warns in the ephemeral interaction response that it could not DM the user; the API report continues.
+The bot sends one private Components V2 DM card. It displays the target separately, including
+best-effort avatar/server icon, name, `@username`, and message/server context. The fenced report
+section contains only the API's `finalText`; target identity and example message content are never
+concatenated into that code block.
+
+The card deliberately groups fast internal events into stable visible states. Queued, planning,
+researching, and writing appear as **Preparing report**; verification and transport work appear as
+**Submitting report**. Nonterminal updates wait two seconds, retain only the latest pending state,
+are spaced at least five seconds apart, and skip identical visible-payload hashes. Terminal updates
+bypass the spacing. This prevents pairs such as “Submitting report” followed immediately by
+“Awaiting verification email” from producing rapid Discord edits. If Discord returns error `50007`,
+the bot warns in the ephemeral interaction response that it could not DM the user; the API report
+continues.
 
 ## Notifications and recovery
 
@@ -59,8 +75,13 @@ advance a cursor past an event that cannot yet be linked. Webhook and polling in
 same event inbox so duplicate delivery cannot create duplicate DMs. Pending create/retry calls are
 replayed with their original idempotency key before normal feed reconciliation.
 
-Notification preferences control lifecycle updates and daily/weekly digests. Digest summaries come
-from the authenticated account's API endpoint and have local idempotent delivery records.
+The status card is always maintained while the account is connected. Separate private DMs are sent
+only for decisions or actionable problems: original-report accepted, appeal accepted, appeal
+denied, report/appeal confirmation timeout, ineligible appeal, and failure. The original
+report-denied DM is off by default because the automatic appeal continues; its preference is
+independent from appeal-denied and accepted-decision notifications. Progress events do not create
+separate DMs. Daily/weekly digest summaries come from the authenticated account's API endpoint and
+have local idempotent delivery records.
 
 ## History, retry, and analytics
 
@@ -69,8 +90,18 @@ activity are fetched using the connected personal key. Community analytics uses 
 returns only protected aggregate data. The bot never relies on a Discord ID field inside an API
 report for ownership; the local connection and report link are authoritative.
 
-Retries require a user-selected `reuse` or `regenerate` mode and a stable operation key. The bot
-displays only modes returned by the API and does not implement automatic report retries.
+Pre-submission failures may expose API-authorized `reuse` or `regenerate` retries. An appeal denial
+instead exposes exactly two actions on the existing status card: **Rewrite with AI** and **Edit
+manually**. Rewrite is autonomous and opens no modal; it asks the API to improve clarity, legal
+relevance, specificity, and category fit using only immutable evidence, without inventing facts or
+claiming to know Discord's denial reason. Manual editing uses a category dropdown and exact final
+text. There is no “resend as is” action after an appeal denial.
+
+Discord outcomes are presented distinctly as report accepted, report denied, appeal accepted, or
+appeal denied. Appeal-ineligible and two-minute report/appeal confirmation timeouts are terminal and
+offer no retry. A timed-out report may refer to a deleted or inaccessible message, so the bot never
+automatically resubmits it. Every permitted retry still uses a stable operation key and a fresh API
+eligibility read; the API remains authoritative for lifecycle and retry eligibility.
 
 ## Administration
 
@@ -89,7 +120,8 @@ The bot database contains:
 - encrypted API connections and the one-to-one ownership constraints;
 - short-lived encrypted pending forms;
 - pre-created report/idempotency/DM links used for reconciliation;
-- a deduplicated lifecycle-event inbox and per-account feed cursor;
+- encrypted target-display context and visible-card hashes beside those links;
+- a coalescing, deduplicated lifecycle-event inbox and per-account feed cursor;
 - notification preferences and digest delivery records.
 
 It does not duplicate report evidence as readable columns, maintain credits, or become an

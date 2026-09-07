@@ -276,7 +276,7 @@ describe("v2 account-owned server", () => {
     });
 
     expect(response.statusCode).toBe(202);
-    expect(retry).toHaveBeenCalledWith(principal.accountId, "22222222-2222-4222-8222-222222222222", "retry:interaction-1", "reuse");
+    expect(retry).toHaveBeenCalledWith(principal.accountId, "22222222-2222-4222-8222-222222222222", "retry:interaction-1", { mode: "reuse" });
     await server.close();
   });
 });

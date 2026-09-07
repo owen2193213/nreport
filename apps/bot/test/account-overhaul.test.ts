@@ -67,6 +67,17 @@ describe("local account mapping", () => {
     );
   });
 
+  it("stores target display context encrypted beside the report link", async () => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{ id: "link-1" }], rowCount: 1 }));
+    const database = new AccountBotDatabase({ query } as never);
+
+    await database.beginReportLink("discord-1", "account-1", "create:key", "encrypted-request", "encrypted-context");
+
+    const call = query.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO bot_report_links"));
+    expect(call?.[0]).toContain("encrypted_target_context");
+    expect(call?.[1]).toContain("encrypted-context");
+  });
+
   it("allows only one worker to claim creation of a report status card", async () => {
     const query = vi.fn()
       .mockResolvedValueOnce({ rows: [{ id: "link-1" }], rowCount: 1 })
@@ -103,6 +114,32 @@ describe("local account mapping", () => {
     expect(client.query.mock.calls.some(([sql, values]) =>
       String(sql).includes("SET state = 'ignored'") && values?.includes("report-1") && values?.includes("9")
     )).toBe(true);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes("now() + interval '2 seconds'"))).toBe(true);
+  });
+
+  it("spaces ordinary status-card edits while allowing terminal events through immediately", async () => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [], rowCount: 0 }));
+    const database = new AccountBotDatabase({ query } as never);
+
+    await database.claimNotification();
+
+    const sql = String(query.mock.calls[0]?.[0]);
+    expect(sql).toContain("last_card_edit_at <= now() - interval '5 seconds'");
+    expect(sql).toContain("'discord:actioned'");
+    expect(sql).toContain("'discord:review_not_approved'");
+  });
+
+  it("defaults report-denied DMs off while keeping other decisions and problems on", async () => {
+    const query = vi.fn(async () => ({ rows: [], rowCount: 0 }));
+    const database = new AccountBotDatabase({ query } as never);
+
+    await expect(database.notificationPreferences("discord-1")).resolves.toEqual({
+      decisionEnabled: true,
+      reportDeniedEnabled: false,
+      problemEnabled: true,
+      dailyDigest: false,
+      weeklyDigest: false
+    });
   });
 });
 
@@ -115,6 +152,7 @@ describe("account reconciliation", () => {
       ]),
       abandonReportLink: vi.fn(),
       completeReportLink: vi.fn(),
+      completeReplacementLink: vi.fn(),
       ingestEvent: vi.fn(async () => "accepted"),
       advanceCursor: vi.fn(),
       cleanupExpiredForms: vi.fn()
@@ -143,5 +181,28 @@ describe("account reconciliation", () => {
     expect(database.completeReportLink).toHaveBeenCalledWith("link-2", "report-2");
     expect(api.events).toHaveBeenCalled();
     expect(database.advanceCursor).toHaveBeenCalledWith("discord-1", "7");
+  });
+
+  it("restores the predecessor DM mapping when a replacement response is reconciled", async () => {
+    const database = {
+      pendingReportLinks: vi.fn(async () => [{ id: "link-3", idempotency_key: "retry-key", encrypted_request: "retry-request" }]),
+      abandonReportLink: vi.fn(), completeReportLink: vi.fn(), completeReplacementLink: vi.fn(),
+      ingestEvent: vi.fn(), advanceCursor: vi.fn(), cleanupExpiredForms: vi.fn()
+    };
+    const api = {
+      createReport: vi.fn(), retryReport: vi.fn(async () => ({ reportId: "report-new" })),
+      events: vi.fn(async () => ({ items: [], next: null }))
+    };
+    const worker = new AccountNotificationWorker(
+      database as never, {} as never,
+      { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
+      () => api as never,
+      <T>() => ({ reportId: "report-old", input: { mode: "rewrite_ai" } }) as T
+    );
+
+    await worker.reconcileConnection({ discord_user_id: "discord-1", account_id: "account-1", encrypted_api_key: "key", event_cursor: "0" } as never);
+
+    expect(database.completeReplacementLink).toHaveBeenCalledWith("link-3", "report-new", "report-old");
+    expect(database.completeReportLink).not.toHaveBeenCalled();
   });
 });

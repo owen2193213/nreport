@@ -158,7 +158,7 @@ describe("message snapshots", () => {
     });
   });
 
-  it("captures referenced message and attachment info when message is a reply", () => {
+  it("never captures referenced-message context when the report target is a reply", () => {
     const snapshot = snapshotMessage({
       id: "323456789012345682",
       channelId: "223456789012345682",
@@ -212,22 +212,8 @@ describe("message snapshots", () => {
       }
     } as unknown as Message);
 
-    expect(snapshot.referencedMessage).toEqual({
-      messageId: "323456789012345680",
-      authorId: "504116640007323648",
-      authorUsername: "original_author",
-      authorDisplayName: "Original Author",
-      authorBot: false,
-      content: "excuse me im 17 in highschool",
-      attachments: [
-        {
-          name: "context.jpg",
-          contentType: "image/jpeg",
-          size: 512,
-          spoiler: false
-        }
-      ]
-    });
+    expect(snapshot).not.toHaveProperty("referencedMessage");
+    expect(JSON.stringify(snapshot)).not.toContain("excuse me im 17 in highschool");
     expect(snapshot.attachments).toHaveLength(1);
     expect(snapshot.attachments[0]?.name).toBe("image.png");
   });

@@ -16,7 +16,7 @@ export const REPORT_STATUSES = [
   "submitted", "failed"
 ] as const;
 export type ReportStatus = (typeof REPORT_STATUSES)[number];
-export const REPORT_RETRY_MODES = ["reuse", "regenerate"] as const;
+export const REPORT_RETRY_MODES = ["reuse", "regenerate", "rewrite_ai", "edit_manual"] as const;
 export type ReportRetryMode = (typeof REPORT_RETRY_MODES)[number];
 export const ACCOUNT_STATUSES = ["active", "suspended"] as const;
 export type ApiAccountStatus = (typeof ACCOUNT_STATUSES)[number];
@@ -48,16 +48,6 @@ export interface ReportedUserSnapshot {
   resolvedAt: string;
 }
 
-export interface ReportedReferencedMessageSnapshot {
-  messageId: string;
-  authorId: string;
-  authorUsername: string;
-  authorDisplayName: string | null;
-  authorBot: boolean;
-  content: string;
-  attachments?: Array<{ name: string; contentType: string | null; size: number; spoiler: boolean }>;
-}
-
 export interface ReportedMessageSnapshot {
   messageId: string;
   channelId: string;
@@ -73,7 +63,6 @@ export interface ReportedMessageSnapshot {
   createdAt: string;
   attachments: Array<{ name: string; url: string; contentType: string | null; size: number; spoiler: boolean }>;
   embeds: Array<{ title: string | null; description: string | null; url: string | null }>;
-  referencedMessage?: ReportedReferencedMessageSnapshot | null;
 }
 
 export interface CapturedMessageEvidence {
@@ -120,6 +109,17 @@ export interface ManualCreateReportInput extends BaseCreateReportInput {
   finalText: string;
 }
 export type CreateReportInput = AiCreateReportInput | ManualCreateReportInput;
+
+export type RetryReportInput =
+  | { mode: "reuse" | "regenerate" | "rewrite_ai" }
+  | {
+      mode: "edit_manual";
+      country: string;
+      category: string;
+      finalText: string;
+      profileElements?: UserProfileElement[];
+      guildElements?: GuildElement[];
+    };
 
 export interface ApiUsageTotals {
   aiRequests: number;

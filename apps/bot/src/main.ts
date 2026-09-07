@@ -9,6 +9,7 @@ import { HealthServer } from "./health.js";
 import { MessageResolver } from "./message-resolver.js";
 import { BOT_PRESENCE } from "./presence.js";
 import { ProfileResolver } from "./profile-resolver.js";
+import { ServerResolver } from "./server-resolver.js";
 import { DigestWorker } from "./digest-worker.js";
 
 async function main(): Promise<void> {
@@ -28,7 +29,8 @@ async function main(): Promise<void> {
     config,
     database,
     messageResolver: new MessageResolver(client),
-    profileResolver: new ProfileResolver(client)
+    profileResolver: new ProfileResolver(client),
+    serverResolver: new ServerResolver(client)
   });
   client.on(Events.InteractionCreate, (interaction) => void handler.handle(interaction));
 

@@ -1,7 +1,6 @@
 import type {
   CapturedMessageEvidence,
   ReportedMessageSnapshot,
-  ReportedReferencedMessageSnapshot,
   UnavailableMessageEvidence
 } from "@nreport/contracts";
 import type { Client, Message } from "discord.js";
@@ -10,34 +9,8 @@ import type { Client, Message } from "discord.js";
 const MESSAGE_URL =
   /^https:\/\/(?:www\.)?discord\.com\/channels\/(?:@me|\d+)\/(\d+)\/(\d+)$/;
 
-function snapshotReferencedMessage(
-  referenced: Message | null | undefined
-): ReportedReferencedMessageSnapshot | null {
-  if (!referenced || !referenced.author) return null;
-  const attachments = referenced.attachments
-    ? [...referenced.attachments.values()].map((attachment) => ({
-        name: attachment.name,
-        contentType: attachment.contentType,
-        size: attachment.size,
-        spoiler: attachment.spoiler
-      }))
-    : [];
-  return {
-    messageId: referenced.id,
-    authorId: referenced.author.id,
-    authorUsername: referenced.author.username,
-    authorDisplayName:
-      referenced.member?.displayName ?? referenced.author.globalName ?? null,
-    authorBot: referenced.author.bot,
-    content: referenced.content,
-    attachments
-  };
-}
-
 export function snapshotMessage(message: Message): ReportedMessageSnapshot {
   const channel = message.channel;
-  const referenced = (message as { referencedMessage?: Message | null }).referencedMessage;
-  const referencedMessage = snapshotReferencedMessage(referenced);
   return {
     messageId: message.id,
     channelId: message.channelId,
@@ -65,8 +38,7 @@ export function snapshotMessage(message: Message): ReportedMessageSnapshot {
       title: embed.title,
       description: embed.description,
       url: embed.url
-    })),
-    ...(referencedMessage ? { referencedMessage } : {})
+    }))
   };
 }
 

@@ -176,7 +176,12 @@ describe("retry eligibility", () => {
       status: "submitted", use_ai: true,
       prepared_input: { finalText: "Prepared" }, discord_status: "closed_no_action",
       review_status: "not_approved", error_code: null, submission_started_at: new Date()
-    })).toEqual(["reuse", "regenerate"]);
+    })).toEqual(["rewrite_ai", "edit_manual"]);
+    expect(reportRetryableModes({
+      status: "submitted", use_ai: true,
+      prepared_input: { finalText: "Prepared" }, discord_status: "closed_no_action",
+      review_status: "ineligible", error_code: null, submission_started_at: new Date()
+    })).toEqual([]);
     expect(reportRetryableModes({
       status: "failed", use_ai: true, prepared_input: null, discord_status: null,
       review_status: null, error_code: "ambiguous_submission_state", submission_started_at: new Date()
@@ -343,7 +348,7 @@ describe("serial report retries", () => {
           id: "report-1", account_id: "account-1", flow: "message", use_ai: true,
           request_input: input, request_hash: ReportRepository.requestHash(input), prepared_input: { country: "DE", category: "x", description: "d", finalText: "f" },
           legal_reference: null, research_summary: null, research_sources: [], credit_chain_id: "chain-1",
-          credit_state: "consumed", status: "submitted", discord_status: "closed_no_action",
+          credit_state: "consumed", status: "submitted", discord_status: "closed_no_action", review_status: "not_approved",
           successor_report_id: null, updated_at: new Date("2026-09-04T00:00:00Z"), lifecycle_attempt: 1
         }], rowCount: 1 };
       }
@@ -353,7 +358,7 @@ describe("serial report retries", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    const result = await repository.retry("account-1", "report-1", "retry:key-1", "reuse", new Date("2026-09-04T00:01:00Z"));
+    const result = await repository.retry("account-1", "report-1", "retry:key-1", { mode: "rewrite_ai" }, new Date("2026-09-04T00:01:00Z"));
 
     expect(result.created).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("available_credits = available_credits - 1"))).toBe(false);
@@ -377,7 +382,7 @@ describe("serial report retries", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    await expect(repository.retry("account-1", "report-1", "retry:key-1", "regenerate", new Date("2026-09-04T00:01:00Z")))
+    await expect(repository.retry("account-1", "report-1", "retry:key-1", { mode: "regenerate" }, new Date("2026-09-04T00:01:00Z")))
       .rejects.toMatchObject({ code: "credits_exhausted" });
   });
 
@@ -399,7 +404,37 @@ describe("serial report retries", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    await expect(repository.retry("account-1", "report-1", "retry:key-2", "reuse", new Date("2026-09-04T00:01:00Z")))
+    await expect(repository.retry("account-1", "report-1", "retry:key-2", { mode: "reuse" }, new Date("2026-09-04T00:01:00Z")))
       .rejects.toMatchObject({ code: "invalid_retry" });
+  });
+
+  it("copies immutable evidence but applies only manual replacement fields", async () => {
+    const { repository, client } = repositoryWithQueries((sql) => {
+      if (sql.includes("FROM api_accounts") && sql.includes("FOR UPDATE")) return { rows: [{ status: "active", available_credits: 0 }], rowCount: 1 };
+      if (sql.includes("idempotency_key") && !sql.includes("INSERT")) return { rows: [], rowCount: 0 };
+      if (sql.includes("JOIN report_credit_chains") && sql.includes("predecessor")) return { rows: [{
+        id: "report-1", account_id: "account-1", flow: "profile", use_ai: true,
+        request_input: { flow: "profile", useAi: true, country: "FR", category: "old", description: "old", target: {
+          reportedUsername: "example", reportedUserId: "123456789012345678", reportedUserSnapshot: { userId: "123456789012345678", username: "example", globalDisplayName: null, avatarUrl: null, bot: false, resolvedAt: "2026-09-04T00:00:00Z" }, profileElements: ["name"]
+        } },
+        prepared_input: { country: "FR", category: "old", description: "old", finalText: "old" },
+        credit_chain_id: "chain-1", credit_state: "consumed", status: "submitted",
+        discord_status: "review_not_approved", review_status: "not_approved", error_code: null,
+        successor_report_id: null, updated_at: new Date("2026-09-04T00:00:00Z"), lifecycle_attempt: 1,
+        research_sources: []
+      }], rowCount: 1 };
+      if (sql.includes("INSERT INTO account_reports")) return { rows: [{ id: "report-2", account_id: "account-1", status: "queued" }], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    });
+
+    await repository.retry("account-1", "report-1", "retry:manual", {
+      mode: "edit_manual", country: "DE", category: "new", finalText: "A complete replacement.", profileElements: ["photos"]
+    }, new Date("2026-09-04T00:01:00Z"));
+
+    const insert = client.query.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO account_reports"));
+    expect(insert?.[1]?.[6]).toMatchObject({
+      flow: "profile", useAi: false, country: "DE", category: "new", finalText: "A complete replacement.",
+      target: { reportedUserId: "123456789012345678", profileElements: ["photos"] }
+    });
   });
 });

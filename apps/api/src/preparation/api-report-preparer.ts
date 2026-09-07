@@ -82,10 +82,12 @@ export class ApiReportPreparer implements ReportPreparer {
 }
 
 function toWriterDraft(input: Extract<CreateReportInput, { useAi: true }>): ReportDraft {
+  const internal = input as typeof input & { rewriteDirective?: ReportDraft["rewriteRequest"] };
   const common = {
     ...(input.country === undefined ? {} : { country: input.country, countrySelection: "override" as const }),
     ...(input.category === undefined ? {} : { reportType: input.category }),
-    ...(input.description === undefined ? {} : { reportBrief: input.description })
+    ...(input.description === undefined ? {} : { reportBrief: input.description }),
+    ...(internal.rewriteDirective === undefined ? {} : { rewriteRequest: internal.rewriteDirective })
   };
   const target = input.target;
   if (input.flow === "message") {

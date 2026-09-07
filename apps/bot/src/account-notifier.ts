@@ -1,12 +1,12 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import { DsaApi, DsaApiError, type CreateReportInput } from "@nreport/contracts";
+import { DsaApi, DsaApiError, type CreateReportInput, type RetryReportInput } from "@nreport/contracts";
 import type { Client, Message } from "discord.js";
 
 import type { AccountBotDatabase, ApiConnection, ClaimedNotification } from "./account-database.js";
 import type { BotConfig } from "./config.js";
 import { decryptJson } from "./crypto.js";
-import { statusEmbed } from "./account-interactions.js";
+import { classifyReportView, decisionMessageOptions, shouldSendDecisionDm, statusMessageOptions, targetContextFromReport, visibleStatusHash, type TargetDisplayContext } from "./report-ui.js";
 
 type AccountApi = Pick<DsaApi, "createReport" | "retryReport" | "events" | "report">;
 
@@ -42,12 +42,13 @@ export class AccountNotificationWorker {
     if (item === null) return false;
     try {
       const preferences = await this.database.notificationPreferences(item.discord_user_id);
-      if (!preferences.lifecycleEnabled) {
-        await this.database.completeNotification(item.event_id);
-        return true;
-      }
       const api = this.api(item);
       const report = await api.report(item.report_id);
+      const context = item.encrypted_target_context === null
+        ? targetContextFromReport(report)
+        : this.decrypt<TargetDisplayContext>(item.encrypted_target_context, this.config.dataEncryptionKey);
+      const options = statusMessageOptions(report, context);
+      const visibleHash = visibleStatusHash(report, context);
       const user = await this.client.users.fetch(item.discord_user_id);
       const dm = await user.createDM();
       let message: Message | null = null;
@@ -58,13 +59,19 @@ export class AccountNotificationWorker {
           return true;
         }
         try {
-          message = await dm.send({ embeds: [statusEmbed(report)] });
+          message = await dm.send(options);
           await this.database.setDmMapping(report.reportId, message.channelId, message.id);
+          await this.database.completeCardUpdate(report.reportId, visibleHash);
         } catch (error) {
           await this.database.releaseDmCard(report.reportId);
           throw error;
         }
-      } else await message.edit({ embeds: [statusEmbed(report)] });
+      } else if (item.visible_payload_hash !== visibleHash) {
+        await message.edit(options);
+        await this.database.completeCardUpdate(report.reportId, visibleHash);
+      }
+      const view = classifyReportView(report);
+      if (shouldSendDecisionDm(item.event_type, view.key, preferences)) await user.send(decisionMessageOptions(report, context));
       await this.database.completeNotification(item.event_id);
     } catch (error) {
       if (error instanceof DsaApiError && error.status === 401) {
@@ -83,7 +90,7 @@ export class AccountNotificationWorker {
     await this.database.cleanupExpiredForms();
     const pendingLinks = await this.database.pendingReportLinks(connection.discord_user_id);
     for (const link of pendingLinks) {
-      let pending: CreateReportInput | { reportId: string; mode: "reuse" | "regenerate" };
+      let pending: CreateReportInput | { reportId: string; input?: RetryReportInput; mode?: "reuse" | "regenerate" };
       try {
         pending = this.decrypt(link.encrypted_request, this.config.dataEncryptionKey);
       } catch {
@@ -91,10 +98,13 @@ export class AccountNotificationWorker {
         continue;
       }
       try {
-        const report = "flow" in pending
-          ? await api.createReport(link.idempotency_key, pending)
-          : await api.retryReport(pending.reportId, link.idempotency_key, pending.mode);
-        await this.database.completeReportLink(link.id, report.reportId);
+        if ("flow" in pending) {
+          const report = await api.createReport(link.idempotency_key, pending);
+          await this.database.completeReportLink(link.id, report.reportId);
+        } else {
+          const report = await api.retryReport(pending.reportId, link.idempotency_key, pending.input ?? { mode: pending.mode! });
+          await this.database.completeReplacementLink(link.id, report.reportId, pending.reportId);
+        }
       } catch (error) {
         if (error instanceof DsaApiError && error.status === 401) throw error;
         if (error instanceof DsaApiError && error.status < 500 && error.status !== 429) {

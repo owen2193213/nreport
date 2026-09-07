@@ -238,15 +238,7 @@ function targetEvidence(draft: ReportDraft): Record<string, unknown> {
             title: embed.title,
             description: embed.description,
             ...(includeMedia ? { url: embed.url } : {})
-          })),
-          referencedMessage: snapshot.referencedMessage
-            ? {
-                authorUsername: snapshot.referencedMessage.authorUsername,
-                authorDisplayName: snapshot.referencedMessage.authorDisplayName,
-                content: snapshot.referencedMessage.content,
-                attachments: snapshot.referencedMessage.attachments?.map((a) => a.name)
-              }
-            : undefined
+          }))
         }
       : undefined
   };

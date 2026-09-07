@@ -653,7 +653,7 @@ describe("Baseten and Brave report writer", () => {
     expect(serialized).not.toContain("private-evidence.png");
   });
 
-  it("includes referenced message context in AI evidence prompt", async () => {
+  it("excludes referenced message context from AI evidence prompt", async () => {
     const messageDraft: ReportDraft = {
       ...draft(),
       flow: "message_urf",
@@ -677,16 +677,7 @@ describe("Baseten and Brave report writer", () => {
           content: "You are not an adult yet",
           createdAt: "2026-08-09T00:00:00.000Z",
           attachments: [],
-          embeds: [],
-          referencedMessage: {
-            messageId: "788",
-            authorId: "222222222222222222",
-            authorUsername: "minor_user",
-            authorDisplayName: "Minor User",
-            authorBot: false,
-            content: "excuse me im 17 in highschool",
-            attachments: []
-          }
+          embeds: []
         }
       }
     };
@@ -702,8 +693,8 @@ describe("Baseten and Brave report writer", () => {
         return typeof body === "string" ? body : "";
       })
       .join("\n");
-    expect(serialized).toContain("minor_user");
-    expect(serialized).toContain("excuse me im 17 in highschool");
+    expect(serialized).not.toContain("minor_user");
+    expect(serialized).not.toContain("excuse me im 17 in highschool");
   });
 
   it("preserves Unicode evidence for analysis while removing it from AI-generated prose", async () => {

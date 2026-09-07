@@ -20,7 +20,7 @@ import {
   USER_MESSAGE_REPORT_REASONS
 } from "@nreport/contracts";
 import { createHash } from "node:crypto";
-import type { AdminCreateAccountInput, ApiAccountView, CreateReportInput, PublicReportTarget, ReportDetail, ReportTarget } from "@nreport/contracts";
+import type { AdminCreateAccountInput, ApiAccountView, CreateReportInput, PublicReportTarget, ReportDetail, ReportTarget, RetryReportInput } from "@nreport/contracts";
 import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
@@ -30,7 +30,7 @@ import type { AppConfig } from "./config.js";
 import { reportRetryableModes, type AccountReportRow, type ReportRepository } from "./report-repository.js";
 import { inspectDiscordEmail } from "./email.js";
 import { encryptJson, safeEqual, sha256Hex, verifyInboundSignature } from "./security.js";
-import { parseCreateReportInput } from "./validation.js";
+import { parseCreateReportInput, parseRetryReportInput } from "./validation.js";
 import { supportedCountries } from "./pseudonyms.js";
 import type { WebhookDestinationRepository } from "./webhook-destinations.js";
 import type { AnalyticsRepository } from "./analytics-repository.js";
@@ -366,7 +366,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       return reply.send(await dependencies.reports.listEvents(principal.accountId, after, limit));
     }
   );
-  app.post<{ Params: { reportId: string }; Body: { mode?: unknown } }>(
+  app.post<{ Params: { reportId: string }; Body: RetryReportInput }>(
     `${DSA_API_BASE_PATH}/reports/:reportId/retries`,
     {
       preHandler: accountAuth,
@@ -383,16 +383,15 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       if (typeof idempotencyKey !== "string" || idempotencyKey.trim().length < 8 || idempotencyKey.length > 200) {
         return apiError(reply, request, 400, "invalid_idempotency_key", "Idempotency-Key must contain between 8 and 200 characters.");
       }
-      const mode = request.body?.mode;
-      if (mode !== "reuse" && mode !== "regenerate") {
-        return apiError(reply, request, 400, "invalid_request", "Retry mode must be reuse or regenerate.");
-      }
+      let retryInput: RetryReportInput;
+      try { retryInput = parseRetryReportInput(request.body); }
+      catch (error) { return apiError(reply, request, 400, "invalid_request", error instanceof Error ? error.message : "Retry input is invalid."); }
       try {
         const result = await dependencies.reports.retry(
           principal.accountId,
           request.params.reportId,
           idempotencyKey.trim(),
-          mode
+          retryInput
         );
         return reply.code(202).send(publicReport(result.report));
       } catch (error) {
@@ -402,7 +401,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
         if (code === "credits_exhausted") return apiError(reply, request, 402, code, message);
         if (code === "account_suspended") return apiError(reply, request, 403, code, message);
         if (code === "rate_limited") {
-          reply.header("Retry-After", mode === "regenerate" ? "3600" : "60");
+          reply.header("Retry-After", retryInput.mode === "regenerate" || retryInput.mode === "rewrite_ai" ? "3600" : "60");
           return apiError(reply, request, 429, code, message);
         }
         if (code === "idempotency_conflict" || code === "invalid_retry" || code === "retry_cooldown") {
@@ -677,8 +676,7 @@ function sanitizeTarget(target: ReportTarget): PublicReportTarget {
           embeds: snapshot.embeds.map((embed) => ({
             title: embed.title,
             description: embed.description
-          })),
-          ...(snapshot.referencedMessage === undefined ? {} : { referencedMessage: snapshot.referencedMessage })
+          }))
         }
       }
     };

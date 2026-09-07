@@ -4,9 +4,8 @@ import type {
   GuildElement,
   MessageEvidence,
   ReportedMessageSnapshot,
-  ReportedReferencedMessageSnapshot,
   ReportedUserSnapshot,
-  ReportRetryMode,
+  RetryReportInput,
   UserProfileElement
 } from "@nreport/contracts";
 import { supportedCountries } from "./pseudonyms.js";
@@ -24,10 +23,6 @@ const GUILD_ELEMENTS = new Set<GuildElement>([
   "channel_names",
   "other"
 ]);
-
-export interface RetryReportInput {
-  mode: ReportRetryMode;
-}
 
 export interface PreparedReportInput {
   request: CreateReportInput;
@@ -112,47 +107,6 @@ function snowflake(input: Record<string, unknown>, key: string): string {
   return value;
 }
 
-function reportedReferencedMessageSnapshot(
-  value: unknown
-): ReportedReferencedMessageSnapshot {
-  const input = record(value);
-  const attachmentsValue = input.attachments;
-  let attachments: ReportedReferencedMessageSnapshot["attachments"] = undefined;
-  if (attachmentsValue !== undefined) {
-    if (!Array.isArray(attachmentsValue) || attachmentsValue.length > 25) {
-      throw new Error("referencedMessage.attachments must contain at most 25 items.");
-    }
-    attachments = attachmentsValue.map((item) => {
-      const attachment = record(item);
-      const size = attachment.size;
-      if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) {
-        throw new Error("referencedMessage attachment size must be a non-negative integer.");
-      }
-      if (typeof attachment.spoiler !== "boolean") {
-        throw new Error("referencedMessage attachment spoiler must be a boolean.");
-      }
-      return {
-        name: requiredString(attachment, "name", 256),
-        contentType: nullableString(attachment, "contentType", 100),
-        size,
-        spoiler: attachment.spoiler
-      };
-    });
-  }
-  if (typeof input.authorBot !== "boolean") {
-    throw new Error("referencedMessage.authorBot must be a boolean.");
-  }
-  return {
-    messageId: snowflake(input, "messageId"),
-    authorId: snowflake(input, "authorId"),
-    authorUsername: requiredString(input, "authorUsername", 100),
-    authorDisplayName: nullableString(input, "authorDisplayName", 100),
-    authorBot: input.authorBot,
-    content: evidenceString(input, "content", 4_000),
-    ...(attachments !== undefined ? { attachments } : {})
-  };
-}
-
 function reportedMessageSnapshot(value: unknown): ReportedMessageSnapshot {
   const input = record(value);
   const attachmentsValue = input.attachments;
@@ -192,10 +146,6 @@ function reportedMessageSnapshot(value: unknown): ReportedMessageSnapshot {
   if (typeof input.authorBot !== "boolean") {
     throw new Error("messageEvidence.snapshot.authorBot must be a boolean.");
   }
-  const referencedMessage =
-    input.referencedMessage === undefined || input.referencedMessage === null
-      ? null
-      : reportedReferencedMessageSnapshot(input.referencedMessage);
   return {
     messageId: snowflake(input, "messageId"),
     channelId: snowflake(input, "channelId"),
@@ -210,8 +160,7 @@ function reportedMessageSnapshot(value: unknown): ReportedMessageSnapshot {
     content: evidenceString(input, "content", 4_000),
     createdAt: timestamp(input, "createdAt"),
     attachments,
-    embeds,
-    ...(referencedMessage ? { referencedMessage } : {})
+    embeds
   };
 }
 
@@ -420,10 +369,15 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
 export function parseRetryReportInput(value: unknown): RetryReportInput {
   const input = record(value);
   const modeValue = input.mode;
-  if (modeValue !== "reuse" && modeValue !== "regenerate") {
-    throw new Error("mode must be reuse or regenerate.");
-  }
-  return { mode: modeValue };
+  if (modeValue === "reuse" || modeValue === "regenerate" || modeValue === "rewrite_ai") return { mode: modeValue };
+  if (modeValue !== "edit_manual") throw new Error("mode must be reuse, regenerate, rewrite_ai, or edit_manual.");
+  const country = requiredString(input, "country", 2).toUpperCase();
+  if (!supportedCountries().includes(country)) throw new Error("country must be a supported two-letter code.");
+  const category = requiredString(input, "category", 100);
+  const finalText = requiredString(input, "finalText", 512);
+  const profileElements = input.profileElements === undefined ? undefined : stringArray(input, "profileElements", PROFILE_ELEMENTS);
+  const guildElements = input.guildElements === undefined ? undefined : stringArray(input, "guildElements", GUILD_ELEMENTS);
+  return { mode: modeValue, country, category, finalText, ...(profileElements ? { profileElements } : {}), ...(guildElements ? { guildElements } : {}) };
 }
 
 export function toReportDraft(

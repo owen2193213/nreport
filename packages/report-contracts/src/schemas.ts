@@ -86,10 +86,27 @@ export const errorEnvelopeSchema = {
 
 export const retryReportBodySchema = {
   $id: "RetryReportInput",
-  type: "object",
-  additionalProperties: false,
-  required: ["mode"],
-  properties: { mode: { enum: ["reuse", "regenerate"] } }
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["mode"],
+      properties: { mode: { enum: ["reuse", "regenerate", "rewrite_ai"] } }
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["mode", "country", "category", "finalText"],
+      properties: {
+        mode: { const: "edit_manual" },
+        country: { type: "string", minLength: 2, maxLength: 2 },
+        category: { type: "string", minLength: 1, maxLength: 100 },
+        finalText: { type: "string", minLength: 1, maxLength: 512 },
+        profileElements: { type: "array", minItems: 1, uniqueItems: true, items: { enum: [...PROFILE_ELEMENTS] } },
+        guildElements: { type: "array", minItems: 1, uniqueItems: true, items: { enum: [...GUILD_ELEMENTS] } }
+      }
+    }
+  ]
 } as const;
 
 export const adminCreateAccountBodySchema = {

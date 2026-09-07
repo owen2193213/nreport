@@ -5,7 +5,8 @@ import type {
   CursorPage,
   ReportLifecycleEvent,
   ReportStatus,
-  ReportTimelineEvent
+  ReportTimelineEvent,
+  RetryReportInput
 } from "@nreport/contracts";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import type { LifecycleJob, LifecycleReport } from "./lifecycle-runner-v2.js";
@@ -41,7 +42,7 @@ CREATE TABLE IF NOT EXISTS account_reports (
   credit_chain_id uuid NOT NULL REFERENCES report_credit_chains(id) ON DELETE RESTRICT,
   predecessor_report_id uuid REFERENCES account_reports(id) ON DELETE RESTRICT,
   successor_report_id uuid REFERENCES account_reports(id) ON DELETE RESTRICT,
-  retry_mode text CHECK (retry_mode IS NULL OR retry_mode IN ('reuse', 'regenerate')),
+  retry_mode text CHECK (retry_mode IS NULL OR retry_mode IN ('reuse', 'regenerate', 'rewrite_ai', 'edit_manual')),
   retry_sequence integer NOT NULL DEFAULT 0,
   status text NOT NULL DEFAULT 'queued',
   reporter_legal_name text,
@@ -150,6 +151,10 @@ ALTER TABLE account_rate_limit_windows
   ADD CONSTRAINT account_rate_limit_windows_kind_check
   CHECK (kind IN ('report_mutation', 'ai_preparation', 'account_read'));
 
+ALTER TABLE account_reports DROP CONSTRAINT IF EXISTS account_reports_retry_mode_check;
+ALTER TABLE account_reports ADD CONSTRAINT account_reports_retry_mode_check
+  CHECK (retry_mode IS NULL OR retry_mode IN ('reuse', 'regenerate', 'rewrite_ai', 'edit_manual'));
+
 CREATE TABLE IF NOT EXISTS event_destination_deliveries (
   event_id bigint NOT NULL REFERENCES account_report_events(id) ON DELETE CASCADE,
   destination_id uuid NOT NULL REFERENCES webhook_destinations(id) ON DELETE RESTRICT,
@@ -201,7 +206,7 @@ export interface AccountReportRow extends QueryResultRow {
   use_ai: boolean;
   request_input: CreateReportInput;
   prepared_input: Record<string, unknown> | null;
-  retry_mode: "reuse" | "regenerate" | null;
+  retry_mode: "reuse" | "regenerate" | "rewrite_ai" | "edit_manual" | null;
   legal_reference: string | null;
   research_summary: string | null;
   research_sources: unknown[];
@@ -647,11 +652,12 @@ export class ReportRepository {
     accountId: string,
     predecessorReportId: string,
     idempotencyKey: string,
-    mode: "reuse" | "regenerate",
+    input: RetryReportInput,
     now = new Date()
   ): Promise<{ created: boolean; report: AccountReportRow }> {
+    const mode = input.mode;
     const requestHash = createHash("sha256")
-      .update(JSON.stringify({ predecessorReportId, mode }))
+      .update(JSON.stringify({ predecessorReportId, input }))
       .digest("hex");
     const client = await this.pool.connect();
     try {
@@ -709,7 +715,7 @@ export class ReportRepository {
       if (!reportRetryableModes(predecessor).includes(mode)) {
         throw new ReportMutationError("invalid_retry", "The requested retry mode is not available.");
       }
-      if (mode === "regenerate") await consumeRateLimit(client, accountId, "ai_preparation", "hour", 20);
+      if (mode === "regenerate" || mode === "rewrite_ai") await consumeRateLimit(client, accountId, "ai_preparation", "hour", 20);
 
       if (predecessor.credit_state === "released") {
         if (accountRow.available_credits < 1) {
@@ -742,6 +748,7 @@ export class ReportRepository {
       }
 
       const reportId = randomUUID();
+      const successorInput = replacementRequest(predecessor, input);
       const inserted = await client.query<AccountReportRow>(
         `INSERT INTO account_reports
            (id, account_id, idempotency_key, request_hash, flow, use_ai, request_input,
@@ -753,7 +760,7 @@ export class ReportRepository {
          RETURNING *`,
         [
           reportId, accountId, idempotencyKey, requestHash, predecessor.flow,
-          predecessor.use_ai, predecessor.request_input,
+          successorInput.useAi, successorInput,
           mode === "reuse" ? predecessor.prepared_input : null,
           mode === "reuse" ? predecessor.legal_reference : null,
           mode === "reuse" ? predecessor.research_summary : null,
@@ -1752,19 +1759,45 @@ export function reportRetryableModes(report: {
   review_status?: string | null;
   error_code: string | null;
   submission_started_at?: Date | null;
-}): Array<"reuse" | "regenerate"> {
+}): Array<"reuse" | "regenerate" | "rewrite_ai" | "edit_manual"> {
   if (report.discord_status === "actioned" || report.error_code === "ambiguous_submission_state") return [];
-  const appealFinished = report.review_status === null || report.review_status === undefined ||
-    report.review_status === "ineligible" || report.review_status === "request_failed" ||
-    report.review_status === "not_approved";
-  const terminalDenial = report.discord_status === "review_not_approved" ||
-    (report.discord_status === "closed_no_action" && appealFinished);
+  if (report.review_status === "ineligible" || report.review_status === "confirmation_timeout" || report.review_status === "request_ambiguous") return [];
+  const appealDenied = report.discord_status === "review_not_approved" || report.review_status === "not_approved";
+  if (appealDenied) return ["rewrite_ai", "edit_manual"];
   const failedBeforeBoundary = report.status === "failed" && report.submission_started_at == null;
-  if (!failedBeforeBoundary && !terminalDenial) return [];
+  if (!failedBeforeBoundary) return [];
   const modes: Array<"reuse" | "regenerate"> = [];
   if (report.prepared_input !== null) modes.push("reuse");
   if (report.use_ai) modes.push("regenerate");
   return modes;
+}
+
+const APPEAL_DENIAL_REWRITE_INSTRUCTION = "Discord denied the automatic appeal, but no explanatory denial reason was provided. Re-evaluate the original evidence independently. Write a materially improved replacement report and choose the strongest supported country, category, and legal reference; these may differ from the prior report. Do not invent a denial reason, new evidence, or facts not present in the captured target.";
+
+type InternalCreateReportInput = CreateReportInput & {
+  rewriteDirective?: { instruction: string; previousReportReason?: string; previousContext?: string };
+};
+
+function replacementRequest(predecessor: AccountReportRow, input: RetryReportInput): InternalCreateReportInput {
+  if (input.mode === "reuse" || input.mode === "regenerate") return predecessor.request_input;
+  const target = structuredClone(predecessor.request_input.target);
+  if (input.mode === "rewrite_ai") {
+    const previous = predecessor.prepared_input;
+    return {
+      flow: predecessor.flow,
+      useAi: true,
+      target,
+      rewriteDirective: {
+        instruction: APPEAL_DENIAL_REWRITE_INSTRUCTION,
+        ...(typeof previous?.description === "string" ? { previousReportReason: previous.description } : {}),
+        ...(typeof previous?.finalText === "string" ? { previousContext: previous.finalText } : {})
+      }
+    };
+  }
+  if (input.mode !== "edit_manual") throw new Error("Unsupported replacement mode.");
+  if (predecessor.flow === "profile" && "reportedUsername" in target && input.profileElements !== undefined) target.profileElements = input.profileElements;
+  if (predecessor.flow === "server" && "guildIdOrInviteCode" in target && input.guildElements !== undefined) target.guildElements = input.guildElements;
+  return { flow: predecessor.flow, useAi: false, target, country: input.country, category: input.category, description: input.finalText, finalText: input.finalText };
 }
 
 function shouldApplyDiscordStatus(current: string | null, incoming: string): boolean {

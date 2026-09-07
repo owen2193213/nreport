@@ -4,16 +4,19 @@ import {
   DsaApiError,
   type CreateReportInput,
   type ReportDetail,
-  type ReportTarget
+  type MessageEvidence,
+  type ReportTarget,
+  type ReportedMessageSnapshot,
+  type RetryReportInput
 } from "@nreport/contracts";
 import {
   ActionRowBuilder,
-  EmbedBuilder,
   MessageFlags,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
   type ChatInputCommandInteraction,
+  type ButtonInteraction,
   type Client,
   type Interaction,
   type MessageContextMenuCommandInteraction,
@@ -25,6 +28,16 @@ import type { BotConfig } from "./config.js";
 import { decryptJson, encryptJson } from "./crypto.js";
 import { capturedMessageEvidence, resolvedMessageEvidence, unavailableMessageEvidence, type MessageResolver } from "./message-resolver.js";
 import type { ProfileResolver } from "./profile-resolver.js";
+import type { ServerResolver } from "./server-resolver.js";
+import {
+  buildManualRetryModal,
+  buildReportModal,
+  parseReportModalValues,
+  statusMessageOptions,
+  targetContextFromReport,
+  visibleStatusHash,
+  type TargetDisplayContext
+} from "./report-ui.js";
 
 interface Dependencies {
   client: Client;
@@ -32,12 +45,15 @@ interface Dependencies {
   database: AccountBotDatabase;
   messageResolver: MessageResolver;
   profileResolver: ProfileResolver;
+  serverResolver: ServerResolver;
 }
 
 type PendingTarget =
-  | { flow: "message"; messageUrl: string; evidence?: ReturnType<typeof capturedMessageEvidence> }
-  | { flow: "profile"; userId: string; serverId?: string }
-  | { flow: "server"; serverOrInvite: string };
+  | { flow: "message"; messageUrl: string; evidence?: MessageEvidence; display?: TargetDisplayContext }
+  | { flow: "profile"; userId: string; serverId?: string; snapshot?: Awaited<ReturnType<ProfileResolver["resolve"]>>; display?: TargetDisplayContext }
+  | { flow: "server"; serverOrInvite: string; display?: TargetDisplayContext };
+
+type PendingManualRetry = { kind: "manual-retry"; reportId: string; flow: "message" | "profile" | "server" };
 
 export class AccountInteractionHandler {
   private readonly adminApi: DsaAdminApi;
@@ -49,6 +65,7 @@ export class AccountInteractionHandler {
   public async handle(interaction: Interaction): Promise<void> {
     try {
       if (interaction.isModalSubmit()) await this.modal(interaction);
+      else if (interaction.isButton()) await this.button(interaction);
       else if (interaction.isMessageContextMenuCommand()) await this.contextMenu(interaction);
       else if (interaction.isChatInputCommand()) await this.command(interaction);
     } catch (error) {
@@ -105,21 +122,58 @@ export class AccountInteractionHandler {
       await interaction.editReply(`Connected as **${account.username}**. You have ${account.availableCredits} report credits.`);
       return;
     }
+    if (interaction.customId.startsWith("report-edit-submit:")) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const pendingId = interaction.customId.slice("report-edit-submit:".length);
+      const encrypted = await this.dependencies.database.pendingForm(pendingId, interaction.user.id);
+      if (encrypted === null) throw new UserFacingError("This replacement form expired. Start again from the status card.");
+      const pending = decryptJson<PendingManualRetry>(encrypted, this.dependencies.config.dataEncryptionKey);
+      const connection = await this.requiredConnection(interaction.user.id);
+      const countries = await this.supportedCountries(connection);
+      const values = this.parseModalValues(pending.flow, {
+        mode: "manual",
+        country: interaction.fields.getTextInputValue("country"),
+        categories: interaction.fields.getStringSelectValues("category"),
+        details: interaction.fields.getTextInputValue("report-details"),
+        ...(pending.flow === "profile" ? { profileElements: interaction.fields.getStringSelectValues("profile-elements") } : {}),
+        ...(pending.flow === "server" ? { guildElements: interaction.fields.getStringSelectValues("server-elements") } : {})
+      }, countries);
+      const retry: RetryReportInput = {
+        mode: "edit_manual", country: values.country!, category: values.category!, finalText: values.finalText!,
+        ...(values.profileElements ? { profileElements: values.profileElements } : {}),
+        ...(values.guildElements ? { guildElements: values.guildElements } : {})
+      };
+      await this.submitRetry(interaction, pending.reportId, retry, pendingId);
+      return;
+    }
     if (!interaction.customId.startsWith("report:")) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const [, pendingId, aiFlag] = interaction.customId.split(":");
+    const [, pendingId] = interaction.customId.split(":");
     if (pendingId === undefined) throw new UserFacingError("Report form is invalid.");
     const encrypted = await this.dependencies.database.pendingForm(pendingId, interaction.user.id);
     if (encrypted === null) throw new UserFacingError("This report form expired. Start again.");
     const pending = decryptJson<PendingTarget>(encrypted, this.dependencies.config.dataEncryptionKey);
-    const useAi = aiFlag === "ai";
-    const input = await this.createInput(interaction, pending, useAi);
-    await this.submit(interaction, input, `create:${interaction.id}`, pendingId);
+    const input = await this.createInput(interaction, pending);
+    await this.submit(interaction, input, `create:${interaction.id}`, pendingId, pending.display);
+  }
+
+  private async button(interaction: ButtonInteraction): Promise<void> {
+    if (interaction.customId.startsWith("report-rewrite:")) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await this.submitRetry(interaction, interaction.customId.slice("report-rewrite:".length), { mode: "rewrite_ai" });
+      return;
+    }
+    if (!interaction.customId.startsWith("report-edit:")) return;
+    const reportId = interaction.customId.slice("report-edit:".length);
+    const connection = await this.requiredConnection(interaction.user.id);
+    const report = await this.api(connection).report(reportId);
+    if (!report.retryableModes.includes("edit_manual") || report.successorReportId !== null) throw new UserFacingError("Manual replacement is no longer available for this report.");
+    const pendingId = await this.dependencies.database.savePendingForm(interaction.user.id, encryptJson({ kind: "manual-retry", reportId, flow: report.flow }, this.dependencies.config.dataEncryptionKey));
+    await interaction.showModal(buildManualRetryModal(`report-edit-submit:${pendingId}`, report));
   }
 
   private async reportCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     const flow = interaction.options.getSubcommand();
-    const useAi = interaction.options.getBoolean("use-ai") ?? true;
     let pending: PendingTarget;
     if (flow === "message") {
       pending = { flow, messageUrl: interaction.options.getString("message-link", true) };
@@ -129,14 +183,15 @@ export class AccountInteractionHandler {
     } else {
       pending = { flow: "server", serverOrInvite: interaction.options.getString("server-or-invite") ?? interaction.guildId ?? "" };
     }
-    await this.showReportModal(interaction, pending, useAi);
+    await this.showReportModal(interaction, pending);
   }
 
   private async contextMenu(interaction: MessageContextMenuCommandInteraction): Promise<void> {
     const pending: PendingTarget = {
       flow: "message",
       messageUrl: interaction.targetMessage.url,
-      evidence: capturedMessageEvidence(interaction.targetMessage, "context_menu")
+      evidence: capturedMessageEvidence(interaction.targetMessage, "context_menu"),
+      display: messageSnapshotDisplay(capturedMessageEvidence(interaction.targetMessage, "context_menu").snapshot)
     };
     if (interaction.commandName === "Quick Report Message") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -144,73 +199,73 @@ export class AccountInteractionHandler {
         flow: "message",
         useAi: true,
         target: { messageUrl: pending.messageUrl, ...(pending.evidence === undefined ? {} : { messageEvidence: pending.evidence }) }
-      }, `create:${interaction.id}`);
-    } else await this.showReportModal(interaction, pending, true);
+      }, `create:${interaction.id}`, undefined, pending.display);
+    } else await this.showReportModal(interaction, pending);
   }
 
   private async showReportModal(
     interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
-    pending: PendingTarget,
-    useAi: boolean
+    pending: PendingTarget
   ): Promise<void> {
+    const resolved = await this.resolvePending(pending);
     const pendingId = await this.dependencies.database.savePendingForm(
       interaction.user.id,
-      encryptJson(pending, this.dependencies.config.dataEncryptionKey)
+      encryptJson(resolved, this.dependencies.config.dataEncryptionKey)
     );
-    const modal = new ModalBuilder().setCustomId(`report:${pendingId}:${useAi ? "ai" : "manual"}`)
-      .setTitle(useAi ? "Submit automatic report" : "Submit manual report");
-    modal.addComponents(
-      row(field("country", "Country code", !useAi, 2, 2)),
-      row(field("category", "Report category", !useAi, 1, 100)),
-      row(field("description", "Evidence or guidance", false, 1, 1_000, TextInputStyle.Paragraph))
-    );
-    if (!useAi) modal.addComponents(row(field("final-text", "Final report text", true, 1, 512, TextInputStyle.Paragraph)));
-    await interaction.showModal(modal);
+    const targetLabel = resolved.display?.handle ?? resolved.display?.name ?? (resolved.flow === "message" ? "@username's message" : resolved.flow === "profile" ? "@username" : "server");
+    await interaction.showModal(buildReportModal(`report:${pendingId}`, resolved.flow, targetLabel));
   }
 
-  private async createInput(interaction: ModalSubmitInteraction, pending: PendingTarget, useAi: boolean): Promise<CreateReportInput> {
-    const country = optionalField(interaction, "country")?.toUpperCase();
-    const category = optionalField(interaction, "category");
-    const description = optionalField(interaction, "description");
+  private async createInput(interaction: ModalSubmitInteraction, pending: PendingTarget): Promise<CreateReportInput> {
+    const mode = interaction.fields.getRadioGroup("writer-mode");
+    if (mode !== "ai" && mode !== "manual") throw new UserFacingError("Choose how the report should be written.");
+    const parsed = this.parseModalValues(pending.flow, {
+      mode,
+      country: interaction.fields.getTextInputValue("country"),
+      categories: interaction.fields.getStringSelectValues("category"),
+      details: interaction.fields.getTextInputValue("report-details"),
+      ...(pending.flow === "profile" ? { profileElements: interaction.fields.getStringSelectValues("profile-elements") } : {}),
+      ...(pending.flow === "server" ? { guildElements: interaction.fields.getStringSelectValues("server-elements") } : {})
+    }, await this.supportedCountries(await this.requiredConnection(interaction.user.id)));
     let target: ReportTarget;
     if (pending.flow === "message") {
       const evidence = pending.evidence ?? await this.dependencies.messageResolver.resolve(pending.messageUrl)
         .then((snapshot) => snapshot === null ? unavailableMessageEvidence() : resolvedMessageEvidence(snapshot));
       target = { messageUrl: pending.messageUrl, ...(evidence === undefined ? {} : { messageEvidence: evidence }) };
     } else if (pending.flow === "profile") {
-      const snapshot = await this.dependencies.profileResolver.resolve(pending.userId);
+      const snapshot = pending.snapshot ?? await this.dependencies.profileResolver.resolve(pending.userId);
       if (snapshot === null) throw new UserFacingError("That Discord profile could not be resolved.");
       target = {
         reportedUsername: snapshot.username,
         reportedUserId: pending.userId,
         reportedUserSnapshot: snapshot,
-        profileElements: ["photos", "name", "descriptors"],
+        profileElements: parsed.profileElements!,
         ...(pending.serverId === undefined ? {} : { reportedUserServerId: pending.serverId })
       };
     } else {
       if (!pending.serverOrInvite) throw new UserFacingError("A server ID or invite is required.");
-      target = { guildIdOrInviteCode: pending.serverOrInvite, guildElements: ["name", "icon", "banner", "invite_splash", "discovery_splash", "welcome_screen_description", "channel_names", "other"] };
+      target = { guildIdOrInviteCode: pending.serverOrInvite, guildElements: parsed.guildElements! };
     }
-    if (useAi) {
-      return { flow: pending.flow, useAi: true, target, ...(country ? { country } : {}), ...(category ? { category } : {}), ...(description ? { description } : {}) };
+    if (parsed.useAi) {
+      return { flow: pending.flow, useAi: true, target, ...(parsed.country ? { country: parsed.country } : {}), ...(parsed.category ? { category: parsed.category } : {}), ...(parsed.description ? { description: parsed.description } : {}) };
     }
-    const finalText = interaction.fields.getTextInputValue("final-text").trim();
-    if (!country || !category || !finalText) throw new UserFacingError("Country, category, and final report text are required in manual mode.");
-    return { flow: pending.flow, useAi: false, target, country, category, finalText, ...(description ? { description } : {}) };
+    return { flow: pending.flow, useAi: false, target, country: parsed.country!, category: parsed.category!, finalText: parsed.finalText!, ...(parsed.description ? { description: parsed.description } : {}) };
   }
 
   private async submit(
     interaction: ModalSubmitInteraction | MessageContextMenuCommandInteraction,
     input: CreateReportInput,
     idempotencyKey: string,
-    pendingId?: string
+    pendingId?: string,
+    display?: TargetDisplayContext
   ): Promise<void> {
     const connection = await this.requiredConnection(interaction.user.id);
     const linkId = await this.dependencies.database.beginReportLink(
       interaction.user.id,
       connection.account_id,
       idempotencyKey,
-      encryptJson(input, this.dependencies.config.dataEncryptionKey)
+      encryptJson(input, this.dependencies.config.dataEncryptionKey),
+      display ? encryptJson(display, this.dependencies.config.dataEncryptionKey) : undefined
     );
     let report: ReportDetail;
     try {
@@ -224,8 +279,10 @@ export class AccountInteractionHandler {
     let dmWarning = "";
     if (await this.dependencies.database.claimDmCard(report.reportId)) {
       try {
-        const message = await interaction.user.send({ embeds: [statusEmbed(report)] });
+        const context = display ?? targetContextFromReport(report);
+        const message = await interaction.user.send(statusMessageOptions(report, context));
         await this.dependencies.database.setDmMapping(report.reportId, message.channelId, message.id);
+        await this.dependencies.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
       } catch (error) {
         await this.dependencies.database.releaseDmCard(report.reportId);
         const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
@@ -239,6 +296,81 @@ export class AccountInteractionHandler {
     await interaction.editReply(`Report **${report.reportId}** is queued.${dmWarning}`);
   }
 
+  private async submitRetry(
+    interaction: ModalSubmitInteraction | ButtonInteraction,
+    predecessorReportId: string,
+    input: RetryReportInput,
+    pendingId?: string
+  ): Promise<void> {
+    const connection = await this.requiredConnection(interaction.user.id);
+    const predecessor = await this.api(connection).report(predecessorReportId);
+    if (!predecessor.retryableModes.includes(input.mode) || predecessor.successorReportId !== null) throw new UserFacingError("That replacement option is no longer available.");
+    const idempotencyKey = `retry:${interaction.id}`;
+    const encryptedContext = await this.dependencies.database.reportTargetContext(predecessorReportId);
+    const linkId = await this.dependencies.database.beginReportLink(
+      interaction.user.id, connection.account_id, idempotencyKey,
+      encryptJson({ reportId: predecessorReportId, input }, this.dependencies.config.dataEncryptionKey),
+      encryptedContext ?? undefined
+    );
+    let report: ReportDetail;
+    try { report = await this.api(connection).retryReport(predecessorReportId, idempotencyKey, input); }
+    catch (error) {
+      if (error instanceof DsaApiError && error.status < 500) await this.dependencies.database.abandonReportLink(linkId);
+      throw error;
+    }
+    await this.dependencies.database.completeReplacementLink(linkId, report.reportId, predecessorReportId);
+    if (pendingId) await this.dependencies.database.deletePendingForm(pendingId, interaction.user.id);
+    await interaction.editReply(`Replacement report **${report.reportId}** is queued. The existing private status card will continue updating.`);
+  }
+
+  private async resolvePending(pending: PendingTarget): Promise<PendingTarget> {
+    if (pending.flow === "message") {
+      if (pending.evidence) return pending.evidence.status === "captured"
+        ? { ...pending, display: pending.display ?? messageSnapshotDisplay(pending.evidence.snapshot) }
+        : { ...pending, display: pending.display ?? { flow: "message", name: "Reported message", kind: "Discord message", metadata: [] } };
+      const snapshot = await this.dependencies.messageResolver.resolve(pending.messageUrl);
+      return snapshot === null
+        ? { ...pending, evidence: unavailableMessageEvidence(), display: { flow: "message", name: "Reported message", kind: "Discord message", metadata: [] } }
+        : { ...pending, evidence: resolvedMessageEvidence(snapshot), display: messageSnapshotDisplay(snapshot) };
+    }
+    if (pending.flow === "profile") {
+      const snapshot = pending.snapshot ?? await this.dependencies.profileResolver.resolve(pending.userId);
+      if (snapshot === null) throw new UserFacingError("That Discord profile could not be resolved.");
+      return { ...pending, snapshot, display: {
+        flow: "profile", name: snapshot.globalDisplayName ?? snapshot.username, handle: `@${snapshot.username}`,
+        ...(snapshot.avatarUrl ? { imageUrl: snapshot.avatarUrl } : {}), kind: snapshot.bot ? "Bot account" : "User account",
+        metadata: [["User ID", snapshot.userId], ...(pending.serverId ? [["Observed server", pending.serverId] as [string, string]] : [])]
+      } };
+    }
+    const snapshot = await this.dependencies.serverResolver.resolve(pending.serverOrInvite);
+    return snapshot === null
+      ? { ...pending, display: pending.display ?? { flow: "server", name: pending.serverOrInvite, kind: "Discord server", metadata: [["Server or invite", pending.serverOrInvite]] } }
+      : { ...pending, serverOrInvite: snapshot.idOrInvite, display: {
+        flow: "server", name: snapshot.name, ...(snapshot.imageUrl ? { imageUrl: snapshot.imageUrl } : {}), kind: "Discord server",
+        ...(snapshot.description ? { excerpt: snapshot.description.slice(0, 300) } : {}),
+        metadata: [["Server ID", snapshot.idOrInvite], ...(snapshot.memberCount === null ? [] : [["Members", String(snapshot.memberCount)] as [string, string]]), ...(snapshot.presenceCount === null ? [] : [["Online", String(snapshot.presenceCount)] as [string, string]])]
+      } };
+  }
+
+  private async supportedCountries(connection: ApiConnection): Promise<string[]> {
+    const catalog = await this.api(connection).catalog();
+    const countries = catalog.countries;
+    if (!Array.isArray(countries) || countries.some((country) => typeof country !== "string")) throw new Error("API country catalog is invalid.");
+    return countries as string[];
+  }
+
+  private parseModalValues(
+    flow: ReportDetail["flow"],
+    values: Parameters<typeof parseReportModalValues>[1],
+    countries: readonly string[]
+  ): ReturnType<typeof parseReportModalValues> {
+    try {
+      return parseReportModalValues(flow, values, countries);
+    } catch (error) {
+      throw new UserFacingError(error instanceof Error ? error.message : "The report form contains invalid values.");
+    }
+  }
+
   private async reports(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const connection = await this.requiredConnection(interaction.user.id);
@@ -249,15 +381,15 @@ export class AccountInteractionHandler {
       await interaction.editReply(page.items.length === 0 ? "No reports yet." : page.items.map((report) => `• ${report.reportId} — ${report.status}`).join("\n"));
     } else if (action === "status") {
       const report = await api.report(interaction.options.getString("report-id", true));
-      await interaction.editReply({ embeds: [statusEmbed(report)] });
+      await interaction.editReply(statusMessageOptions(report, targetContextFromReport(report)));
     } else {
       const reportId = interaction.options.getString("report-id", true);
       const mode = interaction.options.getString("mode", true) as "reuse" | "regenerate";
       const idempotencyKey = `retry:${interaction.id}`;
-      const linkId = await this.dependencies.database.beginReportLink(interaction.user.id, connection.account_id, idempotencyKey, encryptJson({ reportId, mode }, this.dependencies.config.dataEncryptionKey));
+      const linkId = await this.dependencies.database.beginReportLink(interaction.user.id, connection.account_id, idempotencyKey, encryptJson({ reportId, input: { mode } }, this.dependencies.config.dataEncryptionKey));
       let report: ReportDetail;
       try {
-        report = await api.retryReport(reportId, idempotencyKey, mode);
+        report = await api.retryReport(reportId, idempotencyKey, { mode });
       } catch (error) {
         if (error instanceof DsaApiError && error.status < 500) await this.dependencies.database.abandonReportLink(linkId);
         throw error;
@@ -266,8 +398,10 @@ export class AccountInteractionHandler {
       let warning = "";
       if (await this.dependencies.database.claimDmCard(report.reportId)) {
         try {
-          const message = await interaction.user.send({ embeds: [statusEmbed(report)] });
+          const context = targetContextFromReport(report);
+          const message = await interaction.user.send(statusMessageOptions(report, context));
           await this.dependencies.database.setDmMapping(report.reportId, message.channelId, message.id);
+          await this.dependencies.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
         } catch {
           await this.dependencies.database.releaseDmCard(report.reportId);
           warning = " I could not create the DM status card; use `/reports status`.";
@@ -294,11 +428,13 @@ export class AccountInteractionHandler {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     await this.requiredConnection(interaction.user.id);
     const preferences = await this.dependencies.database.updateNotificationPreferences(interaction.user.id, {
-      ...(interaction.options.getBoolean("lifecycle") === null ? {} : { lifecycleEnabled: interaction.options.getBoolean("lifecycle")! }),
+      ...(interaction.options.getBoolean("decisions") === null ? {} : { decisionEnabled: interaction.options.getBoolean("decisions")! }),
+      ...(interaction.options.getBoolean("report-denied") === null ? {} : { reportDeniedEnabled: interaction.options.getBoolean("report-denied")! }),
+      ...(interaction.options.getBoolean("problems") === null ? {} : { problemEnabled: interaction.options.getBoolean("problems")! }),
       ...(interaction.options.getBoolean("daily-digest") === null ? {} : { dailyDigest: interaction.options.getBoolean("daily-digest")! }),
       ...(interaction.options.getBoolean("weekly-digest") === null ? {} : { weeklyDigest: interaction.options.getBoolean("weekly-digest")! })
     });
-    await interaction.editReply(`Lifecycle DMs: ${preferences.lifecycleEnabled ? "on" : "off"}; daily digest: ${preferences.dailyDigest ? "on" : "off"}; weekly digest: ${preferences.weeklyDigest ? "on" : "off"}.`);
+    await interaction.editReply(`Decision DMs: ${preferences.decisionEnabled ? "on" : "off"}; report-denied DM: ${preferences.reportDeniedEnabled ? "on" : "off"}; problem DMs: ${preferences.problemEnabled ? "on" : "off"}; daily digest: ${preferences.dailyDigest ? "on" : "off"}; weekly digest: ${preferences.weeklyDigest ? "on" : "off"}.`);
   }
 
   private async admin(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -361,49 +497,20 @@ function row(input: TextInputBuilder): ActionRowBuilder<TextInputBuilder> {
   return new ActionRowBuilder<TextInputBuilder>().addComponents(input);
 }
 
-function field(
-  id: string,
-  label: string,
-  required: boolean,
-  minimum: number,
-  maximum: number,
-  style = TextInputStyle.Short
-): TextInputBuilder {
-  return new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style).setRequired(required).setMinLength(minimum).setMaxLength(maximum);
-}
-
-function optionalField(interaction: ModalSubmitInteraction, id: string): string | undefined {
-  const value = interaction.fields.getTextInputValue(id).trim();
-  return value.length === 0 ? undefined : value;
-}
-
-export function statusEmbed(report: ReportDetail): EmbedBuilder {
-  const description = report.failure === null ? lifecycleDescription(report) : `${report.failure.message} (${report.failure.code})`;
-  return new EmbedBuilder()
-    .setTitle(`DSA report · ${titleCase(report.status)}`)
-    .setDescription(description)
-    .addFields(
-      { name: "Report ID", value: report.reportId },
-      { name: "Flow", value: report.flow, inline: true },
-      { name: "Credit", value: report.creditState, inline: true }
-    )
-    .setTimestamp(new Date(report.updatedAt));
-}
-
-function lifecycleDescription(report: ReportDetail): string {
-  if (report.discordStatus === "actioned") return "Discord actioned the report.";
-  if (report.discordStatus === "closed_no_action") return report.reviewStatus === "requested" || report.reviewStatus === "received"
-    ? "Discord closed the report; the automatic appeal is in progress."
-    : "Discord closed the report without action.";
-  if (report.discordStatus === "review_not_approved") return "Discord denied the automatic appeal.";
-  return report.status === "queued" ? "Queued for API preparation."
-    : report.status === "planning" ? "Planning the report."
-      : report.status === "researching" ? "Researching applicable context and law."
-        : report.status === "writing" ? "Writing the final report."
-          : report.status === "submitted" ? "Submitted to Discord; waiting for a decision."
-            : "The API is processing this report.";
-}
-
-function titleCase(value: string): string {
-  return value.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
+function messageSnapshotDisplay(snapshot: ReportedMessageSnapshot): TargetDisplayContext {
+  const location = [snapshot.channelName ? `#${snapshot.channelName}` : null, snapshot.serverName].filter(Boolean).join(" · ");
+  return {
+    flow: "message",
+    name: snapshot.authorDisplayName ?? snapshot.authorUsername,
+    handle: `@${snapshot.authorUsername}`,
+    ...(snapshot.authorAvatarUrl ? { imageUrl: snapshot.authorAvatarUrl } : {}),
+    kind: snapshot.authorBot ? "Bot account" : "User account",
+    ...(snapshot.content ? { excerpt: snapshot.content.slice(0, 300) } : {}),
+    metadata: [
+      ["Location", location || "Unknown channel"],
+      ["Posted", snapshot.createdAt],
+      ["Attachments", String(snapshot.attachments.length)],
+      ["User ID", snapshot.authorId]
+    ]
+  };
 }

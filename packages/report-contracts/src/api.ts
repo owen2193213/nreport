@@ -10,7 +10,7 @@ import type {
   GlobalUsageView,
   ReportDetail,
   ReportLifecycleEvent,
-  ReportRetryMode,
+  RetryReportInput,
   ReportSummary,
   WebhookDestinationView
 } from "./types.js";
@@ -118,11 +118,11 @@ export class DsaApi extends HttpClient {
     return this.request(`${DSA_API_BASE_PATH}/reports${search}`);
   }
 
-  public retryReport(reportId: string, idempotencyKey: string, mode: ReportRetryMode): Promise<ReportDetail> {
+  public retryReport(reportId: string, idempotencyKey: string, input: RetryReportInput): Promise<ReportDetail> {
     return this.request(`${DSA_API_BASE_PATH}/reports/${encodeURIComponent(reportId)}/retries`, {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
-      body: JSON.stringify({ mode })
+      body: JSON.stringify(input)
     });
   }
 

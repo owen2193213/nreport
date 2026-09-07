@@ -31,14 +31,20 @@ CREATE TABLE IF NOT EXISTS bot_report_links (
   idempotency_key text NOT NULL UNIQUE,
   report_id uuid UNIQUE,
   encrypted_request text,
+  encrypted_target_context text,
   dm_channel_id text,
   dm_message_id text,
   dm_claimed_at timestamptz,
+  visible_payload_hash text,
+  last_card_edit_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS bot_report_links_owner_idx ON bot_report_links(discord_user_id, created_at DESC);
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS dm_claimed_at timestamptz;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS encrypted_target_context text;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS visible_payload_hash text;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS last_card_edit_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS lifecycle_inbox (
   event_id bigint PRIMARY KEY,
@@ -59,10 +65,16 @@ CREATE INDEX IF NOT EXISTS lifecycle_inbox_claim_idx ON lifecycle_inbox(state, r
 CREATE TABLE IF NOT EXISTS notification_preferences (
   discord_user_id text PRIMARY KEY,
   lifecycle_enabled boolean NOT NULL DEFAULT true,
+  decision_enabled boolean NOT NULL DEFAULT true,
+  report_denied_enabled boolean NOT NULL DEFAULT false,
+  problem_enabled boolean NOT NULL DEFAULT true,
   daily_digest boolean NOT NULL DEFAULT false,
   weekly_digest boolean NOT NULL DEFAULT false,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS decision_enabled boolean NOT NULL DEFAULT true;
+ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS report_denied_enabled boolean NOT NULL DEFAULT false;
+ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS problem_enabled boolean NOT NULL DEFAULT true;
 
 CREATE TABLE IF NOT EXISTS digest_deliveries (
   discord_user_id text NOT NULL,
@@ -103,6 +115,9 @@ export interface ClaimedNotification extends QueryResultRow {
   encrypted_api_key: string;
   dm_channel_id: string | null;
   dm_message_id: string | null;
+  encrypted_target_context: string | null;
+  visible_payload_hash: string | null;
+  last_card_edit_at: Date | null;
 }
 
 export interface PendingReportLink extends QueryResultRow {
@@ -204,18 +219,19 @@ export class AccountBotDatabase {
     discordUserId: string,
     accountId: string,
     idempotencyKey: string,
-    encryptedRequest: string
+    encryptedRequest: string,
+    encryptedTargetContext?: string
   ): Promise<string> {
     const id = randomUUID();
     const result = await this.pool.query<{ id: string }>(
       `INSERT INTO bot_report_links
-         (id, discord_user_id, account_id, idempotency_key, encrypted_request)
-       VALUES ($1, $2, $3, $4, $5)
+         (id, discord_user_id, account_id, idempotency_key, encrypted_request, encrypted_target_context)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = now()
        WHERE bot_report_links.discord_user_id = EXCLUDED.discord_user_id
          AND bot_report_links.account_id = EXCLUDED.account_id
        RETURNING id`,
-      [id, discordUserId, accountId, idempotencyKey, encryptedRequest]
+      [id, discordUserId, accountId, idempotencyKey, encryptedRequest, encryptedTargetContext ?? null]
     );
     const linkId = result.rows[0]?.id;
     if (linkId === undefined) throw new Error("Idempotency key belongs to a different account mapping.");
@@ -228,6 +244,31 @@ export class AccountBotDatabase {
          updated_at = now() WHERE id = $1`,
       [linkId, reportId]
     );
+  }
+
+  public async completeReplacementLink(linkId: string, reportId: string, predecessorReportId: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const predecessor = await client.query<{
+        dm_channel_id: string | null; dm_message_id: string | null; encrypted_target_context: string | null; visible_payload_hash: string | null; last_card_edit_at: Date | null;
+      }>("SELECT dm_channel_id, dm_message_id, encrypted_target_context, visible_payload_hash, last_card_edit_at FROM bot_report_links WHERE report_id = $1 FOR UPDATE", [predecessorReportId]);
+      const prior = predecessor.rows[0];
+      await client.query(
+        `UPDATE bot_report_links SET report_id = $2, encrypted_request = NULL,
+           dm_channel_id = COALESCE(dm_channel_id, $3), dm_message_id = COALESCE(dm_message_id, $4),
+           encrypted_target_context = COALESCE(encrypted_target_context, $5),
+           visible_payload_hash = $6, last_card_edit_at = $7, updated_at = now() WHERE id = $1`,
+        [linkId, reportId, prior?.dm_channel_id ?? null, prior?.dm_message_id ?? null, prior?.encrypted_target_context ?? null, prior?.visible_payload_hash ?? null, prior?.last_card_edit_at ?? null]
+      );
+      await client.query("UPDATE bot_report_links SET dm_channel_id = NULL, dm_message_id = NULL, updated_at = now() WHERE report_id = $1", [predecessorReportId]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   public async abandonReportLink(linkId: string): Promise<void> {
@@ -252,6 +293,21 @@ export class AccountBotDatabase {
       `UPDATE bot_report_links SET dm_channel_id = $2, dm_message_id = $3,
          dm_claimed_at = NULL, updated_at = now() WHERE report_id = $1`,
       [reportId, channelId, messageId]
+    );
+  }
+
+  public async reportTargetContext(reportId: string): Promise<string | null> {
+    const result = await this.pool.query<{ encrypted_target_context: string | null }>(
+      "SELECT encrypted_target_context FROM bot_report_links WHERE report_id = $1",
+      [reportId]
+    );
+    return result.rows[0]?.encrypted_target_context ?? null;
+  }
+
+  public async completeCardUpdate(reportId: string, visiblePayloadHash: string): Promise<void> {
+    await this.pool.query(
+      "UPDATE bot_report_links SET visible_payload_hash = $2, last_card_edit_at = now(), updated_at = now() WHERE report_id = $1",
+      [reportId, visiblePayloadHash]
     );
   }
 
@@ -313,8 +369,11 @@ export class AccountBotDatabase {
       }
       const inserted = await client.query(
         `INSERT INTO lifecycle_inbox
-           (event_id, account_id, report_id, event_type, occurred_at, lifecycle_attempt)
-         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (event_id) DO NOTHING
+           (event_id, account_id, report_id, event_type, occurred_at, lifecycle_attempt, run_at)
+         VALUES ($1, $2, $3, $4, $5, $6,
+           CASE WHEN $4 IN ('report_failed', 'report_receipt_timeout', 'review_confirmation_timeout', 'review_ineligible', 'review_request_failed', 'review_request_ambiguous', 'discord:actioned', 'discord:review_not_approved')
+             THEN now() ELSE now() + interval '2 seconds' END)
+         ON CONFLICT (event_id) DO NOTHING
          RETURNING event_id`,
         [event.eventId, event.accountId, event.reportId, event.type, event.occurredAt, event.lifecycleAttempt]
       );
@@ -349,17 +408,21 @@ export class AccountBotDatabase {
   public async claimNotification(): Promise<ClaimedNotification | null> {
     const result = await this.pool.query<ClaimedNotification>(
       `WITH candidate AS (
-       SELECT event_id FROM lifecycle_inbox
-         WHERE (state = 'pending' AND run_at <= now())
-            OR (state = 'sending' AND locked_at < now() - interval '2 minutes')
-         ORDER BY event_id FOR UPDATE SKIP LOCKED LIMIT 1
+       SELECT inbox.event_id FROM lifecycle_inbox AS inbox
+       JOIN bot_report_links AS card_link ON card_link.report_id = inbox.report_id
+         WHERE ((inbox.state = 'pending' AND inbox.run_at <= now())
+            OR (inbox.state = 'sending' AND inbox.locked_at < now() - interval '2 minutes'))
+           AND (inbox.event_type IN ('report_failed', 'report_receipt_timeout', 'review_confirmation_timeout', 'review_ineligible', 'review_request_failed', 'review_request_ambiguous', 'discord:actioned', 'discord:review_not_approved')
+             OR card_link.last_card_edit_at IS NULL OR card_link.last_card_edit_at <= now() - interval '5 seconds')
+         ORDER BY inbox.event_id FOR UPDATE OF inbox SKIP LOCKED LIMIT 1
        ), claimed AS (
          UPDATE lifecycle_inbox AS inbox SET state = 'sending', attempts = attempts + 1,
            locked_at = now() FROM candidate WHERE inbox.event_id = candidate.event_id
          RETURNING inbox.*
        )
        SELECT claimed.*, connection.discord_user_id, connection.encrypted_api_key,
-              link.dm_channel_id, link.dm_message_id
+              link.dm_channel_id, link.dm_message_id, link.encrypted_target_context,
+              link.visible_payload_hash, link.last_card_edit_at
        FROM claimed
        JOIN api_connections AS connection ON connection.account_id = claimed.account_id
        JOIN bot_report_links AS link ON link.report_id = claimed.report_id`
@@ -388,31 +451,33 @@ export class AccountBotDatabase {
   }
 
   public async notificationPreferences(discordUserId: string): Promise<{
-    lifecycleEnabled: boolean; dailyDigest: boolean; weeklyDigest: boolean;
+    decisionEnabled: boolean; reportDeniedEnabled: boolean; problemEnabled: boolean; dailyDigest: boolean; weeklyDigest: boolean;
   }> {
     const result = await this.pool.query<{
-      lifecycle_enabled: boolean; daily_digest: boolean; weekly_digest: boolean;
-    }>("SELECT lifecycle_enabled, daily_digest, weekly_digest FROM notification_preferences WHERE discord_user_id = $1", [discordUserId]);
+      decision_enabled: boolean; report_denied_enabled: boolean; problem_enabled: boolean; daily_digest: boolean; weekly_digest: boolean;
+    }>("SELECT decision_enabled, report_denied_enabled, problem_enabled, daily_digest, weekly_digest FROM notification_preferences WHERE discord_user_id = $1", [discordUserId]);
     const row = result.rows[0];
     return row === undefined
-      ? { lifecycleEnabled: true, dailyDigest: false, weeklyDigest: false }
-      : { lifecycleEnabled: row.lifecycle_enabled, dailyDigest: row.daily_digest, weeklyDigest: row.weekly_digest };
+      ? { decisionEnabled: true, reportDeniedEnabled: false, problemEnabled: true, dailyDigest: false, weeklyDigest: false }
+      : { decisionEnabled: row.decision_enabled, reportDeniedEnabled: row.report_denied_enabled, problemEnabled: row.problem_enabled, dailyDigest: row.daily_digest, weeklyDigest: row.weekly_digest };
   }
 
   public async updateNotificationPreferences(
     discordUserId: string,
-    input: { lifecycleEnabled?: boolean; dailyDigest?: boolean; weeklyDigest?: boolean }
-  ): Promise<{ lifecycleEnabled: boolean; dailyDigest: boolean; weeklyDigest: boolean }> {
+    input: { decisionEnabled?: boolean; reportDeniedEnabled?: boolean; problemEnabled?: boolean; dailyDigest?: boolean; weeklyDigest?: boolean }
+  ): Promise<{ decisionEnabled: boolean; reportDeniedEnabled: boolean; problemEnabled: boolean; dailyDigest: boolean; weeklyDigest: boolean }> {
     await this.pool.query(
       `INSERT INTO notification_preferences
-         (discord_user_id, lifecycle_enabled, daily_digest, weekly_digest)
-       VALUES ($1, COALESCE($2, true), COALESCE($3, false), COALESCE($4, false))
+         (discord_user_id, decision_enabled, report_denied_enabled, problem_enabled, daily_digest, weekly_digest)
+       VALUES ($1, COALESCE($2, true), COALESCE($3, false), COALESCE($4, true), COALESCE($5, false), COALESCE($6, false))
        ON CONFLICT (discord_user_id) DO UPDATE
-       SET lifecycle_enabled = COALESCE($2, notification_preferences.lifecycle_enabled),
-           daily_digest = COALESCE($3, notification_preferences.daily_digest),
-           weekly_digest = COALESCE($4, notification_preferences.weekly_digest),
+       SET decision_enabled = COALESCE($2, notification_preferences.decision_enabled),
+           report_denied_enabled = COALESCE($3, notification_preferences.report_denied_enabled),
+           problem_enabled = COALESCE($4, notification_preferences.problem_enabled),
+           daily_digest = COALESCE($5, notification_preferences.daily_digest),
+           weekly_digest = COALESCE($6, notification_preferences.weekly_digest),
            updated_at = now()`,
-      [discordUserId, input.lifecycleEnabled ?? null, input.dailyDigest ?? null, input.weeklyDigest ?? null]
+      [discordUserId, input.decisionEnabled ?? null, input.reportDeniedEnabled ?? null, input.problemEnabled ?? null, input.dailyDigest ?? null, input.weeklyDigest ?? null]
     );
     return this.notificationPreferences(discordUserId);
   }

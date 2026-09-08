@@ -164,4 +164,32 @@ describe("PreparationWorker", () => {
     expect(identity).toHaveBeenCalledWith("DE");
     expect(store.completePreparation.mock.calls[0]?.[2]).toMatchObject({ finalText: "Prepared report", legalReference: "DSA" });
   });
+
+  it("persists a safe specific reason when the AI provider remains rate limited", async () => {
+    const rateLimitError = Object.assign(new Error("sensitive upstream detail"), { kind: "rate_limited" });
+    const store = {
+      claimPreparation: vi.fn(async () => ({
+        jobId: "job-3",
+        report: {
+          ...baseReport,
+          flow: "message" as const,
+          use_ai: true,
+          request_input: { flow: "message" as const, useAi: true as const, target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" } }
+        }
+      })),
+      transition: vi.fn(async () => true),
+      completePreparation: vi.fn(),
+      failPreparation: vi.fn()
+    };
+    const worker = new PreparationWorker(store as never, { prepare: vi.fn(async () => { throw rateLimitError; }) }, vi.fn() as never);
+
+    await worker.processOne();
+
+    expect(store.failPreparation).toHaveBeenCalledWith(
+      "job-3",
+      "report-1",
+      "preparation_rate_limited",
+      "The AI writing provider is rate limited after 3 attempts. Retry the report shortly."
+    );
+  });
 });

@@ -93,7 +93,7 @@ describe("v2 account-owned server", () => {
     expect(openapi.json().paths["/v1/reports"]).toBeUndefined();
     expect(catalog.json().service).toEqual({ category: "discord", type: "dsa", version: "v1" });
     expect(response.statusCode).toBe(202);
-    expect(response.json()).toMatchObject({ status: "queued", accountId: principal.accountId });
+    expect(response.json()).toMatchObject({ status: "queued", accountId: principal.accountId, queueLength: 0 });
     expect(create).toHaveBeenCalledOnce();
     await server.close();
   });

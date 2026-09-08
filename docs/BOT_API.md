@@ -137,10 +137,13 @@ appeal lifecycle.
 `GET /v1/discord/dsa/reports/:reportId` returns the account ID, report ID, timestamps, flow, AI mode, status,
 credit state, sanitized target/evidence, prepared country/category/description/final text, legal
 reference, compact research summary, source annotations, Discord report/decision/appeal state,
-safe failure details, retry modes, predecessor/successor IDs, and the durable timeline. Generated
+safe failure details, retry modes, predecessor/successor IDs, current durable `queueLength`, and the durable timeline. Generated
 identity, email alias, proxy/session details, provider payloads, prompts, and model conversation are
 never returned. For AI reports, `finalText` is the AI-written text that was submitted to Discord;
 clients do not need to reconstruct it from evidence or provider output.
+
+Report creation and retry routes allow 60 mutations per authenticated account per minute. The same
+60/minute ceiling is enforced at both the HTTP route and durable account-ledger layers.
 
 `GET /v1/discord/dsa/reports?after=&limit=` returns account-owned summaries with an opaque cursor. A foreign
 report ID produces the same `404` as a nonexistent one.

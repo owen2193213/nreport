@@ -1,7 +1,7 @@
 import { MessageFlags } from "discord.js";
 import { describe, expect, it } from "vitest";
 
-import { buildReportModal, classifyReportView, parseReportModalValues, shouldSendDecisionDm, statusMessageOptions, visibleStatusHash, type TargetDisplayContext } from "../src/report-ui.js";
+import { buildReportModal, classifyReportView, decisionMessageOptions, parseReportModalValues, shouldSendDecisionDm, statusMessageOptions, visibleStatusHash, type TargetDisplayContext } from "../src/report-ui.js";
 import type { ReportDetail } from "@nreport/contracts";
 
 const context: TargetDisplayContext = {
@@ -73,6 +73,49 @@ describe("Components V2 report UI", () => {
     expect(classifyReportView(report({ status: "failed", discordStatus: null, failure: { stage: "receipt", code: "discord_receipt_timeout", message: "Timed out" } })).key).toBe("report_timeout");
     expect(classifyReportView(report({ reviewStatus: "confirmation_timeout" })).key).toBe("appeal_timeout");
     expect(classifyReportView(report({ reviewStatus: "ineligible" })).key).toBe("ineligible");
+  });
+
+  it("shows explicit queue and Discord submission phases", () => {
+    expect(classifyReportView(report({ status: "queued", discordStatus: null })).title).toBe("Queued for Discord submission");
+    expect(classifyReportView(report({ status: "requesting_verification", discordStatus: null })).title).toBe("Requesting verification from Discord");
+    expect(classifyReportView(report({ status: "awaiting_verification", discordStatus: null })).title).toBe("Waiting for Discord verification email");
+    expect(classifyReportView(report({ status: "submitting", discordStatus: null })).title).toBe("Submitting report to Discord");
+  });
+
+  it("shows compact message identity, a direct link, queue length, and timestamped history", () => {
+    const value = JSON.stringify(statusMessageOptions(report({ status: "queued", discordStatus: null, queueLength: 7 }), {
+      flow: "message",
+      name: "Example Display",
+      handle: "@username",
+      kind: "User account",
+      excerpt: "Example reported message content",
+      metadata: [["Location", "#general"], ["Attachments", "3"], ["User ID", "123456789012345678"], ["Message", "https://discord.com/channels/@me/123456789012345678/123456789012345679"]]
+    }));
+    expect(value).toContain("Discord ID: `123456789012345678`");
+    expect(value).toContain("[Open reported message](https://discord.com/channels/@me/123456789012345678/123456789012345679)");
+    expect(value).toContain("Queue length: **7**");
+    expect(value).toContain("Added to submission queue — <t:1788775200:f> (<t:1788775200:R>)");
+    expect(value).not.toContain("User account");
+    expect(value).not.toContain("Location");
+    expect(value).not.toContain("Attachments");
+  });
+
+  it("shows the safe specific failure on both the card and its reply", () => {
+    const failed = report({ status: "failed", discordStatus: null, failure: { stage: "researching", code: "preparation_rate_limited", message: "The AI writing provider is rate limited after 3 attempts." } });
+    expect(JSON.stringify(statusMessageOptions(failed, context))).toContain("The AI writing provider is rate limited after 3 attempts.");
+    expect(JSON.stringify(decisionMessageOptions(failed, context))).toContain("The AI writing provider is rate limited after 3 attempts.");
+  });
+
+  it("adds valid retry controls to failed reports", () => {
+    const failed = report({ status: "failed", discordStatus: null, retryableModes: ["reuse", "regenerate"], failure: { stage: "researching", code: "preparation_rate_limited", message: "Rate limited." } });
+    const value = JSON.stringify(statusMessageOptions(failed, context));
+    expect(value).toContain("Retry submission");
+    expect(value).toContain("Retry with fresh report");
+  });
+
+  it("keeps submitted reports neutral until Discord accepts them", () => {
+    const card = statusMessageOptions(report({ status: "submitted", discordStatus: "received" }), context);
+    expect(JSON.stringify(card)).toContain('"accent_color":5793266');
   });
 
   it("gives rapid internal preparation states the same visible payload hash", () => {

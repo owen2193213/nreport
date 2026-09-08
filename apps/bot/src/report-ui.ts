@@ -112,8 +112,7 @@ function validateElements<T extends string>(values: readonly string[] | undefine
   return values as T[];
 }
 
-const PREPARING = new Set(["queued", "planning", "researching", "writing"]);
-const SUBMITTING = new Set(["requesting_verification", "awaiting_verification", "verification_received", "verifying", "submitting"]);
+const PREPARING = new Set(["planning", "researching", "writing"]);
 
 export function classifyReportView(report: ReportDetail): ReportViewState {
   if (report.reviewStatus === "confirmation_timeout") return state("appeal_timeout", "Appeal unconfirmed", "Discord did not confirm the appeal within 2 minutes. It will not be retried automatically.", "No retry", true);
@@ -128,8 +127,11 @@ export function classifyReportView(report: ReportDetail): ReportViewState {
   if (report.discordStatus === "closed_no_action") return state("report_denied", "Report denied", "Discord closed the original report without action. The automatic appeal is in progress.", "Appeal pending", false);
   if (report.failure?.code === "discord_receipt_timeout") return state("report_timeout", "Report unconfirmed", "Discord did not confirm the report within 2 minutes. The message may have been deleted or become inaccessible, so it will not be retried.", "No retry", true);
   if (report.status === "failed") return state("failed", "Report failed", report.failure?.message ?? "The report stopped before Discord confirmed submission.", "Needs attention", true);
+  if (report.status === "queued") return state("preparing", "Queued for Discord submission", "The report is waiting for processing.", "Queued", false);
   if (PREPARING.has(report.status)) return state("preparing", "Preparing report", "Reviewing the evidence and writing the report.", "In progress", false);
-  if (SUBMITTING.has(report.status)) return state("submitting", "Submitting report", "Completing verification and sending the report to Discord.", "In progress", false);
+  if (report.status === "requesting_verification") return state("submitting", "Requesting verification from Discord", "Starting Discord's verification step.", "In progress", false);
+  if (report.status === "awaiting_verification") return state("submitting", "Waiting for Discord verification email", "Discord has been asked to send the verification email.", "In progress", false);
+  if (["verification_received", "verifying", "submitting"].includes(report.status)) return state("submitting", "Submitting report to Discord", "Completing verification and sending the report to Discord.", "In progress", false);
   return state("submitted", "Report submitted", "Discord received the report. Waiting for its decision.", "Submitted", false);
 }
 
@@ -157,16 +159,26 @@ export function buildStatusCard(report: ReportDetail, context: TargetDisplayCont
     .addSeparatorComponents(separator())
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### ${targetHeading(context.flow)}`));
 
-  const identity = new TextDisplayBuilder().setContent(`**${safe(context.name)}**${context.handle ? `\n${safe(context.handle)}` : ""}\n${safe(context.kind)}`);
+  const userId = context.metadata.find(([label]) => label === "User ID")?.[1];
+  const messageUrl = context.metadata.find(([label]) => label === "Message")?.[1];
+  const identity = new TextDisplayBuilder().setContent(
+    context.flow === "message"
+      ? `**${safe(context.name)}**${context.handle ? ` (${safe(context.handle)})` : ""}${userId ? `\nDiscord ID: \`${safe(userId)}\`` : ""}${validHttpsUrl(messageUrl) ? `\n[Open reported message](${messageUrl})` : ""}`
+      : `**${safe(context.name)}**${context.handle ? `\n${safe(context.handle)}` : ""}\n${safe(context.kind)}`
+  );
   if (validHttpsUrl(context.imageUrl)) {
     container.addSectionComponents(new SectionBuilder().addTextDisplayComponents(identity).setThumbnailAccessory(new ThumbnailBuilder().setURL(context.imageUrl!)));
   } else {
     container.addTextDisplayComponents(identity);
   }
   if (context.excerpt) container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`> ${safe(context.excerpt)}`));
-  if (context.metadata.length > 0) {
-    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(context.metadata.map(([label, value]) => `**${safe(label)}:** ${safe(value)}`).join("\n")));
+  const visibleMetadata = context.flow === "message"
+    ? context.metadata.filter(([label]) => !["Location", "Posted", "Attachments", "User ID", "Message"].includes(label))
+    : context.metadata;
+  if (visibleMetadata.length > 0) {
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(visibleMetadata.map(([label, value]) => `**${safe(label)}:** ${safe(value)}`).join("\n")));
   }
+  if (report.status === "queued") container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`Queue length: **${report.queueLength ?? 0}**`));
   if (report.category || report.country) {
     container.addSeparatorComponents(separator()).addTextDisplayComponents(new TextDisplayBuilder().setContent([
       report.category ? `**Category:** ${safe(reportReasonLabel(report.flow, report.category))}` : null,
@@ -185,12 +197,19 @@ export function buildStatusCard(report: ReportDetail, context: TargetDisplayCont
       new ButtonBuilder().setCustomId(`report-edit:${report.reportId}`).setLabel("Edit manually").setStyle(ButtonStyle.Secondary)
     ));
   }
+  if (view.key === "failed" && report.successorReportId === null) {
+    const buttons: ButtonBuilder[] = [];
+    if (report.retryableModes.includes("reuse")) buttons.push(new ButtonBuilder().setCustomId(`report-retry-reuse:${report.reportId}`).setLabel("Retry submission").setStyle(ButtonStyle.Primary));
+    if (report.retryableModes.includes("regenerate")) buttons.push(new ButtonBuilder().setCustomId(`report-retry-regenerate:${report.reportId}`).setLabel("Retry with fresh report").setStyle(ButtonStyle.Secondary));
+    if (buttons.length > 0) container.addActionRowComponents(new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons));
+  }
   return container;
 }
 
 export function decisionMessageOptions(report: ReportDetail, context: TargetDisplayContext) {
   const view = classifyReportView(report);
-  const action = view.key === "appeal_denied" ? "Use the report card to rewrite with AI or edit manually."
+  const action = view.key === "failed" ? view.description
+    : view.key === "appeal_denied" ? "Use the report card to rewrite with AI or edit manually."
     : view.key === "report_denied" ? "The automatic appeal is continuing."
       : view.key === "report_accepted" || view.key === "appeal_accepted" ? "No further action is needed."
         : "Open the report status for details.";
@@ -279,7 +298,7 @@ export function targetContextFromReport(report: ReportDetail): TargetDisplayCont
     ...(snapshot ? { handle: `@${snapshot.authorUsername}` } : {}),
     kind: snapshot?.authorBot ? "Bot account" : "User account",
     ...(snapshot?.content ? { excerpt: snapshot.content.slice(0, 300) } : {}),
-    metadata: snapshot ? [["Location", [snapshot.channelName ? `#${snapshot.channelName}` : null, snapshot.serverName].filter(Boolean).join(" · ")], ["User ID", snapshot.authorId]] : []
+    metadata: snapshot ? [["User ID", snapshot.authorId], ["Message", target.messageUrl]] : [["Message", target.messageUrl]]
   };
 }
 
@@ -298,11 +317,18 @@ function targetHeading(flow: ReportFlow): string {
 }
 
 function milestoneHistory(report: ReportDetail): string[] {
-  const milestones = ["Report created"];
-  if (report.status === "submitted" || report.discordStatus !== null) milestones.push("Report submitted");
+  const milestones = [`Added to submission queue — ${discordHistoryTime(report.createdAt)}`];
+  const submitted = report.timeline.find((event) => event.type === "report_submitted");
+  if (submitted) milestones.push(`Report submitted — ${discordHistoryTime(submitted.occurredAt)}`);
+  else if (report.status === "submitted" || report.discordStatus !== null) milestones.push(`Report submitted — ${discordHistoryTime(report.updatedAt)}`);
   const view = classifyReportView(report);
-  if (["report_denied", "appeal_denied", "report_accepted", "appeal_accepted", "report_timeout", "appeal_timeout", "ineligible"].includes(view.key)) milestones.push(view.title);
+  if (["report_denied", "appeal_denied", "report_accepted", "appeal_accepted", "report_timeout", "appeal_timeout", "ineligible", "failed"].includes(view.key)) milestones.push(`${view.title} — ${discordHistoryTime(report.updatedAt)}`);
   return milestones.map((label) => `• ${label}`);
+}
+
+function discordHistoryTime(value: string): string {
+  const seconds = Math.floor(Date.parse(value) / 1_000);
+  return Number.isFinite(seconds) ? `<t:${seconds}:f> (<t:${seconds}:R>)` : safe(value);
 }
 
 function reportCodeBlock(finalText: string): string {
@@ -320,7 +346,7 @@ function validHttpsUrl(value: string | undefined): boolean {
 }
 
 function accent(key: ReportViewKey): number {
-  if (key === "report_accepted" || key === "appeal_accepted" || key === "submitted") return 0x23a559;
+  if (key === "report_accepted" || key === "appeal_accepted") return 0x23a559;
   if (key === "report_denied") return 0xf0b232;
   if (["appeal_denied", "report_timeout", "appeal_timeout", "ineligible", "failed"].includes(key)) return 0xda373c;
   return 0x5865f2;

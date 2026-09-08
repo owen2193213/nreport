@@ -59,7 +59,7 @@ interface V2Dependencies {
   reports: Pick<ReportRepository,
     "create" | "findOwned" | "listOwned" | "timeline" | "listEvents" | "retry" |
     "registerVerificationEmail" | "registerReportUpdateEmail" | "registerReviewUpdateEmail" | "operationalDiagnostics"
-  >;
+  > & { queueLength?: () => Promise<number> };
   destinations?: Pick<WebhookDestinationRepository, "create" | "list" | "update" | "assign">;
   analytics?: Pick<AnalyticsRepository, "analytics" | "actionHistory" | "digest">;
 }
@@ -81,7 +81,7 @@ function apiError(reply: FastifyReply, request: FastifyRequest, status: number, 
   return reply.code(status).send({ error: { code, message, requestId: request.id } });
 }
 
-function publicReport(row: AccountReportRow): ReportDetail {
+function publicReport(row: AccountReportRow, queueLength = 0): ReportDetail {
   const prepared = row.prepared_input as {
     country?: string;
     category?: string;
@@ -118,6 +118,7 @@ function publicReport(row: AccountReportRow): ReportDetail {
     predecessorReportId: row.predecessor_report_id ?? null,
     successorReportId: row.successor_report_id ?? null,
     retryableModes: reportRetryableModes(row),
+    queueLength,
     timeline: [],
     createdAt: row.created_at?.toISOString?.() ?? new Date().toISOString(),
     updatedAt: row.updated_at?.toISOString?.() ?? new Date().toISOString()
@@ -280,7 +281,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     `${DSA_API_BASE_PATH}/reports`,
     {
       preHandler: accountAuth,
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: { body: createReportBodySchema }
     },
     async (request, reply) => {
@@ -298,7 +299,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       }
       try {
         const result = await dependencies.reports.create(principal.accountId, idempotencyKey.trim(), input);
-        return reply.code(202).send(publicReport(result.report));
+        return reply.code(202).send(publicReport(result.report, await dependencies.reports.queueLength?.() ?? 0));
       } catch (error) {
         const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
         const message = error instanceof Error ? error.message : "Report creation failed.";
@@ -326,7 +327,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       if (row === null) {
         return apiError(reply, request, 404, "report_not_found", "Report was not found.");
       }
-      const detail = publicReport(row);
+      const detail = publicReport(row, await dependencies.reports.queueLength?.() ?? 0);
       detail.timeline = await dependencies.reports.timeline(principal.accountId, row.id);
       return reply.send(detail);
     }
@@ -370,7 +371,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     `${DSA_API_BASE_PATH}/reports/:reportId/retries`,
     {
       preHandler: accountAuth,
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: { body: retryReportBodySchema }
     },
     async (request, reply) => {
@@ -393,7 +394,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
           idempotencyKey.trim(),
           retryInput
         );
-        return reply.code(202).send(publicReport(result.report));
+        return reply.code(202).send(publicReport(result.report, await dependencies.reports.queueLength?.() ?? 0));
       } catch (error) {
         const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
         const message = error instanceof Error ? error.message : "Report retry failed.";

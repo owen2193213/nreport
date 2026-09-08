@@ -50,14 +50,17 @@ local report/DM mapping. This ordering lets the webhook endpoint return `409` on
 linking race, which asks the API to retry. A timeout or lost create response is reconciled by
 replaying the same body and key. Definite client errors abandon that pending operation.
 
-The bot sends one private Components V2 DM card. It displays the target separately, including
-best-effort avatar/server icon, name, `@username`, and message/server context. The fenced report
+The bot sends one private Components V2 DM card. Message cards show the display name, `@username`,
+Discord ID, direct message link, and bounded excerpt together; account type, channel/location,
+posted time, and attachment counts are omitted. The fenced report
 section contains only the API's `finalText`; target identity and example message content are never
 concatenated into that code block.
 
-The card deliberately groups fast internal events into stable visible states. Queued, planning,
-researching, and writing appear as **Preparing report**; verification and transport work appear as
-**Submitting report**. Nonterminal updates wait two seconds, retain only the latest pending state,
+The card deliberately groups fast internal events into stable visible states while keeping the
+meaningful boundaries explicit: **Queued for Discord submission**, **Preparing report**,
+**Requesting verification from Discord**, **Waiting for Discord verification email**, and
+**Submitting report to Discord**. Queued cards show the API's current queue length. History uses
+exact and relative Discord timestamps and begins with **Added to submission queue**. Nonterminal updates wait two seconds, retain only the latest pending state,
 are spaced at least five seconds apart, and skip identical visible-payload hashes. Terminal updates
 bypass the spacing. This prevents pairs such as “Submitting report” followed immediately by
 “Awaiting verification email” from producing rapid Discord edits. If Discord returns error `50007`,
@@ -75,7 +78,8 @@ advance a cursor past an event that cannot yet be linked. Webhook and polling in
 same event inbox so duplicate delivery cannot create duplicate DMs. Pending create/retry calls are
 replayed with their original idempotency key before normal feed reconciliation.
 
-The status card is always maintained while the account is connected. Separate private DMs are sent
+The status card is always maintained while the account is connected. Decision/problem messages reply
+to that card so the affected report remains clear. These replies are sent
 only for decisions or actionable problems: original-report accepted, appeal accepted, appeal
 denied, report/appeal confirmation timeout, ineligible appeal, and failure. The original
 report-denied DM is off by default because the automatic appeal continues; its preference is
@@ -90,7 +94,8 @@ activity are fetched using the connected personal key. Community analytics uses 
 returns only protected aggregate data. The bot never relies on a Discord ID field inside an API
 report for ownership; the local connection and report link are authoritative.
 
-Pre-submission failures may expose API-authorized `reuse` or `regenerate` retries. An appeal denial
+Pre-submission failures display the API's safe stage-specific reason and expose API-authorized
+**Retry submission** (`reuse`) or **Retry with fresh report** (`regenerate`) controls. An appeal denial
 instead exposes exactly two actions on the existing status card: **Rewrite with AI** and **Edit
 manually**. Rewrite is autonomous and opens no modal; it asks the API to improve clarity, legal
 relevance, specificity, and category fit using only immutable evidence, without inventing facts or

@@ -235,6 +235,13 @@ export interface InboundEmailRegistration {
 export class ReportRepository {
   public constructor(private readonly pool: Pick<Pool, "connect" | "query">) {}
 
+  public async queueLength(): Promise<number> {
+    const result = await this.pool.query<{ count: string }>(
+      "SELECT count(DISTINCT report_id)::text AS count FROM account_report_jobs WHERE state IN ('pending', 'running')"
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
   public static requestHash(input: CreateReportInput): string {
     return createHash("sha256").update(JSON.stringify(input)).digest("hex");
   }
@@ -441,7 +448,7 @@ export class ReportRepository {
         await client.query("COMMIT");
         return { created: false, report: existingRow };
       }
-      await consumeRateLimit(client, accountId, "report_mutation", "minute", 5);
+      await consumeRateLimit(client, accountId, "report_mutation", "minute", 60);
       if (input.useAi) await consumeRateLimit(client, accountId, "ai_preparation", "hour", 20);
       if (accountRow.available_credits < 1) {
         throw new ReportMutationError("credits_exhausted", "No report credits are available.");
@@ -684,7 +691,7 @@ export class ReportRepository {
         await client.query("COMMIT");
         return { created: false, report: existingRow };
       }
-      await consumeRateLimit(client, accountId, "report_mutation", "minute", 5);
+      await consumeRateLimit(client, accountId, "report_mutation", "minute", 60);
 
       const predecessorResult = await client.query<AccountReportRow & {
         credit_state: "available" | "reserved" | "consumed" | "released";

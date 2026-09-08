@@ -162,6 +162,7 @@ export interface ReportSummary {
   predecessorReportId: string | null;
   successorReportId: string | null;
   retryableModes: ReportRetryMode[];
+  queueLength?: number;
   createdAt: string;
   updatedAt: string;
 }

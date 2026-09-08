@@ -71,7 +71,7 @@ export class AccountNotificationWorker {
         await this.database.completeCardUpdate(report.reportId, visibleHash);
       }
       const view = classifyReportView(report);
-      if (shouldSendDecisionDm(item.event_type, view.key, preferences)) await user.send(decisionMessageOptions(report, context));
+      if (shouldSendDecisionDm(item.event_type, view.key, preferences)) await message.reply(decisionMessageOptions(report, context));
       await this.database.completeNotification(item.event_id);
     } catch (error) {
       if (error instanceof DsaApiError && error.status === 401) {

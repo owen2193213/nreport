@@ -158,6 +158,16 @@ export class AccountInteractionHandler {
   }
 
   private async button(interaction: ButtonInteraction): Promise<void> {
+    if (interaction.customId.startsWith("report-retry-reuse:")) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await this.submitRetry(interaction, interaction.customId.slice("report-retry-reuse:".length), { mode: "reuse" });
+      return;
+    }
+    if (interaction.customId.startsWith("report-retry-regenerate:")) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await this.submitRetry(interaction, interaction.customId.slice("report-retry-regenerate:".length), { mode: "regenerate" });
+      return;
+    }
     if (interaction.customId.startsWith("report-rewrite:")) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await this.submitRetry(interaction, interaction.customId.slice("report-rewrite:".length), { mode: "rewrite_ai" });
@@ -510,7 +520,8 @@ function messageSnapshotDisplay(snapshot: ReportedMessageSnapshot): TargetDispla
       ["Location", location || "Unknown channel"],
       ["Posted", snapshot.createdAt],
       ["Attachments", String(snapshot.attachments.length)],
-      ["User ID", snapshot.authorId]
+      ["User ID", snapshot.authorId],
+      ["Message", `https://discord.com/channels/${snapshot.serverId ?? "@me"}/${snapshot.channelId}/${snapshot.messageId}`]
     ]
   };
 }

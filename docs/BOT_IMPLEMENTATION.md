@@ -50,9 +50,9 @@ local report/DM mapping. This ordering lets the webhook endpoint return `409` on
 linking race, which asks the API to retry. A timeout or lost create response is reconciled by
 replaying the same body and key. Definite client errors abandon that pending operation.
 
-The bot sends one private Components V2 DM card. Message cards show the display name, `@username`,
-Discord ID, direct message link, and bounded excerpt together; account type, channel/location,
-posted time, and attachment counts are omitted. The fenced report
+The bot sends one private Components V2 DM card. Message cards keep the author mention with
+`@username`, the plain message URL, and a bounded code-blocked excerpt in the same reported-message
+block; account type, channel/location, posted time, and attachment counts are omitted. The fenced report
 section contains only the API's `finalText`; target identity and example message content are never
 concatenated into that code block.
 
@@ -60,12 +60,17 @@ The card deliberately groups fast internal events into stable visible states whi
 meaningful boundaries explicit: **Queued for Discord submission**, **Preparing report**,
 **Requesting verification from Discord**, **Waiting for Discord verification email**, and
 **Submitting report to Discord**. Queued cards show the API's current queue length. History uses
-exact and relative Discord timestamps and begins with **Added to submission queue**. Nonterminal updates wait two seconds, retain only the latest pending state,
+relative Discord timestamps and concise chronological actions. When applicable, report denial and
+appeal submission are collapsed into **Report denied; appeal submitted**. Nonterminal updates wait two seconds, retain only the latest pending state,
 are spaced at least five seconds apart, and skip identical visible-payload hashes. Terminal updates
 bypass the spacing. This prevents pairs such as “Submitting report” followed immediately by
 “Awaiting verification email” from producing rapid Discord edits. If Discord returns error `50007`,
 the bot warns in the ephemeral interaction response that it could not DM the user; the API report
 continues.
+
+After Discord closes a report without action, `reviewStatus=queued` displays **Preparing appeal —
+Not submitted yet**. Only `reviewStatus=requested` or `received` displays **Appeal submitted —
+Awaiting Discord's decision**; the UI never uses an ambiguous generic “Appeal pending” label.
 
 ## Notifications and recovery
 

@@ -124,7 +124,15 @@ export function classifyReportView(report: ReportDetail): ReportViewState {
       ? state("appeal_accepted", "Appeal accepted", "Discord accepted the appeal and took action.", "Accepted", true)
       : state("report_accepted", "Report accepted", "Discord accepted the original report and took action.", "Accepted", true);
   }
-  if (report.discordStatus === "closed_no_action") return state("report_denied", "Report denied", "Discord closed the original report without action. The automatic appeal is in progress.", "Appeal pending", false);
+  if (report.discordStatus === "closed_no_action") {
+    if (report.reviewStatus === "requested" || report.reviewStatus === "received") {
+      return state("report_denied", "Appeal submitted", "The original report was denied. The automatic appeal was submitted and is awaiting Discord's decision.", "Awaiting Discord's decision", false);
+    }
+    if (report.reviewStatus === "queued") {
+      return state("report_denied", "Preparing appeal", "The original report was denied. The automatic appeal is queued but has not been submitted yet.", "Not submitted yet", false);
+    }
+    return state("report_denied", "Report denied", "Discord closed the original report without action. The appeal has not been submitted.", "Appeal not submitted", false);
+  }
   if (report.failure?.code === "discord_receipt_timeout") return state("report_timeout", "Report unconfirmed", "Discord did not confirm the report within 2 minutes. The message may have been deleted or become inaccessible, so it will not be retried.", "No retry", true);
   if (report.status === "failed") return state("failed", "Report failed", report.failure?.message ?? "The report stopped before Discord confirmed submission.", "Needs attention", true);
   if (report.status === "queued") return state("preparing", "Queued for Discord submission", "The report is waiting for processing.", "Queued", false);
@@ -161,17 +169,15 @@ export function buildStatusCard(report: ReportDetail, context: TargetDisplayCont
 
   const userId = context.metadata.find(([label]) => label === "User ID")?.[1];
   const messageUrl = context.metadata.find(([label]) => label === "Message")?.[1];
-  const identity = new TextDisplayBuilder().setContent(
-    context.flow === "message"
-      ? `**${safe(context.name)}**${context.handle ? ` (${safe(context.handle)})` : ""}${userId ? `\nDiscord ID: \`${safe(userId)}\`` : ""}${validHttpsUrl(messageUrl) ? `\n[Open reported message](${messageUrl})` : ""}`
-      : `**${safe(context.name)}**${context.handle ? `\n${safe(context.handle)}` : ""}\n${safe(context.kind)}`
-  );
+  const identity = new TextDisplayBuilder().setContent(context.flow === "message"
+    ? `${userId ? `<@${safe(userId)}>` : `**${safe(context.name)}**`}${context.handle ? ` (${safe(context.handle)})` : ""}${validHttpsUrl(messageUrl) ? `\n${messageUrl}` : ""}${context.excerpt ? `\n${reportCodeBlock(context.excerpt)}` : ""}`
+    : `**${safe(context.name)}**${context.handle ? `\n${safe(context.handle)}` : ""}\n${safe(context.kind)}`);
   if (validHttpsUrl(context.imageUrl)) {
     container.addSectionComponents(new SectionBuilder().addTextDisplayComponents(identity).setThumbnailAccessory(new ThumbnailBuilder().setURL(context.imageUrl!)));
   } else {
     container.addTextDisplayComponents(identity);
   }
-  if (context.excerpt) container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`> ${safe(context.excerpt)}`));
+  if (context.flow !== "message" && context.excerpt) container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`> ${safe(context.excerpt)}`));
   const visibleMetadata = context.flow === "message"
     ? context.metadata.filter(([label]) => !["Location", "Posted", "Attachments", "User ID", "Message"].includes(label))
     : context.metadata;
@@ -317,18 +323,54 @@ function targetHeading(flow: ReportFlow): string {
 }
 
 function milestoneHistory(report: ReportDetail): string[] {
-  const milestones = [`Added to submission queue — ${discordHistoryTime(report.createdAt)}`];
+  const milestones: Array<{ occurredAt: string; label: string }> = [
+    { occurredAt: report.createdAt, label: "Added to submission queue" }
+  ];
   const submitted = report.timeline.find((event) => event.type === "report_submitted");
-  if (submitted) milestones.push(`Report submitted — ${discordHistoryTime(submitted.occurredAt)}`);
-  else if (report.status === "submitted" || report.discordStatus !== null) milestones.push(`Report submitted — ${discordHistoryTime(report.updatedAt)}`);
+  if (submitted) milestones.push({ occurredAt: submitted.occurredAt, label: "Report submitted" });
+  else if (report.status === "submitted" || report.discordStatus !== null) milestones.push({ occurredAt: report.updatedAt, label: "Report submitted" });
+
+  const denied = report.timeline.find((event) => event.type === "discord:closed_no_action");
+  const appealSubmitted = report.timeline.find((event) => event.type === "review_requested");
+  if (appealSubmitted) {
+    milestones.push({ occurredAt: appealSubmitted.occurredAt, label: "Report denied; appeal submitted" });
+  } else if (denied) {
+    milestones.push({ occurredAt: denied.occurredAt, label: "Report denied" });
+  }
+
+  const actioned = lastTimelineEvent(report.timeline, (event) => event.type === "discord:actioned");
+  if (actioned) {
+    milestones.push({
+      occurredAt: actioned.occurredAt,
+      label: appealSubmitted || report.reviewStatus === "approved" ? "Appeal accepted" : "Report accepted"
+    });
+  }
+  const appealDenied = lastTimelineEvent(report.timeline, (event) => event.type === "discord:review_not_approved");
+  if (appealDenied) milestones.push({ occurredAt: appealDenied.occurredAt, label: "Appeal denied" });
+
   const view = classifyReportView(report);
-  if (["report_denied", "appeal_denied", "report_accepted", "appeal_accepted", "report_timeout", "appeal_timeout", "ineligible", "failed"].includes(view.key)) milestones.push(`${view.title} — ${discordHistoryTime(report.updatedAt)}`);
-  return milestones.map((label) => `• ${label}`);
+  if (view.key === "failed") milestones.push({ occurredAt: report.updatedAt, label: "Report failed" });
+  else if (view.key === "report_timeout") milestones.push({ occurredAt: report.updatedAt, label: "Report unconfirmed" });
+  else if (view.key === "appeal_timeout") milestones.push({ occurredAt: report.updatedAt, label: "Appeal unconfirmed" });
+  else if (view.key === "ineligible") milestones.push({ occurredAt: report.updatedAt, label: "Appeal unavailable" });
+
+  return milestones.map(({ occurredAt, label }) => `- ${discordHistoryTime(occurredAt)} ${label}`);
+}
+
+function lastTimelineEvent(
+  timeline: ReportDetail["timeline"],
+  predicate: (event: ReportDetail["timeline"][number]) => boolean
+): ReportDetail["timeline"][number] | undefined {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index];
+    if (event !== undefined && predicate(event)) return event;
+  }
+  return undefined;
 }
 
 function discordHistoryTime(value: string): string {
   const seconds = Math.floor(Date.parse(value) / 1_000);
-  return Number.isFinite(seconds) ? `<t:${seconds}:f> (<t:${seconds}:R>)` : safe(value);
+  return Number.isFinite(seconds) ? `<t:${seconds}:R>` : safe(value);
 }
 
 function reportCodeBlock(finalText: string): string {

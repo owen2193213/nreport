@@ -75,6 +75,17 @@ describe("Components V2 report UI", () => {
     expect(classifyReportView(report({ reviewStatus: "ineligible" })).key).toBe("ineligible");
   });
 
+  it("distinguishes an appeal waiting to submit from one already submitted", () => {
+    expect(classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "queued" }))).toMatchObject({
+      title: "Preparing appeal",
+      mark: "Not submitted yet"
+    });
+    expect(classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "requested" }))).toMatchObject({
+      title: "Appeal submitted",
+      mark: "Awaiting Discord's decision"
+    });
+  });
+
   it("shows explicit queue and Discord submission phases", () => {
     expect(classifyReportView(report({ status: "queued", discordStatus: null })).title).toBe("Queued for Discord submission");
     expect(classifyReportView(report({ status: "requesting_verification", discordStatus: null })).title).toBe("Requesting verification from Discord");
@@ -82,7 +93,7 @@ describe("Components V2 report UI", () => {
     expect(classifyReportView(report({ status: "submitting", discordStatus: null })).title).toBe("Submitting report to Discord");
   });
 
-  it("shows compact message identity, a direct link, queue length, and timestamped history", () => {
+  it("keeps the mention, username, plain link, and code-blocked message in one reported-item block", () => {
     const value = JSON.stringify(statusMessageOptions(report({ status: "queued", discordStatus: null, queueLength: 7 }), {
       flow: "message",
       name: "Example Display",
@@ -91,13 +102,28 @@ describe("Components V2 report UI", () => {
       excerpt: "Example reported message content",
       metadata: [["Location", "#general"], ["Attachments", "3"], ["User ID", "123456789012345678"], ["Message", "https://discord.com/channels/@me/123456789012345678/123456789012345679"]]
     }));
-    expect(value).toContain("Discord ID: `123456789012345678`");
-    expect(value).toContain("[Open reported message](https://discord.com/channels/@me/123456789012345678/123456789012345679)");
+    expect(value).toContain("<@123456789012345678> (@username)\\nhttps://discord.com/channels/@me/123456789012345678/123456789012345679\\n```\\nExample reported message content\\n```");
     expect(value).toContain("Queue length: **7**");
-    expect(value).toContain("Added to submission queue — <t:1788775200:f> (<t:1788775200:R>)");
+    expect(value).toContain("- <t:1788775200:R> Added to submission queue");
+    expect(value).not.toContain("Open reported message");
+    expect(value).not.toContain("Discord ID:");
+    expect(value).not.toContain("> Example reported message content");
     expect(value).not.toContain("User account");
     expect(value).not.toContain("Location");
     expect(value).not.toContain("Attachments");
+  });
+
+  it("collapses a denied report and submitted appeal into one chronological history action", () => {
+    const timeline = [
+      { eventId: "1", type: "report_queued", occurredAt: "2026-09-07T10:00:00.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null },
+      { eventId: "2", type: "report_submitted", occurredAt: "2026-09-07T10:01:00.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null },
+      { eventId: "3", type: "discord:closed_no_action", occurredAt: "2026-09-07T10:02:00.000Z", lifecycleAttempt: 1, discordStatus: "closed_no_action" as const, errorCode: null },
+      { eventId: "4", type: "review_requested", occurredAt: "2026-09-07T10:03:00.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null },
+      { eventId: "5", type: "discord:actioned", occurredAt: "2026-09-07T10:04:00.000Z", lifecycleAttempt: 1, discordStatus: "actioned" as const, errorCode: null }
+    ];
+    const value = JSON.stringify(statusMessageOptions(report({ discordStatus: "actioned", reviewStatus: "approved", timeline }), context));
+    expect(value).toContain("- <t:1788775200:R> Added to submission queue\\n- <t:1788775260:R> Report submitted\\n- <t:1788775380:R> Report denied; appeal submitted\\n- <t:1788775440:R> Appeal accepted");
+    expect(value).not.toContain("<t:1788775320:R> Report denied");
   });
 
   it("shows the safe specific failure on both the card and its reply", () => {

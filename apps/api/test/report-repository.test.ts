@@ -170,6 +170,41 @@ describe("deadline expiry", () => {
   });
 });
 
+describe("lifecycle job leases", () => {
+  it("refreshes a lease only while the lifecycle job is running", async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ id: "job-1" }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    const repository = new ReportRepository({ query } as never);
+
+    await expect(repository.heartbeatLifecycleJob("job-1")).resolves.toBe(true);
+    await expect(repository.heartbeatLifecycleJob("job-completed")).resolves.toBe(false);
+
+    expect(query).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("SET locked_at = now(), updated_at = now()"),
+      ["job-1"]
+    );
+    expect(String(query.mock.calls[0]?.[0])).toContain("WHERE id = $1 AND state = 'running'");
+    expect(String(query.mock.calls[0]?.[0])).toContain("RETURNING id");
+  });
+
+  it("recovery changes only running lifecycle jobs with stale leases", async () => {
+    const { repository, client } = repositoryWithQueries(() => ({ rows: [], rowCount: 0 }));
+
+    await repository.recoverInterruptedJobs();
+
+    const lifecycleRecoveryStatements = client.query.mock.calls
+      .map(([sql]) => String(sql))
+      .filter((sql) => sql.includes("job.locked_at < now() - interval '2 minutes'"));
+    expect(lifecycleRecoveryStatements).toHaveLength(4);
+    for (const sql of lifecycleRecoveryStatements) {
+      expect(sql).toContain("job.state = 'running'");
+      expect(sql).toContain("job.locked_at < now() - interval '2 minutes'");
+    }
+  });
+});
+
 describe("retry eligibility", () => {
   it("uses one rule for terminal denial, preparation availability, and AI mode", () => {
     expect(reportRetryableModes({

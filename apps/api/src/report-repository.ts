@@ -1117,6 +1117,17 @@ export class ReportRepository {
     return result.rows[0] ?? null;
   }
 
+  public async heartbeatLifecycleJob(jobId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE account_report_jobs
+       SET locked_at = now(), updated_at = now()
+       WHERE id = $1 AND state = 'running'
+       RETURNING id`,
+      [jobId]
+    );
+    return result.rowCount === 1;
+  }
+
   public async getLifecycleReport(reportId: string): Promise<LifecycleReport | null> {
     const result = await this.pool.query<LifecycleReport & QueryResultRow>(
       `SELECT id, flow, prepared_input->>'country' AS country,

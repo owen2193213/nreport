@@ -1,5 +1,3 @@
-import { setTimeout as delay } from "node:timers/promises";
-
 import {
   DiscordDsaClient,
   DiscordDsaHttpError,
@@ -39,6 +37,7 @@ export interface LifecycleReport {
 
 interface LifecycleStore {
   claimLifecycleJob(): Promise<LifecycleJob | null>;
+  heartbeatLifecycleJob(jobId: string): Promise<boolean>;
   getLifecycleReport(reportId: string): Promise<LifecycleReport | null>;
   setStatus(reportId: string, status: "requesting_verification" | "verifying"): Promise<boolean>;
   saveAwaitingVerification(jobId: string, reportId: string, encryptedSession: string): Promise<boolean>;
@@ -73,6 +72,8 @@ interface RunnerCodecs {
   encrypt(value: unknown): string;
 }
 
+type RunnerSleep = (milliseconds: number, signal?: AbortSignal) => Promise<unknown>;
+
 export type LifecycleRunnerOutcome =
   | {
       component: "job";
@@ -97,7 +98,7 @@ export class LifecycleRunner {
   private resolveStop: (() => void) | undefined;
   private readonly clientFactory: (report: LifecycleReport, session?: DiscordDsaSessionState) => LifecycleClient;
   private readonly codecs: RunnerCodecs;
-  private readonly sleep: (milliseconds: number) => Promise<unknown>;
+  private readonly sleep: RunnerSleep;
   private readonly concurrency: number;
 
   public constructor(
@@ -105,8 +106,8 @@ export class LifecycleRunner {
     config: AppConfig,
     clientFactory?: (report: LifecycleReport, session?: DiscordDsaSessionState) => LifecycleClient,
     codecs?: Partial<RunnerCodecs>,
-    sleep: (milliseconds: number) => Promise<unknown> = delay,
-    private readonly onOutcome: (outcome: LifecycleRunnerOutcome) => void = () => undefined
+    sleep: RunnerSleep = cancellableDelay,
+    private readonly onOutcome: (outcome: LifecycleRunnerOutcome) => void | Promise<void> = () => undefined
   ) {
     this.clientFactory = clientFactory ?? ((report, session) => defaultClient(config, report, session));
     this.codecs = {
@@ -151,6 +152,11 @@ export class LifecycleRunner {
 
   private async processJob(job: LifecycleJob): Promise<void> {
     const startedAt = Date.now();
+    let settleHeartbeat!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      settleHeartbeat = resolve;
+    });
+    const heartbeat = this.heartbeatJob(job.id, settled);
     try {
       await this.dispatchJob(job);
       this.notify({
@@ -170,6 +176,9 @@ export class LifecycleRunner {
         errorCategory: safeJobErrorCategory(error)
       });
       throw error;
+    } finally {
+      settleHeartbeat();
+      await heartbeat;
     }
   }
 
@@ -365,6 +374,25 @@ export class LifecycleRunner {
     }
   }
 
+  private async heartbeatJob(jobId: string, settled: Promise<void>): Promise<void> {
+    if (this.store.heartbeatLifecycleJob === undefined) return;
+    while (true) {
+      const jobSettled = await this.waitForInterrupt(30_000, settled);
+      if (jobSettled) return;
+      const heartbeatStartedAt = Date.now();
+      try {
+        if (!(await this.store.heartbeatLifecycleJob(jobId))) return;
+      } catch {
+        this.notify({
+          component: "loop",
+          outcome: "failed",
+          durationMs: elapsedSince(heartbeatStartedAt),
+          errorCategory: "lifecycle_heartbeat_failed"
+        });
+      }
+    }
+  }
+
   private async runMaintenance(): Promise<void> {
     const startedAt = Date.now();
     try {
@@ -395,12 +423,28 @@ export class LifecycleRunner {
       await this.sleep(milliseconds);
       return;
     }
-    await Promise.race([this.sleep(milliseconds), stopSignal]);
+    await this.waitForInterrupt(milliseconds, stopSignal);
+  }
+
+  private async waitForInterrupt(milliseconds: number, interrupt: Promise<void>): Promise<boolean> {
+    const controller = new AbortController();
+    const sleeping = this.sleep(milliseconds, controller.signal).then(
+      () => false,
+      (error: unknown) => {
+        if (controller.signal.aborted) return true;
+        throw error;
+      }
+    );
+    try {
+      return await Promise.race([sleeping, interrupt.then(() => true)]);
+    } finally {
+      controller.abort();
+    }
   }
 
   private notify(outcome: LifecycleRunnerOutcome): void {
     try {
-      this.onOutcome(outcome);
+      void Promise.resolve(this.onOutcome(outcome)).catch(() => undefined);
     } catch {
       // Observability must not interrupt queue progress.
     }
@@ -409,6 +453,26 @@ export class LifecycleRunner {
 
 function elapsedSince(startedAt: number): number {
   return Math.max(0, Date.now() - startedAt);
+}
+
+function cancellableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted === true) {
+      resolve();
+      return;
+    }
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    timer.unref?.();
+    signal?.addEventListener("abort", finish, { once: true });
+  });
 }
 
 function safeJobErrorCategory(error: unknown): string {

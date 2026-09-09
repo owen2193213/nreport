@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/require-await */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DiscordDsaHttpError } from "@discord-dsa/client";
 
 import { LifecycleRunner } from "../src/lifecycle-runner-v2.js";
@@ -10,14 +10,6 @@ function deferred<T = void>() {
     resolve = resolvePromise;
   });
   return { promise, resolve };
-}
-
-async function waitFor(condition: () => boolean, timeoutMilliseconds = 500): Promise<void> {
-  const deadline = Date.now() + timeoutMilliseconds;
-  while (!condition()) {
-    if (Date.now() >= deadline) throw new Error("Timed out waiting for condition.");
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
 }
 
 function report() {
@@ -207,6 +199,9 @@ describe("LifecycleRunner automatic appeal", () => {
 });
 
 describe("LifecycleRunner background scheduling", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
   it("claims two eligible jobs while the first job is still running", async () => {
     const jobs = [
       { id: "job-1", report_id: "report-1", kind: "request_code" as const, payload: {}, attempts: 1, max_attempts: 3 },
@@ -237,7 +232,7 @@ describe("LifecycleRunner background scheduling", () => {
 
     runner.start();
     try {
-      await waitFor(() => started.size === 2);
+      await vi.advanceTimersByTimeAsync(0);
       expect(started).toEqual(new Set(["report-1", "report-2"]));
     } finally {
       releaseJobs.resolve();
@@ -293,8 +288,7 @@ describe("LifecycleRunner background scheduling", () => {
 
     runner.start();
     try {
-      await appealSleeping.promise;
-      await waitFor(() => requestCodeStarted);
+      await vi.advanceTimersByTimeAsync(0);
       expect(requestCodeStarted).toBe(true);
     } finally {
       releaseAppeal.resolve();
@@ -331,7 +325,7 @@ describe("LifecycleRunner background scheduling", () => {
 
     runner.start();
     try {
-      await waitFor(() => requestCodeStarted);
+      await vi.advanceTimersByTimeAsync(0);
       expect(requestCodeStarted).toBe(true);
     } finally {
       await runner.stop();
@@ -375,8 +369,8 @@ describe("LifecycleRunner background scheduling", () => {
 
     runner.start();
     try {
-      await jobStalled.promise;
-      await waitFor(() => store.recoverInterruptedJobs.mock.calls.length >= 2);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.recoverInterruptedJobs).toHaveBeenCalledTimes(2);
       expect(store.expireDeadlines).toHaveBeenCalledTimes(2);
     } finally {
       releaseJob.resolve();
@@ -390,20 +384,73 @@ describe("LifecycleRunner background scheduling", () => {
       store as never,
       { lifecycleConcurrency: 1 } as never,
       undefined,
-      undefined,
-      () => new Promise(() => undefined)
+      undefined
     );
     runner.start();
-    await waitFor(() => store.claimLifecycleJob.mock.calls.length === 1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.claimLifecycleJob).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(2);
 
     const stopPromise = runner.stop();
-    const stoppedPromptly = await Promise.race([
-      stopPromise.then(() => true),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100))
-    ]);
-
-    expect(stoppedPromptly).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
     await stopPromise;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("heartbeats a live post-boundary job while maintenance continues", async () => {
+    const releaseSubmission = deferred<{ report_id: string }>();
+    const store = {
+      recoverInterruptedJobs: vi.fn(),
+      expireDeadlines: vi.fn(),
+      claimLifecycleJob: vi.fn()
+        .mockResolvedValueOnce({ id: "job-1", report_id: "report-1", kind: "verify_submit", payload: { code: "123456" }, attempts: 1, max_attempts: 3 })
+        .mockResolvedValue(null),
+      heartbeatLifecycleJob: vi.fn(async () => true),
+      getLifecycleReport: vi.fn(async () => report()),
+      setStatus: vi.fn(async () => true),
+      beginSubmission: vi.fn(async () => true),
+      markSubmitted: vi.fn(),
+      completeLifecycleJob: vi.fn(),
+      failBeforeSubmission: vi.fn(),
+      failAfterSubmission: vi.fn(),
+      retryLifecycleJob: vi.fn()
+    };
+    const client = {
+      verifyEmailCode: vi.fn(async () => "token"),
+      getMenu: vi.fn(async () => ({})),
+      prepareSubmission: vi.fn(() => ({})),
+      submitPrepared: vi.fn(() => releaseSubmission.promise),
+      close: vi.fn()
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      { lifecycleConcurrency: 1 } as never,
+      () => client as never,
+      { decrypt: (value: string) => value },
+      (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+    );
+
+    runner.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.beginSubmission).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(store.heartbeatLifecycleJob).toHaveBeenCalledWith("job-1");
+      expect(store.recoverInterruptedJobs.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(store.expireDeadlines.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+      releaseSubmission.resolve({ report_id: "discord-1" });
+      await vi.advanceTimersByTimeAsync(0);
+      const settledHeartbeatCount = store.heartbeatLifecycleJob.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(store.heartbeatLifecycleJob).toHaveBeenCalledTimes(settledHeartbeatCount);
+    } finally {
+      releaseSubmission.resolve({ report_id: "discord-1" });
+      await vi.advanceTimersByTimeAsync(0);
+      await runner.stop();
+    }
   });
 });
 
@@ -429,7 +476,7 @@ describe("LifecycleRunner safe outcomes", () => {
       undefined,
       undefined,
       undefined,
-      (outcome) => outcomes.push(outcome)
+      (outcome) => { outcomes.push(outcome); }
     );
 
     await expect(runner.processOne()).rejects.toThrow("sensitive provider response");
@@ -458,7 +505,7 @@ describe("LifecycleRunner safe outcomes", () => {
       undefined,
       undefined,
       undefined,
-      (outcome) => outcomes.push(outcome)
+      (outcome) => { outcomes.push(outcome); }
     );
 
     await runner.processOne();
@@ -474,6 +521,7 @@ describe("LifecycleRunner safe outcomes", () => {
   });
 
   it("reports a claim-loop failure using a fixed safe category and keeps running", async () => {
+    vi.useFakeTimers();
     const outcomes: unknown[] = [];
     const store = {
       recoverInterruptedJobs: vi.fn(),
@@ -491,12 +539,12 @@ describe("LifecycleRunner safe outcomes", () => {
         if (milliseconds === 1_500) return;
         await new Promise(() => undefined);
       },
-      (outcome) => outcomes.push(outcome)
+      (outcome) => { outcomes.push(outcome); }
     );
 
     runner.start();
     try {
-      await waitFor(() => outcomes.some((outcome) => (outcome as { component?: string }).component === "loop"));
+      await vi.advanceTimersByTimeAsync(0);
       const loopOutcome = outcomes.find(
         (outcome) => (outcome as { component?: string }).component === "loop"
       );
@@ -509,6 +557,51 @@ describe("LifecycleRunner safe outcomes", () => {
       expect(JSON.stringify(outcomes)).not.toContain("sensitive database URL");
     } finally {
       await runner.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("isolates synchronous observer throws", async () => {
+    const store = {
+      recoverInterruptedJobs: vi.fn(),
+      expireDeadlines: vi.fn(),
+      claimLifecycleJob: vi.fn(async () => null)
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      () => { throw new Error("observer failed"); }
+    );
+
+    await expect(runner.processOne()).resolves.toBe(false);
+  });
+
+  it("isolates asynchronous observer rejections without an unhandled rejection", async () => {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    const store = {
+      recoverInterruptedJobs: vi.fn(),
+      expireDeadlines: vi.fn(),
+      claimLifecycleJob: vi.fn(async () => null)
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      async () => { throw new Error("observer failed asynchronously"); }
+    );
+
+    try {
+      await expect(runner.processOne()).resolves.toBe(false);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
     }
   });
 });

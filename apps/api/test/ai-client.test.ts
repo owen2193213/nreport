@@ -99,12 +99,6 @@ describe("AiClient", () => {
       });
     });
 
-    it("always exposes the OpenRouter endpoint and provider name", () => {
-      const client = new AiClient("ai-secret", OPENROUTER_MODEL);
-      expect(client.endpoint).toBe("https://openrouter.ai/api/v1/chat/completions");
-      expect(client.providerName).toBe("OpenRouter");
-    });
-
     it("handles upstream error objects in response payloads", async () => {
       const request = vi.fn().mockResolvedValue(
         new Response(

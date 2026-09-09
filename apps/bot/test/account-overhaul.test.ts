@@ -78,7 +78,7 @@ describe("local account mapping", () => {
     expect(call?.[1]).toContain("encrypted-context");
   });
 
-  it("allows only one worker to claim creation of a report status card", async () => {
+  it("maps the database card-claim result to acquired or unavailable", async () => {
     const query = vi.fn()
       .mockResolvedValueOnce({ rows: [{ id: "link-1" }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 });
@@ -97,7 +97,7 @@ describe("local account mapping", () => {
     expect(query).toHaveBeenCalledWith(expect.stringContaining("expires_at <= now()"));
   });
 
-  it("coalesces older pending notifications after a newer event arrives", async () => {
+  it("issues report-scoped coalescing SQL after inserting a new event", async () => {
     const client = {
       query: vi.fn(async (sql: string, _values?: unknown[]) => {
         if (sql.includes("FROM api_connections")) return { rows: [{ discord_user_id: "discord-1" }], rowCount: 1 };
@@ -117,7 +117,7 @@ describe("local account mapping", () => {
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("now() + interval '2 seconds'"))).toBe(true);
   });
 
-  it("spaces ordinary status-card edits while allowing terminal events through immediately", async () => {
+  it("includes edit-spacing and terminal-event exemptions in the claim query", async () => {
     const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [], rowCount: 0 }));
     const database = new AccountBotDatabase({ query } as never);
 

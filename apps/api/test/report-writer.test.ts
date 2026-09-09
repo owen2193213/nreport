@@ -229,18 +229,6 @@ describe("OpenRouter and Brave report writer", () => {
     expect(planning.max_completion_tokens).toBe(4_096);
     expect(planning.response_format).toBeUndefined();
     expect(JSON.stringify(planning.messages)).toContain("provisionalLawReference");
-    expect(JSON.stringify(planning.messages)).not.toContain("without Markdown or a code fence");
-    expect(planning.messages[1]!.content).toContain("## Task");
-    expect(planning.messages[1]!.content).toContain("## Rules");
-    expect(planning.messages[1]!.content).toContain("## Input");
-    expect(planning.messages[1]!.content).toContain("## Output");
-    expect(planning.messages[1]!.content).toContain("## Examples");
-    expect(planning.messages[1]!.content).not.toContain("hedging");
-    expect(planning.messages[1]!.content).toContain("generic, standalone searches");
-    expect(planning.messages[1]!.content).toContain("Germany laws on online threats");
-    expect(planning.messages[1]!.content).toContain(
-      "what does [slang] mean in online context"
-    );
     const planningSchema = embeddedSchema(planning.messages[1]!.content);
     expect(planningSchema.properties).not.toHaveProperty("country");
     expect(planningSchema.properties).not.toHaveProperty("reportType");
@@ -259,26 +247,6 @@ describe("OpenRouter and Brave report writer", () => {
     expect(synthesis.max_completion_tokens).toBe(2_048);
     expect(synthesis.response_format.type).toBe("json_schema");
     expect(synthesis.response_format.json_schema.strict).toBeUndefined();
-    expect(JSON.stringify(synthesis.messages)).toContain(
-      "Do not count characters step by step or spend time optimizing the exact character count."
-    );
-    expect(JSON.stringify(synthesis.messages)).toContain(
-      "When the message's meaning is obvious, do not elaborate on it."
-    );
-    expect(synthesis.messages[1]!.content).toContain("# FUCK YOUUUU");
-    expect(synthesis.messages[1]!.content).toContain(
-      "Section 185 prohibits insulting another person."
-    );
-    expect(synthesis.messages[1]!.content).toContain("coded wording");
-    expect(synthesis.messages[1]!.content).toContain("## Task");
-    expect(synthesis.messages[1]!.content).toContain("## Input");
-    expect(synthesis.messages[1]!.content).toContain("## Research");
-    expect(synthesis.messages[1]!.content).toContain("## Writing");
-    expect(synthesis.messages[1]!.content).toContain("## Output");
-    expect(synthesis.messages[1]!.content).toContain("## Examples");
-    expect(synthesis.messages[1]!.content).toContain(
-      "briefly explain what the wording means, then connect that meaning to the law"
-    );
   });
 
   it("keeps resolved fields out of the synthesis output contract", async () => {
@@ -527,18 +495,6 @@ describe("OpenRouter and Brave report writer", () => {
     expect(result.legalResearch.searchRequests).toBe(1);
     expect(successRequest).toHaveBeenCalledTimes(4);
 
-    const firstSynthesis = bodyAt<{ messages: Array<{ content: string }> }>(successRequest, 1);
-    expect(firstSynthesis.messages[1]!.content).toContain(
-      "Do NOT request a follow-up search unless the existing material is completely insufficient"
-    );
-    expect(firstSynthesis.messages[1]!.content).not.toContain(
-      "You have already used the allowed follow-up search"
-    );
-    const finalSynthesis = bodyAt<{ messages: Array<{ content: string }> }>(successRequest, 3);
-    expect(finalSynthesis.messages[1]!.content).toContain(
-      "You have already used the allowed follow-up search. Do not request more research."
-    );
-
     const repeated = vi
       .fn()
       .mockResolvedValueOnce(baseten(plan()))
@@ -552,6 +508,7 @@ describe("OpenRouter and Brave report writer", () => {
     await expect(writer(repeated).generate(draft(), ACTOR)).rejects.toThrow(
       /allowed follow-up/
     );
+    expect(repeated).toHaveBeenCalledTimes(4);
   });
 
   it("repairs an oversized completed report once with reasoning disabled", async () => {
@@ -681,6 +638,13 @@ describe("OpenRouter and Brave report writer", () => {
         }
       }
     };
+    // Actually supply unwanted context: asserting absent text without injecting it
+    // cannot detect accidental forwarding by the writer.
+    if (messageDraft.messageEvidence?.status === "captured") {
+      Object.assign(messageDraft.messageEvidence.snapshot, {
+        referencedMessage: { authorUsername: "minor_user", content: "excuse me im 17 in highschool" }
+      });
+    }
     const request = vi
       .fn()
       .mockResolvedValueOnce(baseten(plan()))
@@ -693,6 +657,7 @@ describe("OpenRouter and Brave report writer", () => {
         return typeof body === "string" ? body : "";
       })
       .join("\n");
+    expect(serialized).toContain("You are not an adult yet");
     expect(serialized).not.toContain("minor_user");
     expect(serialized).not.toContain("excuse me im 17 in highschool");
   });

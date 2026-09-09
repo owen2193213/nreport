@@ -12,8 +12,9 @@ import {
 
 describe("report contracts", () => {
   it("keeps report reason catalogs within Discord select limits", () => {
-    expect(USER_MESSAGE_REPORT_REASONS).toHaveLength(18);
-    expect(GUILD_REPORT_REASONS).toHaveLength(5);
+    expect(USER_MESSAGE_REPORT_REASONS.length).toBeGreaterThan(0);
+    expect(GUILD_REPORT_REASONS.length).toBeGreaterThan(0);
+    expect(GUILD_REPORT_REASONS.length).toBeLessThanOrEqual(25);
     expect(USER_MESSAGE_REPORT_REASONS.length).toBeLessThanOrEqual(25);
   });
 

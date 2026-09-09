@@ -1145,10 +1145,39 @@ export class ReportRepository {
   }
 
   public async setStatus(
-    reportId: string,
+    job: LifecycleJob,
     status: "requesting_verification" | "verifying"
   ): Promise<boolean> {
-    return this.transition(reportId, status);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (!(await ownsLifecycleJob(client, job))) {
+        await client.query("COMMIT");
+        return false;
+      }
+      const updated = await client.query<{ account_id: string; lifecycle_attempt: number }>(
+        `UPDATE account_reports AS report SET status = $2, updated_at = now()
+         WHERE report.id = $1
+           AND report.status NOT IN ('failed', 'submitting', 'submitted')
+           AND EXISTS (
+             SELECT 1 FROM api_accounts AS account
+             WHERE account.id = report.account_id AND account.status = 'active'
+           )
+         RETURNING account_id, lifecycle_attempt`,
+        [job.report_id, status]
+      );
+      const row = updated.rows[0];
+      if (row !== undefined) {
+        await insertEvent(client, row.account_id, job.report_id, `report_${status}`, row.lifecycle_attempt);
+      }
+      await client.query("COMMIT");
+      return row !== undefined;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   public async saveAwaitingVerification(

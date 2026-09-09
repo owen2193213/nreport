@@ -234,6 +234,10 @@ describe("lifecycle job leases", () => {
   });
 
   it.each([
+    ["requesting-verification status", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { setStatus(value: unknown, status: string): Promise<boolean> }).setStatus(job, "requesting_verification")],
+    ["verifying status", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { setStatus(value: unknown, status: string): Promise<boolean> }).setStatus(job, "verifying")],
     ["completion", (repository: ReportRepository, job: unknown) =>
       (repository as unknown as { completeLifecycleJob(value: unknown): Promise<boolean> }).completeLifecycleJob(job)],
     ["retry", (repository: ReportRepository, job: unknown) =>

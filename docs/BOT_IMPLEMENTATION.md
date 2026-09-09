@@ -149,7 +149,7 @@ The API runs `LIFECYCLE_CONCURRENCY` independent lifecycle job loops (default `2
 other stalled lifecycle request therefore occupies only its own slot and does not pause maintenance.
 Each running lifecycle job renews its database lease every 30 seconds so recovery cannot reclaim a
 live job, including one that has crossed the irreversible submission boundary. The claimed attempt
-number is also the execution token: heartbeats and all lifecycle completion, retry, failure,
+number is also the execution token: heartbeats and all lifecycle status, completion, retry, failure,
 submission, and review transitions require the same running job and token, so a recovered stale
 worker cannot mutate its replacement claim. A worker that loses heartbeat ownership abandons further
 progress and closes its Discord client where possible. Shutdown stops new claims, cancels idle

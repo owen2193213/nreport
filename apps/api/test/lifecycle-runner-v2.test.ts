@@ -125,6 +125,45 @@ describe("LifecycleRunner irreversible boundary", () => {
     expect(store.markSubmitted).toHaveBeenCalledTimes(0);
     expect(store.failBeforeSubmission).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["request_code" as const, "requesting_verification" as const, "sendEmailCode" as const],
+    ["verify_submit" as const, "verifying" as const, "verifyEmailCode" as const]
+  ])("passes claim ownership into %s status transition and stops when it is stale", async (kind, status, blockedMethod) => {
+    const job = {
+      id: "job-1",
+      report_id: "report-1",
+      kind,
+      payload: { code: "123456" },
+      attempts: 1,
+      max_attempts: 3,
+      execution_token: 1
+    };
+    const store = {
+      claimLifecycleJob: vi.fn().mockResolvedValueOnce(job).mockResolvedValue(null),
+      getLifecycleReport: vi.fn(async () => report()),
+      setStatus: vi.fn(async () => false),
+      failBeforeSubmission: vi.fn(),
+      retryLifecycleJob: vi.fn()
+    };
+    const client = {
+      sendEmailCode: vi.fn(),
+      snapshotSession: vi.fn(),
+      verifyEmailCode: vi.fn(),
+      getMenu: vi.fn(),
+      prepareSubmission: vi.fn(),
+      close: vi.fn()
+    };
+    const runner = new LifecycleRunner(store as never, {} as never, () => client as never, {
+      decrypt: (value: string) => value
+    });
+
+    await runner.processOne();
+
+    expect(store.setStatus).toHaveBeenCalledWith(job, status);
+    expect(client[blockedMethod]).not.toHaveBeenCalled();
+    expect(client.close).toHaveBeenCalledOnce();
+  });
 });
 
 describe("LifecycleRunner automatic appeal", () => {

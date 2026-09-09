@@ -40,7 +40,7 @@ interface LifecycleStore {
   claimLifecycleJob(): Promise<LifecycleJob | null>;
   heartbeatLifecycleJob(job: LifecycleJob): Promise<boolean>;
   getLifecycleReport(reportId: string): Promise<LifecycleReport | null>;
-  setStatus(reportId: string, status: "requesting_verification" | "verifying"): Promise<boolean>;
+  setStatus(job: LifecycleJob, status: "requesting_verification" | "verifying"): Promise<boolean>;
   saveAwaitingVerification(job: LifecycleJob, encryptedSession: string): Promise<boolean>;
   beginSubmission(job: LifecycleJob): Promise<boolean>;
   markSubmitted(job: LifecycleJob, discordReportId: string): Promise<boolean>;
@@ -259,7 +259,7 @@ export class LifecycleRunner {
     const report = await this.requiredReport(job.report_id);
     const client = this.clientFactory(report);
     try {
-      if (!(await this.store.setStatus(report.id, "requesting_verification"))) return;
+      if (!(await this.store.setStatus(job, "requesting_verification"))) return;
       await ownership.wait(client.sendEmailCode(transportFlow(report.flow), report.reporter_email));
       const session = await ownership.wait(client.snapshotSession());
       await this.store.saveAwaitingVerification(job, this.codecs.encrypt(session));
@@ -292,7 +292,7 @@ export class LifecycleRunner {
     const client = this.clientFactory(report, session);
     let crossedBoundary = false;
     try {
-      if (!(await this.store.setStatus(report.id, "verifying"))) return;
+      if (!(await this.store.setStatus(job, "verifying"))) return;
       const flow = transportFlow(report.flow);
       const token = await ownership.wait(client.verifyEmailCode(flow, report.reporter_email, code));
       const menu = await ownership.wait(client.getMenu(flow));

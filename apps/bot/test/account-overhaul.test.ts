@@ -154,6 +154,22 @@ describe("local account mapping", () => {
     expect(sql).toContain("'discord:review_not_approved'");
   });
 
+  it("returns a failed notification claim to pending with bounded retry metadata", async () => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [], rowCount: 1 }));
+    const database = new AccountBotDatabase({ query } as never);
+
+    await database.retryNotification("event-1", "network");
+    await database.retryNotification("event-2", "x".repeat(400));
+
+    const [sql, values] = query.mock.calls[0]!;
+    expect(sql).toContain("state = 'pending'");
+    expect(sql).toContain("locked_at = NULL");
+    expect(sql).toContain("last_error = $2");
+    expect(sql).toContain("run_at = now() + interval '30 seconds'");
+    expect(values).toEqual(["event-1", "network"]);
+    expect(query.mock.calls[1]?.[1]).toEqual(["event-2", "x".repeat(300)]);
+  });
+
   it("defaults report-denied DMs off while keeping other decisions and problems on", async () => {
     const query = vi.fn(async () => ({ rows: [], rowCount: 0 }));
     const database = new AccountBotDatabase({ query } as never);

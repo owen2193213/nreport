@@ -106,6 +106,7 @@ export interface ApiConnection extends QueryResultRow {
 
 export interface ClaimedNotification extends QueryResultRow {
   event_id: string;
+  attempts: number;
   account_id: string;
   report_id: string;
   event_type: string;

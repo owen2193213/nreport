@@ -49,7 +49,7 @@ export class AccountNotificationWorker {
     const item = await this.database.claimNotification();
     if (item === null) return false;
     const startedAt = Date.now();
-    const attempts = Number((item as ClaimedNotification & { attempts: number }).attempts);
+    const attempts = item.attempts;
     this.log("account_notification_claimed", { eventType: item.event_type, attempts });
     try {
       const preferences = await this.database.notificationPreferences(item.discord_user_id);
@@ -106,10 +106,11 @@ export class AccountNotificationWorker {
           eventType: item.event_type, attempts, durationMs: Date.now() - startedAt
         });
       } else {
-        await this.database.retryNotification(item.event_id, error instanceof Error ? error.name : "notification_failed");
+        const failureCategory = safeErrorCategory(error);
+        await this.database.retryNotification(item.event_id, failureCategory);
         this.log("account_notification_retry", {
           eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
-          failureCategory: safeErrorCategory(error)
+          failureCategory
         }, "warn");
       }
     }

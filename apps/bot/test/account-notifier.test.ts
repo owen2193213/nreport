@@ -90,7 +90,7 @@ describe("notification delivery against an existing report card", () => {
     const h = harness();
     h.message[operation].mockRejectedValue(new Error("Discord unavailable canary-secret"));
     await h.worker.processOne();
-    expect(h.database.retryNotification).toHaveBeenCalledWith("event", "Error");
+    expect(h.database.retryNotification).toHaveBeenCalledWith("event", "unexpected");
     expect(h.logger).toHaveBeenCalledWith("account_notification_retry", {
       eventType: "report_failed", attempts: 1, durationMs: expect.any(Number) as number,
       failureCategory: "unexpected"

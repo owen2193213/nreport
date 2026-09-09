@@ -144,5 +144,13 @@ Use a new Discord application, bot database, and `BOT_DATA_ENCRYPTION_KEY`. Conf
 `apps/bot/.env.example`. Register global commands after the new API and test account are ready.
 Do not point the new bot at the historical API or database.
 
+The API runs `LIFECYCLE_CONCURRENCY` independent lifecycle job loops (default `2`, valid range
+`1..16`) plus an independently scheduled recovery/deadline-maintenance loop. A delayed appeal or
+other stalled lifecycle request therefore occupies only its own slot and does not pause maintenance.
+Shutdown stops new claims, interrupts idle cadence waits, and waits for in-flight lifecycle work.
+Lifecycle logs contain only job kind, attempt count, duration, outcome, and a safe error category;
+they must never include report, job, account, or Discord identifiers, evidence, verification codes,
+URLs, provider responses, or arbitrary error messages.
+
 The health endpoint becomes ready only when PostgreSQL and the Discord gateway are ready. The bot
 webhook is intended for Railway private networking and does not need a public domain.

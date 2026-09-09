@@ -6,6 +6,7 @@ export interface AppConfig {
   aiApiKey: string;
   aiModel: string;
   braveSearchApiKey: string;
+  lifecycleConcurrency: number;
   preparationConcurrency: number;
   databaseUrl: string;
   emailDomain: string;
@@ -81,6 +82,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     aiApiKey,
     aiModel,
     braveSearchApiKey: required(env, "BRAVE_SEARCH_API_KEY"),
+    lifecycleConcurrency: positiveInteger(env.LIFECYCLE_CONCURRENCY, 2, "LIFECYCLE_CONCURRENCY"),
     preparationConcurrency: positiveInteger(env.PREPARATION_CONCURRENCY, 2, "PREPARATION_CONCURRENCY"),
     databaseUrl: required(env, "DATABASE_URL"),
     emailDomain,

@@ -59,7 +59,17 @@ async function main(): Promise<void> {
       "Preparation worker iteration failed"
     )
   );
-  const lifecycleRunner = new LifecycleRunner(reports, config);
+  const lifecycleRunner = new LifecycleRunner(
+    reports,
+    config,
+    undefined,
+    undefined,
+    undefined,
+    (outcome) => {
+      if (outcome.outcome === "failed") app.log.error(outcome, "Lifecycle runner outcome");
+      else app.log.info(outcome, "Lifecycle runner outcome");
+    }
+  );
   const eventDeliveryWorker = new AccountEventDeliveryWorker(reports, {
     decrypt: (value) => decryptJson<string>(value, config.sessionEncryptionKey)
   });

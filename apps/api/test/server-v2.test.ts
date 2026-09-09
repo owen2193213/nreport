@@ -10,6 +10,7 @@ const config = {
   aiApiKey: "ai-key",
   aiModel: "model",
   braveSearchApiKey: "brave-key",
+  lifecycleConcurrency: 2,
   preparationConcurrency: 2,
   databaseUrl: "postgres://unused",
   emailDomain: "reports.example.test",

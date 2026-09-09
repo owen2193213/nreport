@@ -73,20 +73,40 @@ interface RunnerCodecs {
   encrypt(value: unknown): string;
 }
 
+export type LifecycleRunnerOutcome =
+  | {
+      component: "job";
+      outcome: "completed" | "failed";
+      jobKind: LifecycleJob["kind"];
+      attempts: number;
+      durationMs: number;
+      errorCategory?: string;
+    }
+  | {
+      component: "loop" | "maintenance";
+      outcome: "completed" | "failed";
+      durationMs: number;
+      errorCategory?: string;
+    };
+
 export class LifecycleRunner {
-  private running: Promise<void> | undefined;
+  private running: Promise<void>[] | undefined;
   private stopping = false;
   private lastMaintenanceAt = 0;
+  private stopSignal: Promise<void> | undefined;
+  private resolveStop: (() => void) | undefined;
   private readonly clientFactory: (report: LifecycleReport, session?: DiscordDsaSessionState) => LifecycleClient;
   private readonly codecs: RunnerCodecs;
   private readonly sleep: (milliseconds: number) => Promise<unknown>;
+  private readonly concurrency: number;
 
   public constructor(
     private readonly store: LifecycleStore,
     config: AppConfig,
     clientFactory?: (report: LifecycleReport, session?: DiscordDsaSessionState) => LifecycleClient,
     codecs?: Partial<RunnerCodecs>,
-    sleep: (milliseconds: number) => Promise<unknown> = delay
+    sleep: (milliseconds: number) => Promise<unknown> = delay,
+    private readonly onOutcome: (outcome: LifecycleRunnerOutcome) => void = () => undefined
   ) {
     this.clientFactory = clientFactory ?? ((report, session) => defaultClient(config, report, session));
     this.codecs = {
@@ -94,32 +114,69 @@ export class LifecycleRunner {
       encrypt: codecs?.encrypt ?? ((value) => encryptJson(value, config.sessionEncryptionKey))
     };
     this.sleep = sleep;
+    this.concurrency = config.lifecycleConcurrency ?? 2;
   }
 
   public start(): void {
     if (this.running !== undefined) return;
     this.stopping = false;
-    this.running = this.loop();
+    this.stopSignal = new Promise((resolve) => {
+      this.resolveStop = resolve;
+    });
+    this.running = [
+      ...Array.from({ length: this.concurrency }, () => this.jobLoop()),
+      this.maintenanceLoop()
+    ];
   }
 
   public async stop(): Promise<void> {
     this.stopping = true;
-    await this.running;
+    this.resolveStop?.();
+    await Promise.all(this.running ?? []);
     this.running = undefined;
+    this.stopSignal = undefined;
+    this.resolveStop = undefined;
   }
 
   public async processOne(): Promise<boolean> {
     if (Date.now() - this.lastMaintenanceAt >= 30_000) {
-      await this.store.recoverInterruptedJobs?.();
-      await this.store.expireDeadlines?.();
+      await this.runMaintenance();
       this.lastMaintenanceAt = Date.now();
     }
     const job = await this.store.claimLifecycleJob();
     if (job === null) return false;
+    await this.processJob(job);
+    return true;
+  }
+
+  private async processJob(job: LifecycleJob): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      await this.dispatchJob(job);
+      this.notify({
+        component: "job",
+        outcome: "completed",
+        jobKind: job.kind,
+        attempts: job.attempts,
+        durationMs: elapsedSince(startedAt)
+      });
+    } catch (error) {
+      this.notify({
+        component: "job",
+        outcome: "failed",
+        jobKind: job.kind,
+        attempts: job.attempts,
+        durationMs: elapsedSince(startedAt),
+        errorCategory: safeJobErrorCategory(error)
+      });
+      throw error;
+    }
+  }
+
+  private async dispatchJob(job: LifecycleJob): Promise<void> {
     if (job.kind === "request_code") await this.requestCode(job);
     else if (job.kind === "verify_submit") await this.verifyAndSubmit(job);
     else await this.submitReview(job);
-    return true;
   }
 
   private async submitReview(job: LifecycleJob): Promise<void> {
@@ -268,15 +325,95 @@ export class LifecycleRunner {
     return report;
   }
 
-  private async loop(): Promise<void> {
+  private async jobLoop(): Promise<void> {
     while (!this.stopping) {
+      const claimStartedAt = Date.now();
+      let job: LifecycleJob | null;
       try {
-        if (!(await this.processOne())) await delay(750);
+        job = await this.store.claimLifecycleJob();
       } catch {
-        await delay(1_500);
+        this.notify({
+          component: "loop",
+          outcome: "failed",
+          durationMs: elapsedSince(claimStartedAt),
+          errorCategory: "lifecycle_claim_failed"
+        });
+        await this.waitForStop(1_500);
+        continue;
+      }
+      if (job === null) {
+        await this.waitForStop(750);
+        continue;
+      }
+      try {
+        await this.processJob(job);
+      } catch {
+        await this.waitForStop(1_500);
       }
     }
   }
+
+  private async maintenanceLoop(): Promise<void> {
+    while (!this.stopping) {
+      try {
+        await this.runMaintenance();
+      } catch {
+        // The safe outcome is emitted by runMaintenance; the next cadence retries it.
+      }
+      if (this.stopping) return;
+      await this.waitForStop(30_000);
+    }
+  }
+
+  private async runMaintenance(): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      await Promise.all([
+        this.store.recoverInterruptedJobs?.(),
+        this.store.expireDeadlines?.()
+      ]);
+      this.notify({
+        component: "maintenance",
+        outcome: "completed",
+        durationMs: elapsedSince(startedAt)
+      });
+    } catch (error) {
+      this.notify({
+        component: "maintenance",
+        outcome: "failed",
+        durationMs: elapsedSince(startedAt),
+        errorCategory: "lifecycle_maintenance_failed"
+      });
+      throw error;
+    }
+  }
+
+  private async waitForStop(milliseconds: number): Promise<void> {
+    if (this.stopping) return;
+    const stopSignal = this.stopSignal;
+    if (stopSignal === undefined) {
+      await this.sleep(milliseconds);
+      return;
+    }
+    await Promise.race([this.sleep(milliseconds), stopSignal]);
+  }
+
+  private notify(outcome: LifecycleRunnerOutcome): void {
+    try {
+      this.onOutcome(outcome);
+    } catch {
+      // Observability must not interrupt queue progress.
+    }
+  }
+}
+
+function elapsedSince(startedAt: number): number {
+  return Math.max(0, Date.now() - startedAt);
+}
+
+function safeJobErrorCategory(error: unknown): string {
+  const category = discordFailureCode(error);
+  return category === "discord_lifecycle_failed" ? "lifecycle_job_failed" : category;
 }
 
 function discordResponseCode(error: unknown): string | undefined {

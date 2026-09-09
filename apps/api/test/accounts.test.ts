@@ -15,6 +15,19 @@ import { loadConfig } from "../src/config.js";
 import type { AppConfig } from "../src/config.js";
 import { buildV2Server } from "../src/server-v2.js";
 
+function configEnv(): NodeJS.ProcessEnv {
+  return {
+    DATABASE_URL: "postgres://localhost/test",
+    REPORT_EMAIL_DOMAIN: "reports.example.test",
+    SESSION_ENCRYPTION_KEY: Buffer.alloc(32).toString("base64"),
+    CLOUDFLARE_EMAIL_WEBHOOK_SECRET: "c".repeat(32),
+    NREPORT_ADMIN_KEY: "a".repeat(32),
+    API_KEY_PEPPER: "p".repeat(32),
+    AI_API_KEY: "ai-secret",
+    BRAVE_SEARCH_API_KEY: "brave-secret"
+  };
+}
+
 describe("API account security primitives", () => {
   it("issues parseable keys without retaining a recoverable secret in the digest", () => {
     const issued = createApiKey();
@@ -152,16 +165,7 @@ describe("API account security primitives", () => {
   });
 
   it("requires a provider-neutral AI key and defaults to the OpenRouter DeepSeek model", () => {
-    const base = {
-      DATABASE_URL: "postgres://localhost/test",
-      REPORT_EMAIL_DOMAIN: "reports.example.test",
-      SESSION_ENCRYPTION_KEY: Buffer.alloc(32).toString("base64"),
-      CLOUDFLARE_EMAIL_WEBHOOK_SECRET: "c".repeat(32),
-      NREPORT_ADMIN_KEY: "a".repeat(32),
-      API_KEY_PEPPER: "p".repeat(32),
-      AI_API_KEY: "ai-secret",
-      BRAVE_SEARCH_API_KEY: "brave-secret"
-    };
+    const base = configEnv();
 
     expect(loadConfig(base)).toMatchObject({
       adminApiKey: "a".repeat(32),
@@ -173,6 +177,22 @@ describe("API account security primitives", () => {
       /API_KEY_PEPPER/
     );
     expect(() => loadConfig({ ...base, AI_API_KEY: "" })).toThrow(/AI_API_KEY/);
+  });
+
+  it("defaults lifecycle concurrency to two", () => {
+    expect(loadConfig(configEnv()).lifecycleConcurrency).toBe(2);
+  });
+
+  it.each(["1", "8", "16"])("accepts lifecycle concurrency %s", (value) => {
+    expect(loadConfig({ ...configEnv(), LIFECYCLE_CONCURRENCY: value }).lifecycleConcurrency).toBe(Number(value));
+  });
+
+  it("rejects lifecycle concurrency below one", () => {
+    expect(() => loadConfig({ ...configEnv(), LIFECYCLE_CONCURRENCY: "0" })).toThrow(/LIFECYCLE_CONCURRENCY/);
+  });
+
+  it("rejects lifecycle concurrency above sixteen", () => {
+    expect(() => loadConfig({ ...configEnv(), LIFECYCLE_CONCURRENCY: "17" })).toThrow(/LIFECYCLE_CONCURRENCY/);
   });
 
   it("authenticates account and administrator routes independently", async () => {
@@ -206,6 +226,7 @@ describe("API account security primitives", () => {
       aiApiKey: "ai-key",
       aiModel: "model",
       braveSearchApiKey: "brave-key",
+      lifecycleConcurrency: 2,
       preparationConcurrency: 2,
       databaseUrl: "postgres://unused",
       emailDomain: "reports.example.test",

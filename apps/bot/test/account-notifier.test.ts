@@ -14,11 +14,12 @@ const report: ReportDetail = {
   failure: { stage: "writing", code: "preparation_timeout", message: "Report preparation timed out." }
 };
 
-function harness(hash: string | null = null) {
+function harness(hash: string | null = null, eventId = "event") {
   const message = { edit: vi.fn().mockResolvedValue(undefined), reply: vi.fn().mockResolvedValue(undefined) };
   const dm = { messages: { fetch: vi.fn().mockResolvedValue(message) }, send: vi.fn() };
   const database = {
-    claimNotification: vi.fn().mockResolvedValue({ event_id: "event", event_type: "report_failed", report_id: report.reportId,
+    claimNotification: vi.fn().mockResolvedValue({ event_id: eventId, event_type: "report_failed", report_id: report.reportId,
+      attempts: 1,
       discord_user_id: "user", encrypted_api_key: "unused", encrypted_target_context: null,
       dm_message_id: "original-card", visible_payload_hash: hash }),
     notificationPreferences: vi.fn().mockResolvedValue({ decisionEnabled: true, reportDeniedEnabled: false, problemEnabled: true }),
@@ -26,8 +27,9 @@ function harness(hash: string | null = null) {
   };
   const api = { report: vi.fn().mockResolvedValue(report) };
   const client = { users: { fetch: vi.fn().mockResolvedValue({ createDM: vi.fn().mockResolvedValue(dm) }) } };
-  const worker = new AccountNotificationWorker(database as never, client as never, {} as never, () => api as never);
-  return { worker, database, api, message, dm };
+  const logger = vi.fn<(event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error") => void>();
+  const worker = new AccountNotificationWorker(database as never, client as never, {} as never, () => api as never, undefined, logger);
+  return { worker, database, api, message, dm, logger };
 }
 
 describe("notification delivery against an existing report card", () => {
@@ -37,10 +39,44 @@ describe("notification delivery against an existing report card", () => {
     expect(h.dm.messages.fetch).toHaveBeenCalledWith("original-card");
     expect(h.message.edit).toHaveBeenCalledOnce();
     expect(h.message.reply).toHaveBeenCalledOnce();
+    expect(h.message.reply).toHaveBeenCalledWith(expect.objectContaining({
+      nonce: "nreport-b8e1f80bd70ae078",
+      enforceNonce: true
+    }));
     expect(JSON.stringify(h.message.reply.mock.calls)).toContain("Report preparation timed out.");
     expect(h.dm.send).not.toHaveBeenCalled();
     expect(h.database.completeNotification).toHaveBeenCalledWith("event");
     expect(h.message.reply.mock.invocationCallOrder[0]).toBeLessThan(h.database.completeNotification.mock.invocationCallOrder[0]!);
+  });
+
+  it("uses the same event-only nonce for retries and a different nonce for another event", async () => {
+    const first = harness(null, "event");
+    const retry = harness(null, "event");
+    const different = harness(null, "event-2");
+
+    await first.worker.processOne();
+    await retry.worker.processOne();
+    await different.worker.processOne();
+
+    expect(first.message.reply.mock.calls[0]?.[0]).toMatchObject({ nonce: "nreport-b8e1f80bd70ae078", enforceNonce: true });
+    expect(retry.message.reply.mock.calls[0]?.[0]).toMatchObject({ nonce: "nreport-b8e1f80bd70ae078", enforceNonce: true });
+    expect(different.message.reply.mock.calls[0]?.[0]).toMatchObject({ nonce: "nreport-b4e3d14e7519279e", enforceNonce: true });
+  });
+
+  it("logs claimed and completed outcomes without durable or Discord identifiers", async () => {
+    const h = harness();
+
+    await h.worker.processOne();
+
+    expect(h.logger).toHaveBeenCalledWith("account_notification_claimed", { eventType: "report_failed", attempts: 1 });
+    expect(h.logger).toHaveBeenCalledWith("account_notification_completed", {
+      eventType: "report_failed", attempts: 1, durationMs: expect.any(Number) as number
+    });
+    const serializedLogs = JSON.stringify(h.logger.mock.calls);
+    expect(serializedLogs).not.toContain("11111111-1111-4111-8111-111111111111");
+    expect(serializedLogs).not.toContain("original-card");
+    expect(serializedLogs).not.toContain("user");
+    expect(serializedLogs).not.toContain("event\"");
   });
 
   it("skips an unchanged edit but still sends the terminal reply", async () => {
@@ -52,9 +88,14 @@ describe("notification delivery against an existing report card", () => {
 
   it.each(["edit", "reply"] as const)("keeps a rejected Discord %s retryable", async (operation) => {
     const h = harness();
-    h.message[operation].mockRejectedValue(new Error("Discord unavailable"));
+    h.message[operation].mockRejectedValue(new Error("Discord unavailable canary-secret"));
     await h.worker.processOne();
     expect(h.database.retryNotification).toHaveBeenCalledWith("event", "Error");
+    expect(h.logger).toHaveBeenCalledWith("account_notification_retry", {
+      eventType: "report_failed", attempts: 1, durationMs: expect.any(Number) as number,
+      failureCategory: "unexpected"
+    }, "warn");
+    expect(JSON.stringify(h.logger.mock.calls)).not.toContain("canary-secret");
     expect(h.database.completeNotification).not.toHaveBeenCalled();
     if (operation === "edit") expect(h.message.reply).not.toHaveBeenCalled();
   });

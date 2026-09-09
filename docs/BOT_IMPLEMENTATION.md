@@ -84,7 +84,10 @@ same event inbox so duplicate delivery cannot create duplicate DMs. Pending crea
 replayed with their original idempotency key before normal feed reconciliation.
 
 The status card is always maintained while the account is connected. Decision/problem messages reply
-to that card so the affected report remains clear. These replies are sent
+to that card so the affected report remains clear. Terminal replies use an enforced, deterministic
+Discord nonce derived only from the durable lifecycle event ID, allowing Discord to deduplicate a
+retry when the original message-create response was lost. The inbox item is completed only after
+Discord accepts the reply. These replies are sent
 only for decisions or actionable problems: original-report accepted, appeal accepted, appeal
 denied, report/appeal confirmation timeout, ineligible appeal, and failure. The original
 report-denied DM is off by default because the automatic appeal continues; its preference is
@@ -157,6 +160,9 @@ cadence timers, and waits for in-flight lifecycle work.
 Lifecycle logs contain only job kind, attempt count, duration, outcome, and a safe error category;
 they must never include report, job, account, or Discord identifiers, evidence, verification codes,
 URLs, provider responses, or arbitrary error messages.
+Bot notification logs similarly contain only lifecycle event type, attempt count, duration, outcome,
+and safe error category. Reconciliation logs contain only duration, outcome, and safe error category;
+failures are isolated per connection so one unavailable account does not stop later accounts.
 
 The health endpoint becomes ready only when PostgreSQL and the Discord gateway are ready. The bot
 webhook is intended for Railway private networking and does not need a public domain.

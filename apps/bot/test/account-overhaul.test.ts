@@ -6,8 +6,33 @@ import { AccountNotificationWorker } from "../src/account-notifier.js";
 import { loadBotConfig } from "../src/config.js";
 import { reportEventIngestionStatus } from "../src/health.js";
 import { DsaApiError } from "@nreport/contracts";
+import { errorFields } from "../src/observability.js";
 
 describe("thin account client configuration", () => {
+  it("serializes only allowlisted bounded error diagnostics", () => {
+    const secret = "canary-api-key-do-not-log";
+    const error = Object.assign(new Error(`request failed with ${secret}`), {
+      name: "DiscordAPIError",
+      code: "50007",
+      status: 403,
+      rawError: { message: secret, errors: { body: secret } }
+    });
+
+    const fields = errorFields(error);
+
+    expect(fields).toEqual({ errorName: "DiscordAPIError", errorCode: "50007", httpStatus: 403 });
+    expect(JSON.stringify(fields)).not.toContain(secret);
+  });
+
+  it("bounds error codes and normalizes arbitrary error names", () => {
+    const error = Object.assign(new Error("not serialized"), {
+      name: "secret-custom-name",
+      code: "x".repeat(100)
+    });
+
+    expect(errorFields(error)).toEqual({ errorName: "Error", errorCode: "x".repeat(64) });
+  });
+
   it("requires only API administration, Discord, database, encryption, and webhook secrets", () => {
     const config = loadBotConfig({
       NREPORT_API_URL: "https://api.example.test",
@@ -144,6 +169,46 @@ describe("local account mapping", () => {
 });
 
 describe("account reconciliation", () => {
+  it("logs a safe failure and continues reconciling the next connection", async () => {
+    const connections = [
+      { discord_user_id: "secret-user-1", account_id: "secret-account-1", encrypted_api_key: "first-key", event_cursor: "0" },
+      { discord_user_id: "secret-user-2", account_id: "secret-account-2", encrypted_api_key: "second-key", event_cursor: "0" }
+    ];
+    const database = {
+      connections: vi.fn(async () => connections), pendingReportLinks: vi.fn(async () => []),
+      cleanupExpiredForms: vi.fn(), ingestEvent: vi.fn(), advanceCursor: vi.fn()
+    };
+    const firstApi = { events: vi.fn().mockRejectedValue(Object.assign(new Error("network failure secret"), { code: "ECONNRESET" })) };
+    const secondApi = { events: vi.fn(async () => ({ items: [], next: null })) };
+    const logger = vi.fn<(event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error") => void>();
+    const worker = new AccountNotificationWorker(
+      database as never, {} as never,
+      { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://secret.example.test" } as never,
+      (connection) => (connection.encrypted_api_key === "first-key" ? firstApi : secondApi) as never,
+      undefined,
+      logger
+    );
+
+    await worker.reconcileOnce();
+
+    expect(secondApi.events).toHaveBeenCalledOnce();
+    expect(logger).toHaveBeenCalledWith(
+      "account_reconciliation_failed",
+      expect.objectContaining({ durationMs: expect.any(Number) as number, failureCategory: "network" }),
+      "error"
+    );
+    expect(logger).toHaveBeenCalledWith(
+      "account_reconciliation_completed",
+      expect.objectContaining({ durationMs: expect.any(Number) as number })
+    );
+    const serializedLogs = JSON.stringify(logger.mock.calls);
+    expect(serializedLogs).not.toContain("secret-user");
+    expect(serializedLogs).not.toContain("secret-account");
+    expect(serializedLogs).not.toContain("first-key");
+    expect(serializedLogs).not.toContain("secret.example.test");
+    expect(serializedLogs).not.toContain("network failure secret");
+  });
+
   it("drops a permanently rejected pending request and continues with later links and events", async () => {
     const database = {
       pendingReportLinks: vi.fn(async () => [

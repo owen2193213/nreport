@@ -139,7 +139,7 @@ describe("verification state races", () => {
     };
     const repository = new ReportRepository({ connect: async () => client } as never);
 
-    expect(await repository.saveAwaitingVerification("job-1", "report-1", "encrypted-session")).toBe(true);
+    expect(await repository.saveAwaitingVerification({ id: "job-1", report_id: "report-1", execution_token: 1 } as never, "encrypted-session")).toBe(true);
 
     const update = client.query.mock.calls.find(([sql]) => String(sql).includes("session_state"));
     expect(String(update?.[0])).toContain("status IN ('requesting_verification', 'verification_received')");
@@ -172,21 +172,50 @@ describe("deadline expiry", () => {
 
 describe("lifecycle job leases", () => {
   it("refreshes a lease only while the lifecycle job is running", async () => {
-    const query = vi.fn()
-      .mockResolvedValueOnce({ rows: [{ id: "job-1" }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    const query = vi.fn(async (_sql: string, values?: unknown[]) =>
+      values?.[1] === 2
+        ? { rows: [{ id: "job-1" }], rowCount: 1 }
+        : { rows: [], rowCount: 0 }
+    );
     const repository = new ReportRepository({ query } as never);
+    const staleJob = { id: "job-1", report_id: "report-1", execution_token: 1 };
+    const currentJob = { ...staleJob, execution_token: 2 };
 
-    await expect(repository.heartbeatLifecycleJob("job-1")).resolves.toBe(true);
-    await expect(repository.heartbeatLifecycleJob("job-completed")).resolves.toBe(false);
+    await expect(repository.heartbeatLifecycleJob(staleJob as never)).resolves.toBe(false);
+    await expect(repository.heartbeatLifecycleJob(currentJob as never)).resolves.toBe(true);
 
     expect(query).toHaveBeenNthCalledWith(
       1,
       expect.stringContaining("SET locked_at = now(), updated_at = now()"),
-      ["job-1"]
+      ["job-1", 1]
     );
-    expect(String(query.mock.calls[0]?.[0])).toContain("WHERE id = $1 AND state = 'running'");
+    expect(String(query.mock.calls[0]?.[0])).toContain("WHERE id = $1 AND attempts = $2 AND state = 'running'");
     expect(String(query.mock.calls[0]?.[0])).toContain("RETURNING id");
+  });
+
+  it("returns a new execution token when recovery is followed by reclaim", async () => {
+    const client = {
+      query: vi.fn(async () => ({ rows: [], rowCount: 0 })),
+      release: vi.fn()
+    };
+    const reclaimed = {
+      id: "job-1",
+      report_id: "report-1",
+      kind: "verify_submit",
+      payload: {},
+      attempts: 2,
+      max_attempts: 3,
+      execution_token: 2
+    };
+    const query = vi.fn(async (_sql: string) => ({ rows: [reclaimed], rowCount: 1 }));
+    const repository = new ReportRepository({ connect: async () => client, query } as never);
+
+    await repository.recoverInterruptedJobs();
+    await expect(repository.claimLifecycleJob()).resolves.toEqual(reclaimed);
+
+    const claimSql = String(query.mock.calls[0]?.[0]);
+    expect(claimSql).toContain("attempts = attempts + 1");
+    expect(claimSql).toContain("job.attempts AS execution_token");
   });
 
   it("recovery changes only running lifecycle jobs with stale leases", async () => {
@@ -202,6 +231,65 @@ describe("lifecycle job leases", () => {
       expect(sql).toContain("job.state = 'running'");
       expect(sql).toContain("job.locked_at < now() - interval '2 minutes'");
     }
+  });
+
+  it.each([
+    ["completion", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { completeLifecycleJob(value: unknown): Promise<boolean> }).completeLifecycleJob(job)],
+    ["retry", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { retryLifecycleJob(value: unknown, code: string, delay: number): Promise<boolean> }).retryLifecycleJob(job, "safe_error", 5)],
+    ["pre-boundary failure", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { failBeforeSubmission(value: unknown, code: string, message: string): Promise<boolean> }).failBeforeSubmission(job, "safe_error", "Safe failure.")],
+    ["post-boundary failure", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { failAfterSubmission(value: unknown, code: string, message: string): Promise<boolean> }).failAfterSubmission(job, "safe_error", "Safe failure.")],
+    ["awaiting-verification completion", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { saveAwaitingVerification(value: unknown, session: string): Promise<boolean> }).saveAwaitingVerification(job, "encrypted-session")],
+    ["submission boundary", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { beginSubmission(value: unknown): Promise<boolean> }).beginSubmission(job)],
+    ["submission result", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { markSubmitted(value: unknown, discordId: string): Promise<boolean> }).markSubmitted(job, "discord-report")],
+    ["review boundary", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { beginReviewSubmission(value: unknown): Promise<boolean> }).beginReviewSubmission(job)],
+    ["review success", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { markReviewRequested(value: unknown, discordId: string): Promise<boolean> }).markReviewRequested(job, "discord-report")],
+    ["review failure", (repository: ReportRepository, job: unknown) =>
+      (repository as unknown as { failReview(value: unknown, status: string, code: string, message: string): Promise<boolean> }).failReview(job, "request_failed", "safe_error", "Safe failure.")]
+  ])("rejects stale-token %s without mutating the replacement claim or report", async (_label, invoke) => {
+    const reportMutations: string[] = [];
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT 1 FROM account_report_jobs")) return { rows: [], rowCount: 0 };
+        if (sql.includes("UPDATE account_reports") || sql.includes("credit_ledger") || sql.includes("account_report_events")) {
+          reportMutations.push(sql);
+          return { rows: [{ account_id: "account-1", lifecycle_attempt: 1 }], rowCount: 1 };
+        }
+        if (sql.includes("JOIN report_credit_chains")) {
+          return { rows: [{ account_id: "account-1", credit_chain_id: "chain-1", credit_state: "reserved", account_status: "active", status: "verifying", lifecycle_attempt: 1 }], rowCount: 1 };
+        }
+        return { rows: [{ id: "job-1" }], rowCount: 1 };
+      }),
+      release: vi.fn()
+    };
+    const poolQuery = vi.fn(async (sql: string) => ({
+      rows: sql.includes("attempts = $2") ? [] : [{ id: "job-1" }],
+      rowCount: sql.includes("attempts = $2") ? 0 : 1
+    }));
+    const repository = new ReportRepository({ connect: async () => client, query: poolQuery } as never);
+    const staleJob = {
+      id: "job-1",
+      report_id: "report-1",
+      kind: "verify_submit",
+      payload: {},
+      attempts: 1,
+      max_attempts: 3,
+      execution_token: 1
+    };
+
+    await expect(invoke(repository, staleJob)).resolves.toBe(false);
+
+    expect(reportMutations).toEqual([]);
+    const allSql = [...client.query.mock.calls, ...poolQuery.mock.calls].map(([sql]) => String(sql));
+    expect(allSql.some((sql) => sql.includes("attempts = $2"))).toBe(true);
   });
 });
 
@@ -276,7 +364,7 @@ describe("credit boundary transitions", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    expect(await repository.beginSubmission("report-1")).toBe(true);
+    expect(await repository.beginSubmission({ id: "job-1", report_id: "report-1", execution_token: 1 } as never)).toBe(true);
 
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("reserved_credits = reserved_credits - 1"))).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("SET state = 'consumed'"))).toBe(true);
@@ -292,7 +380,7 @@ describe("credit boundary transitions", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    expect(await repository.beginSubmission("report-2")).toBe(true);
+    expect(await repository.beginSubmission({ id: "job-2", report_id: "report-2", execution_token: 1 } as never)).toBe(true);
 
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("reserved_credits = reserved_credits - 1"))).toBe(false);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("kind, available_delta") && String(sql).includes("consumption"))).toBe(false);
@@ -309,7 +397,7 @@ describe("atomic lifecycle persistence", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    await expect(repository.saveAwaitingVerification("job-1", "report-1", "encrypted-session"))
+    await expect(repository.saveAwaitingVerification({ id: "job-1", report_id: "report-1", execution_token: 1 } as never, "encrypted-session"))
       .resolves.toBe(false);
 
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("SET state = 'completed'"))).toBe(false);
@@ -327,7 +415,7 @@ describe("atomic lifecycle persistence", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    await repository.markSubmitted("job-1", "report-1", "discord-report-1");
+    await repository.markSubmitted({ id: "job-1", report_id: "report-1", execution_token: 1 } as never, "discord-report-1");
 
     expect(client.query.mock.calls.some(([sql, values]) =>
       String(sql).includes("SET state = 'completed'") && values?.[0] === "job-1" && values?.[1] === "report-1"

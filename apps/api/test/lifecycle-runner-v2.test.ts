@@ -85,7 +85,7 @@ describe("LifecycleRunner irreversible boundary", () => {
     await runner.processOne();
 
     expect(calls).toEqual(["verifying", "boundary", "discord-submit", "persisted"]);
-    expect(store.markSubmitted).toHaveBeenCalledWith("job-1", "report-1", "discord-1");
+    expect(store.markSubmitted).toHaveBeenCalledWith(expect.objectContaining({ id: "job-1", report_id: "report-1" }), "discord-1");
     expect(store.completeLifecycleJob).not.toHaveBeenCalled();
   });
 
@@ -115,8 +115,7 @@ describe("LifecycleRunner irreversible boundary", () => {
     await runner.processOne();
 
     expect(store.failAfterSubmission).toHaveBeenCalledWith(
-      "job-1",
-      "report-1",
+      expect.objectContaining({ id: "job-1", report_id: "report-1" }),
       "ambiguous_submission_state",
       expect.any(String)
     );
@@ -168,7 +167,7 @@ describe("LifecycleRunner automatic appeal", () => {
 
     expect(sleep).toHaveBeenCalledWith(10_000);
     expect(client.submitReportReviewToken).toHaveBeenCalledTimes(2);
-    expect(store.markReviewRequested).toHaveBeenCalledWith("job-review", "report-1", "discord-1");
+    expect(store.markReviewRequested).toHaveBeenCalledWith(expect.objectContaining({ id: "job-review", report_id: "report-1" }), "discord-1");
     expect(store.failReview).not.toHaveBeenCalled();
   });
 
@@ -189,8 +188,7 @@ describe("LifecycleRunner automatic appeal", () => {
 
     expect(client.submitReportReviewToken).toHaveBeenCalledTimes(2);
     expect(store.failReview).toHaveBeenCalledWith(
-      "job-review",
-      "report-1",
+      expect.objectContaining({ id: "job-review", report_id: "report-1" }),
       "ineligible",
       "discord_review_ineligible",
       expect.any(String)
@@ -403,7 +401,7 @@ describe("LifecycleRunner background scheduling", () => {
       recoverInterruptedJobs: vi.fn(),
       expireDeadlines: vi.fn(),
       claimLifecycleJob: vi.fn()
-        .mockResolvedValueOnce({ id: "job-1", report_id: "report-1", kind: "verify_submit", payload: { code: "123456" }, attempts: 1, max_attempts: 3 })
+        .mockResolvedValueOnce({ id: "job-1", report_id: "report-1", kind: "verify_submit", payload: { code: "123456" }, attempts: 1, max_attempts: 3, execution_token: 1 })
         .mockResolvedValue(null),
       heartbeatLifecycleJob: vi.fn(async () => true),
       getLifecycleReport: vi.fn(async () => report()),
@@ -437,7 +435,7 @@ describe("LifecycleRunner background scheduling", () => {
 
       await vi.advanceTimersByTimeAsync(30_000);
 
-      expect(store.heartbeatLifecycleJob).toHaveBeenCalledWith("job-1");
+      expect(store.heartbeatLifecycleJob).toHaveBeenCalledWith(expect.objectContaining({ id: "job-1", execution_token: 1 }));
       expect(store.recoverInterruptedJobs.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(store.expireDeadlines.mock.calls.length).toBeGreaterThanOrEqual(2);
 
@@ -446,6 +444,57 @@ describe("LifecycleRunner background scheduling", () => {
       const settledHeartbeatCount = store.heartbeatLifecycleJob.mock.calls.length;
       await vi.advanceTimersByTimeAsync(30_000);
       expect(store.heartbeatLifecycleJob).toHaveBeenCalledTimes(settledHeartbeatCount);
+    } finally {
+      releaseSubmission.resolve({ report_id: "discord-1" });
+      await vi.advanceTimersByTimeAsync(0);
+      await runner.stop();
+    }
+  });
+
+  it("abandons a stalled submission and closes its client when heartbeat ownership is lost", async () => {
+    const releaseSubmission = deferred<{ report_id: string }>();
+    const job = { id: "job-1", report_id: "report-1", kind: "verify_submit" as const, payload: { code: "123456" }, attempts: 1, max_attempts: 3, execution_token: 1 };
+    const store = {
+      recoverInterruptedJobs: vi.fn(),
+      expireDeadlines: vi.fn(),
+      claimLifecycleJob: vi.fn().mockResolvedValueOnce(job).mockResolvedValue(null),
+      heartbeatLifecycleJob: vi.fn(async () => false),
+      getLifecycleReport: vi.fn(async () => report()),
+      setStatus: vi.fn(async () => true),
+      beginSubmission: vi.fn(async () => true),
+      markSubmitted: vi.fn(),
+      completeLifecycleJob: vi.fn(),
+      failBeforeSubmission: vi.fn(),
+      failAfterSubmission: vi.fn(),
+      retryLifecycleJob: vi.fn()
+    };
+    const client = {
+      verifyEmailCode: vi.fn(async () => "token"),
+      getMenu: vi.fn(async () => ({})),
+      prepareSubmission: vi.fn(() => ({})),
+      submitPrepared: vi.fn(() => releaseSubmission.promise),
+      close: vi.fn()
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      { lifecycleConcurrency: 1 } as never,
+      () => client as never,
+      { decrypt: (value: string) => value },
+      (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+    );
+
+    runner.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.submitPrepared).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(store.heartbeatLifecycleJob).toHaveBeenCalledWith(job);
+      expect(client.close).toHaveBeenCalledOnce();
+      expect(store.markSubmitted).not.toHaveBeenCalled();
+      expect(store.failAfterSubmission).not.toHaveBeenCalled();
+      expect(store.retryLifecycleJob).not.toHaveBeenCalled();
     } finally {
       releaseSubmission.resolve({ report_id: "discord-1" });
       await vi.advanceTimersByTimeAsync(0);

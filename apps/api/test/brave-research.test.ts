@@ -295,6 +295,32 @@ describe("BraveResearchClient", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("aborts an active search once and releases its request listener", async () => {
+    const controller = new AbortController();
+    const reason = new DOMException("Preparation cancelled", "AbortError");
+    let activeListeners = 0;
+    const request = vi.fn((_url: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const requestSignal = init?.signal;
+        if (!requestSignal) throw new Error("Expected a request signal.");
+        activeListeners += 1;
+        requestSignal.addEventListener("abort", () => {
+          activeListeners -= 1;
+          reject(requestSignal.reason instanceof Error ? requestSignal.reason : new Error("Request aborted."));
+        }, { once: true });
+      }));
+    const running = new BraveResearchClient("key", {
+      request: request as unknown as typeof fetch
+    }).search("term", "coded term meaning", "DE", Date.now() + 5_000, ACTOR, controller.signal);
+    await vi.waitFor(() => expect(activeListeners).toBe(1));
+
+    controller.abort(reason);
+
+    await expect(running).rejects.toBe(reason);
+    expect(activeListeners).toBe(0);
+    expect(request).toHaveBeenCalledOnce();
+  });
+
   it("rejects empty results and exhausted deadlines", async () => {
     const empty = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ web: { results: [] } }), {

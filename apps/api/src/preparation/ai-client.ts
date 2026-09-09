@@ -1,8 +1,10 @@
 import {
   preparationLog as botLog,
   providerCodeCategory,
+  providerFinishReasonCategory,
   requestAbortSignal,
-  responseSize
+  responseSize,
+  type ProviderFinishReasonCategory
 } from "./observability.js";
 import type { AiUsage } from "./types.js";
 
@@ -197,10 +199,6 @@ export class AiClient {
       }
 
       if (payload.error) {
-        const errorMessage =
-          typeof payload.error.message === "string"
-            ? payload.error.message
-            : `${this.providerName} returned an upstream error.`;
         this.logFailure(
           actor,
           stage,
@@ -210,7 +208,7 @@ export class AiClient {
           { providerCodeCategory: providerCodeCategory(payload.error.code) },
           attempts
         );
-        throw new AiClientError("provider", errorMessage);
+        throw new AiClientError("provider", `${this.providerName} returned an upstream error.`);
       }
 
       const choice = payload.choices?.[0];
@@ -221,7 +219,7 @@ export class AiClient {
           Date.now() - startedAt,
           "refusal",
           response.status,
-          { finishReason: typeof choice.finish_reason === "string" ? choice.finish_reason : "unknown" },
+          { finishReasonCategory: providerFinishReasonCategory(choice.finish_reason) },
           attempts
         );
         throw new AiClientError("refusal", "The model declined the request.");
@@ -234,7 +232,7 @@ export class AiClient {
           "incomplete",
           response.status,
           {
-            finishReason: "length",
+            finishReasonCategory: "length",
             responseSize: JSON.stringify(payload).length
           },
           attempts
@@ -252,7 +250,7 @@ export class AiClient {
           "malformed",
           response.status,
           {
-            finishReason: typeof choice?.finish_reason === "string" ? choice.finish_reason : "unknown",
+            finishReasonCategory: providerFinishReasonCategory(choice?.finish_reason),
             responseSize: JSON.stringify(payload).length
           },
           attempts
@@ -289,7 +287,7 @@ export class AiClient {
     failureCategory: AiClientErrorKind,
     httpStatus?: number,
     metadata?: {
-      finishReason?: string;
+      finishReasonCategory?: ProviderFinishReasonCategory;
       providerCodeCategory?: "missing" | "number" | "string" | "other";
       responseSize?: number;
     },

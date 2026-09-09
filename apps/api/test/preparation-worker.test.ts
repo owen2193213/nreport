@@ -225,7 +225,7 @@ describe("PreparationWorker", () => {
       "job-3",
       "report-1",
       "preparation_rate_limited",
-      "The AI writing provider is rate limited after 3 attempts. Retry the report shortly."
+      "A preparation provider is rate limited. Retry the report shortly."
     );
   });
 });

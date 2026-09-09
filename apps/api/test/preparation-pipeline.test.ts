@@ -33,6 +33,7 @@ describe("preparation pipeline reliability", () => {
     const generate = vi.fn().mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     const preparer = new ApiReportPreparer({ writerFactory: () => ({ generate }) });
     const controller = new AbortController();
+    const removeEventListener = vi.spyOn(controller.signal, "removeEventListener");
     const running = preparer.prepare({ flow: "message", useAi: true,
       target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
     }, () => Promise.resolve(), controller.signal).then(() => "resolved", () => "aborted");
@@ -40,8 +41,25 @@ describe("preparation pipeline reliability", () => {
     const observed = await Promise.race([running, new Promise<string>((resolve) => setImmediate(() => resolve("still-running")))]);
     finish(undefined as never);
     await running;
-    expect.assertions(1);
     expect(observed).toBe("aborted");
+    expect(removeEventListener).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
+  it("keeps only a safe provider message in the writer cause chain", async () => {
+    const canary = "CANARY_UNSAFE_WRITER_CAUSE";
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { message: canary, code: 500 }
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const failure = await new ReportWriter("test-key", "test-model", "test-search", ["DE"], { request })
+      .generate({ flow: "message_urf", messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }, { actorKey: "actor", userId: "user" })
+      .catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ kind: "provider" });
+    expect((failure as Error).cause).toMatchObject({
+      kind: "provider",
+      message: "OpenRouter returned an upstream error."
+    });
+    expect(String((failure as Error).cause)).not.toContain(canary);
   });
 
   it.each([
@@ -73,5 +91,33 @@ describe("preparation pipeline reliability", () => {
     }));
     expect(write.mock.calls.map(([line]) => String(line)).join(""))
       .not.toMatch(/CANARY_(?:PROVIDER_MESSAGE|REFUSAL|RATE_LIMIT_BODY|REASONING|MALFORMED_BODY|TIMEOUT_DETAIL)/);
+  });
+
+  it("uses provider-neutral public wording for an exhausted research rate limit", async () => {
+    const plan = new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
+      termResearchRequired: true,
+      termSearchQuery: "coded term meaning",
+      lawResearchRequired: false,
+      lawSearchQuery: null,
+      provisionalLawReference: "Germany Basic Law Article 1"
+    }) } }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    const request = vi.fn()
+      .mockResolvedValueOnce(plan)
+      .mockResolvedValue(new Response("private research limit body", { status: 429 }));
+    const preparer = new ApiReportPreparer({ writerFactory: (recordUsage) => new ReportWriter("test-key", "test-model", "test-search", ["DE"], { request, recordUsage }) });
+    const store = {
+      claimPreparation: vi.fn().mockResolvedValue({ jobId: "job", report: { id: "report", request_input: {
+        flow: "profile", useAi: true, country: "DE", category: "sub_other_hate_speech", description: "Evidence summary.",
+        target: { reportedUsername: "example", reportedUserId: "123456789012345678", reportedUserSnapshot: null, profileElements: ["photos"] }
+      } } }), transition: vi.fn().mockResolvedValue(true), completePreparation: vi.fn(), failPreparation: vi.fn()
+    };
+    await new PreparationWorker(store, preparer, vi.fn() as never).processOne();
+
+    expect(store.failPreparation).toHaveBeenCalledWith(
+      "job",
+      "report",
+      "preparation_rate_limited",
+      "A preparation provider is rate limited. Retry the report shortly."
+    );
   });
 });

@@ -257,10 +257,10 @@ class PreparationCancelledError extends Error {}
 function preparationErrorMessage(code: string, error: unknown): string {
   if (code === "preparation_timeout") return "Report preparation timed out.";
   if (code === "preparation_refusal") return "The writing provider could not prepare this report.";
-  if (code === "preparation_rate_limited") return "The AI writing provider is rate limited after 3 attempts. Retry the report shortly.";
-  if (code === "preparation_network") return "The AI writing provider could not be reached after 3 attempts.";
-  if (code === "preparation_provider") return "The AI writing provider remained unavailable after 3 attempts.";
-  if (code === "preparation_malformed") return "The AI writing provider returned an invalid response.";
+  if (code === "preparation_rate_limited") return "A preparation provider is rate limited. Retry the report shortly.";
+  if (code === "preparation_network") return "A preparation provider could not be reached.";
+  if (code === "preparation_provider") return "A preparation provider remained unavailable.";
+  if (code === "preparation_malformed") return "A preparation provider returned an invalid response.";
   if (code === "preparation_incomplete") return "The AI writing provider stopped before completing the report.";
   const message = error instanceof Error ? error.message : "";
   if (message === "Reusable prepared input is unavailable.") return message;

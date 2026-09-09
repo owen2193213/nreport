@@ -27,6 +27,22 @@ export function providerCodeCategory(value: unknown): "missing" | "number" | "st
   return "other";
 }
 
+export type ProviderFinishReasonCategory =
+  | "stop"
+  | "length"
+  | "content_filter"
+  | "tool_calls"
+  | "missing"
+  | "other";
+
+export function providerFinishReasonCategory(value: unknown): ProviderFinishReasonCategory {
+  if (value === undefined || value === null) return "missing";
+  if (value === "stop" || value === "length" || value === "content_filter" || value === "tool_calls") {
+    return value;
+  }
+  return "other";
+}
+
 export function preparationLog(event: string, fields: LogFields = {}, level: LogLevel = "info"): void {
   const record = JSON.stringify({
     timestamp: new Date().toISOString(),

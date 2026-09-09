@@ -775,8 +775,37 @@ describe("OpenRouter and Brave report writer", () => {
       .generate(draft(), ACTOR)
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(ReportWriterError);
+    expect((failure as ReportWriterError).kind).toBe("malformed");
     expect((failure as ReportWriterError).candidateReport).toBe(repairedCandidate);
     expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["provider", () => new Response(JSON.stringify({ error: { message: "private provider body", code: 500 } }), { status: 200, headers: { "Content-Type": "application/json" } })],
+    ["refusal", () => new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: null, refusal: "private refusal" } }] }), { status: 200, headers: { "Content-Type": "application/json" } })],
+    ["rate_limited", () => new Response("private rate limit body", { status: 429 })],
+    ["incomplete", () => new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: null, reasoning_content: "private reasoning" } }] }), { status: 200, headers: { "Content-Type": "application/json" } })],
+    ["malformed", () => new Response("private malformed body", { status: 200 })],
+    ["timeout", () => Promise.reject(new DOMException("private timeout detail", "TimeoutError"))]
+  ] as const)("preserves the %s AI failure kind", async (kind, response) => {
+    const request = vi.fn().mockImplementation(response);
+
+    await expect(writer(request).generate(draft(), ACTOR)).rejects.toMatchObject({ kind });
+  });
+
+  it("preserves a research provider failure kind", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(baseten(plan({
+        termResearchRequired: true,
+        termSearchQuery: "coded term meaning"
+      })))
+      .mockResolvedValue(new Response("private search response", { status: 429 }));
+
+    await expect(writer(request).generate(draft(), ACTOR)).rejects.toMatchObject({
+      kind: "rate_limited",
+      stage: "term_research"
+    });
   });
 
   it("repairs a synthesis response that is missing its law reference", async () => {

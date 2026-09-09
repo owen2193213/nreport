@@ -1,5 +1,5 @@
 import { preparationLog as botLog } from "./observability.js";
-import { readDiagnosticResponse } from "@nreport/contracts";
+import { requestAbortSignal, responseSize } from "./observability.js";
 import type { AiRequestContext } from "./ai-client.js";
 import { capturedMessageSnapshot, type ReportDraft } from "./types.js";
 
@@ -285,10 +285,12 @@ export class BraveResearchClient {
     query: string,
     country: string,
     deadline: number,
-    actor: AiRequestContext
+    actor: AiRequestContext,
+    signal?: AbortSignal
   ): Promise<ResearchMaterial> {
     let attempts = 0;
     for (;;) {
+      if (signal?.aborted) throw signal.reason;
       if (deadline <= Date.now()) {
         const timeout = new BraveResearchError(
           "timeout",
@@ -309,7 +311,7 @@ export class BraveResearchClient {
       }
       try {
         attempts += 1;
-        const payload = await this.requestOnce(kind, query, country, deadline, actor);
+        const payload = await this.requestOnce(kind, query, country, deadline, actor, attempts, signal);
         const sources = kind === "term" ? compactWeb(payload as BraveWebResponse) : compactContext(payload as BraveContextResponse);
         if (sources.length === 0) {
           throw new BraveResearchError("empty", "Brave returned no usable sources.", attempts);
@@ -322,6 +324,7 @@ export class BraveResearchClient {
         });
         return { kind, query, sources, searchRequests: attempts };
       } catch (error) {
+        if (signal?.aborted) throw signal.reason;
         const researchError =
           error instanceof BraveResearchError
             ? error
@@ -359,7 +362,9 @@ export class BraveResearchClient {
     query: string,
     country: string,
     deadline: number,
-    actor: AiRequestContext
+    actor: AiRequestContext,
+    attempt: number,
+    signal?: AbortSignal
   ): Promise<BraveWebResponse | BraveContextResponse> {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
@@ -398,29 +403,35 @@ export class BraveResearchClient {
           ...(kind === "law" ? { "Content-Type": "application/json" } : {})
         },
         ...(body === undefined ? {} : { body }),
-        signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining))
+        signal: requestAbortSignal(deadline, REQUEST_TIMEOUT_MS, signal)
       });
-    } catch {
-      throw new BraveResearchError("network", "Brave could not be reached.", 0, true);
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      const isTimeout = error instanceof Error &&
+        (error.name === "TimeoutError" || error.name === "AbortError");
+      throw new BraveResearchError(
+        isTimeout ? "timeout" : "network",
+        isTimeout ? "The Brave request timed out." : "Brave could not be reached.",
+        0,
+        !isTimeout
+      );
     }
     if (!response.ok) {
       const failureKind = response.status === 429 ? "rate_limited" : "provider";
       const retryable = response.status === 429 || response.status >= 500;
-      const responseDiagnostic = await readDiagnosticResponse(response.clone(), [query]);
       botLog(
         "ai_search_http_failed",
         {
           actorKey: actor.actorKey,
           endpoint: kind === "term" ? "web_search" : "llm_context",
           httpStatus: response.status,
+          attempt,
           kind,
           method: kind === "term" ? "GET" : "POST",
           provider: "brave",
           queryCharacters: query.length,
           queryWords: query.split(/\s+/).length,
-          requestParameterNames: kind === "term" ? "q,country,count" : "q,country,count,maximum_number_of_urls,maximum_number_of_tokens,maximum_number_of_tokens_per_url,context_threshold_mode,enable_source_metadata,enable_local,goggles",
-          response: responseDiagnostic,
-          ...(responseDiagnostic.requestId === undefined ? {} : { requestId: responseDiagnostic.requestId }),
+          responseSize: responseSize(response),
           ...(actor.traceId === undefined ? {} : { traceId: actor.traceId })
         },
         "warn"

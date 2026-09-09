@@ -1,6 +1,6 @@
 # Regression audit — 2026-09-09
 
-Scope: all 29 existing test files at live main `1d79fef`, plus two new files. This is a test-only review and proposed operational work, not a production fix or deployment. No live Discord reports were submitted. SQL mocks are not database integration tests; payload strings are not visual readability tests.
+Scope: all 29 existing test files at live main `1d79fef`, plus two new files and the subsequent Task 1 preparation reliability fix. This is not a deployment. No live Discord reports were submitted. SQL mocks are not database integration tests; payload strings are not visual readability tests.
 
 ## Incident evidence and confidence
 
@@ -10,7 +10,7 @@ Scope: all 29 existing test files at live main `1d79fef`, plus two new files. Th
 - September 9, 03:42:56 China time (September 8, 19:42:56 UTC): another generic worker failure. Nearby planning/synthesis requests completed in 9.003/3.942 seconds. Missing cross-layer correlation prevents attributing those requests to this failure.
 - The current-deployment search from September 8, 14:15 UTC returned ten completed AI-request records, no `ai_request_failed` records, and one generic preparation-worker failure. This is not proof of fleet-wide health or absence of failures outside the retrieved window.
 
-Code findings: the writer replaces typed provider/search errors with a wrapper that loses their kind. The worker then creates a fresh diagnostic error, losing stage and cause. Preparation only checks its abort signal before and after the writer; a stalled writer retains its worker slot. The lifecycle loop processes jobs serially, including an appeal delay, and performs maintenance between jobs. Queue length includes distinct reports with pending/running jobs, including appeals; it is not waiting position or expected wait time. Restart recovery is age-gated. Bot reconciliation runs at 15-minute intervals and cannot guarantee fresh queue counts when no report event occurs. These are plausible delay mechanisms, not measured attribution of every user's delay. Production preparation concurrency is configured but its value was not available through the connector.
+Fixed findings: the writer now preserves typed provider/search failure kinds and safe internal causes, the preparer propagates cancellation into the writer and provider requests, and worker diagnostics retain an allowlisted error code, stage, and kind without raw error messages. Provider failure logs now contain bounded allowlisted metadata rather than response bodies, refusal text, reasoning, or search results. The lifecycle loop still processes jobs serially, including an appeal delay, and performs maintenance between jobs. Queue length includes distinct reports with pending/running jobs, including appeals; it is not waiting position or expected wait time. Restart recovery is age-gated. Bot reconciliation runs at 15-minute intervals and cannot guarantee fresh queue counts when no report event occurs. These are plausible delay mechanisms, not measured attribution of every user's delay. Production preparation concurrency is configured but its value was not available through the connector.
 
 ## Existing-file review
 
@@ -51,13 +51,13 @@ Paths below are repository-relative. “Keep” means useful unit coverage, not 
 ## New files and explicit limitations
 
 - `apps/bot/test/account-notifier.test.ts`: original-card edit/reply ordering, safe failure text, unchanged-card handling, rejected edit/reply retries, concurrent card-claim refusal, empty outbox. These exercise the real notification worker with mocked API/Discord/database boundaries.
-- `apps/api/test/preparation-pipeline.test.ts`: two `it.fails` reproductions for the desired behavior: preserve `preparation_incomplete` through real provider wrappers, and cancel an in-flight writer promptly. Expected failures intentionally remain visible. Remove `.fails` when implementing each fix; verify the original mismatch first. A green suite containing these is NOT a healthy production pipeline.
+- `apps/api/test/preparation-pipeline.test.ts`: the two former `it.fails` reproductions are ordinary passing tests. They preserve `preparation_incomplete` through the real writer/preparer/worker path and cancel an in-flight writer promptly. Additional cases cover provider, refusal, exhausted 429, incomplete, malformed, and timeout kinds plus safe worker diagnostics and log-canary exclusion.
 - Worker concurrency test proves the in-process worker limit and slot release only, not SQL claim uniqueness across instances.
 - No automated string assertion establishes legibility, desktop/mobile layout, screen-reader quality or actual Discord component acceptance. Keep explicit product-format tests, and use a controlled Discord smoke review for rendering.
 
 ## Next tests, prioritized
 
-1. P0: fix the two known-defect reproductions, then run them as ordinary passing tests. Add exhausted 429, provider 5xx, malformed output, invalid-country/category, refused/overlong output, database transition/commit failure, and search failures through the full preparation stack. Assert safe stage/code and no raw upstream content.
+1. P0: completed for the confirmed provider-kind, cancellation, and raw provider-log defects. Remaining extensions include invalid-country/category, database transition/commit failure, and additional search failures through the full preparation stack.
 2. P0: disposable PostgreSQL with two independent clients: SKIP LOCKED claim uniqueness; atomic credit/idempotency rollback; stale-lock recovery; lease fencing against late old-worker writes; event order; duplicate email; retry lineage. Do not run destructive integration setup against production.
 3. P0: ambiguous Discord final submission crash matrix (before request, request sent, response lost, response persisted). Assert no automatic duplicate final submission and explicit recoverable operator state.
 4. P1: saturation test with preparation, manual and appeal jobs together. Fake slow providers, deadlines and DB outages; measure queue wait and verify other eligible work and maintenance progress. Check restart recovery and graceful shutdown with stalled tasks.
@@ -69,6 +69,8 @@ See `OBSERVABILITY_PLAN.md` for the proposed implementation sequence. Production
 
 ## Verification result
 
-At completion: lint, all-workspace typecheck and build passed. Full suite: 31 files, 233 passing tests and two explicitly expected failures. Both known-defect tests were temporarily run as normal tests and failed at their intended assertions: `preparation_failed` instead of `preparation_incomplete`, and `still-running` instead of `aborted`. Expected-failure markers were restored and the full suite rerun. No production fix is implied.
+Task 1 red/green evidence: after removing `.fails`, the two pipeline reproductions failed at their intended assertions: `preparation_failed` instead of `preparation_incomplete`, and `still-running` instead of `aborted`. After the production fix, `npm.cmd test -- apps/api/test/preparation-pipeline.test.ts apps/api/test/ai-client.test.ts apps/api/test/brave-research.test.ts apps/api/test/report-writer.test.ts` passed 4 files and 69 tests with no expected-failure markers. `npm.cmd run lint` and `npm.cmd run typecheck` also passed. No live provider or Discord request was made; all provider boundaries used controlled test doubles.
 
-The network-enabled high-severity audit failed with four dependency findings: one high and three moderate, involving nodemailer/mailparser and Vitest/@vitest/mocker. Dependencies were not changed during this test-only review. Dependency remediation and lockfile verification are required before claiming all release gates pass.
+The full post-fix suite passed 31 files and 251 tests, and `npm.cmd run build` passed all built workspaces. The high-severity audit still reports the pre-existing four dependency findings described below; Task 1 did not change dependencies.
+
+The network-enabled high-severity audit failed with four dependency findings: one high and three moderate, involving nodemailer/mailparser and Vitest/@vitest/mocker. Dependencies were not changed during Task 1. Dependency remediation and lockfile verification are required before claiming all release gates pass.

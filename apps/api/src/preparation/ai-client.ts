@@ -1,5 +1,9 @@
-import { readDiagnosticResponse } from "@nreport/contracts";
-import { preparationLog as botLog } from "./observability.js";
+import {
+  preparationLog as botLog,
+  providerCodeCategory,
+  requestAbortSignal,
+  responseSize
+} from "./observability.js";
 import type { AiUsage } from "./types.js";
 
 export const OPENROUTER_CHAT_COMPLETIONS_URL =
@@ -95,7 +99,8 @@ export class AiClient {
     body: Record<string, unknown>,
     deadline: number,
     actor: AiRequestContext,
-    stage: AiStage
+    stage: AiStage,
+    signal?: AbortSignal
   ): Promise<AiCompletion> {
     const requestBody: Record<string, unknown> = {
       ...body,
@@ -111,6 +116,7 @@ export class AiClient {
     };
     let attempts = 0;
     for (;;) {
+      if (signal?.aborted) throw signal.reason;
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         this.logFailure(actor, stage, 0, "timeout");
@@ -125,22 +131,21 @@ export class AiClient {
           method: "POST",
           headers,
           body: JSON.stringify(requestBody),
-          signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining))
+          signal: requestAbortSignal(deadline, REQUEST_TIMEOUT_MS, signal)
         });
       } catch (fetchError) {
+        if (signal?.aborted) throw signal.reason;
         const isTimeout =
           fetchError instanceof Error &&
           (fetchError.name === "TimeoutError" || fetchError.name === "AbortError");
         const failureCategory = isTimeout ? "timeout" : "network";
-        const diagnosticMessage =
-          fetchError instanceof Error ? fetchError.message : undefined;
         this.logFailure(
           actor,
           stage,
           Date.now() - startedAt,
           failureCategory,
           undefined,
-          diagnosticMessage,
+          undefined,
           attempts
         );
         if (attempts < 3 && deadline > Date.now()) continue;
@@ -152,21 +157,16 @@ export class AiClient {
         );
       }
 
-      const responseClone = response.clone();
-
       if (!response.ok) {
         const kind = response.status === 429 ? "rate_limited" : "provider";
-        const responseDiagnostic = await readDiagnosticResponse(
-          responseClone,
-          [JSON.stringify(requestBody)]
-        );
+        const size = responseSize(response);
         this.logFailure(
           actor,
           stage,
           Date.now() - startedAt,
           kind,
           response.status,
-          responseDiagnostic,
+          size === undefined ? undefined : { responseSize: size },
           attempts
         );
         const retryable = response.status === 429 || response.status >= 500;
@@ -183,17 +183,14 @@ export class AiClient {
       try {
         payload = (await response.json()) as ChatCompletionResponse;
       } catch {
-        const responseDiagnostic = await readDiagnosticResponse(
-          responseClone,
-          [JSON.stringify(requestBody)]
-        );
+        const size = responseSize(response);
         this.logFailure(
           actor,
           stage,
           Date.now() - startedAt,
           "malformed",
           response.status,
-          responseDiagnostic,
+          size === undefined ? undefined : { responseSize: size },
           attempts
         );
         throw new AiClientError("malformed", `${this.providerName} returned malformed JSON.`);
@@ -210,7 +207,7 @@ export class AiClient {
           Date.now() - startedAt,
           "provider",
           response.status,
-          payload.error,
+          { providerCodeCategory: providerCodeCategory(payload.error.code) },
           attempts
         );
         throw new AiClientError("provider", errorMessage);
@@ -224,7 +221,7 @@ export class AiClient {
           Date.now() - startedAt,
           "refusal",
           response.status,
-          choice.message.refusal,
+          { finishReason: typeof choice.finish_reason === "string" ? choice.finish_reason : "unknown" },
           attempts
         );
         throw new AiClientError("refusal", "The model declined the request.");
@@ -236,7 +233,10 @@ export class AiClient {
           Date.now() - startedAt,
           "incomplete",
           response.status,
-          payload,
+          {
+            finishReason: "length",
+            responseSize: JSON.stringify(payload).length
+          },
           attempts
         );
         throw new AiClientError(
@@ -245,17 +245,16 @@ export class AiClient {
         );
       }
       if (typeof choice?.message?.content !== "string" || !choice.message.content.trim()) {
-        const responseDiagnostic = await readDiagnosticResponse(
-          responseClone,
-          [JSON.stringify(requestBody)]
-        );
         this.logFailure(
           actor,
           stage,
           Date.now() - startedAt,
           "malformed",
           response.status,
-          responseDiagnostic,
+          {
+            finishReason: typeof choice?.finish_reason === "string" ? choice.finish_reason : "unknown",
+            responseSize: JSON.stringify(payload).length
+          },
           attempts
         );
         throw new AiClientError("malformed", `${this.providerName} returned no completion.`);
@@ -289,7 +288,11 @@ export class AiClient {
     latencyMs: number,
     failureCategory: AiClientErrorKind,
     httpStatus?: number,
-    response?: unknown,
+    metadata?: {
+      finishReason?: string;
+      providerCodeCategory?: "missing" | "number" | "string" | "other";
+      responseSize?: number;
+    },
     attempts?: number
   ): void {
     botLog(
@@ -304,7 +307,7 @@ export class AiClient {
         stage,
         ...(attempts === undefined ? {} : { attempts }),
         ...(actor.traceId === undefined ? {} : { traceId: actor.traceId }),
-        ...(response === undefined ? {} : { response })
+        ...metadata
       },
       "warn"
     );

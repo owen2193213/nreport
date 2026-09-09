@@ -107,16 +107,15 @@ export class PreparationWorker {
       );
     } catch (error) {
       if (error instanceof PreparationCancelledError) return true;
-      const code = preparationErrorCode(error);
+      const details = preparationErrorDetails(error);
+      const code = details.errorCode;
       await this.store.failPreparation(
         jobId,
         report.id,
         code,
         preparationErrorMessage(code, error)
       );
-      const diagnostic = new Error();
-      diagnostic.name = code;
-      this.onIterationError(diagnostic);
+      this.onIterationError(new PreparationFailureDiagnostic(details));
     }
     return true;
   }
@@ -194,10 +193,63 @@ function reusedPreparation(report: AccountReportRow): PreparedResult {
   };
 }
 
-function preparationErrorCode(error: unknown): string {
-  if (error instanceof DOMException && error.name === "TimeoutError") return "preparation_timeout";
-  const kind = typeof error === "object" && error !== null ? (error as { kind?: unknown }).kind : undefined;
-  return typeof kind === "string" ? `preparation_${kind}` : "preparation_failed";
+const PREPARATION_ERROR_KINDS = new Set([
+  "empty",
+  "incomplete",
+  "invalid_query",
+  "malformed",
+  "network",
+  "provider",
+  "rate_limited",
+  "refusal",
+  "timeout"
+]);
+const PREPARATION_ERROR_STAGES = new Set([
+  "plan",
+  "synthesize",
+  "refine",
+  "term_research",
+  "law_research"
+]);
+
+interface PreparationErrorDetails {
+  errorCode: string;
+  kind: string;
+  stage: string;
+}
+
+function preparationErrorDetails(error: unknown): PreparationErrorDetails {
+  if (error instanceof DOMException && error.name === "TimeoutError") {
+    return { errorCode: "preparation_timeout", kind: "timeout", stage: "preparation" };
+  }
+  const candidate = typeof error === "object" && error !== null
+    ? error as { kind?: unknown; stage?: unknown }
+    : {};
+  const kind = typeof candidate.kind === "string" && PREPARATION_ERROR_KINDS.has(candidate.kind)
+    ? candidate.kind
+    : "unknown";
+  const stage = typeof candidate.stage === "string" && PREPARATION_ERROR_STAGES.has(candidate.stage)
+    ? candidate.stage
+    : "preparation";
+  return {
+    errorCode: kind === "unknown" ? "preparation_failed" : `preparation_${kind}`,
+    kind,
+    stage
+  };
+}
+
+class PreparationFailureDiagnostic extends Error {
+  public constructor(details: PreparationErrorDetails) {
+    super("Report preparation failed.");
+    this.name = "PreparationFailureDiagnostic";
+    this.errorCode = details.errorCode;
+    this.kind = details.kind;
+    this.stage = details.stage;
+  }
+
+  public readonly errorCode: string;
+  public readonly kind: string;
+  public readonly stage: string;
 }
 
 class PreparationCancelledError extends Error {}

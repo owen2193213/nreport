@@ -263,18 +263,36 @@ describe("BraveResearchClient", () => {
     write.mockRestore();
   });
 
-  it("records Brave's redacted 422 response details", async () => {
+  it("records only bounded metadata for Brave HTTP failures", async () => {
+    const canary = "CANARY_BRAVE_RESPONSE_BODY";
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "query is invalid: German law" }), {
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: canary }), {
       status: 422,
       headers: { "content-type": "application/json", "x-request-id": "brave-request-1" }
     }));
     await expect(new BraveResearchClient("key", { request: request as unknown as typeof fetch })
       .search("law", "German law", "DE", Date.now() + 5_000, { ...ACTOR, traceId: "trace-1" }))
       .rejects.toMatchObject({ kind: "provider" });
-    const event: unknown = JSON.parse(String(write.mock.calls.find(([line]) => String(line).includes("ai_search_http_failed"))?.[0]));
-    expect(event).toMatchObject({ traceId: "trace-1", httpStatus: 422, requestId: "brave-request-1", response: { body: { detail: "query is invalid: [redacted]" } } });
+    const serialized = String(write.mock.calls.find(([line]) => String(line).includes("ai_search_http_failed"))?.[0]);
+    const event: unknown = JSON.parse(serialized);
+    expect(serialized).not.toContain(canary);
+    expect(event).toMatchObject({ traceId: "trace-1", httpStatus: 422, provider: "brave", attempt: 1 });
+    expect(event).not.toHaveProperty("response");
+    expect(event).not.toHaveProperty("requestId");
     write.mockRestore();
+  });
+
+  it("honors an already-aborted caller signal without making a request", async () => {
+    const request = vi.fn();
+    const controller = new AbortController();
+    const reason = new DOMException("Preparation cancelled", "AbortError");
+    controller.abort(reason);
+
+    await expect(
+      new BraveResearchClient("key", { request: request as unknown as typeof fetch })
+        .search("term", "coded term meaning", "DE", Date.now() + 5_000, ACTOR, controller.signal)
+    ).rejects.toBe(reason);
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("rejects empty results and exhausted deadlines", async () => {

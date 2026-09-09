@@ -4,6 +4,7 @@ import {
   BraveResearchClient,
   BraveResearchError,
   validateResearchQuery,
+  type BraveResearchErrorKind,
   type ResearchKind,
   type ResearchMaterial
 } from "./brave-research.js";
@@ -11,6 +12,7 @@ import { countryChoice } from "./countries.js";
 import {
   AiClient,
   AiClientError,
+  type AiClientErrorKind,
   type AiClientOptions,
   type AiRequestContext,
   type AiStage
@@ -117,6 +119,7 @@ export type WriterProgress =
     };
 
 export type WriterProgressHandler = (progress: WriterProgress) => Promise<void> | void;
+export type ReportWriterErrorKind = AiClientErrorKind | BraveResearchErrorKind;
 
 export class ReportWriterError extends Error {
   public candidateReport: string | undefined;
@@ -125,27 +128,35 @@ export class ReportWriterError extends Error {
   public legalResearch: LegalResearch | undefined;
   public reportReason: string | undefined;
   public reportType: string | undefined;
+  public stage: AiStage | "term_research" | "law_research" | undefined;
 
   public constructor(
     message = "The AI report writer could not produce a valid report.",
     options: {
       candidateReport?: string;
+      cause?: Error;
       conversation?: WriterConversationMessage[];
       country?: string;
       legalResearch?: LegalResearch;
       reportReason?: string;
       reportType?: string;
+      kind?: ReportWriterErrorKind;
+      stage?: AiStage | "term_research" | "law_research";
     } = {}
   ) {
-    super(message);
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "ReportWriterError";
+    this.kind = options.kind ?? "malformed";
     this.candidateReport = options.candidateReport;
     this.conversation = options.conversation;
     this.country = options.country;
     this.legalResearch = options.legalResearch;
     this.reportReason = options.reportReason;
     this.reportType = options.reportType;
+    this.stage = options.stage;
   }
+
+  public readonly kind: ReportWriterErrorKind;
 }
 
 function mediaAllowed(): boolean {
@@ -740,7 +751,8 @@ export class ReportWriter {
   public async generate(
     inputDraft: ReportDraft,
     actor: AiRequestContext,
-    onProgress?: WriterProgressHandler
+    onProgress?: WriterProgressHandler,
+    signal?: AbortSignal
   ): Promise<WriterResult> {
     actor = { ...actor, traceId: actor.traceId ?? createTraceId() };
     const draft = normalizedDraft(inputDraft);
@@ -770,7 +782,8 @@ export class ReportWriter {
       },
       deadline,
       actor,
-      "plan"
+      "plan",
+      signal
     );
     let plan: ResearchPlan;
     try {
@@ -792,7 +805,8 @@ export class ReportWriter {
         },
         deadline,
         actor,
-        "plan"
+        "plan",
+        signal
       );
       try {
         plan = parseAndValidatePlan(repairedPlanContent, draft, this.supportedCountries);
@@ -801,7 +815,11 @@ export class ReportWriter {
         throw new ReportWriterError(
           detail
             ? `AI planning remained invalid after one repair: ${detail}`
-            : "AI planning remained invalid after one repair."
+            : "AI planning remained invalid after one repair.",
+          {
+            ...(repairError instanceof Error ? { cause: repairError } : {}),
+            stage: "plan"
+          }
         );
       }
     }
@@ -809,12 +827,12 @@ export class ReportWriter {
     const initialSearches: Array<Promise<ResearchMaterial>> = [];
     if (plan.termResearchRequired) {
       initialSearches.push(
-        this.performSearch("term", plan.termSearchQuery!, plan.country, draft, deadline, actor)
+        this.performSearch("term", plan.termSearchQuery!, plan.country, draft, deadline, actor, signal)
       );
     }
     if (plan.lawResearchRequired) {
       initialSearches.push(
-        this.performSearch("law", plan.lawSearchQuery!, plan.country, draft, deadline, actor)
+        this.performSearch("law", plan.lawSearchQuery!, plan.country, draft, deadline, actor, signal)
       );
     }
     const materials = await Promise.all(initialSearches);
@@ -825,7 +843,7 @@ export class ReportWriter {
       reportReason: plan.reportReason,
       reportType: reportReasonLabel(draft.flow, plan.reportType)
     });
-    let completion = await this.synthesize(draft, plan, materials, deadline, actor, false);
+    let completion = await this.synthesize(draft, plan, materials, deadline, actor, false, signal);
     let followUpUsed = false;
     if (completion.status === "more_research_required") {
       followUpUsed = true;
@@ -838,7 +856,8 @@ export class ReportWriter {
             plan.country,
             draft,
             deadline,
-            actor
+            actor,
+            signal
           )
         );
       } catch (error) {
@@ -850,7 +869,7 @@ export class ReportWriter {
           followUpType: completion.followUpType
         });
       }
-      completion = await this.synthesize(draft, plan, materials, deadline, actor, true);
+      completion = await this.synthesize(draft, plan, materials, deadline, actor, true, signal);
       if (completion.status === "more_research_required") {
         throw new ReportWriterError(
           "The AI requested more research after the allowed follow-up. Retry or edit manually."
@@ -981,7 +1000,8 @@ export class ReportWriter {
     materials: ResearchMaterial[],
     deadline: number,
     actor: AiRequestContext,
-    followUpUsed: boolean
+    followUpUsed: boolean,
+    signal?: AbortSignal
   ): Promise<SynthesisCompletion> {
     const responseFormat = synthesisResponseFormat();
     const reasoningRequired = materials.length > 0;
@@ -1015,7 +1035,8 @@ export class ReportWriter {
             },
         deadline,
         actor,
-        "synthesize"
+        "synthesize",
+        signal
       );
       try {
         return parseSynthesis(content);
@@ -1035,16 +1056,21 @@ export class ReportWriter {
           },
           deadline,
           actor,
-          "synthesize"
+          "synthesize",
+          signal
         );
         try {
           return parseSynthesis(repaired);
         } catch (repairError) {
           throw new ReportWriterError(
             "AI report synthesis remained invalid after one repair.",
-            repairError instanceof ReportWriterError && repairError.candidateReport
-              ? { candidateReport: repairError.candidateReport }
-              : {}
+            {
+              ...(repairError instanceof ReportWriterError && repairError.candidateReport
+                ? { candidateReport: repairError.candidateReport }
+                : {}),
+              ...(repairError instanceof Error ? { cause: repairError } : {}),
+              stage: "synthesize"
+            }
           );
         }
       }
@@ -1064,10 +1090,11 @@ export class ReportWriter {
     country: string,
     draft: ReportDraft,
     deadline: number,
-    actor: AiRequestContext
+    actor: AiRequestContext,
+    signal?: AbortSignal
   ): Promise<ResearchMaterial> {
     try {
-      const material = await this.brave.search(kind, query, country, deadline, actor);
+      const material = await this.brave.search(kind, query, country, deadline, actor, signal);
       await this.record(
         actor.userId,
         {
@@ -1098,7 +1125,11 @@ export class ReportWriter {
       }
       if (error instanceof BraveResearchError) {
         const label = kind === "term" ? "Terminology research" : "Legal research";
-        throw new ReportWriterError(`${label} could not be completed. Retry when ready.`);
+        throw new ReportWriterError(`${label} could not be completed. Retry when ready.`, {
+          cause: error,
+          kind: error.kind,
+          stage: kind === "term" ? "term_research" : "law_research"
+        });
       }
       throw error;
     }
@@ -1108,16 +1139,21 @@ export class ReportWriter {
     body: Record<string, unknown>,
     deadline: number,
     actor: AiRequestContext,
-    stage: AiStage
+    stage: AiStage,
+    signal?: AbortSignal
   ): Promise<string> {
     try {
-      const completion = await this.ai.complete(body, deadline, actor, stage);
+      const completion = await this.ai.complete(body, deadline, actor, stage, signal);
       await this.record(actor.userId, completion.usage, stage, actor);
       return completion.content;
     } catch (error) {
       if (error instanceof AiClientError) {
         if (error.kind === "refusal") {
-          throw new ReportWriterError("The AI declined to process this evidence.");
+          throw new ReportWriterError("The AI declined to process this evidence.", {
+            cause: error,
+            kind: error.kind,
+            stage
+          });
         }
         const label =
           stage === "plan"
@@ -1125,7 +1161,11 @@ export class ReportWriter {
             : stage === "synthesize"
               ? "Report writing"
               : "Report refinement";
-        throw new ReportWriterError(`${label} could not be completed. Retry when ready.`);
+        throw new ReportWriterError(`${label} could not be completed. Retry when ready.`, {
+          cause: error,
+          kind: error.kind,
+          stage
+        });
       }
       throw error;
     }

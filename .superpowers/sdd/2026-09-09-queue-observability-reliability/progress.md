@@ -35,7 +35,7 @@ Task 4: fix round 1/5 (3 addressed, 0 open — provider trace propagation, bound
 single-flight draining sampler; commits db88ce9..ebc6c89).
 Task 4: fix round 2/5 (2 addressed, 0 open — traced heartbeat failures and per-event traced ingest
 failures with cursor-preserving retry; from ebc6c89, scoped commit recorded in the task result).
-Task 4: complete (from c506358 through the scoped fix commit, re-review pending).
+Task 4: complete (commits c506358..d49d4e3, independent re-review clean).
 Task 5: blocked before changes — `npm.cmd audit --json` registry access was rejected because
 private dependency metadata egress requires explicit user authorization. No dependency versions
 were guessed or changed.

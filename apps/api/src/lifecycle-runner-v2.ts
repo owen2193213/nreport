@@ -80,6 +80,7 @@ type RunnerSleep = (milliseconds: number, signal?: AbortSignal) => Promise<unkno
 export type LifecycleRunnerOutcome =
   | {
       component: "job";
+      stage: "lifecycle_job";
       outcome: "completed" | "failed";
       jobKind: LifecycleJob["kind"];
       attempts: number;
@@ -89,6 +90,7 @@ export type LifecycleRunnerOutcome =
     }
   | {
       component: "loop" | "maintenance";
+      stage: "lifecycle_claim" | "lifecycle_heartbeat" | "lifecycle_maintenance";
       outcome: "completed" | "failed";
       durationMs: number;
       errorCategory?: string;
@@ -166,6 +168,7 @@ export class LifecycleRunner {
       await this.dispatchJob(job, ownership);
       this.notify({
         component: "job",
+        stage: "lifecycle_job",
         outcome: "completed",
         jobKind: job.kind,
         attempts: job.attempts,
@@ -175,6 +178,7 @@ export class LifecycleRunner {
     } catch (error) {
       this.notify({
         component: "job",
+        stage: "lifecycle_job",
         outcome: "failed",
         jobKind: job.kind,
         attempts: job.attempts,
@@ -354,6 +358,7 @@ export class LifecycleRunner {
       } catch {
         this.notify({
           component: "loop",
+          stage: "lifecycle_claim",
           outcome: "failed",
           durationMs: elapsedSince(claimStartedAt),
           errorCategory: "lifecycle_claim_failed"
@@ -399,6 +404,7 @@ export class LifecycleRunner {
       } catch {
         this.notify({
           component: "loop",
+          stage: "lifecycle_heartbeat",
           outcome: "failed",
           durationMs: elapsedSince(heartbeatStartedAt),
           errorCategory: "lifecycle_heartbeat_failed"
@@ -416,12 +422,14 @@ export class LifecycleRunner {
       ]);
       this.notify({
         component: "maintenance",
+        stage: "lifecycle_maintenance",
         outcome: "completed",
         durationMs: elapsedSince(startedAt)
       });
     } catch (error) {
       this.notify({
         component: "maintenance",
+        stage: "lifecycle_maintenance",
         outcome: "failed",
         durationMs: elapsedSince(startedAt),
         errorCategory: "lifecycle_maintenance_failed"

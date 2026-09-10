@@ -68,3 +68,27 @@ dependency manifests or the lockfile; remediation should be handled as a separat
 
 Scoped task commit: `feat: add trace and queue observability` (the exact hash is returned with the
 task result).
+
+## Review follow-up
+
+The review findings were reproduced with new failing tests before implementation: the focused API
+suite had 14 failures with 192 passes, and the focused bot suite had 4 failures with 47 passes.
+Coverage demonstrated the missing persisted-trace handoff into the writer, alternate `actorKey`
+correlation in provider logs, incomplete lifecycle/notifier outcome fields, overlapping sampler
+queries, non-draining shutdown, and asynchronous logger rejection.
+
+The API now passes each report's persisted `trace_id` through `PreparationWorker`,
+`ReportPreparer`, `ApiReportPreparer`, `ReportWriter`, AI, search, workflow, and usage diagnostics.
+Provider event names remain stable, `actorKey` has been removed, and provider operations use
+`traceId` as their only report-level correlation key. Lifecycle and bot notification/reconciliation
+events now consistently include bounded stage, outcome, and duration fields, with a safe category
+on failures and no raw identifiers.
+
+The queue sampler now coalesces interval ticks onto one in-flight sample. `stop()` clears the
+interval and awaits the active database query and log emission before API database shutdown. Both
+synchronous logger throws and asynchronous logger rejections are isolated. Focused verification is
+206/206 API tests and 51/51 bot tests passing. The fresh full verification after these corrections
+is lint exit 0, workspace typecheck exit 0, 32 test files with 309/309 tests passing, and build exit
+0. The required high-severity audit completed and still reports the unchanged dependency concern
+above: one high transitive `nodemailer` vulnerability and three moderate Vitest advisories. No live
+Discord or provider diagnostics were run.

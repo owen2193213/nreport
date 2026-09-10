@@ -13,9 +13,8 @@ export const OPENROUTER_CHAT_COMPLETIONS_URL =
 const REQUEST_TIMEOUT_MS = 150_000;
 
 export interface AiRequestContext {
-  actorKey: string;
   userId: string;
-  traceId?: string;
+  traceId: string;
 }
 
 export type AiStage = "plan" | "synthesize" | "refine";
@@ -262,19 +261,20 @@ export class AiClient {
       const finishReason =
         typeof choice.finish_reason === "string" ? choice.finish_reason : "unknown";
       botLog("ai_request_completed", {
-        actorKey: actor.actorKey,
         attempts,
         costCredits: 0,
         finishReason,
         inputTokens: usage.inputTokens,
-        latencyMs: Date.now() - startedAt,
+        durationMs: Date.now() - startedAt,
         model: this.model,
         outputTokens: usage.outputTokens,
         provider: "openrouter",
         reasoningTokens: usage.reasoningTokens,
         responseLength: choice.message.content.length,
         searchRequests: 0,
-        stage
+        stage,
+        outcome: "completed",
+        traceId: actor.traceId
       });
       return { content: choice.message.content, finishReason, usage };
     }
@@ -283,7 +283,7 @@ export class AiClient {
   private logFailure(
     actor: AiRequestContext,
     stage: AiStage,
-    latencyMs: number,
+    durationMs: number,
     failureCategory: AiClientErrorKind,
     httpStatus?: number,
     metadata?: {
@@ -296,15 +296,15 @@ export class AiClient {
     botLog(
       "ai_request_failed",
       {
-        actorKey: actor.actorKey,
         failureCategory,
         ...(httpStatus === undefined ? {} : { httpStatus }),
-        latencyMs,
+        durationMs,
         model: this.model,
         provider: "openrouter",
         stage,
+        outcome: "failed",
         ...(attempts === undefined ? {} : { attempts }),
-        ...(actor.traceId === undefined ? {} : { traceId: actor.traceId }),
+        traceId: actor.traceId,
         ...metadata
       },
       "warn"

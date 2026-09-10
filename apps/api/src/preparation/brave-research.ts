@@ -288,6 +288,8 @@ export class BraveResearchClient {
     actor: AiRequestContext,
     signal?: AbortSignal
   ): Promise<ResearchMaterial> {
+    const startedAt = Date.now();
+    const stage = `${kind}_research`;
     let attempts = 0;
     for (;;) {
       if (signal?.aborted) throw signal.reason;
@@ -300,10 +302,13 @@ export class BraveResearchClient {
         botLog(
           "ai_search_failed",
           {
-            actorKey: actor.actorKey,
+            traceId: actor.traceId,
             failureCategory: timeout.kind,
             kind,
-            searchRequests: timeout.searchRequests
+            searchRequests: timeout.searchRequests,
+            stage,
+            outcome: "failed",
+            durationMs: Date.now() - startedAt
           },
           "warn"
         );
@@ -317,10 +322,13 @@ export class BraveResearchClient {
           throw new BraveResearchError("empty", "Brave returned no usable sources.", attempts);
         }
         botLog("ai_search_completed", {
-          actorKey: actor.actorKey,
+          traceId: actor.traceId,
           kind,
           latencyAttempts: attempts,
-          resultCount: sources.length
+          resultCount: sources.length,
+          stage,
+          outcome: "completed",
+          durationMs: Date.now() - startedAt
         });
         return { kind, query, sources, searchRequests: attempts };
       } catch (error) {
@@ -345,10 +353,13 @@ export class BraveResearchClient {
         botLog(
           "ai_search_failed",
           {
-            actorKey: actor.actorKey,
+            traceId: actor.traceId,
             failureCategory: finalError.kind,
             kind,
-            searchRequests: finalError.searchRequests
+            searchRequests: finalError.searchRequests,
+            stage,
+            outcome: "failed",
+            durationMs: Date.now() - startedAt
           },
           "warn"
         );
@@ -366,6 +377,7 @@ export class BraveResearchClient {
     attempt: number,
     signal?: AbortSignal
   ): Promise<BraveWebResponse | BraveContextResponse> {
+    const startedAt = Date.now();
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       throw new BraveResearchError("timeout", "The research deadline was exceeded.");
@@ -422,17 +434,20 @@ export class BraveResearchClient {
       botLog(
         "ai_search_http_failed",
         {
-          actorKey: actor.actorKey,
+          traceId: actor.traceId,
           endpoint: kind === "term" ? "web_search" : "llm_context",
           httpStatus: response.status,
           attempt,
           kind,
           method: kind === "term" ? "GET" : "POST",
           provider: "brave",
+          stage: `${kind}_research`,
+          outcome: "failed",
+          durationMs: Date.now() - startedAt,
+          failureCategory: failureKind,
           queryCharacters: query.length,
           queryWords: query.split(/\s+/).length,
           responseSize: responseSize(response),
-          ...(actor.traceId === undefined ? {} : { traceId: actor.traceId })
         },
         "warn"
       );

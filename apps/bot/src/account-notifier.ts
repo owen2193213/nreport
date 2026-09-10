@@ -51,7 +51,10 @@ export class AccountNotificationWorker {
     const startedAt = Date.now();
     const attempts = item.attempts;
     const traceFields = item.trace_id === null ? {} : { traceId: item.trace_id };
-    this.safeLog("account_notification_claimed", { ...traceFields, eventType: item.event_type, attempts });
+    this.safeLog("account_notification_claimed", {
+      ...traceFields, eventType: item.event_type, attempts,
+      stage: "notification", outcome: "claimed", durationMs: 0
+    });
     try {
       const preferences = await this.database.notificationPreferences(item.discord_user_id);
       const api = this.api(item);
@@ -70,7 +73,7 @@ export class AccountNotificationWorker {
           await this.database.retryNotification(item.event_id, "status_card_creation_in_progress");
           this.safeLog("account_notification_retry", {
             ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
-            failureCategory: "card_claim_busy"
+            failureCategory: "card_claim_busy", stage: "notification", outcome: "retry"
           }, "warn");
           return true;
         }
@@ -96,7 +99,8 @@ export class AccountNotificationWorker {
       }
       await this.database.completeNotification(item.event_id);
       this.safeLog("account_notification_completed", {
-        ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt
+        ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+        stage: "notification", outcome: "completed"
       });
     } catch (error) {
       if (error instanceof DsaApiError && error.status === 401) {
@@ -104,14 +108,15 @@ export class AccountNotificationWorker {
         await user?.send("Your reporting API key was revoked or expired. Use `/access connect` to reconnect; detailed status refreshes are paused.").catch(() => undefined);
         await this.database.completeNotification(item.event_id);
         this.safeLog("account_notification_completed", {
-          ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt
+          ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+          stage: "notification", outcome: "completed"
         });
       } else {
         const failureCategory = safeErrorCategory(error);
         await this.database.retryNotification(item.event_id, failureCategory);
         this.safeLog("account_notification_retry", {
           ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
-          failureCategory
+          failureCategory, stage: "notification", outcome: "retry"
         }, "warn");
       }
     }
@@ -174,7 +179,9 @@ export class AccountNotificationWorker {
     } catch (error) {
       this.safeLog("account_reconciliation_failed", {
         durationMs: Date.now() - batchStartedAt,
-        failureCategory: safeErrorCategory(error)
+        failureCategory: safeErrorCategory(error),
+        stage: "reconciliation",
+        outcome: "failed"
       }, "error");
       return;
     }
@@ -183,11 +190,15 @@ export class AccountNotificationWorker {
       const startedAt = Date.now();
       try {
         await this.reconcileConnection(connection);
-        this.safeLog("account_reconciliation_completed", { durationMs: Date.now() - startedAt });
+        this.safeLog("account_reconciliation_completed", {
+          durationMs: Date.now() - startedAt, stage: "reconciliation", outcome: "completed"
+        });
       } catch (error) {
         this.safeLog("account_reconciliation_failed", {
           durationMs: Date.now() - startedAt,
-          failureCategory: safeErrorCategory(error)
+          failureCategory: safeErrorCategory(error),
+          stage: "reconciliation",
+          outcome: "failed"
         }, "error");
         if (error instanceof DsaApiError && error.status === 401) {
           const user = await this.client.users.fetch(connection.discord_user_id).catch(() => null);
@@ -211,7 +222,8 @@ export class AccountNotificationWorker {
         if (!(await this.processOne())) await delay(1_000);
       } catch (error) {
         this.safeLog("account_notification_retry", {
-          eventType: "unknown", attempts: 0, durationMs: 0, failureCategory: safeErrorCategory(error)
+          eventType: "unknown", attempts: 0, durationMs: 0, failureCategory: safeErrorCategory(error),
+          stage: "notification", outcome: "retry"
         }, "error");
         await delay(2_000);
       }

@@ -225,12 +225,14 @@ describe("account reconciliation", () => {
     expect(secondApi.events).toHaveBeenCalledOnce();
     expect(logger).toHaveBeenCalledWith(
       "account_reconciliation_failed",
-      expect.objectContaining({ durationMs: expect.any(Number) as number, failureCategory: "network" }),
+      expect.objectContaining({ stage: "reconciliation", outcome: "failed",
+        durationMs: expect.any(Number) as number, failureCategory: "network" }),
       "error"
     );
     expect(logger).toHaveBeenCalledWith(
       "account_reconciliation_completed",
-      expect.objectContaining({ durationMs: expect.any(Number) as number })
+      expect.objectContaining({ stage: "reconciliation", outcome: "completed",
+        durationMs: expect.any(Number) as number })
     );
     const serializedLogs = JSON.stringify(logger.mock.calls);
     expect(serializedLogs).not.toContain("secret-user");

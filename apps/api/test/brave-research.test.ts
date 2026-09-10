@@ -7,7 +7,7 @@ import {
 import type { AiRequestContext } from "../src/preparation/ai-client.js";
 import type { ReportDraft } from "../src/preparation/types.js";
 
-const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
+const ACTOR: AiRequestContext = { traceId: "33333333-3333-4333-8333-333333333333", userId: "reporter-id" };
 
 function draft(): ReportDraft {
   return {
@@ -276,7 +276,9 @@ describe("BraveResearchClient", () => {
     const serialized = String(write.mock.calls.find(([line]) => String(line).includes("ai_search_http_failed"))?.[0]);
     const event: unknown = JSON.parse(serialized);
     expect(serialized).not.toContain(canary);
-    expect(event).toMatchObject({ traceId: "trace-1", httpStatus: 422, provider: "brave", attempt: 1 });
+    expect(event).toMatchObject({ traceId: "trace-1", httpStatus: 422, provider: "brave", attempt: 1,
+      stage: "law_research", outcome: "failed", durationMs: expect.any(Number) as number });
+    expect(event).not.toHaveProperty("actorKey");
     expect(event).not.toHaveProperty("response");
     expect(event).not.toHaveProperty("requestId");
     write.mockRestore();

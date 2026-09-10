@@ -1,4 +1,4 @@
-import { createTraceId, reportReasonLabel, reportReasons } from "@nreport/contracts";
+import { reportReasonLabel, reportReasons } from "@nreport/contracts";
 
 import {
   BraveResearchClient,
@@ -754,7 +754,6 @@ export class ReportWriter {
     onProgress?: WriterProgressHandler,
     signal?: AbortSignal
   ): Promise<WriterResult> {
-    actor = { ...actor, traceId: actor.traceId ?? createTraceId() };
     const draft = normalizedDraft(inputDraft);
     const deadline = Date.now() + WORKFLOW_TIMEOUT_MS;
     this.logWorkflowStarted(draft, actor, "generate");
@@ -865,8 +864,12 @@ export class ReportWriter {
           throw error;
         }
         botLog("ai_follow_up_query_rejected", {
-          actorKey: actor.actorKey,
-          followUpType: completion.followUpType
+          traceId: actor.traceId,
+          followUpType: completion.followUpType,
+          stage: `${completion.followUpType}_research`,
+          outcome: "rejected",
+          durationMs: 0,
+          errorCategory: "invalid_query"
         });
       }
       completion = await this.synthesize(draft, plan, materials, deadline, actor, true, signal);
@@ -908,7 +911,6 @@ export class ReportWriter {
     instruction: string,
     actor: AiRequestContext
   ): Promise<WriterResult> {
-    actor = { ...actor, traceId: actor.traceId ?? createTraceId() };
     if (
       !draft.country ||
       !draft.legalResearch ||
@@ -1177,10 +1179,17 @@ export class ReportWriter {
     stage: string,
     actor: AiRequestContext
   ): Promise<void> {
+    const startedAt = Date.now();
     try {
       await this.recordUsage(userId, usage);
     } catch {
-      botLog("ai_usage_record_failed", { actorKey: actor.actorKey, stage }, "error");
+      botLog("ai_usage_record_failed", {
+        traceId: actor.traceId,
+        stage,
+        outcome: "failed",
+        durationMs: Date.now() - startedAt,
+        errorCategory: "usage_persistence"
+      }, "error");
     }
   }
 
@@ -1191,7 +1200,10 @@ export class ReportWriter {
   ): void {
     botLog("ai_workflow_started", {
       action,
-      actorKey: actor.actorKey,
+      traceId: actor.traceId,
+      stage: "workflow",
+      outcome: "started",
+      durationMs: 0,
       attachmentCount: capturedMessageSnapshot(draft.messageEvidence)?.attachments.length ?? 0,
       country: draft.country ?? null,
       countryMode: countryMode(draft),

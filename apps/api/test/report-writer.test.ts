@@ -6,7 +6,10 @@ import { ReportWriter, ReportWriterError } from "../src/preparation/report-write
 import type { AiUsage, ReportDraft } from "../src/preparation/types.js";
 
 const COUNTRIES = ["AT", "DE", "FR", "IE"] as const;
-const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
+const ACTOR: AiRequestContext = {
+  traceId: "33333333-3333-4333-8333-333333333333",
+  userId: "reporter-id"
+};
 const LAW = "Germany's Basic Law (Grundgesetz), Article 1";
 const BRAVE_UNSUPPORTED_REPORT_COUNTRIES = [
   "BG",

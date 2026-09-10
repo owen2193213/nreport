@@ -86,6 +86,11 @@ advance a cursor past an event that cannot yet be linked. Webhook and polling in
 same event inbox so duplicate delivery cannot create duplicate DMs. Pending create/retry calls are
 replayed with their original idempotency key before normal feed reconciliation.
 
+Notification and reconciliation operational events retain their stable event names and emit a
+bounded `stage`, `outcome`, and `durationMs`; failures also emit a safe error category. Where a
+lifecycle event supplies a trace, it is the only report-level correlation value in these logs. Raw
+report, account, event, message, and Discord user identifiers are never logged.
+
 The status card is always maintained while the account is connected. Decision/problem messages reply
 to that card so the affected report remains clear. Terminal replies use an enforced, deterministic
 Discord nonce derived only from the durable lifecycle event ID, allowing Discord to deduplicate a

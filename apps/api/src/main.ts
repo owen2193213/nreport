@@ -105,7 +105,7 @@ async function main(): Promise<void> {
       await preparationWorker.stop();
       await lifecycleRunner.stop();
       await eventDeliveryWorker.stop();
-      queueSampler.stop();
+      await queueSampler.stop();
     }
     await database.close();
   };

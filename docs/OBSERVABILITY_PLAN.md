@@ -11,7 +11,12 @@ Answer for one report: where is it waiting, how long, which attempt/stage failed
 
 ## One correlation model
 
-Generate a random opaque `traceId` when the API creates a report and persist it. Propagate it through preparation/lifecycle jobs, durable lifecycle events and the additive shared API contract to the bot. Each retry report gets its own trace while the durable predecessor/successor report relationship remains authoritative. Use a separate `spanId`/parent span per stage and attempt; HTTP `requestId` identifies a request, not the entire report.
+Generate a random opaque `traceId` when the API creates a report and persist it. Propagate that
+exact value through preparation/provider operations, lifecycle jobs, durable lifecycle events and
+the additive shared API contract to the bot. Provider logs use it as their sole correlation key and
+do not generate a workflow-local replacement. Each retry report gets its own trace while the durable
+predecessor/successor report relationship remains authoritative. Use a separate `spanId`/parent span
+per stage and attempt; HTTP `requestId` identifies a request, not the entire report.
 
 The email worker starts an independent ingestion trace; after trusted parsing/correlation the API links it to the report trace. Never expose aliases, verification codes, Discord IDs, raw report IDs or message URLs to achieve correlation. Validate inbound trace format/length and generate server-owned values when absent. Traces remain access-controlled operational metadata, never metric labels. Additive DTO changes require updates to BOT_API.md and bot implementation documentation.
 
@@ -36,7 +41,9 @@ Restore safe error logging to silent notification/reconciliation/lifecycle catch
 Separate preparation, Discord lifecycle and bot notification queues. Each snapshot reports readyPending, delayedPending, running, oldestReadyAgeMs, completion/retry/failure counts and worker busy/idle slots. Histograms cover queue wait, stage duration and end-to-end submission latency. Split lifecycle job type (verification/submit/appeal) and provider errors using bounded labels, not report/account IDs. Preserve existing queueLength compatibility; define it clearly before adding phase-specific fields. It must not be presented as a queue position.
 
 The implemented API sampler emits `queue_snapshot` every 5 seconds to 5 minutes (60 seconds by
-default) using one aggregate query. It separates preparation and lifecycle ready, delayed, running,
+default) using one aggregate query. Samples are single-flight: interval ticks coalesce while a query
+or log emission remains active, and shutdown clears the interval and drains that active sample before
+the API closes its database. It separates preparation and lifecycle ready, delayed, running,
 and oldest-ready age values and provides bounded lifecycle job-kind counts. Empty ages are `null`,
 clock-skewed ages are clamped to zero, and repository/logger failures cannot stop later samples or
 workers. Completion/retry/failure rates, busy-slot counts, and bot-queue aggregation remain future work.

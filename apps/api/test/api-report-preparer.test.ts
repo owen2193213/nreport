@@ -49,10 +49,16 @@ describe("ApiReportPreparer", () => {
         }
       },
       async (stage) => { stages.push(stage); },
-      new AbortController().signal
+      new AbortController().signal,
+      "33333333-3333-4333-8333-333333333333"
     );
 
     expect(generate.mock.calls[0]?.[0]).toMatchObject({ flow: "message_urf" });
+    expect(generate.mock.calls[0]?.[1]).toEqual({
+      traceId: "33333333-3333-4333-8333-333333333333",
+      userId: expect.any(String) as string
+    });
+    expect(generate.mock.calls[0]?.[1]).not.toHaveProperty("actorKey");
     expect(stages).toEqual(["researching", "writing"]);
     expect(result).toMatchObject({
       country: "DE",
@@ -87,7 +93,12 @@ describe("ApiReportPreparer", () => {
       }
     };
 
-    await preparer.prepare(input as never, async () => undefined, new AbortController().signal);
+    await preparer.prepare(
+      input as never,
+      async () => undefined,
+      new AbortController().signal,
+      "33333333-3333-4333-8333-333333333333"
+    );
 
     expect(generate.mock.calls[0]?.[0]).toMatchObject({
       flow: "message_urf",

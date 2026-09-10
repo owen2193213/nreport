@@ -5,7 +5,7 @@ type QueueLogger = (
   event: string,
   fields: Record<string, unknown>,
   level?: "info" | "warn" | "error"
-) => void;
+) => void | Promise<void>;
 
 interface QueueSamplerOptions {
   intervalMs?: number;
@@ -20,6 +20,7 @@ export class QueueObservabilitySampler {
   private readonly schedule: (callback: () => void, milliseconds: number) => unknown;
   private readonly cancel: (handle: unknown) => void;
   private timer: unknown;
+  private inFlight: Promise<void> | undefined;
 
   public constructor(
     private readonly store: QueueSnapshotStore,
@@ -38,24 +39,35 @@ export class QueueObservabilitySampler {
     this.timer = this.schedule(() => void this.sampleOnce(), this.intervalMs);
   }
 
-  public stop(): void {
-    if (this.timer === undefined) return;
-    this.cancel(this.timer);
-    this.timer = undefined;
+  public async stop(): Promise<void> {
+    if (this.timer !== undefined) {
+      this.cancel(this.timer);
+      this.timer = undefined;
+    }
+    await this.inFlight;
   }
 
-  public async sampleOnce(): Promise<void> {
+  public sampleOnce(): Promise<void> {
+    if (this.inFlight !== undefined) return this.inFlight;
+    const running = this.runSample().finally(() => {
+      if (this.inFlight === running) this.inFlight = undefined;
+    });
+    this.inFlight = running;
+    return running;
+  }
+
+  private async runSample(): Promise<void> {
     const startedAt = this.now();
     try {
       const snapshot = await this.store.queueSnapshot();
-      this.safeLog("queue_snapshot", {
+      await this.safeLog("queue_snapshot", {
         stage: "queues",
         outcome: "sampled",
         durationMs: Math.max(0, this.now() - startedAt),
         ...snapshot
       });
     } catch {
-      this.safeLog("queue_snapshot_failed", {
+      await this.safeLog("queue_snapshot_failed", {
         stage: "queues",
         outcome: "failed",
         durationMs: Math.max(0, this.now() - startedAt),
@@ -64,10 +76,10 @@ export class QueueObservabilitySampler {
     }
   }
 
-  private safeLog(event: string, fields: Record<string, unknown>, level?: "info" | "warn" | "error"): void {
+  private async safeLog(event: string, fields: Record<string, unknown>, level?: "info" | "warn" | "error"): Promise<void> {
     try {
-      if (level === undefined) this.logger(event, fields);
-      else this.logger(event, fields, level);
+      if (level === undefined) await this.logger(event, fields);
+      else await this.logger(event, fields, level);
     } catch {
       // Observability failures must never affect workers or future samples.
     }

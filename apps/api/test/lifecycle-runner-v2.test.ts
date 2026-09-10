@@ -551,6 +551,7 @@ describe("LifecycleRunner safe outcomes", () => {
       claimLifecycleJob: vi.fn(async () => ({
         id: "sensitive-job-id",
         report_id: "sensitive-report-id",
+        trace_id: "33333333-3333-4333-8333-333333333333",
         kind: "request_code",
         payload: { evidence: "sensitive evidence", code: "123456" },
         attempts: 2,
@@ -571,6 +572,8 @@ describe("LifecycleRunner safe outcomes", () => {
 
     expect(outcomes.at(-1)).toMatchObject({
       component: "job",
+      traceId: "33333333-3333-4333-8333-333333333333",
+      stage: "lifecycle_job",
       outcome: "failed",
       jobKind: "request_code",
       attempts: 2,
@@ -603,6 +606,7 @@ describe("LifecycleRunner safe outcomes", () => {
     );
     expect(maintenanceOutcome).toMatchObject({
       component: "maintenance",
+      stage: "lifecycle_maintenance",
       outcome: "completed"
     });
     expect(typeof (maintenanceOutcome as { durationMs: unknown }).durationMs).toBe("number");
@@ -638,6 +642,7 @@ describe("LifecycleRunner safe outcomes", () => {
       );
       expect(loopOutcome).toMatchObject({
         component: "loop",
+        stage: "lifecycle_claim",
         outcome: "failed",
         errorCategory: "lifecycle_claim_failed"
       });

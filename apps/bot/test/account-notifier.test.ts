@@ -69,9 +69,13 @@ describe("notification delivery against an existing report card", () => {
 
     await h.worker.processOne();
 
-    expect(h.logger).toHaveBeenCalledWith("account_notification_claimed", { traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1 });
+    expect(h.logger).toHaveBeenCalledWith("account_notification_claimed", {
+      traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1,
+      stage: "notification", outcome: "claimed", durationMs: 0
+    });
     expect(h.logger).toHaveBeenCalledWith("account_notification_completed", {
-      traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1, durationMs: expect.any(Number) as number
+      traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1,
+      stage: "notification", outcome: "completed", durationMs: expect.any(Number) as number
     });
     const serializedLogs = JSON.stringify(h.logger.mock.calls);
     expect(serializedLogs).not.toContain("11111111-1111-4111-8111-111111111111");
@@ -93,7 +97,8 @@ describe("notification delivery against an existing report card", () => {
     await h.worker.processOne();
     expect(h.database.retryNotification).toHaveBeenCalledWith("event", "unexpected");
     expect(h.logger).toHaveBeenCalledWith("account_notification_retry", {
-      traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1, durationMs: expect.any(Number) as number,
+      traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1,
+      stage: "notification", outcome: "retry", durationMs: expect.any(Number) as number,
       failureCategory: "unexpected"
     }, "warn");
     expect(JSON.stringify(h.logger.mock.calls)).not.toContain("canary-secret");

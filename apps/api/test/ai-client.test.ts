@@ -6,7 +6,7 @@ import {
   type AiClientError
 } from "../src/preparation/ai-client.js";
 
-const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
+const ACTOR: AiRequestContext = { traceId: "33333333-3333-4333-8333-333333333333", userId: "reporter-id" };
 const OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";
 
 function success(
@@ -262,10 +262,14 @@ describe("AiClient", () => {
     expect(serialized).not.toContain(canary);
     expect(JSON.parse(serialized)).toMatchObject({
       event: "ai_request_failed",
+      traceId: ACTOR.traceId,
+      outcome: "failed",
+      durationMs: expect.any(Number) as number,
       failureCategory: "provider",
       providerCodeCategory: "string",
       stage: "plan"
     });
+    expect(JSON.parse(serialized)).not.toHaveProperty("actorKey");
   });
 
   it("honors an already-aborted caller signal without making a request", async () => {

@@ -36,6 +36,7 @@ export interface ReportPreparer {
     input: Extract<CreateReportInput, { useAi: true }>,
     progress: (stage: "researching" | "writing") => Promise<void>,
     signal: AbortSignal,
+    traceId: string,
     recordUsage?: (usage: PreparationUsage) => Promise<void>
   ): Promise<PreparedResult>;
 }
@@ -105,7 +106,7 @@ export class PreparationWorker {
       const prepared = report.retry_mode === "reuse"
         ? reusedPreparation(report)
         : report.request_input.useAi
-          ? await this.prepareWithAi(report.id, report.request_input)
+          ? await this.prepareWithAi(report.trace_id, report.id, report.request_input)
           : manualPreparation(report.request_input);
       const identity = this.generateIdentity(prepared.country);
       await this.store.completePreparation(
@@ -160,6 +161,7 @@ export class PreparationWorker {
   }
 
   private async prepareWithAi(
+    traceId: string,
     reportId: string,
     input: Extract<CreateReportInput, { useAi: true }>
   ): Promise<PreparedResult> {
@@ -169,6 +171,7 @@ export class PreparationWorker {
         if (!(await this.store.transition(reportId, stage))) throw new PreparationCancelledError();
       },
       AbortSignal.timeout(PREPARATION_WORKFLOW_TIMEOUT_MS),
+      traceId,
       async (usage) => this.store.recordPreparationUsage?.(reportId, usage)
     );
     return {

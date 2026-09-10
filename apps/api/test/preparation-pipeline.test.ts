@@ -16,7 +16,8 @@ describe("preparation pipeline reliability", () => {
     ));
     const preparer = new ApiReportPreparer({ writerFactory: (recordUsage) => new ReportWriter("test-key", "test-model", "test-search", ["DE"], { request, recordUsage }) });
     const store = {
-      claimPreparation: vi.fn().mockResolvedValue({ jobId: "job", report: { id: "report", request_input: {
+      claimPreparation: vi.fn().mockResolvedValue({ jobId: "job", report: { id: "report",
+        trace_id: "33333333-3333-4333-8333-333333333333", request_input: {
         flow: "message", useAi: true, target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
       } } }), transition: vi.fn().mockResolvedValue(true), completePreparation: vi.fn(), failPreparation: vi.fn()
     };
@@ -36,7 +37,8 @@ describe("preparation pipeline reliability", () => {
     const removeEventListener = vi.spyOn(controller.signal, "removeEventListener");
     const running = preparer.prepare({ flow: "message", useAi: true,
       target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
-    }, () => Promise.resolve(), controller.signal).then(() => "resolved", () => "aborted");
+    }, () => Promise.resolve(), controller.signal, "33333333-3333-4333-8333-333333333333")
+      .then(() => "resolved", () => "aborted");
     controller.abort(new DOMException("Deadline exceeded", "TimeoutError"));
     const observed = await Promise.race([running, new Promise<string>((resolve) => setImmediate(() => resolve("still-running")))]);
     finish(undefined as never);
@@ -51,7 +53,10 @@ describe("preparation pipeline reliability", () => {
       error: { message: canary, code: 500 }
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     const failure = await new ReportWriter("test-key", "test-model", "test-search", ["DE"], { request })
-      .generate({ flow: "message_urf", messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }, { actorKey: "actor", userId: "user" })
+      .generate({ flow: "message_urf", messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }, {
+        traceId: "33333333-3333-4333-8333-333333333333",
+        userId: "user"
+      })
       .catch((error: unknown) => error);
 
     expect(failure).toMatchObject({ kind: "provider" });
@@ -74,7 +79,8 @@ describe("preparation pipeline reliability", () => {
     const request = vi.fn().mockImplementation(outcome);
     const preparer = new ApiReportPreparer({ writerFactory: (recordUsage) => new ReportWriter("test-key", "test-model", "test-search", ["DE"], { request, recordUsage }) });
     const store = {
-      claimPreparation: vi.fn().mockResolvedValue({ jobId: "job", report: { id: "report", request_input: {
+      claimPreparation: vi.fn().mockResolvedValue({ jobId: "job", report: { id: "report",
+        trace_id: "33333333-3333-4333-8333-333333333333", request_input: {
         flow: "message", useAi: true, target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
       } } }), transition: vi.fn().mockResolvedValue(true), completePreparation: vi.fn(), failPreparation: vi.fn()
     };
@@ -91,6 +97,10 @@ describe("preparation pipeline reliability", () => {
     }));
     expect(write.mock.calls.map(([line]) => String(line)).join(""))
       .not.toMatch(/CANARY_(?:PROVIDER_MESSAGE|REFUSAL|RATE_LIMIT_BODY|REASONING|MALFORMED_BODY|TIMEOUT_DETAIL)/);
+    const operationalLogs = write.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(operationalLogs.length).toBeGreaterThan(0);
+    expect(operationalLogs.every((event) => event.traceId === "33333333-3333-4333-8333-333333333333")).toBe(true);
+    expect(operationalLogs.every((event) => !("actorKey" in event))).toBe(true);
   });
 
   it("uses provider-neutral public wording for an exhausted research rate limit", async () => {
@@ -106,7 +116,8 @@ describe("preparation pipeline reliability", () => {
       .mockResolvedValue(new Response("private research limit body", { status: 429 }));
     const preparer = new ApiReportPreparer({ writerFactory: (recordUsage) => new ReportWriter("test-key", "test-model", "test-search", ["DE"], { request, recordUsage }) });
     const store = {
-      claimPreparation: vi.fn().mockResolvedValue({ jobId: "job", report: { id: "report", request_input: {
+      claimPreparation: vi.fn().mockResolvedValue({ jobId: "job", report: { id: "report",
+        trace_id: "33333333-3333-4333-8333-333333333333", request_input: {
         flow: "profile", useAi: true, country: "DE", category: "sub_other_hate_speech", description: "Evidence summary.",
         target: { reportedUsername: "example", reportedUserId: "123456789012345678", reportedUserSnapshot: null, profileElements: ["photos"] }
       } } }), transition: vi.fn().mockResolvedValue(true), completePreparation: vi.fn(), failPreparation: vi.fn()

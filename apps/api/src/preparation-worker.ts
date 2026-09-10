@@ -54,6 +54,14 @@ export interface PreparationStore {
   recordPreparationUsage?(reportId: string, usage: PreparationUsage): Promise<void>;
 }
 
+export interface PreparationWorkerOutcome {
+  traceId: string;
+  stage: "preparation";
+  outcome: "completed" | "failed";
+  durationMs: number;
+  errorCategory?: string;
+}
+
 export class PreparationWorker {
   private stopping = false;
   private loops: Promise<void>[] = [];
@@ -64,7 +72,8 @@ export class PreparationWorker {
     private readonly generateIdentity: (country: string) => GeneratedReportIdentity,
     private readonly concurrency = 2,
     private readonly sleep: (milliseconds: number) => Promise<unknown> = delay,
-    private readonly onIterationError: (error: unknown) => void = () => undefined
+    private readonly onIterationError: (error: unknown) => void = () => undefined,
+    private readonly onOutcome: (outcome: PreparationWorkerOutcome) => void = () => undefined
   ) {
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) {
       throw new Error("Preparation concurrency must be between 1 and 16.");
@@ -87,6 +96,7 @@ export class PreparationWorker {
     const claimed = await this.store.claimPreparation();
     if (claimed === null) return false;
     const { jobId, report } = claimed;
+    const startedAt = Date.now();
     try {
       if (report.retry_mode !== "reuse" && report.request_input.useAi &&
           !(await this.store.transition(report.id, "planning"))) {
@@ -105,6 +115,12 @@ export class PreparationWorker {
         identity,
         prepared.usage
       );
+      this.safeOutcome({
+        traceId: report.trace_id,
+        stage: "preparation",
+        outcome: "completed",
+        durationMs: elapsedSince(startedAt)
+      });
     } catch (error) {
       if (error instanceof PreparationCancelledError) return true;
       const details = preparationErrorDetails(error);
@@ -115,9 +131,32 @@ export class PreparationWorker {
         code,
         preparationErrorMessage(code, error)
       );
-      this.onIterationError(new PreparationFailureDiagnostic(details));
+      this.safeIterationError(new PreparationFailureDiagnostic(details, report.trace_id));
+      this.safeOutcome({
+        traceId: report.trace_id,
+        stage: "preparation",
+        outcome: "failed",
+        durationMs: elapsedSince(startedAt),
+        errorCategory: details.kind
+      });
     }
     return true;
+  }
+
+  private safeOutcome(outcome: PreparationWorkerOutcome): void {
+    try {
+      this.onOutcome(outcome);
+    } catch {
+      // Observability failures must never affect durable preparation processing.
+    }
+  }
+
+  private safeIterationError(error: unknown): void {
+    try {
+      this.onIterationError(error);
+    } catch {
+      // Diagnostic callbacks are observational and must not change durable outcomes.
+    }
   }
 
   private async prepareWithAi(
@@ -147,7 +186,7 @@ export class PreparationWorker {
         if (!worked) await this.sleep(500);
       } catch (error) {
         try {
-          this.onIterationError(error);
+          this.safeIterationError(error);
         } catch {
           // Error reporting must not stop durable preparation processing.
         }
@@ -239,17 +278,19 @@ function preparationErrorDetails(error: unknown): PreparationErrorDetails {
 }
 
 class PreparationFailureDiagnostic extends Error {
-  public constructor(details: PreparationErrorDetails) {
+  public constructor(details: PreparationErrorDetails, traceId: string) {
     super("Report preparation failed.");
     this.name = "PreparationFailureDiagnostic";
     this.errorCode = details.errorCode;
     this.kind = details.kind;
     this.stage = details.stage;
+    this.traceId = traceId;
   }
 
   public readonly errorCode: string;
   public readonly kind: string;
   public readonly stage: string;
+  public readonly traceId: string;
 }
 
 class PreparationCancelledError extends Error {}
@@ -269,4 +310,8 @@ function preparationErrorMessage(code: string, error: unknown): string {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function elapsedSince(startedAt: number): number {
+  return Math.max(0, Date.now() - startedAt);
 }

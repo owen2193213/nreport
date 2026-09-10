@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/require-await, @typescript-eslint/no-unused-vars */
 import { describe, expect, it, vi } from "vitest";
 
-import { reportRetryableModes, ReportMutationError, ReportRepository } from "../src/report-repository.js";
+import { REPORT_SCHEMA_SQL, reportRetryableModes, ReportMutationError, ReportRepository } from "../src/report-repository.js";
 
 const input = {
   flow: "message" as const,
@@ -47,6 +47,9 @@ describe("transactional report creation", () => {
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("kind, dedupe_key") && String(sql).includes("prepare_report"))).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("report_events") && String(sql).includes("report_queued"))).toBe(true);
     expect(client.query).toHaveBeenCalledWith("COMMIT");
+    const insert = client.query.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO account_reports"));
+    expect(insert?.[0]).toContain("trace_id");
+    expect(insert?.[1]).toEqual(expect.arrayContaining([expect.stringMatching(/^[0-9a-f-]{36}$/)]));
   });
 
   it("returns an exact idempotent replay without reserving another credit", async () => {
@@ -447,9 +450,9 @@ describe("account-owned reads and recovery feeds", () => {
   it("returns an account-scoped event page with a stable next cursor", async () => {
     const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({
       rows: [
-        { id: "11", account_id: "account-1", report_id: "report-1", event_type: "report_queued", lifecycle_attempt: 1, created_at: new Date("2026-09-04T00:00:00Z") },
-        { id: "12", account_id: "account-1", report_id: "report-1", event_type: "report_planning", lifecycle_attempt: 1, created_at: new Date("2026-09-04T00:00:01Z") },
-        { id: "13", account_id: "account-1", report_id: "report-1", event_type: "report_writing", lifecycle_attempt: 1, created_at: new Date("2026-09-04T00:00:02Z") }
+        { id: "11", account_id: "account-1", report_id: "report-1", trace_id: "11111111-1111-4111-8111-111111111111", event_type: "report_queued", lifecycle_attempt: 1, created_at: new Date("2026-09-04T00:00:00Z") },
+        { id: "12", account_id: "account-1", report_id: "report-1", trace_id: "11111111-1111-4111-8111-111111111111", event_type: "report_planning", lifecycle_attempt: 1, created_at: new Date("2026-09-04T00:00:01Z") },
+        { id: "13", account_id: "account-1", report_id: "report-1", trace_id: "11111111-1111-4111-8111-111111111111", event_type: "report_writing", lifecycle_attempt: 1, created_at: new Date("2026-09-04T00:00:02Z") }
       ],
       rowCount: 3
     }));
@@ -459,7 +462,48 @@ describe("account-owned reads and recovery feeds", () => {
 
     expect(page.items).toHaveLength(2);
     expect(page.next).toBe("12");
+    expect(page.items[0]?.traceId).toBe("11111111-1111-4111-8111-111111111111");
     expect(query.mock.calls[0]?.[1]).toEqual(["account-1", "0", 3]);
+  });
+});
+
+describe("trace migration and queue observability", () => {
+  it("backfills trace IDs before enforcing the additive non-null UUID column", () => {
+    expect(REPORT_SCHEMA_SQL).toContain("ADD COLUMN IF NOT EXISTS trace_id uuid");
+    expect(REPORT_SCHEMA_SQL).toContain("SET trace_id = gen_random_uuid()");
+    expect(REPORT_SCHEMA_SQL).toContain("ALTER COLUMN trace_id SET NOT NULL");
+  });
+
+  it("maps an empty aggregate queue row to zero counts and null ages", async () => {
+    const query = vi.fn(async (_sql: string) => ({ rows: [{
+      preparation_ready: "0", preparation_delayed: "0", preparation_running: "0", preparation_oldest_ms: null,
+      lifecycle_ready: "0", lifecycle_delayed: "0", lifecycle_running: "0", lifecycle_oldest_ms: null,
+      request_code: "0", verify_submit: "0", submit_review: "0"
+    }], rowCount: 1 }));
+    const repository = new ReportRepository({ query } as never);
+
+    await expect(repository.queueSnapshot()).resolves.toEqual({
+      preparation: { readyPending: 0, delayedPending: 0, running: 0, oldestReadyAgeMs: null },
+      lifecycle: { readyPending: 0, delayedPending: 0, running: 0, oldestReadyAgeMs: null,
+        byJobKind: { requestCode: 0, verifySubmit: 0, submitReview: 0 } }
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps mixed queues and clamps database clock skew to a nonnegative age", async () => {
+    const query = vi.fn(async (_sql: string) => ({ rows: [{
+      preparation_ready: "2", preparation_delayed: "3", preparation_running: "1", preparation_oldest_ms: "-4",
+      lifecycle_ready: "5", lifecycle_delayed: "6", lifecycle_running: "2", lifecycle_oldest_ms: "1500.9",
+      request_code: "4", verify_submit: "7", submit_review: "2"
+    }], rowCount: 1 }));
+    const repository = new ReportRepository({ query } as never);
+
+    const snapshot = await repository.queueSnapshot();
+
+    expect(snapshot.preparation).toEqual({ readyPending: 2, delayedPending: 3, running: 1, oldestReadyAgeMs: 0 });
+    expect(snapshot.lifecycle).toEqual({ readyPending: 5, delayedPending: 6, running: 2, oldestReadyAgeMs: 1500,
+      byJobKind: { requestCode: 4, verifySubmit: 7, submitReview: 2 } });
+    expect(String(query.mock.calls[0]?.[0])).not.toContain("report_id");
   });
 });
 
@@ -559,7 +603,7 @@ describe("serial report retries", () => {
     }, new Date("2026-09-04T00:01:00Z"));
 
     const insert = client.query.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO account_reports"));
-    expect(insert?.[1]?.[6]).toMatchObject({
+    expect(insert?.[1]?.[7]).toMatchObject({
       flow: "profile", useAi: false, country: "DE", category: "new", finalText: "A complete replacement.",
       target: { reportedUserId: "123456789012345678", profileElements: ["photos"] }
     });

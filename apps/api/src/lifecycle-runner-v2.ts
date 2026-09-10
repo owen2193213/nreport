@@ -18,10 +18,12 @@ export interface LifecycleJob {
   attempts: number;
   max_attempts: number;
   execution_token: number;
+  trace_id?: string;
 }
 
 export interface LifecycleReport {
   id: string;
+  trace_id?: string;
   flow: "message" | "profile" | "server";
   country: string;
   reporter_email: string;
@@ -82,6 +84,7 @@ export type LifecycleRunnerOutcome =
       jobKind: LifecycleJob["kind"];
       attempts: number;
       durationMs: number;
+      traceId?: string;
       errorCategory?: string;
     }
   | {
@@ -166,7 +169,8 @@ export class LifecycleRunner {
         outcome: "completed",
         jobKind: job.kind,
         attempts: job.attempts,
-        durationMs: elapsedSince(startedAt)
+        durationMs: elapsedSince(startedAt),
+        ...(job.trace_id === undefined ? {} : { traceId: job.trace_id })
       });
     } catch (error) {
       this.notify({
@@ -175,6 +179,7 @@ export class LifecycleRunner {
         jobKind: job.kind,
         attempts: job.attempts,
         durationMs: elapsedSince(startedAt),
+        ...(job.trace_id === undefined ? {} : { traceId: job.trace_id }),
         errorCategory: safeJobErrorCategory(error)
       });
       if (!isOwnershipLost(error)) throw error;

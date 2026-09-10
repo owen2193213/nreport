@@ -7,7 +7,8 @@ import {
   REPORT_RETRY_MODES,
   REPORT_STATUSES,
   retryReportBodySchema,
-  USER_MESSAGE_REPORT_REASONS
+  USER_MESSAGE_REPORT_REASONS,
+  reportLifecycleEventSchema
 } from "../src/index.js";
 
 describe("report contracts", () => {
@@ -39,6 +40,13 @@ describe("report contracts", () => {
           properties: { mode: { const: "edit_manual" } }
         }
       ]
+    });
+  });
+
+  it("requires a UUID trace ID on lifecycle events", () => {
+    expect(reportLifecycleEventSchema.required).toContain("traceId");
+    expect(reportLifecycleEventSchema.properties).toMatchObject({
+      traceId: { type: "string", format: "uuid" }
     });
   });
 });

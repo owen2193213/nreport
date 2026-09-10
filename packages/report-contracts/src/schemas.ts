@@ -184,11 +184,12 @@ export const reportLifecycleEventSchema = {
   $id: "ReportLifecycleEvent",
   type: "object",
   additionalProperties: false,
-  required: ["eventId", "accountId", "reportId", "type", "occurredAt", "lifecycleAttempt"],
+  required: ["eventId", "accountId", "reportId", "traceId", "type", "occurredAt", "lifecycleAttempt"],
   properties: {
     eventId: { type: "string" },
     accountId: { type: "string", format: "uuid" },
     reportId: { type: "string", format: "uuid" },
+    traceId: { type: "string", format: "uuid" },
     type: { type: "string" },
     occurredAt: { type: "string", format: "date-time" },
     lifecycleAttempt: { type: "integer", minimum: 1 }

@@ -19,6 +19,7 @@ function harness(hash: string | null = null, eventId = "event") {
   const dm = { messages: { fetch: vi.fn().mockResolvedValue(message) }, send: vi.fn() };
   const database = {
     claimNotification: vi.fn().mockResolvedValue({ event_id: eventId, event_type: "report_failed", report_id: report.reportId,
+      trace_id: "33333333-3333-4333-8333-333333333333",
       attempts: 1,
       discord_user_id: "user", encrypted_api_key: "unused", encrypted_target_context: null,
       dm_message_id: "original-card", visible_payload_hash: hash }),
@@ -68,9 +69,9 @@ describe("notification delivery against an existing report card", () => {
 
     await h.worker.processOne();
 
-    expect(h.logger).toHaveBeenCalledWith("account_notification_claimed", { eventType: "report_failed", attempts: 1 });
+    expect(h.logger).toHaveBeenCalledWith("account_notification_claimed", { traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1 });
     expect(h.logger).toHaveBeenCalledWith("account_notification_completed", {
-      eventType: "report_failed", attempts: 1, durationMs: expect.any(Number) as number
+      traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1, durationMs: expect.any(Number) as number
     });
     const serializedLogs = JSON.stringify(h.logger.mock.calls);
     expect(serializedLogs).not.toContain("11111111-1111-4111-8111-111111111111");
@@ -92,7 +93,7 @@ describe("notification delivery against an existing report card", () => {
     await h.worker.processOne();
     expect(h.database.retryNotification).toHaveBeenCalledWith("event", "unexpected");
     expect(h.logger).toHaveBeenCalledWith("account_notification_retry", {
-      eventType: "report_failed", attempts: 1, durationMs: expect.any(Number) as number,
+      traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1, durationMs: expect.any(Number) as number,
       failureCategory: "unexpected"
     }, "warn");
     expect(JSON.stringify(h.logger.mock.calls)).not.toContain("canary-secret");

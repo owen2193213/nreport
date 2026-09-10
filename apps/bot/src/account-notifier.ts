@@ -50,7 +50,8 @@ export class AccountNotificationWorker {
     if (item === null) return false;
     const startedAt = Date.now();
     const attempts = item.attempts;
-    this.log("account_notification_claimed", { eventType: item.event_type, attempts });
+    const traceFields = item.trace_id === null ? {} : { traceId: item.trace_id };
+    this.safeLog("account_notification_claimed", { ...traceFields, eventType: item.event_type, attempts });
     try {
       const preferences = await this.database.notificationPreferences(item.discord_user_id);
       const api = this.api(item);
@@ -67,8 +68,8 @@ export class AccountNotificationWorker {
       if (message === null) {
         if (!(await this.database.claimDmCard(report.reportId))) {
           await this.database.retryNotification(item.event_id, "status_card_creation_in_progress");
-          this.log("account_notification_retry", {
-            eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+          this.safeLog("account_notification_retry", {
+            ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
             failureCategory: "card_claim_busy"
           }, "warn");
           return true;
@@ -94,22 +95,22 @@ export class AccountNotificationWorker {
         });
       }
       await this.database.completeNotification(item.event_id);
-      this.log("account_notification_completed", {
-        eventType: item.event_type, attempts, durationMs: Date.now() - startedAt
+      this.safeLog("account_notification_completed", {
+        ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt
       });
     } catch (error) {
       if (error instanceof DsaApiError && error.status === 401) {
         const user = await this.client.users.fetch(item.discord_user_id).catch(() => null);
         await user?.send("Your reporting API key was revoked or expired. Use `/access connect` to reconnect; detailed status refreshes are paused.").catch(() => undefined);
         await this.database.completeNotification(item.event_id);
-        this.log("account_notification_completed", {
-          eventType: item.event_type, attempts, durationMs: Date.now() - startedAt
+        this.safeLog("account_notification_completed", {
+          ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt
         });
       } else {
         const failureCategory = safeErrorCategory(error);
         await this.database.retryNotification(item.event_id, failureCategory);
-        this.log("account_notification_retry", {
-          eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+        this.safeLog("account_notification_retry", {
+          ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
           failureCategory
         }, "warn");
       }
@@ -148,7 +149,15 @@ export class AccountNotificationWorker {
     for (let pageCount = 0; pageCount < 20; pageCount += 1) {
       const page = await api.events({ after, limit: 100 });
       for (const event of page.items) {
+        const startedAt = Date.now();
         const result = await this.database.ingestEvent(event);
+        this.safeLog("account_reconciliation_event", {
+          traceId: event.traceId,
+          eventType: event.type,
+          stage: "event_ingestion",
+          outcome: result,
+          durationMs: Date.now() - startedAt
+        });
         if (result === "not_tracked_yet") return;
         await this.database.advanceCursor(connection.discord_user_id, event.eventId);
       }
@@ -163,7 +172,7 @@ export class AccountNotificationWorker {
     try {
       connections = await this.database.connections();
     } catch (error) {
-      this.log("account_reconciliation_failed", {
+      this.safeLog("account_reconciliation_failed", {
         durationMs: Date.now() - batchStartedAt,
         failureCategory: safeErrorCategory(error)
       }, "error");
@@ -174,9 +183,9 @@ export class AccountNotificationWorker {
       const startedAt = Date.now();
       try {
         await this.reconcileConnection(connection);
-        this.log("account_reconciliation_completed", { durationMs: Date.now() - startedAt });
+        this.safeLog("account_reconciliation_completed", { durationMs: Date.now() - startedAt });
       } catch (error) {
-        this.log("account_reconciliation_failed", {
+        this.safeLog("account_reconciliation_failed", {
           durationMs: Date.now() - startedAt,
           failureCategory: safeErrorCategory(error)
         }, "error");
@@ -201,7 +210,7 @@ export class AccountNotificationWorker {
       try {
         if (!(await this.processOne())) await delay(1_000);
       } catch (error) {
-        this.log("account_notification_retry", {
+        this.safeLog("account_notification_retry", {
           eventType: "unknown", attempts: 0, durationMs: 0, failureCategory: safeErrorCategory(error)
         }, "error");
         await delay(2_000);
@@ -213,6 +222,15 @@ export class AccountNotificationWorker {
     while (!this.stopping) {
       await this.reconcileOnce();
       for (let second = 0; second < 15 * 60 && !this.stopping; second += 1) await delay(1_000);
+    }
+  }
+
+  private safeLog(event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error"): void {
+    try {
+      if (level === undefined) this.log(event, fields);
+      else this.log(event, fields, level);
+    } catch {
+      // Logging failures must not interrupt notification or reconciliation work.
     }
   }
 }

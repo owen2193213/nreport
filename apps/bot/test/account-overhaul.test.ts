@@ -5,10 +5,22 @@ import { AccountBotDatabase } from "../src/account-database.js";
 import { AccountNotificationWorker } from "../src/account-notifier.js";
 import { loadBotConfig } from "../src/config.js";
 import { reportEventIngestionStatus } from "../src/health.js";
+import * as healthModule from "../src/health.js";
 import { DsaApiError } from "@nreport/contracts";
 import { errorFields } from "../src/observability.js";
 
 describe("thin account client configuration", () => {
+  it("requires a UUID trace ID on webhook lifecycle events", () => {
+    const validate = (healthModule as unknown as {
+      isReportLifecycleEvent?: (value: unknown) => boolean
+    }).isReportLifecycleEvent;
+    const base = { eventId: "9", accountId: "11111111-1111-4111-8111-111111111111",
+      reportId: "22222222-2222-4222-8222-222222222222", type: "report_writing",
+      occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1 };
+    expect(validate?.({ ...base, traceId: "33333333-3333-4333-8333-333333333333" })).toBe(true);
+    expect(validate?.(base)).toBe(false);
+    expect(validate?.({ ...base, traceId: "not-a-uuid" })).toBe(false);
+  });
   it("serializes only allowlisted bounded error diagnostics", () => {
     const secret = "canary-api-key-do-not-log";
     const error = Object.assign(new Error(`request failed with ${secret}`), {
@@ -134,12 +146,15 @@ describe("local account mapping", () => {
     };
     const database = new AccountBotDatabase({ connect: async () => client } as never);
 
-    await database.ingestEvent({ eventId: "9", accountId: "account-1", reportId: "report-1", type: "report_writing", occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1 });
+    await database.ingestEvent({ eventId: "9", accountId: "account-1", reportId: "report-1", traceId: "33333333-3333-4333-8333-333333333333", type: "report_writing", occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1 });
 
     expect(client.query.mock.calls.some(([sql, values]) =>
       String(sql).includes("SET state = 'ignored'") && values?.includes("report-1") && values?.includes("9")
     )).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("now() + interval '2 seconds'"))).toBe(true);
+    const insert = client.query.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO lifecycle_inbox"));
+    expect(insert?.[0]).toContain("trace_id");
+    expect(insert?.[1]).toContain("33333333-3333-4333-8333-333333333333");
   });
 
   it("includes edit-spacing and terminal-event exemptions in the claim query", async () => {
@@ -244,7 +259,7 @@ describe("account reconciliation", () => {
         return { reportId: "report-2" };
       }),
       retryReport: vi.fn(),
-      events: vi.fn(async () => ({ items: [{ eventId: "7", accountId: "account-1", reportId: "report-2", type: "report_queued", occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1 }], next: null }))
+      events: vi.fn(async () => ({ items: [{ eventId: "7", accountId: "account-1", reportId: "report-2", traceId: "33333333-3333-4333-8333-333333333333", type: "report_queued", occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1 }], next: null }))
     };
     const decrypt = <T>(value: string): T => (value === "bad-request"
       ? { flow: "message", useAi: true, target: { messageUrl: "https://discord.com/channels/@me/1/2" } }

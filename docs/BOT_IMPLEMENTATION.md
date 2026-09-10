@@ -76,7 +76,10 @@ Awaiting Discord's decision**; the UI never uses an ambiguous generic “Appeal 
 
 The private `/internal/report-events` endpoint verifies the timestamped HMAC over the exact body,
 rejects stale/replayed deliveries, and records each event idempotently. Payloads contain identifiers
-and state type only; the notifier fetches authoritative details with the connected personal key.
+and state type plus a required API-generated UUID `traceId`; the notifier fetches authoritative
+details with the connected personal key. The inbox persists the trace for operational correlation,
+but the bot never renders it. The bot migration adds the nullable column before validation is
+tightened so existing inbox rows remain readable; every newly accepted event has a valid trace.
 
 The bot also polls each connected account's cursor-based event feed every 15 minutes. It does not
 advance a cursor past an event that cannot yet be linked. Webhook and polling ingestion share the
@@ -157,11 +160,12 @@ submission, and review transitions require the same running job and token, so a 
 worker cannot mutate its replacement claim. A worker that loses heartbeat ownership abandons further
 progress and closes its Discord client where possible. Shutdown stops new claims, cancels idle
 cadence timers, and waits for in-flight lifecycle work.
-Lifecycle logs contain only job kind, attempt count, duration, outcome, and a safe error category;
+Lifecycle logs contain only the report trace, job kind, attempt count, duration, outcome, and a safe error category;
 they must never include report, job, account, or Discord identifiers, evidence, verification codes,
 URLs, provider responses, or arbitrary error messages.
-Bot notification logs similarly contain only lifecycle event type, attempt count, duration, outcome,
-and safe error category. Reconciliation logs contain only duration, outcome, and safe error category;
+Bot notification logs similarly contain only the report trace, lifecycle event type, attempt count,
+duration, outcome, and safe error category. Reconciliation event logs use the trace and bounded event
+type/outcome fields; connection summaries contain only duration, outcome, and safe error category;
 failures are isolated per connection so one unavailable account does not stop later accounts.
 
 The health endpoint becomes ready only when PostgreSQL and the Discord gateway are ready. The bot

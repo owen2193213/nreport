@@ -193,10 +193,17 @@ appeal accepted.
 ## Events, webhooks, and recovery
 
 `GET /v1/discord/dsa/events?after=&limit=` is the authoritative, replayable, account-scoped event feed. Events
-contain only `eventId`, `accountId`, `reportId`, `type`, `occurredAt`, and `lifecycleAttempt`—never
+contain only `eventId`, `accountId`, `reportId`, the API-generated UUID `traceId`, `type`, `occurredAt`,
+and `lifecycleAttempt`—never
 evidence or report text. Clients should persist the cursor only after all items are linked and
 processed, then recover state through report reads. This provides durable recovery; clients still
 need idempotent local processing rather than assuming zero delivery loss.
+
+`traceId` is required on feed responses and webhook envelopes. It is operational correlation
+metadata generated separately for every report lifecycle, including retries; callers cannot supply
+it and clients must not render it to users. API and bot releases that introduce this field must be
+deployed together. When the bot is deployed first, envelopes from an older API are rejected and
+remain in the API's durable delivery retry queue until the API deployment completes.
 
 Administrators may assign one destination to many accounts. Each event/destination delivery is
 unique, signed over the timestamp, event ID, and exact body, and retried with capped exponential

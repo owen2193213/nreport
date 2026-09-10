@@ -11,6 +11,7 @@ export interface AccountEventDelivery {
   created_at: Date;
   account_id: string;
   report_id: string;
+  trace_id: string;
   event_type: string;
   lifecycle_attempt: number;
   occurred_at: Date;
@@ -26,6 +27,7 @@ interface EventDeliveryOptions {
   decrypt(value: string): string;
   fetcher?: typeof fetch;
   now?: () => Date;
+  log?: (event: string, fields: Record<string, unknown>, level?: "info" | "warn" | "error") => void;
 }
 
 export class AccountEventDeliveryWorker {
@@ -57,11 +59,13 @@ export class AccountEventDeliveryWorker {
   public async processOne(): Promise<boolean> {
     const delivery = await this.store.claimEventDelivery();
     if (delivery === null) return false;
+    const startedAt = this.now().getTime();
     try {
       const body = JSON.stringify({
         eventId: delivery.event_id,
         accountId: delivery.account_id,
         reportId: delivery.report_id,
+        traceId: delivery.trace_id,
         type: delivery.event_type,
         occurredAt: delivery.occurred_at.toISOString(),
         lifecycleAttempt: delivery.lifecycle_attempt
@@ -82,6 +86,10 @@ export class AccountEventDeliveryWorker {
       });
       if (!response.ok) throw new DeliveryHttpError(response.status);
       await this.store.completeEventDelivery(delivery.event_id, delivery.destination_id);
+      this.safeLog("event_delivery_completed", {
+        traceId: delivery.trace_id, stage: "webhook", outcome: "completed",
+        durationMs: Math.max(0, this.now().getTime() - startedAt), attempts: delivery.attempts
+      });
     } catch (error) {
       const status = error instanceof DeliveryHttpError ? error.status : null;
       const backoff = status === 409 && delivery.attempts === 1
@@ -89,6 +97,11 @@ export class AccountEventDeliveryWorker {
         : Math.min(3_600_000, 1_000 * 2 ** Math.min(12, delivery.attempts));
       const message = status === null ? "Webhook delivery failed." : `Webhook returned HTTP ${status}.`;
       await this.store.retryEventDelivery(delivery.event_id, delivery.destination_id, message, backoff);
+      this.safeLog("event_delivery_retry", {
+        traceId: delivery.trace_id, stage: "webhook", outcome: "retry",
+        durationMs: Math.max(0, this.now().getTime() - startedAt), attempts: delivery.attempts,
+        errorCategory: status === null ? "network" : "http"
+      }, "warn");
     }
     return true;
   }
@@ -100,6 +113,15 @@ export class AccountEventDeliveryWorker {
       } catch {
         await delay(1_500);
       }
+    }
+  }
+
+  private safeLog(event: string, fields: Record<string, unknown>, level?: "info" | "warn" | "error"): void {
+    try {
+      if (level === undefined) this.options.log?.(event, fields);
+      else this.options.log?.(event, fields, level);
+    } catch {
+      // Logging must not interrupt durable delivery processing.
     }
   }
 }

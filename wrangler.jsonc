@@ -1,0 +1,16 @@
+// Cloudflare's monorepo build runs `wrangler versions upload` from the
+// repository root. Keep this root entry point aligned with the worker-local
+// config so that command discovers the email worker without dashboard cwd
+// overrides.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nreport-discord-dsa-email",
+  "main": "apps/email-worker/src/index.ts",
+  "compatibility_date": "2026-07-19",
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
+}

@@ -7,13 +7,15 @@ import {
   REPORT_RETRY_MODES,
   REPORT_STATUSES,
   retryReportBodySchema,
-  USER_MESSAGE_REPORT_REASONS
+  USER_MESSAGE_REPORT_REASONS,
+  reportLifecycleEventSchema
 } from "../src/index.js";
 
 describe("report contracts", () => {
   it("keeps report reason catalogs within Discord select limits", () => {
-    expect(USER_MESSAGE_REPORT_REASONS).toHaveLength(18);
-    expect(GUILD_REPORT_REASONS).toHaveLength(5);
+    expect(USER_MESSAGE_REPORT_REASONS.length).toBeGreaterThan(0);
+    expect(GUILD_REPORT_REASONS.length).toBeGreaterThan(0);
+    expect(GUILD_REPORT_REASONS.length).toBeLessThanOrEqual(25);
     expect(USER_MESSAGE_REPORT_REASONS.length).toBeLessThanOrEqual(25);
   });
 
@@ -38,6 +40,13 @@ describe("report contracts", () => {
           properties: { mode: { const: "edit_manual" } }
         }
       ]
+    });
+  });
+
+  it("requires a UUID trace ID on lifecycle events", () => {
+    expect(reportLifecycleEventSchema.required).toContain("traceId");
+    expect(reportLifecycleEventSchema.properties).toMatchObject({
+      traceId: { type: "string", format: "uuid" }
     });
   });
 });

@@ -4,12 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 import { REPORT_SCHEMA_SQL, ReportRepository } from "../src/report-repository.js";
 
 describe("report worker recovery", () => {
-  it("serializes event insertion so a cursor cannot pass an uncommitted lower event ID", () => {
+  it("declares an event-insert advisory-lock trigger in the schema", () => {
     expect(REPORT_SCHEMA_SQL).toContain("pg_advisory_xact_lock");
     expect(REPORT_SCHEMA_SQL).toContain("BEFORE INSERT ON account_report_events");
   });
 
-  it("requeues work before the Discord boundary and fails closed after it", async () => {
+  it("builds age-gated recovery queries and records mocked ambiguous submissions", async () => {
     const client = {
       query: vi.fn(async (sql: string, _values?: unknown[]) => {
         if (sql.includes("RETURNING report.id") && sql.includes("ambiguous_submission_state")) {

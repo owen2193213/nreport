@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { createHash } from "node:crypto";
 
 import { DsaApi, DsaApiError, type CreateReportInput, type RetryReportInput } from "@nreport/contracts";
 import type { Client, Message } from "discord.js";
@@ -6,9 +7,17 @@ import type { Client, Message } from "discord.js";
 import type { AccountBotDatabase, ApiConnection, ClaimedNotification } from "./account-database.js";
 import type { BotConfig } from "./config.js";
 import { decryptJson } from "./crypto.js";
+import { botLog, safeErrorCategory } from "./observability.js";
 import { classifyReportView, decisionMessageOptions, shouldSendDecisionDm, statusMessageOptions, targetContextFromReport, visibleStatusHash, type TargetDisplayContext } from "./report-ui.js";
 
 type AccountApi = Pick<DsaApi, "createReport" | "retryReport" | "events" | "report">;
+type AccountNotifierLog = (event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error") => void;
+
+class ReconciliationEventIngestError extends Error {}
+
+function notificationNonce(eventId: string): string {
+  return `nreport-${createHash("sha256").update(eventId).digest("hex").slice(0, 16)}`;
+}
 
 export class AccountNotificationWorker {
   private stopping = false;
@@ -20,7 +29,8 @@ export class AccountNotificationWorker {
     private readonly client: Client,
     private readonly config: BotConfig,
     private readonly apiFactory?: (connection: Pick<ApiConnection, "encrypted_api_key"> | Pick<ClaimedNotification, "encrypted_api_key">) => AccountApi,
-    private readonly decrypt: <T>(value: string, key: Buffer) => T = decryptJson
+    private readonly decrypt: <T>(value: string, key: Buffer) => T = decryptJson,
+    private readonly log: AccountNotifierLog = botLog
   ) {}
 
   public start(): void {
@@ -40,6 +50,13 @@ export class AccountNotificationWorker {
   public async processOne(): Promise<boolean> {
     const item = await this.database.claimNotification();
     if (item === null) return false;
+    const startedAt = Date.now();
+    const attempts = item.attempts;
+    const traceFields = item.trace_id === null ? {} : { traceId: item.trace_id };
+    this.safeLog("account_notification_claimed", {
+      ...traceFields, eventType: item.event_type, attempts,
+      stage: "notification", outcome: "claimed", durationMs: 0
+    });
     try {
       const preferences = await this.database.notificationPreferences(item.discord_user_id);
       const api = this.api(item);
@@ -56,6 +73,10 @@ export class AccountNotificationWorker {
       if (message === null) {
         if (!(await this.database.claimDmCard(report.reportId))) {
           await this.database.retryNotification(item.event_id, "status_card_creation_in_progress");
+          this.safeLog("account_notification_retry", {
+            ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+            failureCategory: "card_claim_busy", stage: "notification", outcome: "retry"
+          }, "warn");
           return true;
         }
         try {
@@ -71,15 +92,34 @@ export class AccountNotificationWorker {
         await this.database.completeCardUpdate(report.reportId, visibleHash);
       }
       const view = classifyReportView(report);
-      if (shouldSendDecisionDm(item.event_type, view.key, preferences)) await message.reply(decisionMessageOptions(report, context));
+      if (shouldSendDecisionDm(item.event_type, view.key, preferences)) {
+        await message.reply({
+          ...decisionMessageOptions(report, context),
+          nonce: notificationNonce(item.event_id),
+          enforceNonce: true
+        });
+      }
       await this.database.completeNotification(item.event_id);
+      this.safeLog("account_notification_completed", {
+        ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+        stage: "notification", outcome: "completed"
+      });
     } catch (error) {
       if (error instanceof DsaApiError && error.status === 401) {
         const user = await this.client.users.fetch(item.discord_user_id).catch(() => null);
         await user?.send("Your reporting API key was revoked or expired. Use `/access connect` to reconnect; detailed status refreshes are paused.").catch(() => undefined);
         await this.database.completeNotification(item.event_id);
+        this.safeLog("account_notification_completed", {
+          ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+          stage: "notification", outcome: "completed"
+        });
       } else {
-        await this.database.retryNotification(item.event_id, error instanceof Error ? error.name : "notification_failed");
+        const failureCategory = safeErrorCategory(error);
+        await this.database.retryNotification(item.event_id, failureCategory);
+        this.safeLog("account_notification_retry", {
+          ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+          failureCategory, stage: "notification", outcome: "retry"
+        }, "warn");
       }
     }
     return true;
@@ -116,12 +156,73 @@ export class AccountNotificationWorker {
     for (let pageCount = 0; pageCount < 20; pageCount += 1) {
       const page = await api.events({ after, limit: 100 });
       for (const event of page.items) {
-        const result = await this.database.ingestEvent(event);
+        const startedAt = Date.now();
+        let result: Awaited<ReturnType<AccountBotDatabase["ingestEvent"]>>;
+        try {
+          result = await this.database.ingestEvent(event);
+        } catch (error) {
+          this.safeLog("account_reconciliation_event", {
+            traceId: event.traceId,
+            eventType: event.type,
+            stage: "event_ingestion",
+            outcome: "failed",
+            durationMs: Date.now() - startedAt,
+            failureCategory: safeErrorCategory(error)
+          }, "error");
+          throw new ReconciliationEventIngestError();
+        }
+        this.safeLog("account_reconciliation_event", {
+          traceId: event.traceId,
+          eventType: event.type,
+          stage: "event_ingestion",
+          outcome: result,
+          durationMs: Date.now() - startedAt
+        });
         if (result === "not_tracked_yet") return;
         await this.database.advanceCursor(connection.discord_user_id, event.eventId);
       }
       if (page.next === null) break;
       after = page.next;
+    }
+  }
+
+  public async reconcileOnce(): Promise<void> {
+    const batchStartedAt = Date.now();
+    let connections: ApiConnection[];
+    try {
+      connections = await this.database.connections();
+    } catch (error) {
+      this.safeLog("account_reconciliation_failed", {
+        durationMs: Date.now() - batchStartedAt,
+        failureCategory: safeErrorCategory(error),
+        stage: "reconciliation",
+        outcome: "failed"
+      }, "error");
+      return;
+    }
+    for (const connection of connections) {
+      if (this.stopping) break;
+      const startedAt = Date.now();
+      try {
+        await this.reconcileConnection(connection);
+        this.safeLog("account_reconciliation_completed", {
+          durationMs: Date.now() - startedAt, stage: "reconciliation", outcome: "completed"
+        });
+      } catch (error) {
+        if (!(error instanceof ReconciliationEventIngestError)) {
+          this.safeLog("account_reconciliation_failed", {
+            durationMs: Date.now() - startedAt,
+            failureCategory: safeErrorCategory(error),
+            stage: "reconciliation",
+            outcome: "failed"
+          }, "error");
+        }
+        if (error instanceof DsaApiError && error.status === 401) {
+          const user = await this.client.users.fetch(connection.discord_user_id).catch(() => null);
+          await user?.send("Your reporting API key was revoked or expired. Use `/access connect` to reconnect; background refreshes are paused.").catch(() => undefined);
+          await this.database.disconnect(connection.discord_user_id).catch(() => undefined);
+        }
+      }
     }
   }
 
@@ -136,7 +237,11 @@ export class AccountNotificationWorker {
     while (!this.stopping) {
       try {
         if (!(await this.processOne())) await delay(1_000);
-      } catch {
+      } catch (error) {
+        this.safeLog("account_notification_retry", {
+          eventType: "unknown", attempts: 0, durationMs: 0, failureCategory: safeErrorCategory(error),
+          stage: "notification", outcome: "retry"
+        }, "error");
         await delay(2_000);
       }
     }
@@ -144,20 +249,17 @@ export class AccountNotificationWorker {
 
   private async reconcile(): Promise<void> {
     while (!this.stopping) {
-      const connections = await this.database.connections().catch(() => []);
-      for (const connection of connections) {
-        if (this.stopping) break;
-        try {
-          await this.reconcileConnection(connection);
-        } catch (error) {
-          if (error instanceof DsaApiError && error.status === 401) {
-            const user = await this.client.users.fetch(connection.discord_user_id).catch(() => null);
-            await user?.send("Your reporting API key was revoked or expired. Use `/access connect` to reconnect; background refreshes are paused.").catch(() => undefined);
-            await this.database.disconnect(connection.discord_user_id).catch(() => undefined);
-          }
-        }
-      }
+      await this.reconcileOnce();
       for (let second = 0; second < 15 * 60 && !this.stopping; second += 1) await delay(1_000);
+    }
+  }
+
+  private safeLog(event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error"): void {
+    try {
+      if (level === undefined) this.log(event, fields);
+      else this.log(event, fields, level);
+    } catch {
+      // Logging failures must not interrupt notification or reconciliation work.
     }
   }
 }

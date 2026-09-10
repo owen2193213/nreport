@@ -10,6 +10,7 @@ const config = {
   aiApiKey: "ai-key",
   aiModel: "model",
   braveSearchApiKey: "brave-key",
+  lifecycleConcurrency: 2,
   preparationConcurrency: 2,
   databaseUrl: "postgres://unused",
   emailDomain: "reports.example.test",
@@ -52,6 +53,7 @@ describe("v2 account-owned server", () => {
         updated_at: new Date("2026-09-04T00:00:00.000Z")
       }
     }));
+    const queueLength = vi.fn(async () => 7);
     const server = await buildV2Server(config, {
       healthcheck: vi.fn(),
       accounts: {
@@ -59,7 +61,7 @@ describe("v2 account-owned server", () => {
         accountView: vi.fn(),
         createAccount: vi.fn()
       },
-      reports: { create }
+      reports: { create, queueLength }
     } as never);
 
     const openapi = await server.inject({ method: "GET", url: "/openapi.json" });
@@ -93,7 +95,8 @@ describe("v2 account-owned server", () => {
     expect(openapi.json().paths["/v1/reports"]).toBeUndefined();
     expect(catalog.json().service).toEqual({ category: "discord", type: "dsa", version: "v1" });
     expect(response.statusCode).toBe(202);
-    expect(response.json()).toMatchObject({ status: "queued", accountId: principal.accountId, queueLength: 0 });
+    expect(response.json()).toMatchObject({ status: "queued", accountId: principal.accountId, queueLength: 7 });
+    expect(queueLength).toHaveBeenCalled();
     expect(create).toHaveBeenCalledOnce();
     await server.close();
   });

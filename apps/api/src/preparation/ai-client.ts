@@ -1,5 +1,11 @@
-import { readDiagnosticResponse } from "@nreport/contracts";
-import { preparationLog as botLog } from "./observability.js";
+import {
+  preparationLog as botLog,
+  providerCodeCategory,
+  providerFinishReasonCategory,
+  requestAbortSignal,
+  responseSize,
+  type ProviderFinishReasonCategory
+} from "./observability.js";
 import type { AiUsage } from "./types.js";
 
 export const OPENROUTER_CHAT_COMPLETIONS_URL =
@@ -7,9 +13,8 @@ export const OPENROUTER_CHAT_COMPLETIONS_URL =
 const REQUEST_TIMEOUT_MS = 150_000;
 
 export interface AiRequestContext {
-  actorKey: string;
   userId: string;
-  traceId?: string;
+  traceId: string;
 }
 
 export type AiStage = "plan" | "synthesize" | "refine";
@@ -95,7 +100,8 @@ export class AiClient {
     body: Record<string, unknown>,
     deadline: number,
     actor: AiRequestContext,
-    stage: AiStage
+    stage: AiStage,
+    signal?: AbortSignal
   ): Promise<AiCompletion> {
     const requestBody: Record<string, unknown> = {
       ...body,
@@ -111,6 +117,7 @@ export class AiClient {
     };
     let attempts = 0;
     for (;;) {
+      if (signal?.aborted) throw signal.reason;
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         this.logFailure(actor, stage, 0, "timeout");
@@ -125,22 +132,21 @@ export class AiClient {
           method: "POST",
           headers,
           body: JSON.stringify(requestBody),
-          signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining))
+          signal: requestAbortSignal(deadline, REQUEST_TIMEOUT_MS, signal)
         });
       } catch (fetchError) {
+        if (signal?.aborted) throw signal.reason;
         const isTimeout =
           fetchError instanceof Error &&
           (fetchError.name === "TimeoutError" || fetchError.name === "AbortError");
         const failureCategory = isTimeout ? "timeout" : "network";
-        const diagnosticMessage =
-          fetchError instanceof Error ? fetchError.message : undefined;
         this.logFailure(
           actor,
           stage,
           Date.now() - startedAt,
           failureCategory,
           undefined,
-          diagnosticMessage,
+          undefined,
           attempts
         );
         if (attempts < 3 && deadline > Date.now()) continue;
@@ -152,21 +158,16 @@ export class AiClient {
         );
       }
 
-      const responseClone = response.clone();
-
       if (!response.ok) {
         const kind = response.status === 429 ? "rate_limited" : "provider";
-        const responseDiagnostic = await readDiagnosticResponse(
-          responseClone,
-          [JSON.stringify(requestBody)]
-        );
+        const size = responseSize(response);
         this.logFailure(
           actor,
           stage,
           Date.now() - startedAt,
           kind,
           response.status,
-          responseDiagnostic,
+          size === undefined ? undefined : { responseSize: size },
           attempts
         );
         const retryable = response.status === 429 || response.status >= 500;
@@ -183,37 +184,30 @@ export class AiClient {
       try {
         payload = (await response.json()) as ChatCompletionResponse;
       } catch {
-        const responseDiagnostic = await readDiagnosticResponse(
-          responseClone,
-          [JSON.stringify(requestBody)]
-        );
+        const size = responseSize(response);
         this.logFailure(
           actor,
           stage,
           Date.now() - startedAt,
           "malformed",
           response.status,
-          responseDiagnostic,
+          size === undefined ? undefined : { responseSize: size },
           attempts
         );
         throw new AiClientError("malformed", `${this.providerName} returned malformed JSON.`);
       }
 
       if (payload.error) {
-        const errorMessage =
-          typeof payload.error.message === "string"
-            ? payload.error.message
-            : `${this.providerName} returned an upstream error.`;
         this.logFailure(
           actor,
           stage,
           Date.now() - startedAt,
           "provider",
           response.status,
-          payload.error,
+          { providerCodeCategory: providerCodeCategory(payload.error.code) },
           attempts
         );
-        throw new AiClientError("provider", errorMessage);
+        throw new AiClientError("provider", `${this.providerName} returned an upstream error.`);
       }
 
       const choice = payload.choices?.[0];
@@ -224,7 +218,7 @@ export class AiClient {
           Date.now() - startedAt,
           "refusal",
           response.status,
-          choice.message.refusal,
+          { finishReasonCategory: providerFinishReasonCategory(choice.finish_reason) },
           attempts
         );
         throw new AiClientError("refusal", "The model declined the request.");
@@ -236,7 +230,10 @@ export class AiClient {
           Date.now() - startedAt,
           "incomplete",
           response.status,
-          payload,
+          {
+            finishReasonCategory: "length",
+            responseSize: JSON.stringify(payload).length
+          },
           attempts
         );
         throw new AiClientError(
@@ -245,17 +242,16 @@ export class AiClient {
         );
       }
       if (typeof choice?.message?.content !== "string" || !choice.message.content.trim()) {
-        const responseDiagnostic = await readDiagnosticResponse(
-          responseClone,
-          [JSON.stringify(requestBody)]
-        );
         this.logFailure(
           actor,
           stage,
           Date.now() - startedAt,
           "malformed",
           response.status,
-          responseDiagnostic,
+          {
+            finishReasonCategory: providerFinishReasonCategory(choice?.finish_reason),
+            responseSize: JSON.stringify(payload).length
+          },
           attempts
         );
         throw new AiClientError("malformed", `${this.providerName} returned no completion.`);
@@ -265,19 +261,20 @@ export class AiClient {
       const finishReason =
         typeof choice.finish_reason === "string" ? choice.finish_reason : "unknown";
       botLog("ai_request_completed", {
-        actorKey: actor.actorKey,
         attempts,
         costCredits: 0,
         finishReason,
         inputTokens: usage.inputTokens,
-        latencyMs: Date.now() - startedAt,
+        durationMs: Date.now() - startedAt,
         model: this.model,
         outputTokens: usage.outputTokens,
         provider: "openrouter",
         reasoningTokens: usage.reasoningTokens,
         responseLength: choice.message.content.length,
         searchRequests: 0,
-        stage
+        stage,
+        outcome: "completed",
+        traceId: actor.traceId
       });
       return { content: choice.message.content, finishReason, usage };
     }
@@ -286,25 +283,29 @@ export class AiClient {
   private logFailure(
     actor: AiRequestContext,
     stage: AiStage,
-    latencyMs: number,
+    durationMs: number,
     failureCategory: AiClientErrorKind,
     httpStatus?: number,
-    response?: unknown,
+    metadata?: {
+      finishReasonCategory?: ProviderFinishReasonCategory;
+      providerCodeCategory?: "missing" | "number" | "string" | "other";
+      responseSize?: number;
+    },
     attempts?: number
   ): void {
     botLog(
       "ai_request_failed",
       {
-        actorKey: actor.actorKey,
         failureCategory,
         ...(httpStatus === undefined ? {} : { httpStatus }),
-        latencyMs,
+        durationMs,
         model: this.model,
         provider: "openrouter",
         stage,
+        outcome: "failed",
         ...(attempts === undefined ? {} : { attempts }),
-        ...(actor.traceId === undefined ? {} : { traceId: actor.traceId }),
-        ...(response === undefined ? {} : { response })
+        traceId: actor.traceId,
+        ...metadata
       },
       "warn"
     );

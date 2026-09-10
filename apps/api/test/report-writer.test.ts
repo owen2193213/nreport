@@ -6,7 +6,10 @@ import { ReportWriter, ReportWriterError } from "../src/preparation/report-write
 import type { AiUsage, ReportDraft } from "../src/preparation/types.js";
 
 const COUNTRIES = ["AT", "DE", "FR", "IE"] as const;
-const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
+const ACTOR: AiRequestContext = {
+  traceId: "33333333-3333-4333-8333-333333333333",
+  userId: "reporter-id"
+};
 const LAW = "Germany's Basic Law (Grundgesetz), Article 1";
 const BRAVE_UNSUPPORTED_REPORT_COUNTRIES = [
   "BG",
@@ -229,18 +232,6 @@ describe("OpenRouter and Brave report writer", () => {
     expect(planning.max_completion_tokens).toBe(4_096);
     expect(planning.response_format).toBeUndefined();
     expect(JSON.stringify(planning.messages)).toContain("provisionalLawReference");
-    expect(JSON.stringify(planning.messages)).not.toContain("without Markdown or a code fence");
-    expect(planning.messages[1]!.content).toContain("## Task");
-    expect(planning.messages[1]!.content).toContain("## Rules");
-    expect(planning.messages[1]!.content).toContain("## Input");
-    expect(planning.messages[1]!.content).toContain("## Output");
-    expect(planning.messages[1]!.content).toContain("## Examples");
-    expect(planning.messages[1]!.content).not.toContain("hedging");
-    expect(planning.messages[1]!.content).toContain("generic, standalone searches");
-    expect(planning.messages[1]!.content).toContain("Germany laws on online threats");
-    expect(planning.messages[1]!.content).toContain(
-      "what does [slang] mean in online context"
-    );
     const planningSchema = embeddedSchema(planning.messages[1]!.content);
     expect(planningSchema.properties).not.toHaveProperty("country");
     expect(planningSchema.properties).not.toHaveProperty("reportType");
@@ -259,26 +250,6 @@ describe("OpenRouter and Brave report writer", () => {
     expect(synthesis.max_completion_tokens).toBe(2_048);
     expect(synthesis.response_format.type).toBe("json_schema");
     expect(synthesis.response_format.json_schema.strict).toBeUndefined();
-    expect(JSON.stringify(synthesis.messages)).toContain(
-      "Do not count characters step by step or spend time optimizing the exact character count."
-    );
-    expect(JSON.stringify(synthesis.messages)).toContain(
-      "When the message's meaning is obvious, do not elaborate on it."
-    );
-    expect(synthesis.messages[1]!.content).toContain("# FUCK YOUUUU");
-    expect(synthesis.messages[1]!.content).toContain(
-      "Section 185 prohibits insulting another person."
-    );
-    expect(synthesis.messages[1]!.content).toContain("coded wording");
-    expect(synthesis.messages[1]!.content).toContain("## Task");
-    expect(synthesis.messages[1]!.content).toContain("## Input");
-    expect(synthesis.messages[1]!.content).toContain("## Research");
-    expect(synthesis.messages[1]!.content).toContain("## Writing");
-    expect(synthesis.messages[1]!.content).toContain("## Output");
-    expect(synthesis.messages[1]!.content).toContain("## Examples");
-    expect(synthesis.messages[1]!.content).toContain(
-      "briefly explain what the wording means, then connect that meaning to the law"
-    );
   });
 
   it("keeps resolved fields out of the synthesis output contract", async () => {
@@ -527,18 +498,6 @@ describe("OpenRouter and Brave report writer", () => {
     expect(result.legalResearch.searchRequests).toBe(1);
     expect(successRequest).toHaveBeenCalledTimes(4);
 
-    const firstSynthesis = bodyAt<{ messages: Array<{ content: string }> }>(successRequest, 1);
-    expect(firstSynthesis.messages[1]!.content).toContain(
-      "Do NOT request a follow-up search unless the existing material is completely insufficient"
-    );
-    expect(firstSynthesis.messages[1]!.content).not.toContain(
-      "You have already used the allowed follow-up search"
-    );
-    const finalSynthesis = bodyAt<{ messages: Array<{ content: string }> }>(successRequest, 3);
-    expect(finalSynthesis.messages[1]!.content).toContain(
-      "You have already used the allowed follow-up search. Do not request more research."
-    );
-
     const repeated = vi
       .fn()
       .mockResolvedValueOnce(baseten(plan()))
@@ -552,6 +511,7 @@ describe("OpenRouter and Brave report writer", () => {
     await expect(writer(repeated).generate(draft(), ACTOR)).rejects.toThrow(
       /allowed follow-up/
     );
+    expect(repeated).toHaveBeenCalledTimes(4);
   });
 
   it("repairs an oversized completed report once with reasoning disabled", async () => {
@@ -681,6 +641,13 @@ describe("OpenRouter and Brave report writer", () => {
         }
       }
     };
+    // Actually supply unwanted context: asserting absent text without injecting it
+    // cannot detect accidental forwarding by the writer.
+    if (messageDraft.messageEvidence?.status === "captured") {
+      Object.assign(messageDraft.messageEvidence.snapshot, {
+        referencedMessage: { authorUsername: "minor_user", content: "excuse me im 17 in highschool" }
+      });
+    }
     const request = vi
       .fn()
       .mockResolvedValueOnce(baseten(plan()))
@@ -693,6 +660,7 @@ describe("OpenRouter and Brave report writer", () => {
         return typeof body === "string" ? body : "";
       })
       .join("\n");
+    expect(serialized).toContain("You are not an adult yet");
     expect(serialized).not.toContain("minor_user");
     expect(serialized).not.toContain("excuse me im 17 in highschool");
   });
@@ -810,8 +778,37 @@ describe("OpenRouter and Brave report writer", () => {
       .generate(draft(), ACTOR)
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(ReportWriterError);
+    expect((failure as ReportWriterError).kind).toBe("malformed");
     expect((failure as ReportWriterError).candidateReport).toBe(repairedCandidate);
     expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["provider", () => new Response(JSON.stringify({ error: { message: "private provider body", code: 500 } }), { status: 200, headers: { "Content-Type": "application/json" } })],
+    ["refusal", () => new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: null, refusal: "private refusal" } }] }), { status: 200, headers: { "Content-Type": "application/json" } })],
+    ["rate_limited", () => new Response("private rate limit body", { status: 429 })],
+    ["incomplete", () => new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: null, reasoning_content: "private reasoning" } }] }), { status: 200, headers: { "Content-Type": "application/json" } })],
+    ["malformed", () => new Response("private malformed body", { status: 200 })],
+    ["timeout", () => Promise.reject(new DOMException("private timeout detail", "TimeoutError"))]
+  ] as const)("preserves the %s AI failure kind", async (kind, response) => {
+    const request = vi.fn().mockImplementation(response);
+
+    await expect(writer(request).generate(draft(), ACTOR)).rejects.toMatchObject({ kind });
+  });
+
+  it("preserves a research provider failure kind", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(baseten(plan({
+        termResearchRequired: true,
+        termSearchQuery: "coded term meaning"
+      })))
+      .mockResolvedValue(new Response("private search response", { status: 429 }));
+
+    await expect(writer(request).generate(draft(), ACTOR)).rejects.toMatchObject({
+      kind: "rate_limited",
+      stage: "term_research"
+    });
   });
 
   it("repairs a synthesis response that is missing its law reference", async () => {

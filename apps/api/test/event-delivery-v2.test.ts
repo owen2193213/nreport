@@ -17,6 +17,7 @@ describe("account event delivery", () => {
       created_at: new Date("2026-09-04T00:00:00Z"),
       account_id: "account-1",
       report_id: "report-1",
+      trace_id: "33333333-3333-4333-8333-333333333333",
       event_type: "report_writing",
       lifecycle_attempt: 1,
       occurred_at: new Date("2026-09-04T00:00:01Z")
@@ -35,7 +36,7 @@ describe("account event delivery", () => {
         .digest("hex");
       expect(headers["x-report-event-signature"]).toBe(expected);
       expect(JSON.parse(body)).toEqual({
-        eventId: "42", accountId: "account-1", reportId: "report-1",
+        eventId: "42", accountId: "account-1", reportId: "report-1", traceId: "33333333-3333-4333-8333-333333333333",
         type: "report_writing", occurredAt: "2026-09-04T00:00:01.000Z", lifecycleAttempt: 1
       });
       return new Response(null, { status: 204 });
@@ -55,6 +56,7 @@ describe("account event delivery", () => {
       event_id: "42", destination_id: "dest-1", destination_url: "https://bot.example.test/events",
       encrypted_signing_secret: "encrypted", attempts: 1, created_at: new Date(), account_id: "account-1",
       report_id: "report-1", event_type: "report_queued", lifecycle_attempt: 1, occurred_at: new Date()
+      , trace_id: "33333333-3333-4333-8333-333333333333"
     };
     const store = {
       claimEventDelivery: vi.fn(async () => delivery), completeEventDelivery: vi.fn(), retryEventDelivery: vi.fn()

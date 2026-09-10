@@ -11,6 +11,7 @@ import { buildV2Server } from "./server-v2.js";
 import { decryptJson } from "./security.js";
 import { WebhookDestinationRepository } from "./webhook-destinations.js";
 import { AnalyticsRepository } from "./analytics-repository.js";
+import { QueueObservabilitySampler } from "./operational-observability.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -55,18 +56,43 @@ async function main(): Promise<void> {
     config.preparationConcurrency,
     undefined,
     (error) => app.log.error(
-      { errorName: error instanceof Error ? error.name : "UnknownError" },
+      {
+        traceId: diagnosticString(error, "traceId"),
+        stage: diagnosticString(error, "stage") ?? "preparation",
+        outcome: "failed",
+        errorCategory: diagnosticString(error, "kind") ?? "unknown"
+      },
       "Preparation worker iteration failed"
-    )
+    ),
+    (outcome) => {
+      if (outcome.outcome === "failed") app.log.error(outcome, "Preparation worker outcome");
+      else app.log.info(outcome, "Preparation worker outcome");
+    }
   );
-  const lifecycleRunner = new LifecycleRunner(reports, config);
+  const lifecycleRunner = new LifecycleRunner(
+    reports,
+    config,
+    undefined,
+    undefined,
+    undefined,
+    (outcome) => {
+      if (outcome.outcome === "failed") app.log.error(outcome, "Lifecycle runner outcome");
+      else app.log.info(outcome, "Lifecycle runner outcome");
+    }
+  );
   const eventDeliveryWorker = new AccountEventDeliveryWorker(reports, {
-    decrypt: (value) => decryptJson<string>(value, config.sessionEncryptionKey)
+    decrypt: (value) => decryptJson<string>(value, config.sessionEncryptionKey),
+    log: (event, fields, level = "info") => app.log[level]({ event, ...fields }, "Event delivery outcome")
   });
+  const queueSampler = new QueueObservabilitySampler(
+    reports,
+    (event, fields, level = "info") => app.log[level]({ event, ...fields }, "Queue observability sample")
+  );
   if (config.workerEnabled) {
     preparationWorker.start();
     lifecycleRunner.start();
     eventDeliveryWorker.start();
+    queueSampler.start();
   }
 
   let stopping = false;
@@ -79,6 +105,7 @@ async function main(): Promise<void> {
       await preparationWorker.stop();
       await lifecycleRunner.stop();
       await eventDeliveryWorker.stop();
+      await queueSampler.stop();
     }
     await database.close();
   };
@@ -86,6 +113,12 @@ async function main(): Promise<void> {
   process.once("SIGTERM", () => void stop("SIGTERM"));
 
   await app.listen({ host: "0.0.0.0", port: config.port });
+}
+
+function diagnosticString(value: unknown, key: string): string | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === "string" ? field : undefined;
 }
 
 main().catch((error: unknown) => {

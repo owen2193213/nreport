@@ -13,6 +13,42 @@ const baseReport = {
 };
 
 describe("PreparationWorker", () => {
+  it("bounds active work and frees a slot after a job fails", async () => {
+    const jobs = [1, 2, 3].map((id) => ({ jobId: `job-${id}`, report: { ...baseReport, id: `report-${id}`,
+      request_input: { flow: "message", useAi: true, target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" } } } }));
+    const releases: (() => void)[] = [];
+    let active = 0;
+    let peak = 0;
+    const prepare = vi.fn(async () => {
+      const index = releases.length;
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      active -= 1;
+      if (index === 0) throw new Error("test failure");
+      return { country: "DE", category: "category", description: "description", finalText: "text",
+        legalReference: null, researchSummary: null, sources: [], usage: { aiRequests: 1, inputTokens: 0, outputTokens: 0, searchRequests: 0 } };
+    });
+    const store = { claimPreparation: vi.fn(async () => jobs.shift() ?? null), transition: vi.fn(async () => true),
+      completePreparation: vi.fn(), failPreparation: vi.fn() };
+    const worker = new PreparationWorker(store as never, { prepare }, vi.fn() as never, 2,
+      () => new Promise((resolve) => setTimeout(resolve, 1)));
+    worker.start();
+    try {
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+      expect(jobs).toHaveLength(1);
+      releases[0]!();
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(3));
+      expect(store.failPreparation).toHaveBeenCalledOnce();
+      expect(peak).toBe(2);
+    } finally {
+      const stopping = worker.stop();
+      releases.forEach((release) => release());
+      await stopping;
+    }
+    expect(store.completePreparation).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps processing after a transient job-claim failure", async () => {
     let claims = 0;
     const store = {
@@ -189,7 +225,7 @@ describe("PreparationWorker", () => {
       "job-3",
       "report-1",
       "preparation_rate_limited",
-      "The AI writing provider is rate limited after 3 attempts. Retry the report shortly."
+      "A preparation provider is rate limited. Retry the report shortly."
     );
   });
 });

@@ -6,7 +6,7 @@ import {
   type AiClientError
 } from "../src/preparation/ai-client.js";
 
-const ACTOR: AiRequestContext = { actorKey: "actor-key", userId: "reporter-id" };
+const ACTOR: AiRequestContext = { traceId: "33333333-3333-4333-8333-333333333333", userId: "reporter-id" };
 const OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";
 
 function success(
@@ -99,17 +99,12 @@ describe("AiClient", () => {
       });
     });
 
-    it("always exposes the OpenRouter endpoint and provider name", () => {
-      const client = new AiClient("ai-secret", OPENROUTER_MODEL);
-      expect(client.endpoint).toBe("https://openrouter.ai/api/v1/chat/completions");
-      expect(client.providerName).toBe("OpenRouter");
-    });
-
     it("handles upstream error objects in response payloads", async () => {
+      const canary = "CANARY_UNSAFE_PROVIDER_CAUSE";
       const request = vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            error: { message: "Provider returned 504 gateway timeout", code: 504 }
+            error: { message: canary, code: 504 }
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         )
@@ -121,7 +116,7 @@ describe("AiClient", () => {
         }).complete({}, Date.now() + 5_000, ACTOR, "plan")
       ).rejects.toMatchObject({
         kind: "provider",
-        message: "Provider returned 504 gateway timeout"
+        message: "OpenRouter returned an upstream error."
       });
     });
   });
@@ -242,5 +237,98 @@ describe("AiClient", () => {
       expect.objectContaining<Partial<AiClientError>>({ kind: "timeout" })
     );
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("serializes only bounded provider failure metadata", async () => {
+    const canary = "CANARY_PROVIDER_BODY_AND_REASONING";
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const request = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { message: canary, code: `secret-${canary}` },
+          reasoning: canary
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    await expect(
+      new AiClient("key", OPENROUTER_MODEL, {
+        request: request as unknown as typeof fetch
+      }).complete({}, Date.now() + 5_000, ACTOR, "plan")
+    ).rejects.toMatchObject({ kind: "provider" });
+
+    const serialized = write.mock.calls.map(([line]) => String(line)).join("");
+    expect(serialized).not.toContain(canary);
+    expect(JSON.parse(serialized)).toMatchObject({
+      event: "ai_request_failed",
+      traceId: ACTOR.traceId,
+      outcome: "failed",
+      durationMs: expect.any(Number) as number,
+      failureCategory: "provider",
+      providerCodeCategory: "string",
+      stage: "plan"
+    });
+    expect(JSON.parse(serialized)).not.toHaveProperty("actorKey");
+  });
+
+  it("honors an already-aborted caller signal without making a request", async () => {
+    const request = vi.fn();
+    const controller = new AbortController();
+    const reason = new DOMException("Preparation cancelled", "AbortError");
+    controller.abort(reason);
+
+    await expect(
+      new AiClient("key", OPENROUTER_MODEL, {
+        request: request as unknown as typeof fetch
+      }).complete({}, Date.now() + 5_000, ACTOR, "plan", controller.signal)
+    ).rejects.toBe(reason);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("aborts an active request once and releases its request listener", async () => {
+    const controller = new AbortController();
+    const reason = new DOMException("Preparation cancelled", "AbortError");
+    let activeListeners = 0;
+    const request = vi.fn((_url: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const requestSignal = init?.signal;
+        if (!requestSignal) throw new Error("Expected a request signal.");
+        activeListeners += 1;
+        requestSignal.addEventListener("abort", () => {
+          activeListeners -= 1;
+          reject(requestSignal.reason instanceof Error ? requestSignal.reason : new Error("Request aborted."));
+        }, { once: true });
+      }));
+    const running = new AiClient("key", OPENROUTER_MODEL, {
+      request: request as unknown as typeof fetch
+    }).complete({}, Date.now() + 5_000, ACTOR, "plan", controller.signal);
+    await vi.waitFor(() => expect(activeListeners).toBe(1));
+
+    controller.abort(reason);
+
+    await expect(running).rejects.toBe(reason);
+    expect(activeListeners).toBe(0);
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("categorizes an untrusted finish reason without logging it", async () => {
+    const canary = "CANARY_MALICIOUS_FINISH_REASON";
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ finish_reason: canary, message: { content: null, refusal: "declined" } }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    await expect(new AiClient("key", OPENROUTER_MODEL, {
+      request: request as unknown as typeof fetch
+    }).complete({}, Date.now() + 5_000, ACTOR, "plan")).rejects.toMatchObject({ kind: "refusal" });
+
+    const lines = write.mock.calls.map(([line]) => String(line));
+    const serialized = lines.join("");
+    expect(serialized).not.toContain(canary);
+    const event = lines
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((record) => record.failureCategory === "refusal");
+    expect(event).toMatchObject({ finishReasonCategory: "other" });
   });
 });

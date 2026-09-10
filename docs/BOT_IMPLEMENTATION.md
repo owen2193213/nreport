@@ -76,15 +76,26 @@ Awaiting Discord's decision**; the UI never uses an ambiguous generic “Appeal 
 
 The private `/internal/report-events` endpoint verifies the timestamped HMAC over the exact body,
 rejects stale/replayed deliveries, and records each event idempotently. Payloads contain identifiers
-and state type only; the notifier fetches authoritative details with the connected personal key.
+and state type plus a required API-generated UUID `traceId`; the notifier fetches authoritative
+details with the connected personal key. The inbox persists the trace for operational correlation,
+but the bot never renders it. The bot migration adds the nullable column before validation is
+tightened so existing inbox rows remain readable; every newly accepted event has a valid trace.
 
 The bot also polls each connected account's cursor-based event feed every 15 minutes. It does not
 advance a cursor past an event that cannot yet be linked. Webhook and polling ingestion share the
 same event inbox so duplicate delivery cannot create duplicate DMs. Pending create/retry calls are
 replayed with their original idempotency key before normal feed reconciliation.
 
+Notification and reconciliation operational events retain their stable event names and emit a
+bounded `stage`, `outcome`, and `durationMs`; failures also emit a safe error category. Where a
+lifecycle event supplies a trace, it is the only report-level correlation value in these logs. Raw
+report, account, event, message, and Discord user identifiers are never logged.
+
 The status card is always maintained while the account is connected. Decision/problem messages reply
-to that card so the affected report remains clear. These replies are sent
+to that card so the affected report remains clear. Terminal replies use an enforced, deterministic
+Discord nonce derived only from the durable lifecycle event ID, allowing Discord to deduplicate a
+retry when the original message-create response was lost. The inbox item is completed only after
+Discord accepts the reply. These replies are sent
 only for decisions or actionable problems: original-report accepted, appeal accepted, appeal
 denied, report/appeal confirmation timeout, ineligible appeal, and failure. The original
 report-denied DM is off by default because the automatic appeal continues; its preference is
@@ -143,6 +154,24 @@ Use a new Discord application, bot database, and `BOT_DATA_ENCRYPTION_KEY`. Conf
 `NREPORT_API_URL`, `NREPORT_ADMIN_KEY`, and optionally `REPORT_EVENT_WEBHOOK_SECRET`; see
 `apps/bot/.env.example`. Register global commands after the new API and test account are ready.
 Do not point the new bot at the historical API or database.
+
+The API runs `LIFECYCLE_CONCURRENCY` independent lifecycle job loops (default `2`, valid range
+`1..16`) plus an independently scheduled recovery/deadline-maintenance loop. A delayed appeal or
+other stalled lifecycle request therefore occupies only its own slot and does not pause maintenance.
+Each running lifecycle job renews its database lease every 30 seconds so recovery cannot reclaim a
+live job, including one that has crossed the irreversible submission boundary. The claimed attempt
+number is also the execution token: heartbeats and all lifecycle status, completion, retry, failure,
+submission, and review transitions require the same running job and token, so a recovered stale
+worker cannot mutate its replacement claim. A worker that loses heartbeat ownership abandons further
+progress and closes its Discord client where possible. Shutdown stops new claims, cancels idle
+cadence timers, and waits for in-flight lifecycle work.
+Lifecycle logs contain only the report trace, job kind, attempt count, duration, outcome, and a safe error category;
+they must never include report, job, account, or Discord identifiers, evidence, verification codes,
+URLs, provider responses, or arbitrary error messages.
+Bot notification logs similarly contain only the report trace, lifecycle event type, attempt count,
+duration, outcome, and safe error category. Reconciliation event logs use the trace and bounded event
+type/outcome fields; connection summaries contain only duration, outcome, and safe error category;
+failures are isolated per connection so one unavailable account does not stop later accounts.
 
 The health endpoint becomes ready only when PostgreSQL and the Discord gateway are ready. The bot
 webhook is intended for Railway private networking and does not need a public domain.

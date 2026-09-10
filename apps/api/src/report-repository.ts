@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS report_credit_chains (
 
 CREATE TABLE IF NOT EXISTS account_reports (
   id uuid PRIMARY KEY,
+  trace_id uuid NOT NULL DEFAULT gen_random_uuid(),
   account_id uuid NOT NULL REFERENCES api_accounts(id) ON DELETE RESTRICT,
   idempotency_key text NOT NULL,
   request_hash text NOT NULL,
@@ -73,6 +74,12 @@ CREATE TABLE IF NOT EXISTS account_reports (
   UNIQUE (account_id, idempotency_key),
   UNIQUE (predecessor_report_id)
 );
+
+ALTER TABLE account_reports ADD COLUMN IF NOT EXISTS trace_id uuid;
+UPDATE account_reports SET trace_id = gen_random_uuid() WHERE trace_id IS NULL;
+ALTER TABLE account_reports ALTER COLUMN trace_id SET DEFAULT gen_random_uuid();
+ALTER TABLE account_reports ALTER COLUMN trace_id SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS account_reports_trace_idx ON account_reports(trace_id);
 
 DO $$ BEGIN
   ALTER TABLE report_credit_chains
@@ -199,6 +206,7 @@ export class ReportMutationError extends Error {
 
 export interface AccountReportRow extends QueryResultRow {
   id: string;
+  trace_id: string;
   account_id: string;
   idempotency_key: string;
   request_hash: string;
@@ -234,6 +242,36 @@ export interface InboundEmailRegistration {
 
 export class ReportRepository {
   public constructor(private readonly pool: Pick<Pool, "connect" | "query">) {}
+
+  public async queueSnapshot(): Promise<QueueSnapshot> {
+    const result = await this.pool.query<QueueSnapshotRow>(
+      `SELECT
+         count(*) FILTER (WHERE kind = 'prepare_report' AND state = 'pending' AND run_at <= now())::text AS preparation_ready,
+         count(*) FILTER (WHERE kind = 'prepare_report' AND state = 'pending' AND run_at > now())::text AS preparation_delayed,
+         count(*) FILTER (WHERE kind = 'prepare_report' AND state = 'running')::text AS preparation_running,
+         extract(epoch FROM (now() - min(run_at) FILTER (WHERE kind = 'prepare_report' AND state = 'pending' AND run_at <= now()))) * 1000 AS preparation_oldest_ms,
+         count(*) FILTER (WHERE kind <> 'prepare_report' AND state = 'pending' AND run_at <= now())::text AS lifecycle_ready,
+         count(*) FILTER (WHERE kind <> 'prepare_report' AND state = 'pending' AND run_at > now())::text AS lifecycle_delayed,
+         count(*) FILTER (WHERE kind <> 'prepare_report' AND state = 'running')::text AS lifecycle_running,
+         extract(epoch FROM (now() - min(run_at) FILTER (WHERE kind <> 'prepare_report' AND state = 'pending' AND run_at <= now()))) * 1000 AS lifecycle_oldest_ms,
+         count(*) FILTER (WHERE kind = 'request_code' AND state IN ('pending', 'running'))::text AS request_code,
+         count(*) FILTER (WHERE kind = 'verify_submit' AND state IN ('pending', 'running'))::text AS verify_submit,
+         count(*) FILTER (WHERE kind = 'submit_review' AND state IN ('pending', 'running'))::text AS submit_review
+       FROM account_report_jobs`
+    );
+    const row = result.rows[0];
+    return {
+      preparation: queuePhase(row?.preparation_ready, row?.preparation_delayed, row?.preparation_running, row?.preparation_oldest_ms),
+      lifecycle: {
+        ...queuePhase(row?.lifecycle_ready, row?.lifecycle_delayed, row?.lifecycle_running, row?.lifecycle_oldest_ms),
+        byJobKind: {
+          requestCode: count(row?.request_code),
+          verifySubmit: count(row?.verify_submit),
+          submitReview: count(row?.submit_review)
+        }
+      }
+    };
+  }
 
   public async queueLength(): Promise<number> {
     const result = await this.pool.query<{ count: string }>(
@@ -455,6 +493,7 @@ export class ReportRepository {
       }
 
       const reportId = randomUUID();
+      const traceId = randomUUID();
       const chainId = randomUUID();
       await client.query(
         `UPDATE api_accounts
@@ -471,11 +510,11 @@ export class ReportRepository {
       );
       const inserted = await client.query<AccountReportRow>(
         `INSERT INTO account_reports
-           (id, account_id, idempotency_key, request_hash, flow, use_ai,
+           (id, trace_id, account_id, idempotency_key, request_hash, flow, use_ai,
             request_input, credit_chain_id, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued')
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued')
          RETURNING *`,
-        [reportId, accountId, idempotencyKey, requestHash, input.flow, input.useAi, input, chainId]
+        [reportId, traceId, accountId, idempotencyKey, requestHash, input.flow, input.useAi, input, chainId]
       );
       await client.query(
         "UPDATE report_credit_chains SET original_report_id = $2 WHERE id = $1",
@@ -630,14 +669,17 @@ export class ReportRepository {
       id: string;
       account_id: string;
       report_id: string;
+      trace_id: string;
       event_type: string;
       lifecycle_attempt: number;
       created_at: Date;
     }>(
-      `SELECT id, account_id, report_id, event_type, lifecycle_attempt, created_at
-       FROM account_report_events
-       WHERE account_id = $1 AND id > $2
-       ORDER BY id LIMIT $3`,
+      `SELECT event.id, event.account_id, event.report_id, report.trace_id,
+              event.event_type, event.lifecycle_attempt, event.created_at
+       FROM account_report_events AS event
+       JOIN account_reports AS report ON report.id = event.report_id
+       WHERE event.account_id = $1 AND event.id > $2
+       ORDER BY event.id LIMIT $3`,
       [accountId, after ?? "0", pageSize + 1]
     );
     const hasMore = result.rows.length > pageSize;
@@ -647,6 +689,7 @@ export class ReportRepository {
         eventId: String(row.id),
         accountId: row.account_id,
         reportId: row.report_id,
+        traceId: row.trace_id,
         type: row.event_type,
         occurredAt: row.created_at.toISOString(),
         lifecycleAttempt: row.lifecycle_attempt
@@ -755,18 +798,19 @@ export class ReportRepository {
       }
 
       const reportId = randomUUID();
+      const traceId = randomUUID();
       const successorInput = replacementRequest(predecessor, input);
       const inserted = await client.query<AccountReportRow>(
         `INSERT INTO account_reports
-           (id, account_id, idempotency_key, request_hash, flow, use_ai, request_input,
+           (id, trace_id, account_id, idempotency_key, request_hash, flow, use_ai, request_input,
             prepared_input, legal_reference, research_summary, research_sources,
             credit_chain_id, predecessor_report_id, retry_mode, retry_sequence,
             lifecycle_attempt, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                 $12, $13, $14, $15, $16, 'queued')
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                 $13, $14, $15, $16, $17, 'queued')
          RETURNING *`,
         [
-          reportId, accountId, idempotencyKey, requestHash, predecessor.flow,
+          reportId, traceId, accountId, idempotencyKey, requestHash, predecessor.flow,
           successorInput.useAi, successorInput,
           mode === "reuse" ? predecessor.prepared_input : null,
           mode === "reuse" ? predecessor.legal_reference : null,
@@ -1039,11 +1083,15 @@ export class ReportRepository {
     }
   }
 
-  public async beginSubmission(reportId: string): Promise<boolean> {
+  public async beginSubmission(job: LifecycleJob): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const locked = await lockReportCredit(client, reportId);
+      if (!(await ownsLifecycleJob(client, job))) {
+        await client.query("COMMIT");
+        return false;
+      }
+      const locked = await lockReportCredit(client, job.report_id);
       if (
         locked === undefined ||
         locked.status !== "verifying" ||
@@ -1060,9 +1108,9 @@ export class ReportRepository {
           `UPDATE account_reports SET status = 'failed', failure_stage = 'verifying',
              error_code = 'account_suspended', error_message = 'Account was suspended before submission.',
              updated_at = now() WHERE id = $1`,
-          [reportId]
+          [job.report_id]
         );
-        await insertEvent(client, locked.account_id, reportId, "report_failed", locked.lifecycle_attempt, { errorCode: "account_suspended" });
+        await insertEvent(client, locked.account_id, job.report_id, "report_failed", locked.lifecycle_attempt, { errorCode: "account_suspended" });
         await client.query("COMMIT");
         return false;
       }
@@ -1089,9 +1137,9 @@ export class ReportRepository {
       await client.query(
         `UPDATE account_reports SET status = 'submitting', submission_started_at = now(), updated_at = now()
          WHERE id = $1`,
-        [reportId]
+        [job.report_id]
       );
-      await insertEvent(client, locked.account_id, reportId, "submission_started", locked.lifecycle_attempt);
+      await insertEvent(client, locked.account_id, job.report_id, "submission_started", locked.lifecycle_attempt);
       await client.query("COMMIT");
       return true;
     } catch (error) {
@@ -1112,14 +1160,27 @@ export class ReportRepository {
        UPDATE account_report_jobs AS job
        SET state = 'running', attempts = attempts + 1, locked_at = now(), updated_at = now()
        FROM candidate WHERE job.id = candidate.id
-       RETURNING job.id, job.report_id, job.kind, job.payload, job.attempts, job.max_attempts`
+       RETURNING job.id, job.report_id, job.kind, job.payload, job.attempts,
+                 job.max_attempts, job.attempts AS execution_token,
+                 (SELECT trace_id FROM account_reports WHERE id = job.report_id) AS trace_id`
     );
     return result.rows[0] ?? null;
   }
 
+  public async heartbeatLifecycleJob(job: LifecycleJob): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE account_report_jobs
+       SET locked_at = now(), updated_at = now()
+       WHERE id = $1 AND attempts = $2 AND state = 'running'
+       RETURNING id`,
+      [job.id, job.execution_token]
+    );
+    return result.rowCount === 1;
+  }
+
   public async getLifecycleReport(reportId: string): Promise<LifecycleReport | null> {
     const result = await this.pool.query<LifecycleReport & QueryResultRow>(
-      `SELECT id, flow, prepared_input->>'country' AS country,
+      `SELECT id, trace_id, flow, prepared_input->>'country' AS country,
               reporter_email, reporter_legal_name, timezone, locale, language,
               proxy_session_id, session_state, request_input, prepared_input, discord_report_id
        FROM account_reports WHERE id = $1`,
@@ -1129,20 +1190,52 @@ export class ReportRepository {
   }
 
   public async setStatus(
-    reportId: string,
+    job: LifecycleJob,
     status: "requesting_verification" | "verifying"
   ): Promise<boolean> {
-    return this.transition(reportId, status);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (!(await ownsLifecycleJob(client, job))) {
+        await client.query("COMMIT");
+        return false;
+      }
+      const updated = await client.query<{ account_id: string; lifecycle_attempt: number }>(
+        `UPDATE account_reports AS report SET status = $2, updated_at = now()
+         WHERE report.id = $1
+           AND report.status NOT IN ('failed', 'submitting', 'submitted')
+           AND EXISTS (
+             SELECT 1 FROM api_accounts AS account
+             WHERE account.id = report.account_id AND account.status = 'active'
+           )
+         RETURNING account_id, lifecycle_attempt`,
+        [job.report_id, status]
+      );
+      const row = updated.rows[0];
+      if (row !== undefined) {
+        await insertEvent(client, row.account_id, job.report_id, `report_${status}`, row.lifecycle_attempt);
+      }
+      await client.query("COMMIT");
+      return row !== undefined;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   public async saveAwaitingVerification(
-    jobId: string,
-    reportId: string,
+    job: LifecycleJob,
     encryptedSession: string
   ): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      if (!(await ownsLifecycleJob(client, job))) {
+        await client.query("COMMIT");
+        return false;
+      }
       const updated = await client.query<{
         account_id: string; lifecycle_attempt: number; status: ReportStatus;
       }>(
@@ -1159,17 +1252,17 @@ export class ReportRepository {
              WHERE account.id = account_reports.account_id AND account.status = 'active'
            )
          RETURNING account_id, lifecycle_attempt, status`,
-        [reportId, encryptedSession]
+        [job.report_id, encryptedSession]
       );
       const row = updated.rows[0];
       if (row !== undefined) {
         await client.query(
           `UPDATE account_report_jobs SET state = 'completed', locked_at = NULL, updated_at = now()
-           WHERE id = $1 AND report_id = $2 AND state = 'running'`,
-          [jobId, reportId]
+           WHERE id = $1 AND report_id = $2 AND attempts = $3 AND state = 'running'`,
+          [job.id, job.report_id, job.execution_token]
         );
         if (row.status === "awaiting_verification") {
-          await insertEvent(client, row.account_id, reportId, "awaiting_verification", row.lifecycle_attempt);
+          await insertEvent(client, row.account_id, job.report_id, "awaiting_verification", row.lifecycle_attempt);
         }
       }
       await client.query("COMMIT");
@@ -1182,54 +1275,59 @@ export class ReportRepository {
     }
   }
 
-  public async completeLifecycleJob(jobId: string): Promise<void> {
-    await this.pool.query(
+  public async completeLifecycleJob(job: LifecycleJob): Promise<boolean> {
+    const result = await this.pool.query(
       `UPDATE account_report_jobs
        SET state = 'completed', locked_at = NULL, updated_at = now()
-       WHERE id = $1 AND state = 'running'`,
-      [jobId]
+       WHERE id = $1 AND attempts = $2 AND state = 'running'
+       RETURNING id`,
+      [job.id, job.execution_token]
     );
+    return result.rowCount === 1;
   }
 
-  public async retryLifecycleJob(job: LifecycleJob, code: string, delaySeconds: number): Promise<void> {
-    await this.pool.query(
+  public async retryLifecycleJob(job: LifecycleJob, code: string, delaySeconds: number): Promise<boolean> {
+    const result = await this.pool.query(
       `UPDATE account_report_jobs
-       SET state = 'pending', locked_at = NULL, last_error = $2,
-           run_at = now() + ($3 * interval '1 second'), updated_at = now()
-       WHERE id = $1 AND state = 'running'`,
-      [job.id, code, delaySeconds]
+       SET state = 'pending', locked_at = NULL, last_error = $3,
+           run_at = now() + ($4 * interval '1 second'), updated_at = now()
+       WHERE id = $1 AND attempts = $2 AND state = 'running'
+       RETURNING id`,
+      [job.id, job.execution_token, code, delaySeconds]
     );
+    return result.rowCount === 1;
   }
 
   public async failBeforeSubmission(
-    jobId: string,
-    reportId: string,
+    job: LifecycleJob,
     code: string,
     message: string
-  ): Promise<void> {
-    await this.failLifecycle(jobId, reportId, code, message, true);
+  ): Promise<boolean> {
+    return this.failLifecycle(job, code, message, true);
   }
 
   public async failAfterSubmission(
-    jobId: string,
-    reportId: string,
+    job: LifecycleJob,
     code: string,
     message: string
-  ): Promise<void> {
-    await this.failLifecycle(jobId, reportId, code, message, false);
+  ): Promise<boolean> {
+    return this.failLifecycle(job, code, message, false);
   }
 
   private async failLifecycle(
-    jobId: string,
-    reportId: string,
+    job: LifecycleJob,
     code: string,
     message: string,
     releaseReservation: boolean
-  ): Promise<void> {
+  ): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const locked = await lockReportCredit(client, reportId);
+      if (!(await ownsLifecycleJob(client, job))) {
+        await client.query("COMMIT");
+        return false;
+      }
+      const locked = await lockReportCredit(client, job.report_id);
       if (locked !== undefined && releaseReservation && locked.credit_state === "reserved") {
         await releaseCredit(client, locked.account_id, locked.credit_chain_id, "Lifecycle failed before submission");
       }
@@ -1241,18 +1339,20 @@ export class ReportRepository {
            WHERE id = $1 AND status <> 'failed'
              AND ($4::boolean = false OR submission_started_at IS NULL)
            RETURNING id`,
-          [reportId, code, message, releaseReservation]
+          [job.report_id, code, message, releaseReservation]
         );
         await client.query(
           `UPDATE account_report_jobs SET state = 'failed', locked_at = NULL,
-             last_error = $2, updated_at = now() WHERE id = $1 AND state = 'running'`,
-          [jobId, code]
+             last_error = $4, updated_at = now()
+           WHERE id = $1 AND report_id = $2 AND attempts = $3 AND state = 'running'`,
+          [job.id, job.report_id, job.execution_token, code]
         );
         if (failed.rowCount === 1) {
-          await insertEvent(client, locked.account_id, reportId, "report_failed", locked.lifecycle_attempt, { errorCode: code });
+          await insertEvent(client, locked.account_id, job.report_id, "report_failed", locked.lifecycle_attempt, { errorCode: code });
         }
       }
       await client.query("COMMIT");
+      return true;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1261,26 +1361,30 @@ export class ReportRepository {
     }
   }
 
-  public async markSubmitted(jobId: string, reportId: string, discordReportId: string): Promise<void> {
+  public async markSubmitted(job: LifecycleJob, discordReportId: string): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      if (!(await ownsLifecycleJob(client, job))) {
+        await client.query("COMMIT");
+        return false;
+      }
       const updated = await client.query<{ account_id: string; lifecycle_attempt: number }>(
         `UPDATE account_reports
          SET status = 'submitted', discord_report_id = $2,
              receipt_deadline = now() + interval '120 seconds', updated_at = now()
          WHERE id = $1 AND status = 'submitting'
          RETURNING account_id, lifecycle_attempt`,
-        [reportId, discordReportId]
+        [job.report_id, discordReportId]
       );
       const row = updated.rows[0];
       if (row === undefined) throw new Error("Submitting report could not be persisted.");
       await client.query(
         `UPDATE account_report_jobs SET state = 'completed', locked_at = NULL, updated_at = now()
-         WHERE id = $1 AND report_id = $2 AND state = 'running'`,
-        [jobId, reportId]
+         WHERE id = $1 AND report_id = $2 AND attempts = $3 AND state = 'running'`,
+        [job.id, job.report_id, job.execution_token]
       );
-      await insertEvent(client, row.account_id, reportId, "report_submitted", row.lifecycle_attempt);
+      await insertEvent(client, row.account_id, job.report_id, "report_submitted", row.lifecycle_attempt);
       const pending = await client.query<{
         message_id: string; external_status: string; encrypted_payload: string | null;
       }>(
@@ -1297,30 +1401,31 @@ export class ReportRepository {
           await client.query(
             `UPDATE account_reports SET discord_status = $2, discord_status_updated_at = now(),
                receipt_deadline = NULL, updated_at = now() WHERE id = $1`,
-            [reportId, inbound.external_status]
+            [job.report_id, inbound.external_status]
           );
-          await insertEvent(client, row.account_id, reportId, `discord:${inbound.external_status}`, row.lifecycle_attempt);
+          await insertEvent(client, row.account_id, job.report_id, `discord:${inbound.external_status}`, row.lifecycle_attempt);
         }
         if (inbound.external_status === "closed_no_action" && inbound.encrypted_payload !== null) {
           await client.query(
             `UPDATE account_reports SET review_status = 'queued', review_status_updated_at = now(),
                updated_at = now() WHERE id = $1 AND review_status IS NULL`,
-            [reportId]
+            [job.report_id]
           );
           await client.query(
             `INSERT INTO account_report_jobs (report_id, kind, dedupe_key, payload, max_attempts)
              VALUES ($1, 'submit_review', $2, $3, 3) ON CONFLICT (dedupe_key) DO NOTHING`,
-            [reportId, `submit-review:${reportId}`, { encryptedReviewUrl: inbound.encrypted_payload }]
+            [job.report_id, `submit-review:${job.report_id}`, { encryptedReviewUrl: inbound.encrypted_payload }]
           );
-          await insertEvent(client, row.account_id, reportId, "review_queued", row.lifecycle_attempt);
+          await insertEvent(client, row.account_id, job.report_id, "review_queued", row.lifecycle_attempt);
         }
         await client.query(
           `UPDATE account_inbound_messages SET report_id = $2, status = 'accepted'
            WHERE message_id = $1`,
-          [inbound.message_id, reportId]
+          [inbound.message_id, job.report_id]
         );
       }
       await client.query("COMMIT");
+      return true;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1329,10 +1434,14 @@ export class ReportRepository {
     }
   }
 
-  public async markReviewRequested(jobId: string, reportId: string, discordReportId: string): Promise<void> {
+  public async markReviewRequested(job: LifecycleJob, discordReportId: string): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      if (!(await ownsLifecycleJob(client, job))) {
+        await client.query("COMMIT");
+        return false;
+      }
       const updated = await client.query<{ account_id: string; lifecycle_attempt: number }>(
         `UPDATE account_reports
          SET review_status = 'requested', review_status_updated_at = now(),
@@ -1340,16 +1449,18 @@ export class ReportRepository {
              review_error_code = NULL, review_error_message = NULL, updated_at = now()
          WHERE id = $1 AND discord_report_id = $2 AND review_status = 'queued'
          RETURNING account_id, lifecycle_attempt`,
-        [reportId, discordReportId]
+        [job.report_id, discordReportId]
       );
       const row = updated.rows[0];
       if (row === undefined) throw new Error("Report is no longer waiting for automatic appeal submission.");
       await client.query(
-        "UPDATE account_report_jobs SET state = 'completed', locked_at = NULL, updated_at = now() WHERE id = $1",
-        [jobId]
+        `UPDATE account_report_jobs SET state = 'completed', locked_at = NULL, updated_at = now()
+         WHERE id = $1 AND report_id = $2 AND attempts = $3 AND state = 'running'`,
+        [job.id, job.report_id, job.execution_token]
       );
-      await insertEvent(client, row.account_id, reportId, "review_requested", row.lifecycle_attempt);
+      await insertEvent(client, row.account_id, job.report_id, "review_requested", row.lifecycle_attempt);
       await client.query("COMMIT");
+      return true;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1358,18 +1469,22 @@ export class ReportRepository {
     }
   }
 
-  public async beginReviewSubmission(reportId: string): Promise<boolean> {
+  public async beginReviewSubmission(job: LifecycleJob): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      if (!(await ownsLifecycleJob(client, job))) {
+        await client.query("COMMIT");
+        return false;
+      }
       const updated = await client.query<{ account_id: string; lifecycle_attempt: number }>(
         `UPDATE account_reports SET review_submission_started_at = now(), updated_at = now()
          WHERE id = $1 AND review_status = 'queued' AND review_submission_started_at IS NULL
          RETURNING account_id, lifecycle_attempt`,
-        [reportId]
+        [job.report_id]
       );
       const row = updated.rows[0];
-      if (row !== undefined) await insertEvent(client, row.account_id, reportId, "review_submission_started", row.lifecycle_attempt);
+      if (row !== undefined) await insertEvent(client, row.account_id, job.report_id, "review_submission_started", row.lifecycle_attempt);
       await client.query("COMMIT");
       return row !== undefined;
     } catch (error) {
@@ -1381,15 +1496,18 @@ export class ReportRepository {
   }
 
   public async failReview(
-    jobId: string,
-    reportId: string,
+    job: LifecycleJob,
     status: "ineligible" | "request_failed" | "request_ambiguous",
     code: string,
     message: string
-  ): Promise<void> {
+  ): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      if (!(await ownsLifecycleJob(client, job))) {
+        await client.query("COMMIT");
+        return false;
+      }
       const updated = await client.query<{ account_id: string; lifecycle_attempt: number }>(
         `UPDATE account_reports
          SET review_status = $2, review_status_updated_at = now(),
@@ -1397,16 +1515,18 @@ export class ReportRepository {
              review_error_message = $4, updated_at = now()
          WHERE id = $1 AND review_status = 'queued'
          RETURNING account_id, lifecycle_attempt`,
-        [reportId, status, code, message]
+        [job.report_id, status, code, message]
       );
       await client.query(
         `UPDATE account_report_jobs SET state = 'failed', locked_at = NULL,
-           last_error = $2, updated_at = now() WHERE id = $1`,
-        [jobId, code]
+           last_error = $4, updated_at = now()
+         WHERE id = $1 AND report_id = $2 AND attempts = $3 AND state = 'running'`,
+        [job.id, job.report_id, job.execution_token, code]
       );
       const row = updated.rows[0];
-      if (row !== undefined) await insertEvent(client, row.account_id, reportId, `review_${status}`, row.lifecycle_attempt, { errorCode: code });
+      if (row !== undefined) await insertEvent(client, row.account_id, job.report_id, `review_${status}`, row.lifecycle_attempt, { errorCode: code });
       await client.query("COMMIT");
+      return true;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1439,11 +1559,12 @@ export class ReportRepository {
        )
        SELECT claimed.event_id, claimed.destination_id, claimed.attempts, claimed.created_at,
               destination.url AS destination_url, destination.encrypted_signing_secret,
-              event.account_id, event.report_id, event.event_type,
+              event.account_id, event.report_id, report.trace_id, event.event_type,
               event.lifecycle_attempt, event.created_at AS occurred_at
        FROM claimed
        JOIN webhook_destinations AS destination ON destination.id = claimed.destination_id
-       JOIN account_report_events AS event ON event.id = claimed.event_id`
+       JOIN account_report_events AS event ON event.id = claimed.event_id
+       JOIN account_reports AS report ON report.id = event.report_id`
     );
     return result.rows[0] ?? null;
   }
@@ -1689,6 +1810,44 @@ interface LockedCreditRow extends QueryResultRow {
   lifecycle_attempt: number;
 }
 
+export interface QueuePhaseSnapshot {
+  readyPending: number;
+  delayedPending: number;
+  running: number;
+  oldestReadyAgeMs: number | null;
+}
+
+export interface QueueSnapshot {
+  preparation: QueuePhaseSnapshot;
+  lifecycle: QueuePhaseSnapshot & {
+    byJobKind: { requestCode: number; verifySubmit: number; submitReview: number };
+  };
+}
+
+interface QueueSnapshotRow extends QueryResultRow {
+  preparation_ready: string;
+  preparation_delayed: string;
+  preparation_running: string;
+  preparation_oldest_ms: string | null;
+  lifecycle_ready: string;
+  lifecycle_delayed: string;
+  lifecycle_running: string;
+  lifecycle_oldest_ms: string | null;
+  request_code: string;
+  verify_submit: string;
+  submit_review: string;
+}
+
+async function ownsLifecycleJob(client: PoolClient, job: LifecycleJob): Promise<boolean> {
+  const result = await client.query(
+    `SELECT 1 FROM account_report_jobs
+     WHERE id = $1 AND attempts = $2 AND state = 'running'
+     FOR UPDATE`,
+    [job.id, job.execution_token]
+  );
+  return result.rowCount === 1;
+}
+
 async function lockReportCredit(client: PoolClient, reportId: string): Promise<LockedCreditRow | undefined> {
   const result = await client.query<LockedCreditRow>(
     `SELECT report.account_id, report.credit_chain_id, report.status, report.lifecycle_attempt,
@@ -1756,6 +1915,31 @@ async function enqueueDestinationDelivery(
      ON CONFLICT DO NOTHING`,
     [accountId, eventId]
   );
+}
+
+function count(value: string | undefined): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+}
+
+function age(value: string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : null;
+}
+
+function queuePhase(
+  ready: string | undefined,
+  delayed: string | undefined,
+  running: string | undefined,
+  oldest: string | null | undefined
+): QueuePhaseSnapshot {
+  return {
+    readyPending: count(ready),
+    delayedPending: count(delayed),
+    running: count(running),
+    oldestReadyAgeMs: age(oldest)
+  };
 }
 
 export function reportRetryableModes(report: {

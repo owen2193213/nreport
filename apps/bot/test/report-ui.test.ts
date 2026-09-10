@@ -1,4 +1,4 @@
-import { MessageFlags } from "discord.js";
+import { ComponentType, MessageFlags } from "discord.js";
 import { describe, expect, it } from "vitest";
 
 import { buildReportModal, classifyReportView, decisionMessageOptions, parseReportModalValues, shouldSendDecisionDm, statusMessageOptions, visibleStatusHash, type TargetDisplayContext } from "../src/report-ui.js";
@@ -48,7 +48,18 @@ function report(overrides: Partial<ReportDetail> = {}): ReportDetail {
   };
 }
 
-describe("Components V2 report UI", () => {
+function components(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value.flatMap(components);
+  if (typeof value !== "object" || value === null) return [];
+  const node = value as Record<string, unknown>;
+  return [node, ...Object.values(node).flatMap(components)];
+}
+
+function cardNodes(value: ReportDetail): Record<string, unknown>[] {
+  return components(JSON.parse(JSON.stringify(statusMessageOptions(value, context))));
+}
+
+describe("report card behavior and Discord payload contracts (not visual readability)", () => {
   it("keeps target context separate from the final report code block", () => {
     const options = statusMessageOptions(report(), context);
     const json = JSON.parse(JSON.stringify(options)) as Record<string, unknown>;
@@ -132,22 +143,33 @@ describe("Components V2 report UI", () => {
     expect(JSON.stringify(decisionMessageOptions(failed, context))).toContain("The AI writing provider is rate limited after 3 attempts.");
   });
 
-  it("adds valid retry controls to failed reports", () => {
-    const failed = report({ status: "failed", discordStatus: null, retryableModes: ["reuse", "regenerate"], failure: { stage: "researching", code: "preparation_rate_limited", message: "Rate limited." } });
-    const value = JSON.stringify(statusMessageOptions(failed, context));
-    expect(value).toContain("Retry submission");
-    expect(value).toContain("Retry with fresh report");
+  it.each([[], ["reuse"], ["regenerate"], ["reuse", "regenerate"]] as const)("binds only API-authorized retry modes %j to this report", (...modes) => {
+    const failed = report({ status: "failed", discordStatus: null, retryableModes: [...modes], failure: { stage: "researching", code: "preparation_rate_limited", message: "Rate limited." } });
+    const ids = cardNodes(failed).filter((node) => node.type === ComponentType.Button).map((node) => node.custom_id);
+    expect(ids).toEqual(modes.map((mode) => `report-retry-${mode}:${failed.reportId}`));
+    expect(cardNodes({ ...failed, successorReportId: "replacement" }).filter((node) => node.type === ComponentType.Button)).toEqual([]);
   });
 
   it("keeps submitted reports neutral until Discord accepts them", () => {
-    const card = statusMessageOptions(report({ status: "submitted", discordStatus: "received" }), context);
-    expect(JSON.stringify(card)).toContain('"accent_color":5793266');
+    const color = (value: ReportDetail) => cardNodes(value).find((node) => node.type === ComponentType.Container)?.accent_color;
+    const submitted = color(report({ status: "submitted", discordStatus: "received" }));
+    const accepted = color(report({ discordStatus: "actioned" }));
+    expect(typeof submitted).toBe("number");
+    expect(typeof accepted).toBe("number");
+    expect(submitted).not.toBe(accepted);
   });
 
   it("gives rapid internal preparation states the same visible payload hash", () => {
     const preparing = report({ status: "researching", discordStatus: null, finalText: null, category: null, country: null });
     const writing = report({ status: "writing", discordStatus: null, finalText: null, category: null, country: null });
     expect(visibleStatusHash(preparing, context)).toBe(visibleStatusHash(writing, context));
+  });
+
+  it("invalidates the visible hash when queue length or failure details change", () => {
+    const queued = report({ status: "queued", discordStatus: null, queueLength: 7 });
+    expect(visibleStatusHash(queued, context)).not.toBe(visibleStatusHash({ ...queued, queueLength: 2 }, context));
+    const failed = report({ status: "failed", discordStatus: null, failure: { stage: "writing", code: "preparation_failed", message: "Initial reason" } });
+    expect(visibleStatusHash(failed, context)).not.toBe(visibleStatusHash({ ...failed, failure: { ...failed.failure!, message: "Corrected reason" } }, context));
   });
 
   it("shows recovery only for a fresh appeal denial", () => {

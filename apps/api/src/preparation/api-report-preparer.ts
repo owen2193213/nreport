@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import type { CreateReportInput } from "@nreport/contracts";
 
@@ -39,6 +39,7 @@ export class ApiReportPreparer implements ReportPreparer {
     input: Extract<CreateReportInput, { useAi: true }>,
     progress: (stage: "researching" | "writing") => Promise<void>,
     signal: AbortSignal,
+    traceId: string,
     recordUsage?: (usage: PreparedResult["usage"]) => Promise<void>
   ): Promise<PreparedResult> {
     if (signal.aborted) throw signal.reason;
@@ -57,11 +58,14 @@ export class ApiReportPreparer implements ReportPreparer {
       await recordUsage?.(delta);
     });
     const operationId = randomUUID();
-    const actorKey = createHash("sha256").update(operationId).digest("hex").slice(0, 16);
-    const result = await writer.generate(
-      toWriterDraft(input),
-      { actorKey, userId: operationId },
-      async (event) => progress(event.stage === "research" ? "researching" : "writing")
+    const result = await withAbort(
+      writer.generate(
+        toWriterDraft(input),
+        { traceId, userId: operationId },
+        async (event) => progress(event.stage === "research" ? "researching" : "writing"),
+        signal
+      ),
+      signal
     );
     if (signal.aborted) throw signal.reason;
     return {
@@ -77,6 +81,21 @@ export class ApiReportPreparer implements ReportPreparer {
         searchRequests: usage.searchRequests || result.legalResearch.searchRequests
       }
     };
+  }
+}
+
+async function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  let rejectAbort!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  const onAbort = (): void => rejectAbort(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([operation, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
   }
 }
 

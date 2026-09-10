@@ -1,5 +1,5 @@
 import { preparationLog as botLog } from "./observability.js";
-import { readDiagnosticResponse } from "@nreport/contracts";
+import { requestAbortSignal, responseSize } from "./observability.js";
 import type { AiRequestContext } from "./ai-client.js";
 import { capturedMessageSnapshot, type ReportDraft } from "./types.js";
 
@@ -285,10 +285,14 @@ export class BraveResearchClient {
     query: string,
     country: string,
     deadline: number,
-    actor: AiRequestContext
+    actor: AiRequestContext,
+    signal?: AbortSignal
   ): Promise<ResearchMaterial> {
+    const startedAt = Date.now();
+    const stage = `${kind}_research`;
     let attempts = 0;
     for (;;) {
+      if (signal?.aborted) throw signal.reason;
       if (deadline <= Date.now()) {
         const timeout = new BraveResearchError(
           "timeout",
@@ -298,10 +302,13 @@ export class BraveResearchClient {
         botLog(
           "ai_search_failed",
           {
-            actorKey: actor.actorKey,
+            traceId: actor.traceId,
             failureCategory: timeout.kind,
             kind,
-            searchRequests: timeout.searchRequests
+            searchRequests: timeout.searchRequests,
+            stage,
+            outcome: "failed",
+            durationMs: Date.now() - startedAt
           },
           "warn"
         );
@@ -309,19 +316,23 @@ export class BraveResearchClient {
       }
       try {
         attempts += 1;
-        const payload = await this.requestOnce(kind, query, country, deadline, actor);
+        const payload = await this.requestOnce(kind, query, country, deadline, actor, attempts, signal);
         const sources = kind === "term" ? compactWeb(payload as BraveWebResponse) : compactContext(payload as BraveContextResponse);
         if (sources.length === 0) {
           throw new BraveResearchError("empty", "Brave returned no usable sources.", attempts);
         }
         botLog("ai_search_completed", {
-          actorKey: actor.actorKey,
+          traceId: actor.traceId,
           kind,
           latencyAttempts: attempts,
-          resultCount: sources.length
+          resultCount: sources.length,
+          stage,
+          outcome: "completed",
+          durationMs: Date.now() - startedAt
         });
         return { kind, query, sources, searchRequests: attempts };
       } catch (error) {
+        if (signal?.aborted) throw signal.reason;
         const researchError =
           error instanceof BraveResearchError
             ? error
@@ -342,10 +353,13 @@ export class BraveResearchClient {
         botLog(
           "ai_search_failed",
           {
-            actorKey: actor.actorKey,
+            traceId: actor.traceId,
             failureCategory: finalError.kind,
             kind,
-            searchRequests: finalError.searchRequests
+            searchRequests: finalError.searchRequests,
+            stage,
+            outcome: "failed",
+            durationMs: Date.now() - startedAt
           },
           "warn"
         );
@@ -359,8 +373,11 @@ export class BraveResearchClient {
     query: string,
     country: string,
     deadline: number,
-    actor: AiRequestContext
+    actor: AiRequestContext,
+    attempt: number,
+    signal?: AbortSignal
   ): Promise<BraveWebResponse | BraveContextResponse> {
+    const startedAt = Date.now();
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       throw new BraveResearchError("timeout", "The research deadline was exceeded.");
@@ -398,30 +415,39 @@ export class BraveResearchClient {
           ...(kind === "law" ? { "Content-Type": "application/json" } : {})
         },
         ...(body === undefined ? {} : { body }),
-        signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining))
+        signal: requestAbortSignal(deadline, REQUEST_TIMEOUT_MS, signal)
       });
-    } catch {
-      throw new BraveResearchError("network", "Brave could not be reached.", 0, true);
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      const isTimeout = error instanceof Error &&
+        (error.name === "TimeoutError" || error.name === "AbortError");
+      throw new BraveResearchError(
+        isTimeout ? "timeout" : "network",
+        isTimeout ? "The Brave request timed out." : "Brave could not be reached.",
+        0,
+        !isTimeout
+      );
     }
     if (!response.ok) {
       const failureKind = response.status === 429 ? "rate_limited" : "provider";
       const retryable = response.status === 429 || response.status >= 500;
-      const responseDiagnostic = await readDiagnosticResponse(response.clone(), [query]);
       botLog(
         "ai_search_http_failed",
         {
-          actorKey: actor.actorKey,
+          traceId: actor.traceId,
           endpoint: kind === "term" ? "web_search" : "llm_context",
           httpStatus: response.status,
+          attempt,
           kind,
           method: kind === "term" ? "GET" : "POST",
           provider: "brave",
+          stage: `${kind}_research`,
+          outcome: "failed",
+          durationMs: Date.now() - startedAt,
+          failureCategory: failureKind,
           queryCharacters: query.length,
           queryWords: query.split(/\s+/).length,
-          requestParameterNames: kind === "term" ? "q,country,count" : "q,country,count,maximum_number_of_urls,maximum_number_of_tokens,maximum_number_of_tokens_per_url,context_threshold_mode,enable_source_metadata,enable_local,goggles",
-          response: responseDiagnostic,
-          ...(responseDiagnostic.requestId === undefined ? {} : { requestId: responseDiagnostic.requestId }),
-          ...(actor.traceId === undefined ? {} : { traceId: actor.traceId })
+          responseSize: responseSize(response),
         },
         "warn"
       );

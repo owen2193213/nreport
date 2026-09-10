@@ -58,18 +58,27 @@ export class HealthServer {
         return;
       }
       const event = JSON.parse(body) as Partial<ReportLifecycleEvent>;
-      if (event.eventId !== eventId || !/^\d+$/.test(eventId) || typeof event.accountId !== "string" ||
-        typeof event.reportId !== "string" || typeof event.type !== "string" ||
-        !Number.isSafeInteger(event.lifecycleAttempt) || !Number.isFinite(Date.parse(event.occurredAt ?? ""))) {
+      if (event.eventId !== eventId || !isReportLifecycleEvent(event)) {
         json(response, 400, { error: "invalid_event" });
         return;
       }
-      const result = await this.database.ingestEvent(event as ReportLifecycleEvent);
+      const result = await this.database.ingestEvent(event);
       json(response, reportEventIngestionStatus(result), { status: result });
     } catch {
       json(response, 400, { error: "invalid_event" });
     }
   }
+}
+
+export function isReportLifecycleEvent(event: unknown): event is ReportLifecycleEvent {
+  if (typeof event !== "object" || event === null) return false;
+  const candidate = event as Partial<ReportLifecycleEvent>;
+  return typeof candidate.eventId === "string" && /^\d+$/.test(candidate.eventId) &&
+    typeof candidate.accountId === "string" && typeof candidate.reportId === "string" &&
+    typeof candidate.traceId === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.traceId) &&
+    typeof candidate.type === "string" && Number.isSafeInteger(candidate.lifecycleAttempt) &&
+    !Number.isNaN(Date.parse(candidate.occurredAt ?? ""));
 }
 
 function readBody(request: IncomingMessage): Promise<string> {

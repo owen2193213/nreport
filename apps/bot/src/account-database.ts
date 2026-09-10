@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS lifecycle_inbox (
   event_id bigint PRIMARY KEY,
   account_id uuid NOT NULL,
   report_id uuid NOT NULL,
+  trace_id uuid NOT NULL,
   event_type text NOT NULL,
   occurred_at timestamptz NOT NULL,
   lifecycle_attempt integer NOT NULL,
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS lifecycle_inbox (
   last_error text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE lifecycle_inbox ADD COLUMN IF NOT EXISTS trace_id uuid;
 CREATE INDEX IF NOT EXISTS lifecycle_inbox_claim_idx ON lifecycle_inbox(state, run_at, event_id);
 
 CREATE TABLE IF NOT EXISTS notification_preferences (
@@ -106,8 +108,10 @@ export interface ApiConnection extends QueryResultRow {
 
 export interface ClaimedNotification extends QueryResultRow {
   event_id: string;
+  attempts: number;
   account_id: string;
   report_id: string;
+  trace_id: string | null;
   event_type: string;
   occurred_at: Date;
   lifecycle_attempt: number;
@@ -369,13 +373,13 @@ export class AccountBotDatabase {
       }
       const inserted = await client.query(
         `INSERT INTO lifecycle_inbox
-           (event_id, account_id, report_id, event_type, occurred_at, lifecycle_attempt, run_at)
-         VALUES ($1, $2, $3, $4, $5, $6,
-           CASE WHEN $4 IN ('report_failed', 'report_receipt_timeout', 'review_confirmation_timeout', 'review_ineligible', 'review_request_failed', 'review_request_ambiguous', 'discord:actioned', 'discord:review_not_approved')
+           (event_id, account_id, report_id, trace_id, event_type, occurred_at, lifecycle_attempt, run_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7,
+           CASE WHEN $5 IN ('report_failed', 'report_receipt_timeout', 'review_confirmation_timeout', 'review_ineligible', 'review_request_failed', 'review_request_ambiguous', 'discord:actioned', 'discord:review_not_approved')
              THEN now() ELSE now() + interval '2 seconds' END)
          ON CONFLICT (event_id) DO NOTHING
          RETURNING event_id`,
-        [event.eventId, event.accountId, event.reportId, event.type, event.occurredAt, event.lifecycleAttempt]
+        [event.eventId, event.accountId, event.reportId, event.traceId, event.type, event.occurredAt, event.lifecycleAttempt]
       );
       if (inserted.rowCount === 1) {
         await client.query(

@@ -200,6 +200,7 @@ export interface ReportLifecycleEvent {
   eventId: string;
   accountId: string;
   reportId: string;
+  traceId: string;
   type: string;
   occurredAt: string;
   lifecycleAttempt: number;

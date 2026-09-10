@@ -87,6 +87,19 @@ is assigned or all deliveries fail.
 Deploy the new Worker as `nreport-discord-dsa-email` and configure both values as Cloudflare
 secrets so no deployment-specific API hostname is committed:
 
+Cloudflare builds this monorepo from its repository root. The root `wrangler.jsonc` points Wrangler
+at the email worker entry point, so the deploy command can remain:
+
+```powershell
+npx wrangler versions upload
+```
+
+For a local deployment from another working directory, pass the app config explicitly:
+
+```powershell
+npx wrangler versions upload --config apps/email-worker/wrangler.jsonc
+```
+
 ```text
 INGEST_URL=https://<new-api-domain>/webhooks/cloudflare-email
 INGEST_SHARED_SECRET=<same value as CLOUDFLARE_EMAIL_WEBHOOK_SECRET>

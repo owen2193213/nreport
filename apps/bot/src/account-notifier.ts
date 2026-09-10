@@ -13,6 +13,8 @@ import { classifyReportView, decisionMessageOptions, shouldSendDecisionDm, statu
 type AccountApi = Pick<DsaApi, "createReport" | "retryReport" | "events" | "report">;
 type AccountNotifierLog = (event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error") => void;
 
+class ReconciliationEventIngestError extends Error {}
+
 function notificationNonce(eventId: string): string {
   return `nreport-${createHash("sha256").update(eventId).digest("hex").slice(0, 16)}`;
 }
@@ -155,7 +157,20 @@ export class AccountNotificationWorker {
       const page = await api.events({ after, limit: 100 });
       for (const event of page.items) {
         const startedAt = Date.now();
-        const result = await this.database.ingestEvent(event);
+        let result: Awaited<ReturnType<AccountBotDatabase["ingestEvent"]>>;
+        try {
+          result = await this.database.ingestEvent(event);
+        } catch (error) {
+          this.safeLog("account_reconciliation_event", {
+            traceId: event.traceId,
+            eventType: event.type,
+            stage: "event_ingestion",
+            outcome: "failed",
+            durationMs: Date.now() - startedAt,
+            failureCategory: safeErrorCategory(error)
+          }, "error");
+          throw new ReconciliationEventIngestError();
+        }
         this.safeLog("account_reconciliation_event", {
           traceId: event.traceId,
           eventType: event.type,
@@ -194,12 +209,14 @@ export class AccountNotificationWorker {
           durationMs: Date.now() - startedAt, stage: "reconciliation", outcome: "completed"
         });
       } catch (error) {
-        this.safeLog("account_reconciliation_failed", {
-          durationMs: Date.now() - startedAt,
-          failureCategory: safeErrorCategory(error),
-          stage: "reconciliation",
-          outcome: "failed"
-        }, "error");
+        if (!(error instanceof ReconciliationEventIngestError)) {
+          this.safeLog("account_reconciliation_failed", {
+            durationMs: Date.now() - startedAt,
+            failureCategory: safeErrorCategory(error),
+            stage: "reconciliation",
+            outcome: "failed"
+          }, "error");
+        }
         if (error instanceof DsaApiError && error.status === 401) {
           const user = await this.client.users.fetch(connection.discord_user_id).catch(() => null);
           await user?.send("Your reporting API key was revoked or expired. Use `/access connect` to reconnect; background refreshes are paused.").catch(() => undefined);

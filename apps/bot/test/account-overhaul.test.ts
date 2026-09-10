@@ -200,6 +200,43 @@ describe("local account mapping", () => {
 });
 
 describe("account reconciliation", () => {
+  it("logs an ingest failure with the event trace and leaves its cursor for retry", async () => {
+    const event = {
+      eventId: "sensitive-event-id", accountId: "sensitive-account-id",
+      reportId: "sensitive-report-id", traceId: "33333333-3333-4333-8333-333333333333",
+      type: "report_queued" as const, occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1
+    };
+    const database = {
+      connections: vi.fn(async () => [
+        { discord_user_id: "sensitive-user-id", account_id: "sensitive-account-id", encrypted_api_key: "first-key", event_cursor: "0" },
+        { discord_user_id: "other-user-id", account_id: "other-account-id", encrypted_api_key: "second-key", event_cursor: "0" }
+      ]),
+      pendingReportLinks: vi.fn(async () => []), cleanupExpiredForms: vi.fn(),
+      ingestEvent: vi.fn().mockRejectedValue(new Error("sensitive database URL")),
+      advanceCursor: vi.fn()
+    };
+    const firstApi = { events: vi.fn(async () => ({ items: [event], next: null })) };
+    const secondApi = { events: vi.fn(async () => ({ items: [], next: null })) };
+    const logger = vi.fn<(event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error") => void>();
+    const worker = new AccountNotificationWorker(
+      database as never, {} as never,
+      { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
+      (connection) => (connection.encrypted_api_key === "first-key" ? firstApi : secondApi) as never,
+      undefined, logger
+    );
+
+    await worker.reconcileOnce();
+
+    expect(logger).toHaveBeenCalledWith("account_reconciliation_event", {
+      traceId: event.traceId, eventType: event.type, stage: "event_ingestion", outcome: "failed",
+      durationMs: expect.any(Number) as number, failureCategory: "unexpected"
+    }, "error");
+    expect(database.advanceCursor).not.toHaveBeenCalled();
+    expect(secondApi.events).toHaveBeenCalledOnce();
+    expect(logger).not.toHaveBeenCalledWith("account_reconciliation_failed", expect.anything(), "error");
+    expect(JSON.stringify(logger.mock.calls)).not.toMatch(/sensitive|database URL/);
+  });
+
   it("logs a safe failure and continues reconciling the next connection", async () => {
     const connections = [
       { discord_user_id: "secret-user-1", account_id: "secret-account-1", encrypted_api_key: "first-key", event_cursor: "0" },

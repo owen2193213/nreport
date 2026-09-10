@@ -93,6 +93,7 @@ export type LifecycleRunnerOutcome =
       stage: "lifecycle_claim" | "lifecycle_heartbeat" | "lifecycle_maintenance";
       outcome: "completed" | "failed";
       durationMs: number;
+      traceId?: string;
       errorCategory?: string;
     };
 
@@ -407,6 +408,7 @@ export class LifecycleRunner {
           stage: "lifecycle_heartbeat",
           outcome: "failed",
           durationMs: elapsedSince(heartbeatStartedAt),
+          ...(job.trace_id === undefined ? {} : { traceId: job.trace_id }),
           errorCategory: "lifecycle_heartbeat_failed"
         });
       }

@@ -92,3 +92,24 @@ is lint exit 0, workspace typecheck exit 0, 32 test files with 309/309 tests pas
 0. The required high-severity audit completed and still reports the unchanged dependency concern
 above: one high transitive `nodemailer` vulnerability and three moderate Vitest advisories. No live
 Discord or provider diagnostics were run.
+
+## Scoped re-review fix round
+
+Two focused regressions were added before source changes. RED was one failing heartbeat-outcome test
+in the API suite (206 passing) and one failing per-event ingestion test in the bot suite (51
+passing). The heartbeat failure retained its bounded stage/outcome/duration/error category but
+omitted the claimed job's available trace. The bot ingestion exception escaped the event boundary
+and was therefore observable only as a trace-less connection failure.
+
+The heartbeat outcome now includes `job.trace_id` when present. Bot reconciliation now catches an
+inbox ingestion failure at the individual event boundary and emits the stable
+`account_reconciliation_event` name with that event's trace, bounded event type, stage, outcome,
+duration, and safe failure category. It stops that connection's current page without advancing the
+cursor, so the durable event is retried on the next cycle; existing processing of other connections
+is unchanged. Neither path logs raw job, report, account, event, or Discord identifiers.
+
+GREEN focused verification is 207/207 API tests and API typecheck exit 0, plus 52/52 bot tests and
+bot typecheck exit 0. Fresh full verification is lint exit 0, workspace typecheck exit 0, 32 test
+files with 311/311 tests passing, and build exit 0. Dependencies and live services were untouched.
+Scoped fix commit: `fix: preserve traces on background failures` (exact hash returned with the task
+result).

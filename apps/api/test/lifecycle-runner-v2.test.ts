@@ -543,6 +543,55 @@ describe("LifecycleRunner background scheduling", () => {
 });
 
 describe("LifecycleRunner safe outcomes", () => {
+  it("keeps the job trace on a safe heartbeat failure outcome", async () => {
+    vi.useFakeTimers();
+    const releaseSubmission = deferred<{ report_id: string }>();
+    const outcomes: unknown[] = [];
+    const job = {
+      id: "sensitive-job-id", report_id: "sensitive-report-id",
+      trace_id: "33333333-3333-4333-8333-333333333333",
+      kind: "verify_submit" as const, payload: { code: "123456" },
+      attempts: 1, max_attempts: 3, execution_token: 1
+    };
+    const store = {
+      recoverInterruptedJobs: vi.fn(), expireDeadlines: vi.fn(),
+      claimLifecycleJob: vi.fn().mockResolvedValueOnce(job).mockResolvedValue(null),
+      heartbeatLifecycleJob: vi.fn().mockRejectedValueOnce(new Error("sensitive database URL")),
+      getLifecycleReport: vi.fn(async () => report()), setStatus: vi.fn(async () => true),
+      beginSubmission: vi.fn(async () => true), markSubmitted: vi.fn(),
+      completeLifecycleJob: vi.fn(), failBeforeSubmission: vi.fn(), failAfterSubmission: vi.fn(),
+      retryLifecycleJob: vi.fn()
+    };
+    const runner = new LifecycleRunner(
+      store as never, { lifecycleConcurrency: 1 } as never,
+      () => ({
+        verifyEmailCode: vi.fn(async () => "token"), getMenu: vi.fn(async () => ({})),
+        prepareSubmission: vi.fn(() => ({})), submitPrepared: vi.fn(() => releaseSubmission.promise),
+        close: vi.fn()
+      }) as never,
+      { decrypt: (value: string) => value },
+      (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+      (outcome) => { outcomes.push(outcome); }
+    );
+
+    runner.start();
+    try {
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(outcomes).toContainEqual(expect.objectContaining({
+        component: "loop", traceId: "33333333-3333-4333-8333-333333333333",
+        stage: "lifecycle_heartbeat", outcome: "failed",
+        durationMs: expect.any(Number) as number,
+        errorCategory: "lifecycle_heartbeat_failed"
+      }));
+      expect(JSON.stringify(outcomes)).not.toMatch(/sensitive|123456/);
+    } finally {
+      releaseSubmission.resolve({ report_id: "discord-1" });
+      await vi.advanceTimersByTimeAsync(0);
+      await runner.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("reports a failed job with operational fields only", async () => {
     const outcomes: unknown[] = [];
     const store = {

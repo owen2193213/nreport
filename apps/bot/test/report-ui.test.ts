@@ -125,6 +125,14 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(value).not.toContain("Attachments");
   });
 
+  it("shows meaningful AI preparation stages with stage-specific icons", () => {
+    const value = JSON.stringify(statusMessageOptions(report({ status: "writing" }), context));
+    expect(value).toContain("### AI preparation");
+    expect(value).toContain("✅ 🧾 AI analyzed the report details");
+    expect(value).toContain("✅ 🌐 AI researched applicable laws");
+    expect(value).toContain("⏳ ✍️ AI is drafting the report");
+  });
+
   it("collapses a denied report and submitted appeal into one chronological history action", () => {
     const timeline = [
       { eventId: "1", type: "report_queued", occurredAt: "2026-09-07T10:00:00.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null },
@@ -160,10 +168,10 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(submitted).not.toBe(accepted);
   });
 
-  it("gives rapid internal preparation states the same visible payload hash", () => {
+  it("changes the visible payload hash when the preparation stage changes", () => {
     const preparing = report({ status: "researching", discordStatus: null, finalText: null, category: null, country: null });
     const writing = report({ status: "writing", discordStatus: null, finalText: null, category: null, country: null });
-    expect(visibleStatusHash(preparing, context)).toBe(visibleStatusHash(writing, context));
+    expect(visibleStatusHash(preparing, context)).not.toBe(visibleStatusHash(writing, context));
   });
 
   it("invalidates the visible hash when queue length or failure details change", () => {

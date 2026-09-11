@@ -178,6 +178,12 @@ export function buildStatusCard(report: ReportDetail, context: TargetDisplayCont
     container.addTextDisplayComponents(identity);
   }
   if (context.flow !== "message" && context.excerpt) container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`> ${safe(context.excerpt)}`));
+  const preparationLog = aiPreparationLog(report);
+  if (preparationLog !== null) {
+    container.addSeparatorComponents(separator()).addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`### AI preparation\n${preparationLog.join("\n")}`)
+    );
+  }
   const visibleMetadata = context.flow === "message"
     ? context.metadata.filter(([label]) => !["Location", "Posted", "Attachments", "User ID", "Message"].includes(label))
     : context.metadata;
@@ -211,6 +217,18 @@ export function buildStatusCard(report: ReportDetail, context: TargetDisplayCont
     if (buttons.length > 0) container.addActionRowComponents(new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons));
   }
   return container;
+}
+
+function aiPreparationLog(report: ReportDetail): string[] | null {
+  if (!report.useAi) return null;
+  const failedStage = report.failure?.stage ?? "";
+  const terminal = report.status !== "queued" && report.status !== "planning" && report.status !== "researching" && report.status !== "writing";
+  const researchDone = terminal || report.status === "writing" || (report.status === "failed" && !failedStage.includes("research"));
+  const writingDone = terminal && !(report.status === "failed" && failedStage.includes("writing"));
+  const analysis = report.status === "queued" || report.status === "planning" ? "⏳ 🧾 AI is analyzing the report details" : "✅ 🧾 AI analyzed the report details";
+  const research = researchDone ? "✅ 🌐 AI researched applicable laws" : "⏳ 🌐 AI is researching applicable laws";
+  const writing = writingDone ? "✅ ✍️ AI drafted the report" : "⏳ ✍️ AI is drafting the report";
+  return [analysis, research, writing];
 }
 
 export function decisionMessageOptions(report: ReportDetail, context: TargetDisplayContext) {

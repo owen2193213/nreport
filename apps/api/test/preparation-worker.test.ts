@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/require-await, @typescript-eslint/no-unsafe-member-access */
 import { describe, expect, it, vi } from "vitest";
 
-import { PreparationWorker } from "../src/preparation-worker.js";
+import { PreparationWorker, preparationFailureLogFields } from "../src/preparation-worker.js";
 
 const baseReport = {
   id: "report-1",
@@ -13,6 +13,27 @@ const baseReport = {
 };
 
 describe("PreparationWorker", () => {
+  it("keeps safe error correlation fields while excluding an error message", () => {
+    const fields = preparationFailureLogFields({
+      traceId: "33333333-3333-4333-8333-333333333333",
+      errorCode: "preparation_failed",
+      kind: "unknown",
+      stage: "preparation",
+      originalName: "TypeError",
+      stackFingerprint: "a1b2c3d4e5f60708",
+      safeMessage: "report content must never be logged"
+    });
+
+    expect(fields).toEqual({
+      traceId: "33333333-3333-4333-8333-333333333333",
+      errorCode: "preparation_failed",
+      errorCategory: "unknown",
+      preparationStage: "preparation",
+      originalErrorName: "TypeError",
+      stackFingerprint: "a1b2c3d4e5f60708"
+    });
+    expect(JSON.stringify(fields)).not.toContain("report content");
+  });
   it("bounds active work and frees a slot after a job fails", async () => {
     const jobs = [1, 2, 3].map((id) => ({ jobId: `job-${id}`, report: { ...baseReport, id: `report-${id}`,
       request_input: { flow: "message", useAi: true, target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" } } } }));
@@ -227,5 +248,30 @@ describe("PreparationWorker", () => {
       "preparation_rate_limited",
       "A preparation provider is rate limited. Retry the report shortly."
     );
+  });
+
+  it("emits a correlated diagnostic for an otherwise unexpected preparation failure", async () => {
+    const unexpected = new Error("provider returned secret-token-123 for https://example.test/private/report");
+    const store = {
+      claimPreparation: vi.fn(async () => ({
+        jobId: "job-4",
+        report: {
+          ...baseReport,
+          flow: "message" as const,
+          use_ai: true,
+          request_input: { flow: "message" as const, useAi: true as const, target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" } }
+        }
+      })), transition: vi.fn(async () => true), completePreparation: vi.fn(), failPreparation: vi.fn()
+    };
+    const iterationErrors: unknown[] = [];
+    const onIterationError = (error: unknown) => iterationErrors.push(error);
+    const worker = new PreparationWorker(store as never, { prepare: vi.fn(async () => { throw unexpected; }) }, vi.fn() as never, 1, undefined, onIterationError);
+
+    await worker.processOne();
+
+    expect(iterationErrors).toHaveLength(1);
+    const diagnostic = iterationErrors[0] as { originalName?: unknown; stackFingerprint?: unknown };
+    expect(diagnostic).toMatchObject({ originalName: "Error" });
+    expect(typeof diagnostic.stackFingerprint).toBe("string");
   });
 });

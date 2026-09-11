@@ -1,4 +1,5 @@
 import type { CreateReportInput, LegalSourceAnnotation, ReportStatus } from "@nreport/contracts";
+import { createHash } from "node:crypto";
 
 import type { AccountReportRow } from "./report-repository.js";
 
@@ -132,7 +133,7 @@ export class PreparationWorker {
         code,
         preparationErrorMessage(code, error)
       );
-      this.safeIterationError(new PreparationFailureDiagnostic(details, report.trace_id));
+      this.safeIterationError(new PreparationFailureDiagnostic(details, report.trace_id, error));
       this.safeOutcome({
         traceId: report.trace_id,
         stage: "preparation",
@@ -281,19 +282,44 @@ function preparationErrorDetails(error: unknown): PreparationErrorDetails {
 }
 
 class PreparationFailureDiagnostic extends Error {
-  public constructor(details: PreparationErrorDetails, traceId: string) {
+  public constructor(details: PreparationErrorDetails, traceId: string, original: unknown) {
     super("Report preparation failed.");
     this.name = "PreparationFailureDiagnostic";
     this.errorCode = details.errorCode;
     this.kind = details.kind;
     this.stage = details.stage;
     this.traceId = traceId;
+    this.originalName = original instanceof Error ? original.name : "NonError";
+    this.stackFingerprint = diagnosticFingerprint(original);
   }
 
   public readonly errorCode: string;
   public readonly kind: string;
   public readonly stage: string;
   public readonly traceId: string;
+  public readonly originalName: string;
+  public readonly stackFingerprint: string;
+}
+
+export function preparationFailureLogFields(error: unknown): Record<string, string> {
+  const candidate = typeof error === "object" && error !== null ? error as Record<string, unknown> : {};
+  const string = (key: string): string | undefined => typeof candidate[key] === "string" ? candidate[key] : undefined;
+  const traceId = string("traceId");
+  const errorCode = string("errorCode");
+  const kind = string("kind");
+  const stage = string("stage");
+  const originalName = string("originalName");
+  const stackFingerprint = string("stackFingerprint");
+  if ([traceId, errorCode, kind, stage, originalName, stackFingerprint].some((value) => value === undefined)) return {};
+  return {
+    traceId: traceId!, errorCode: errorCode!, errorCategory: kind!, preparationStage: stage!,
+    originalErrorName: originalName!, stackFingerprint: stackFingerprint!
+  };
+}
+
+function diagnosticFingerprint(error: unknown): string {
+  const source = error instanceof Error ? `${error.name}\n${error.stack ?? error.message}` : String(error);
+  return createHash("sha256").update(source).digest("hex").slice(0, 16);
 }
 
 class PreparationCancelledError extends Error {}

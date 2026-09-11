@@ -3,7 +3,7 @@ import { AccountRepository } from "./accounts.js";
 import { LifecycleRunner } from "./lifecycle-runner-v2.js";
 import { AccountEventDeliveryWorker } from "./event-delivery-v2.js";
 import { PostgresDatabase } from "./postgres.js";
-import { PreparationWorker } from "./preparation-worker.js";
+import { PreparationWorker, preparationFailureLogFields } from "./preparation-worker.js";
 import { ApiReportPreparer } from "./preparation/api-report-preparer.js";
 import { createProxySessionId, generateIdentity, supportedCountries } from "./pseudonyms.js";
 import { ReportRepository } from "./report-repository.js";
@@ -58,10 +58,13 @@ async function main(): Promise<void> {
     undefined,
     (error) => app.log.error(
       {
+        ...preparationFailureLogFields(error),
         traceId: diagnosticString(error, "traceId"),
         stage: diagnosticString(error, "stage") ?? "preparation",
         outcome: "failed",
-        errorCategory: diagnosticString(error, "kind") ?? "unknown"
+        errorCategory: diagnosticString(error, "kind") ?? "unknown",
+        originalErrorName: diagnosticString(error, "originalName"),
+        stackFingerprint: diagnosticString(error, "stackFingerprint")
       },
       "Preparation worker iteration failed"
     ),

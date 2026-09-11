@@ -78,7 +78,8 @@ export const errorEnvelopeSchema = {
       properties: {
         code: { type: "string" },
         message: { type: "string" },
-        requestId: { type: "string" }
+        requestId: { type: "string" },
+        supportReference: { type: "string" }
       }
     }
   }

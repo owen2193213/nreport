@@ -77,8 +77,8 @@ function bearer(request: FastifyRequest): string | null {
   return typeof value === "string" && value.startsWith("Bearer ") ? value.slice(7) : null;
 }
 
-function apiError(reply: FastifyReply, request: FastifyRequest, status: number, code: string, message: string) {
-  return reply.code(status).send({ error: { code, message, requestId: request.id } });
+function apiError(reply: FastifyReply, request: FastifyRequest, status: number, code: string, message: string, supportReference?: string) {
+  return reply.code(status).send({ error: { code, message, requestId: request.id, ...(supportReference === undefined ? {} : { supportReference }) } });
 }
 
 function publicReport(row: AccountReportRow, queueLength = 0): ReportDetail {
@@ -608,10 +608,16 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       : code === "account_not_found" ? 404
         : code === "username_conflict" || code === "credits_would_be_negative" ? 409
           : 500;
-    if (statusCode >= 500) request.log.error({ errorName: error instanceof Error ? error.name : "UnknownError" }, "Request failed");
+    const supportReference = statusCode >= 500
+      ? createHash("sha256").update(`${request.method}:${request.routeOptions.url ?? "unknown"}:${code}:${error instanceof Error ? error.name : "UnknownError"}`).digest("hex").slice(0, 16)
+      : undefined;
+    if (statusCode >= 500) request.log.error({
+      event: "api_request_failed", operation: request.routeOptions.url ?? "unknown", errorCategory: error instanceof Error ? error.name : "unknown",
+      supportReference, httpStatus: statusCode
+    }, "Request failed");
     const safeCode = statusCode >= 500 ? "internal_error" : code;
     const message = statusCode >= 500 ? "An internal error occurred." : error instanceof Error ? error.message : "Request failed.";
-    return apiError(reply, request, statusCode, safeCode, message);
+    return apiError(reply, request, statusCode, safeCode, message, supportReference);
   });
 
   return app;

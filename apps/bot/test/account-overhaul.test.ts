@@ -318,6 +318,48 @@ describe("account reconciliation", () => {
     expect(database.advanceCursor).toHaveBeenCalledWith("discord-1", "7");
   });
 
+  it("reschedules an uncertain create quickly instead of waiting for event reconciliation", async () => {
+    const database = {
+      pendingReportLinks: vi.fn(async () => [{
+        id: "link-1", idempotency_key: "create-key", encrypted_request: "request", recovery_attempts: 1
+      }]),
+      rescheduleReportLink: vi.fn(), abandonReportLink: vi.fn(), completeReportLink: vi.fn(),
+      completeReplacementLink: vi.fn(), ingestEvent: vi.fn(), advanceCursor: vi.fn(), cleanupExpiredForms: vi.fn()
+    };
+    const api = {
+      createReport: vi.fn(async () => { throw new DsaApiError(500, "internal_error", "Unavailable"); }),
+      retryReport: vi.fn(), events: vi.fn(async () => ({ items: [], next: null }))
+    };
+    const worker = new AccountNotificationWorker(
+      database as never, {} as never,
+      { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
+      () => api as never,
+      <T>() => ({ flow: "message", useAi: true, target: { messageUrl: "https://discord.com/channels/@me/1/2" } }) as T
+    );
+
+    await worker.reconcileConnection({ discord_user_id: "discord-1", account_id: "account-1", encrypted_api_key: "key", event_cursor: "0" } as never);
+
+    expect(database.rescheduleReportLink).toHaveBeenCalledWith("link-1", 5, "upstream");
+    expect(database.abandonReportLink).not.toHaveBeenCalled();
+  });
+
+  it("runs due creation recovery without polling the lifecycle event feed", async () => {
+    const connection = { discord_user_id: "discord-1", account_id: "account-1", encrypted_api_key: "key", event_cursor: "0" };
+    const database = {
+      connections: vi.fn(async () => [connection]), cleanupExpiredForms: vi.fn(),
+      pendingReportLinks: vi.fn(async () => []), dueCardRepairs: vi.fn(async () => [])
+    };
+    const worker = new AccountNotificationWorker(
+      database as never, {} as never,
+      { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
+      () => ({ events: vi.fn() }) as never
+    );
+
+    await worker.recoverOnce();
+
+    expect(database.pendingReportLinks).toHaveBeenCalledWith("discord-1");
+  });
+
   it("restores the predecessor DM mapping when a replacement response is reconciled", async () => {
     const database = {
       pendingReportLinks: vi.fn(async () => [{ id: "link-3", idempotency_key: "retry-key", encrypted_request: "retry-request" }]),

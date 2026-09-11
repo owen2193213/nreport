@@ -295,6 +295,7 @@ export class AccountInteractionHandler {
         await this.dependencies.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
       } catch (error) {
         await this.dependencies.database.releaseDmCard(report.reportId);
+        await this.dependencies.database.rescheduleCardRepair(report.reportId, 5);
         const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
         dmWarning = code === 50007
           ? " I could not send the private status card; use `/reports status` to follow it."
@@ -414,6 +415,7 @@ export class AccountInteractionHandler {
           await this.dependencies.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
         } catch {
           await this.dependencies.database.releaseDmCard(report.reportId);
+          await this.dependencies.database.rescheduleCardRepair(report.reportId, 5);
           warning = " I could not create the DM status card; use `/reports status`.";
         }
       } else {

@@ -183,6 +183,50 @@ CREATE INDEX IF NOT EXISTS account_report_jobs_claim_idx
   ON account_report_jobs(kind, state, run_at, locked_at, id);
 CREATE INDEX IF NOT EXISTS event_destination_deliveries_claim_idx
   ON event_destination_deliveries(state, run_at, locked_at, event_id);
+
+-- Aggregate-only operations telemetry. These tables deliberately contain no report,
+-- account, Discord, or webhook destination identifiers.
+CREATE TABLE IF NOT EXISTS operational_worker_health (
+  component text NOT NULL,
+  instance_id uuid NOT NULL,
+  last_heartbeat_at timestamptz NOT NULL DEFAULT now(),
+  last_progress_at timestamptz,
+  active_jobs integer NOT NULL DEFAULT 0,
+  configured_capacity integer NOT NULL DEFAULT 0,
+  recent_failure_count integer NOT NULL DEFAULT 0,
+  recent_rate_limit_count integer NOT NULL DEFAULT 0,
+  window_started_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (component, instance_id)
+);
+
+CREATE TABLE IF NOT EXISTS operational_alert_state (
+  alert_key text PRIMARY KEY,
+  severity text NOT NULL CHECK (severity IN ('warning', 'critical')),
+  state text NOT NULL CHECK (state IN ('open', 'closed')),
+  first_observed_at timestamptz NOT NULL DEFAULT now(),
+  last_observed_at timestamptz NOT NULL DEFAULT now(),
+  last_sent_at timestamptz,
+  recovery_sent_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS operations_alert_outbox (
+  id bigserial PRIMARY KEY,
+  alert_key text NOT NULL,
+  kind text NOT NULL CHECK (kind IN ('open', 'reminder', 'recovery')),
+  payload jsonb NOT NULL,
+  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'sending', 'sent')),
+  attempts integer NOT NULL DEFAULT 0,
+  run_at timestamptz NOT NULL DEFAULT now(),
+  locked_at timestamptz,
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (alert_key, kind, state)
+);
+CREATE INDEX IF NOT EXISTS operations_alert_outbox_claim_idx
+  ON operations_alert_outbox(state, run_at, locked_at, id);
 `;
 
 export class ReportMutationError extends Error {
@@ -278,6 +322,121 @@ export class ReportRepository {
       "SELECT count(DISTINCT report_id)::text AS count FROM account_report_jobs WHERE state IN ('pending', 'running')"
     );
     return Number(result.rows[0]?.count ?? 0);
+  }
+
+  public async recordOperationalWorker(sample: {
+    component: string;
+    instanceId: string;
+    configuredCapacity: number;
+    activeJobs?: number;
+    progressed?: boolean;
+    failure?: boolean;
+    rateLimited?: boolean;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO operational_worker_health (
+         component, instance_id, configured_capacity, active_jobs, last_progress_at,
+         recent_failure_count, recent_rate_limit_count
+       ) VALUES ($1, $2::uuid, $3, $4, CASE WHEN $5 THEN now() ELSE NULL END,
+         CASE WHEN $6 THEN 1 ELSE 0 END, CASE WHEN $7 THEN 1 ELSE 0 END)
+       ON CONFLICT (component, instance_id) DO UPDATE SET
+         configured_capacity = EXCLUDED.configured_capacity,
+         active_jobs = EXCLUDED.active_jobs,
+         last_heartbeat_at = now(),
+         last_progress_at = CASE WHEN $5 THEN now() ELSE operational_worker_health.last_progress_at END,
+         recent_failure_count = CASE
+           WHEN operational_worker_health.window_started_at < now() - interval '5 minutes' THEN CASE WHEN $6 THEN 1 ELSE 0 END
+           ELSE operational_worker_health.recent_failure_count + CASE WHEN $6 THEN 1 ELSE 0 END END,
+         recent_rate_limit_count = CASE
+           WHEN operational_worker_health.window_started_at < now() - interval '5 minutes' THEN CASE WHEN $7 THEN 1 ELSE 0 END
+           ELSE operational_worker_health.recent_rate_limit_count + CASE WHEN $7 THEN 1 ELSE 0 END END,
+         window_started_at = CASE WHEN operational_worker_health.window_started_at < now() - interval '5 minutes' THEN now() ELSE operational_worker_health.window_started_at END,
+         updated_at = now()`,
+      [sample.component, sample.instanceId, sample.configuredCapacity, sample.activeJobs ?? 0,
+        sample.progressed ?? false, sample.failure ?? false, sample.rateLimited ?? false]
+    );
+  }
+
+  public async operationalWorkerHealth(): Promise<Array<{
+    component: string; heartbeatAgeMs: number; progressAgeMs: number | null; configuredCapacity: number;
+    activeJobs: number; recentFailureCount: number; recentRateLimitCount: number;
+  }>> {
+    const result = await this.pool.query<{
+      component: string; heartbeat_age_ms: string; progress_age_ms: string | null;
+      configured_capacity: number; active_jobs: number; recent_failure_count: number; recent_rate_limit_count: number;
+    }>(`SELECT component,
+         (extract(epoch FROM now() - max(last_heartbeat_at)) * 1000)::text AS heartbeat_age_ms,
+         (extract(epoch FROM now() - max(last_progress_at)) * 1000)::text AS progress_age_ms,
+         sum(configured_capacity)::int AS configured_capacity, sum(active_jobs)::int AS active_jobs,
+         sum(recent_failure_count)::int AS recent_failure_count, sum(recent_rate_limit_count)::int AS recent_rate_limit_count
+       FROM operational_worker_health WHERE updated_at >= now() - interval '10 minutes' GROUP BY component`);
+    return result.rows.map((row) => ({
+      component: row.component, heartbeatAgeMs: Number(row.heartbeat_age_ms),
+      progressAgeMs: row.progress_age_ms === null ? null : Number(row.progress_age_ms),
+      configuredCapacity: row.configured_capacity, activeJobs: row.active_jobs,
+      recentFailureCount: row.recent_failure_count, recentRateLimitCount: row.recent_rate_limit_count
+    }));
+  }
+
+  public async transitionOperationalAlerts(alerts: Array<{ key: string; severity: "warning" | "critical" }>): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const seen = new Set(alerts.map((alert) => alert.key));
+      for (const alert of alerts) {
+        const prior = await client.query<{ state: "open" | "closed"; last_sent_at: Date | null }>(
+          "SELECT state, last_sent_at FROM operational_alert_state WHERE alert_key = $1 FOR UPDATE", [alert.key]
+        );
+        const row = prior.rows[0];
+        const shouldSend = row === undefined || row.state === "closed" || row.last_sent_at === null || row.last_sent_at < new Date(Date.now() - 30 * 60_000);
+        await client.query(
+          `INSERT INTO operational_alert_state (alert_key, severity, state, last_sent_at)
+           VALUES ($1, $2, 'open', CASE WHEN $3 THEN now() ELSE NULL END)
+           ON CONFLICT (alert_key) DO UPDATE SET severity = EXCLUDED.severity, state = 'open',
+             last_observed_at = now(), last_sent_at = CASE WHEN $3 THEN now() ELSE operational_alert_state.last_sent_at END, updated_at = now()`,
+          [alert.key, alert.severity, shouldSend]
+        );
+        if (shouldSend) await client.query(
+          `INSERT INTO operations_alert_outbox (alert_key, kind, payload)
+           VALUES ($1, $2, jsonb_build_object('alertKey', $1, 'severity', $3))
+           ON CONFLICT (alert_key, kind, state) DO NOTHING`,
+          [alert.key, row?.state === "open" ? "reminder" : "open", alert.severity]
+        );
+      }
+      const open = await client.query<{ alert_key: string }>("SELECT alert_key FROM operational_alert_state WHERE state = 'open' FOR UPDATE");
+      for (const row of open.rows) if (!seen.has(row.alert_key)) {
+        await client.query("UPDATE operational_alert_state SET state = 'closed', recovery_sent_at = now(), updated_at = now() WHERE alert_key = $1", [row.alert_key]);
+        await client.query(
+          `INSERT INTO operations_alert_outbox (alert_key, kind, payload)
+           VALUES ($1, 'recovery', jsonb_build_object('alertKey', $1, 'status', 'recovered'))
+           ON CONFLICT (alert_key, kind, state) DO NOTHING`, [row.alert_key]
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+
+  public async claimOperationsAlert(): Promise<{ id: string; payload: { alertKey: string; severity?: string; status?: string }; attempts: number } | null> {
+    const result = await this.pool.query<{ id: string; payload: { alertKey: string; severity?: string; status?: string }; attempts: number }>(
+      `WITH candidate AS (
+         SELECT id FROM operations_alert_outbox WHERE state = 'pending' AND run_at <= now()
+           AND (locked_at IS NULL OR locked_at < now() - interval '2 minutes') ORDER BY run_at, id FOR UPDATE SKIP LOCKED LIMIT 1
+       ) UPDATE operations_alert_outbox AS item SET state = 'sending', locked_at = now(), attempts = attempts + 1, updated_at = now()
+       FROM candidate WHERE item.id = candidate.id RETURNING item.id::text, item.payload, item.attempts`
+    );
+    return result.rows[0] ?? null;
+  }
+
+  public async completeOperationsAlert(id: string): Promise<void> {
+    await this.pool.query("UPDATE operations_alert_outbox SET state = 'sent', locked_at = NULL, updated_at = now() WHERE id = $1", [id]);
+  }
+
+  public async retryOperationsAlert(id: string, delaySeconds: number, category: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE operations_alert_outbox SET state = 'pending', locked_at = NULL, last_error = $3,
+       run_at = now() + ($2::text || ' seconds')::interval, updated_at = now() WHERE id = $1`,
+      [id, Math.max(5, Math.floor(delaySeconds)), category.slice(0, 80)]
+    );
   }
 
   public static requestHash(input: CreateReportInput): string {
@@ -608,7 +767,7 @@ export class ReportRepository {
     };
   }
 
-  public async operationalDiagnostics(): Promise<Record<string, number>> {
+  public async operationalDiagnostics(): Promise<Record<string, unknown>> {
     const result = await this.pool.query<{
       reports: string; pending_jobs: string; running_jobs: string;
       pending_deliveries: string; expired_deliveries: string;
@@ -621,12 +780,20 @@ export class ReportRepository {
          (SELECT count(*) FROM event_destination_deliveries WHERE state = 'expired')::text AS expired_deliveries`
     );
     const row = result.rows[0];
+    const [snapshot, workers, alerts] = await Promise.all([
+      this.queueSnapshot(), this.operationalWorkerHealth(), this.pool.query<{ alert_key: string; severity: string }>(
+        "SELECT alert_key, severity FROM operational_alert_state WHERE state = 'open' ORDER BY alert_key"
+      )
+    ]);
     return {
       reports: Number(row?.reports ?? 0),
       pendingJobs: Number(row?.pending_jobs ?? 0),
       runningJobs: Number(row?.running_jobs ?? 0),
       pendingDeliveries: Number(row?.pending_deliveries ?? 0),
-      expiredDeliveries: Number(row?.expired_deliveries ?? 0)
+      expiredDeliveries: Number(row?.expired_deliveries ?? 0),
+      queues: snapshot,
+      workers,
+      openAlerts: alerts.rows.map((alert) => ({ key: alert.alert_key, severity: alert.severity }))
     };
   }
 

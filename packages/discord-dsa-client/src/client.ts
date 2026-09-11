@@ -104,7 +104,8 @@ function emailToCodeQueryB(email: string): string {
 function defaultHeaders(options: DiscordDsaClientOptions): Record<string, string> {
   const headers: Record<string, string> = {
     accept: "*/*",
-    "user-agent": options.userAgent ?? "ProjectNebulon-DSA-Reporter/0.1"
+    "user-agent": options.userAgent ??
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
   };
   if (options.locale !== undefined) headers["x-discord-locale"] = options.locale;
   if (options.timezone !== undefined) headers["x-discord-timezone"] = options.timezone;

@@ -12,6 +12,7 @@ import { decryptJson } from "./security.js";
 import { WebhookDestinationRepository } from "./webhook-destinations.js";
 import { AnalyticsRepository } from "./analytics-repository.js";
 import { QueueObservabilitySampler } from "./operational-observability.js";
+import { OperationsAlertWorker } from "./operations-alert-worker.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -88,11 +89,17 @@ async function main(): Promise<void> {
     reports,
     (event, fields, level = "info") => app.log[level]({ event, ...fields }, "Queue observability sample")
   );
+  const operationsAlertWorker = config.operationsAlertWebhookUrl === undefined ? undefined : new OperationsAlertWorker(
+    reports,
+    config.operationsAlertWebhookUrl,
+    { preparation: config.preparationConcurrency, lifecycle: config.lifecycleConcurrency ?? 2, delivery: 1 }
+  );
   if (config.workerEnabled) {
     preparationWorker.start();
     lifecycleRunner.start();
     eventDeliveryWorker.start();
     queueSampler.start();
+    operationsAlertWorker?.start();
   }
 
   let stopping = false;
@@ -106,6 +113,7 @@ async function main(): Promise<void> {
       await lifecycleRunner.stop();
       await eventDeliveryWorker.stop();
       await queueSampler.stop();
+      await operationsAlertWorker?.stop();
     }
     await database.close();
   };

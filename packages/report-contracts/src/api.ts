@@ -21,7 +21,8 @@ export class DsaApiError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
-    public readonly requestId?: string
+    public readonly requestId?: string,
+    public readonly supportReference?: string
   ) {
     super(message);
     this.name = "DsaApiError";
@@ -69,7 +70,8 @@ class HttpClient {
         response.status,
         detail?.code ?? "unknown_error",
         detail?.message ?? `HTTP ${response.status}`,
-        detail?.requestId
+        detail?.requestId,
+        detail?.supportReference
       );
     }
     if (body === undefined) {

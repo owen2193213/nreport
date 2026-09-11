@@ -34,7 +34,8 @@ All JSON failures use:
   "error": {
     "code": "stable_machine_code",
     "message": "Safe human-readable message",
-    "requestId": "request-correlation-id"
+    "requestId": "request-correlation-id",
+    "supportReference": "opaque-reference-present-on-500-only"
   }
 }
 ```
@@ -42,6 +43,15 @@ All JSON failures use:
 Expected statuses are `401` for authentication, `402` for exhausted credits, `403` for a
 suspended-account write, deliberately indistinguishable `404` responses for missing or foreign
 reports, `409` for state/idempotency conflicts, and `429` with `Retry-After` for throttling.
+Unexpected `500` responses intentionally contain no internal cause. They include a stable opaque
+`supportReference` so an operator can correlate the failure with safe server diagnostics.
+
+## Production operations alerts
+
+Production requires `OPERATIONS_ALERT_WEBHOOK_URL`, a private Discord webhook used only for
+aggregate service-health alerts. It never receives report, account, Discord-user, message, or
+target data. The API persists alert state and delivery retries separately from customer lifecycle
+webhooks; failed operations-alert delivery cannot affect reporting or customer notification.
 
 ## Discovery and account
 

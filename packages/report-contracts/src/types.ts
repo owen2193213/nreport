@@ -207,7 +207,7 @@ export interface ReportLifecycleEvent {
 }
 export interface CursorPage<T> { items: T[]; next: string | null }
 export interface ApiErrorEnvelope {
-  error: { code: string; message: string; requestId: string };
+  error: { code: string; message: string; requestId: string; supportReference?: string };
 }
 export interface AdminCreateAccountInput {
   username: string;

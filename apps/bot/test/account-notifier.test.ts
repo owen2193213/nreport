@@ -1,7 +1,7 @@
 import type { ReportDetail } from "@nreport/contracts";
 import { describe, expect, it, vi } from "vitest";
 
-import { AccountNotificationWorker } from "../src/account-notifier.js";
+import { AccountNotificationWorker, reportRecoveryDelaySeconds } from "../src/account-notifier.js";
 import { targetContextFromReport, visibleStatusHash } from "../src/report-ui.js";
 
 const report: ReportDetail = {
@@ -13,6 +13,14 @@ const report: ReportDetail = {
   finalText: null, legalReference: null, researchSummary: null, sources: [], timeline: [],
   failure: { stage: "writing", code: "preparation_timeout", message: "Report preparation timed out." }
 };
+
+describe("report recovery scheduling", () => {
+  it("uses the bounded transient-failure schedule and slows down API throttling", () => {
+    expect([1, 2, 3, 4, 5, 6, 7].map((attempt) => reportRecoveryDelaySeconds(attempt, false)))
+      .toEqual([5, 15, 30, 60, 120, 300, 300]);
+    expect(reportRecoveryDelaySeconds(1, true)).toBe(120);
+  });
+});
 
 function harness(hash: string | null = null, eventId = "event") {
   const message = { edit: vi.fn().mockResolvedValue(undefined), reply: vi.fn().mockResolvedValue(undefined) };

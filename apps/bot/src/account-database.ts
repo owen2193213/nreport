@@ -35,6 +35,13 @@ CREATE TABLE IF NOT EXISTS bot_report_links (
   dm_channel_id text,
   dm_message_id text,
   dm_claimed_at timestamptz,
+  recovery_attempts integer NOT NULL DEFAULT 0,
+  recovery_run_at timestamptz NOT NULL DEFAULT now(),
+  recovery_claimed_at timestamptz,
+  recovery_error text,
+  card_repair_attempts integer NOT NULL DEFAULT 0,
+  card_repair_run_at timestamptz NOT NULL DEFAULT now(),
+  card_repair_claimed_at timestamptz,
   visible_payload_hash text,
   last_card_edit_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -42,6 +49,13 @@ CREATE TABLE IF NOT EXISTS bot_report_links (
 );
 CREATE INDEX IF NOT EXISTS bot_report_links_owner_idx ON bot_report_links(discord_user_id, created_at DESC);
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS dm_claimed_at timestamptz;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS recovery_attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS recovery_run_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS recovery_claimed_at timestamptz;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS recovery_error text;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS card_repair_attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS card_repair_run_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS card_repair_claimed_at timestamptz;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS encrypted_target_context text;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS visible_payload_hash text;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS last_card_edit_at timestamptz;
@@ -130,7 +144,17 @@ export interface PendingReportLink extends QueryResultRow {
   account_id: string;
   idempotency_key: string;
   encrypted_request: string;
+  encrypted_target_context: string | null;
   encrypted_api_key: string;
+  recovery_attempts: number;
+}
+
+export interface PendingCardRepair extends QueryResultRow {
+  report_id: string;
+  discord_user_id: string;
+  encrypted_target_context: string | null;
+  encrypted_api_key: string;
+  card_repair_attempts: number;
 }
 
 export type EventIngestionResult = "accepted" | "duplicate" | "not_tracked_yet" | "disconnected";
@@ -245,6 +269,7 @@ export class AccountBotDatabase {
   public async completeReportLink(linkId: string, reportId: string): Promise<void> {
     await this.pool.query(
       `UPDATE bot_report_links SET report_id = $2, encrypted_request = NULL,
+         recovery_claimed_at = NULL,
          updated_at = now() WHERE id = $1`,
       [linkId, reportId]
     );
@@ -281,21 +306,39 @@ export class AccountBotDatabase {
 
   public async pendingReportLinks(discordUserId: string): Promise<PendingReportLink[]> {
     const result = await this.pool.query<PendingReportLink>(
-      `SELECT link.id, link.discord_user_id, link.account_id, link.idempotency_key,
-              link.encrypted_request, connection.encrypted_api_key
-       FROM bot_report_links AS link
-       JOIN api_connections AS connection ON connection.account_id = link.account_id
-       WHERE link.discord_user_id = $1 AND link.report_id IS NULL
-       ORDER BY link.created_at LIMIT 20`,
+      `WITH due AS (
+         SELECT id FROM bot_report_links
+         WHERE discord_user_id = $1 AND report_id IS NULL AND recovery_run_at <= now()
+           AND (recovery_claimed_at IS NULL OR recovery_claimed_at < now() - interval '2 minutes')
+         ORDER BY recovery_run_at, created_at FOR UPDATE SKIP LOCKED LIMIT 20
+       ), claimed AS (
+         UPDATE bot_report_links AS link SET recovery_claimed_at = now(),
+           recovery_attempts = recovery_attempts + 1, updated_at = now()
+         FROM due WHERE link.id = due.id RETURNING link.*
+       )
+       SELECT link.id, link.discord_user_id, link.account_id, link.idempotency_key,
+              link.encrypted_request, link.encrypted_target_context, link.recovery_attempts,
+              connection.encrypted_api_key
+       FROM claimed AS link JOIN api_connections AS connection ON connection.account_id = link.account_id
+       ORDER BY link.recovery_run_at, link.created_at`,
       [discordUserId]
     );
     return result.rows;
   }
 
+  public async rescheduleReportLink(linkId: string, delaySeconds: number, error: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE bot_report_links SET recovery_claimed_at = NULL, recovery_error = $3,
+         recovery_run_at = now() + ($2::text || ' seconds')::interval,
+         updated_at = now() WHERE id = $1 AND report_id IS NULL`,
+      [linkId, Math.max(1, Math.floor(delaySeconds)), error.slice(0, 120)]
+    );
+  }
+
   public async setDmMapping(reportId: string, channelId: string, messageId: string): Promise<void> {
     await this.pool.query(
       `UPDATE bot_report_links SET dm_channel_id = $2, dm_message_id = $3,
-         dm_claimed_at = NULL, updated_at = now() WHERE report_id = $1`,
+         dm_claimed_at = NULL, card_repair_claimed_at = NULL, updated_at = now() WHERE report_id = $1`,
       [reportId, channelId, messageId]
     );
   }
@@ -331,6 +374,35 @@ export class AccountBotDatabase {
       `UPDATE bot_report_links SET dm_claimed_at = NULL, updated_at = now()
        WHERE report_id = $1 AND dm_message_id IS NULL`,
       [reportId]
+    );
+  }
+
+  public async dueCardRepairs(discordUserId: string): Promise<PendingCardRepair[]> {
+    const result = await this.pool.query<PendingCardRepair>(
+      `WITH due AS (
+         SELECT id FROM bot_report_links WHERE discord_user_id = $1 AND report_id IS NOT NULL AND dm_message_id IS NULL
+           AND card_repair_run_at <= now()
+           AND (card_repair_claimed_at IS NULL OR card_repair_claimed_at < now() - interval '2 minutes')
+         ORDER BY card_repair_run_at, created_at FOR UPDATE SKIP LOCKED LIMIT 20
+       ), claimed AS (
+         UPDATE bot_report_links AS link SET card_repair_claimed_at = now(),
+           card_repair_attempts = card_repair_attempts + 1, updated_at = now()
+         FROM due WHERE link.id = due.id RETURNING link.*
+       )
+       SELECT link.report_id, link.discord_user_id, link.encrypted_target_context, link.card_repair_attempts,
+              connection.encrypted_api_key
+       FROM claimed AS link JOIN api_connections AS connection ON connection.account_id = link.account_id`,
+      [discordUserId]
+    );
+    return result.rows;
+  }
+
+  public async rescheduleCardRepair(reportId: string, delaySeconds: number): Promise<void> {
+    await this.pool.query(
+      `UPDATE bot_report_links SET card_repair_claimed_at = NULL,
+         card_repair_run_at = now() + ($2::text || ' seconds')::interval, updated_at = now()
+       WHERE report_id = $1 AND dm_message_id IS NULL`,
+      [reportId, Math.max(1, Math.floor(delaySeconds))]
     );
   }
 

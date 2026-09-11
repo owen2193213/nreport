@@ -107,7 +107,8 @@ describe("notification delivery against an existing report card", () => {
     expect(h.logger).toHaveBeenCalledWith("account_notification_retry", {
       traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1,
       stage: "notification", outcome: "retry", durationMs: expect.any(Number) as number,
-      failureCategory: "unexpected"
+      deliveryStage: operation === "edit" ? "edit_card" : "reply",
+      errorName: "Error", failureCategory: "unexpected"
     }, "warn");
     expect(JSON.stringify(h.logger.mock.calls)).not.toContain("canary-secret");
     expect(h.database.completeNotification).not.toHaveBeenCalled();

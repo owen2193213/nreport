@@ -7,12 +7,16 @@ import type { Client, Message } from "discord.js";
 import type { AccountBotDatabase, ApiConnection, ClaimedNotification } from "./account-database.js";
 import type { BotConfig } from "./config.js";
 import { decryptJson } from "./crypto.js";
-import { botLog, safeErrorCategory } from "./observability.js";
+import { botLog, errorFields, safeErrorCategory } from "./observability.js";
 import { classifyReportView, decisionMessageOptions, shouldSendDecisionDm, statusMessageOptions, targetContextFromReport, visibleStatusHash, type TargetDisplayContext } from "./report-ui.js";
 import type { ReportDetail } from "@nreport/contracts";
 
 type AccountApi = Pick<DsaApi, "createReport" | "retryReport" | "events" | "report">;
 type AccountNotifierLog = (event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error") => void;
+type NotificationDeliveryStage =
+  | "load_preferences" | "fetch_report" | "resolve_context" | "render_card"
+  | "fetch_user" | "open_dm" | "fetch_card" | "claim_card" | "send_card"
+  | "save_card_mapping" | "save_card_hash" | "edit_card" | "reply" | "complete_notification";
 
 class ReconciliationEventIngestError extends Error {}
 
@@ -63,6 +67,7 @@ export class AccountNotificationWorker {
     if (item === null) return false;
     const startedAt = Date.now();
     const attempts = item.attempts;
+    let deliveryStage: NotificationDeliveryStage = "load_preferences";
     const traceFields = item.trace_id === null ? {} : { traceId: item.trace_id };
     this.safeLog("account_notification_claimed", {
       ...traceFields, eventType: item.event_type, attempts,
@@ -71,17 +76,26 @@ export class AccountNotificationWorker {
     try {
       const preferences = await this.database.notificationPreferences(item.discord_user_id);
       const api = this.api(item);
+      deliveryStage = "fetch_report";
       const report = await api.report(item.report_id);
+      deliveryStage = "resolve_context";
       const context = item.encrypted_target_context === null
         ? targetContextFromReport(report)
         : this.decrypt<TargetDisplayContext>(item.encrypted_target_context, this.config.dataEncryptionKey);
+      deliveryStage = "render_card";
       const options = statusMessageOptions(report, context);
       const visibleHash = visibleStatusHash(report, context);
+      deliveryStage = "fetch_user";
       const user = await this.client.users.fetch(item.discord_user_id);
+      deliveryStage = "open_dm";
       const dm = await user.createDM();
       let message: Message | null = null;
-      if (item.dm_message_id !== null) message = await dm.messages.fetch(item.dm_message_id).catch(() => null);
+      if (item.dm_message_id !== null) {
+        deliveryStage = "fetch_card";
+        message = await dm.messages.fetch(item.dm_message_id).catch(() => null);
+      }
       if (message === null) {
+        deliveryStage = "claim_card";
         if (!(await this.database.claimDmCard(report.reportId))) {
           await this.database.retryNotification(item.event_id, "status_card_creation_in_progress");
           this.safeLog("account_notification_retry", {
@@ -91,25 +105,32 @@ export class AccountNotificationWorker {
           return true;
         }
         try {
+          deliveryStage = "send_card";
           message = await dm.send(options);
+          deliveryStage = "save_card_mapping";
           await this.database.setDmMapping(report.reportId, message.channelId, message.id);
+          deliveryStage = "save_card_hash";
           await this.database.completeCardUpdate(report.reportId, visibleHash);
         } catch (error) {
           await this.database.releaseDmCard(report.reportId);
           throw error;
         }
       } else if (item.visible_payload_hash !== visibleHash) {
+        deliveryStage = "edit_card";
         await message.edit(options);
+        deliveryStage = "save_card_hash";
         await this.database.completeCardUpdate(report.reportId, visibleHash);
       }
       const view = classifyReportView(report);
       if (shouldSendDecisionDm(item.event_type, view.key, preferences)) {
+        deliveryStage = "reply";
         await message.reply({
           ...decisionMessageOptions(report, context),
           nonce: notificationNonce(item.event_id),
           enforceNonce: true
         });
       }
+      deliveryStage = "complete_notification";
       await this.database.completeNotification(item.event_id);
       this.safeLog("account_notification_completed", {
         ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
@@ -129,7 +150,7 @@ export class AccountNotificationWorker {
         await this.database.retryNotification(item.event_id, failureCategory);
         this.safeLog("account_notification_retry", {
           ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
-          failureCategory, stage: "notification", outcome: "retry"
+          deliveryStage, ...errorFields(error), failureCategory, stage: "notification", outcome: "retry"
         }, "warn");
       }
     }

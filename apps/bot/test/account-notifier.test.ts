@@ -47,6 +47,7 @@ describe("notification delivery against an existing report card", () => {
     await h.worker.processOne();
     expect(h.dm.messages.fetch).toHaveBeenCalledWith("original-card");
     expect(h.message.edit).toHaveBeenCalledOnce();
+    expect(h.message.edit).toHaveBeenCalledWith(expect.objectContaining({ content: null, embeds: [] }));
     expect(h.message.reply).toHaveBeenCalledOnce();
     expect(h.message.reply).toHaveBeenCalledWith(expect.objectContaining({
       nonce: "nreport-b8e1f80bd70ae078",

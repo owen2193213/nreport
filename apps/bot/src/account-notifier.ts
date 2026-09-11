@@ -117,7 +117,7 @@ export class AccountNotificationWorker {
         }
       } else if (item.visible_payload_hash !== visibleHash) {
         deliveryStage = "edit_card";
-        await message.edit(options);
+        await message.edit({ ...options, content: null, embeds: [] });
         deliveryStage = "save_card_hash";
         await this.database.completeCardUpdate(report.reportId, visibleHash);
       }

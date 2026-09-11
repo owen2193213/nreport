@@ -402,7 +402,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
         if (code === "credits_exhausted") return apiError(reply, request, 402, code, message);
         if (code === "account_suspended") return apiError(reply, request, 403, code, message);
         if (code === "rate_limited") {
-          reply.header("Retry-After", retryInput.mode === "regenerate" || retryInput.mode === "rewrite_ai" ? "3600" : "60");
+          reply.header("Retry-After", "60");
           return apiError(reply, request, 429, code, message);
         }
         if (code === "idempotency_conflict" || code === "invalid_retry" || code === "retry_cooldown") {

@@ -646,7 +646,6 @@ export class ReportRepository {
         return { created: false, report: existingRow };
       }
       await consumeRateLimit(client, accountId, "report_mutation", "minute", 60);
-      if (input.useAi) await consumeRateLimit(client, accountId, "ai_preparation", "hour", 20);
       if (accountRow.available_credits < 1) {
         throw new ReportMutationError("credits_exhausted", "No report credits are available.");
       }
@@ -932,7 +931,6 @@ export class ReportRepository {
       if (!reportRetryableModes(predecessor).includes(mode)) {
         throw new ReportMutationError("invalid_retry", "The requested retry mode is not available.");
       }
-      if (mode === "regenerate" || mode === "rewrite_ai") await consumeRateLimit(client, accountId, "ai_preparation", "hour", 20);
 
       if (predecessor.credit_state === "released") {
         if (accountRow.available_credits < 1) {
@@ -2169,8 +2167,8 @@ function shouldApplyDiscordStatus(current: string | null, incoming: string): boo
 async function consumeRateLimit(
   client: PoolClient,
   accountId: string,
-  kind: "report_mutation" | "ai_preparation",
-  window: "minute" | "hour",
+  kind: "report_mutation",
+  window: "minute",
   maximum: number
 ): Promise<void> {
   const result = await client.query<{ request_count: number }>(

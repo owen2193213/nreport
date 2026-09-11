@@ -68,9 +68,9 @@ bypass the spacing. This prevents pairs such as “Submitting report” followed
 the bot warns in the ephemeral interaction response that it could not DM the user; the API report
 continues.
 
-AI-backed cards also include a compact **AI preparation** log with stage-specific icons: 🧾 for
-analyzing report details, 🌐 for researching applicable laws, and ✍️ for drafting the report. Each
-stage is marked as queued, in progress, or complete; manual reports omit this section. The log uses
+AI-backed cards also include a compact **AI preparation** log. Completed stages use plain text; only
+the active stage is bold and prefixed with ⏳. Stages are analyzing report details, researching
+applicable laws, and drafting the report. Manual reports omit this section. The log uses
 plain-language milestones and does not expose prompts, search queries, provider names, or request
 counts.
 

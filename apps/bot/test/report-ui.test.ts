@@ -128,9 +128,9 @@ describe("report card behavior and Discord payload contracts (not visual readabi
   it("shows meaningful AI preparation stages with stage-specific icons", () => {
     const value = JSON.stringify(statusMessageOptions(report({ status: "writing" }), context));
     expect(value).toContain("### AI preparation");
-    expect(value).toContain("✅ 🧾 AI analyzed the report details");
-    expect(value).toContain("✅ 🌐 AI researched applicable laws");
-    expect(value).toContain("⏳ ✍️ AI is drafting the report");
+    expect(value).toContain("AI analyzed the report details");
+    expect(value).toContain("AI researched applicable laws");
+    expect(value).toContain("⏳ **AI is drafting the report**");
   });
 
   it("collapses a denied report and submitted appeal into one chronological history action", () => {

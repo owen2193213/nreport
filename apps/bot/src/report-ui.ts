@@ -225,9 +225,9 @@ function aiPreparationLog(report: ReportDetail): string[] | null {
   const terminal = report.status !== "queued" && report.status !== "planning" && report.status !== "researching" && report.status !== "writing";
   const researchDone = terminal || report.status === "writing" || (report.status === "failed" && !failedStage.includes("research"));
   const writingDone = terminal && !(report.status === "failed" && failedStage.includes("writing"));
-  const analysis = report.status === "queued" || report.status === "planning" ? "⏳ 🧾 AI is analyzing the report details" : "✅ 🧾 AI analyzed the report details";
-  const research = researchDone ? "✅ 🌐 AI researched applicable laws" : "⏳ 🌐 AI is researching applicable laws";
-  const writing = writingDone ? "✅ ✍️ AI drafted the report" : "⏳ ✍️ AI is drafting the report";
+  const analysis = report.status === "queued" || report.status === "planning" ? "⏳ **AI is analyzing the report details**" : "AI analyzed the report details";
+  const research = researchDone ? "AI researched applicable laws" : "⏳ **AI is researching applicable laws**";
+  const writing = writingDone ? "AI drafted the report" : "⏳ **AI is drafting the report**";
   return [analysis, research, writing];
 }
 

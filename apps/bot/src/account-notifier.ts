@@ -9,6 +9,7 @@ import type { BotConfig } from "./config.js";
 import { decryptJson } from "./crypto.js";
 import { botLog, safeErrorCategory } from "./observability.js";
 import { classifyReportView, decisionMessageOptions, shouldSendDecisionDm, statusMessageOptions, targetContextFromReport, visibleStatusHash, type TargetDisplayContext } from "./report-ui.js";
+import type { ReportDetail } from "@nreport/contracts";
 
 type AccountApi = Pick<DsaApi, "createReport" | "retryReport" | "events" | "report">;
 type AccountNotifierLog = (event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error") => void;
@@ -141,6 +142,10 @@ export class AccountNotificationWorker {
         if ("flow" in pending) {
           const report = await api.createReport(link.idempotency_key, pending);
           await this.database.completeReportLink(link.id, report.reportId);
+          await this.ensureInitialCard(report, connection.discord_user_id);
+          this.safeLog("report_create_recovered", {
+            stage: "creation_recovery", outcome: "completed", durationMs: 0
+          });
         } else {
           const report = await api.retryReport(pending.reportId, link.idempotency_key, pending.input ?? { mode: pending.mode! });
           await this.database.completeReplacementLink(link.id, report.reportId, pending.reportId);
@@ -183,6 +188,27 @@ export class AccountNotificationWorker {
       }
       if (page.next === null) break;
       after = page.next;
+    }
+  }
+
+  private async ensureInitialCard(report: ReportDetail, discordUserId: string): Promise<void> {
+    if (!(await this.database.claimDmCard(report.reportId))) return;
+    const startedAt = Date.now();
+    try {
+      const context = targetContextFromReport(report);
+      const user = await this.client.users.fetch(discordUserId);
+      const message = await user.send(statusMessageOptions(report, context));
+      await this.database.setDmMapping(report.reportId, message.channelId, message.id);
+      await this.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
+      this.safeLog("initial_card_created", {
+        stage: "initial_card", outcome: "completed", durationMs: Date.now() - startedAt
+      });
+    } catch (error) {
+      await this.database.releaseDmCard(report.reportId);
+      this.safeLog("initial_card_failed", {
+        stage: "initial_card", outcome: "retry", durationMs: Date.now() - startedAt,
+        failureCategory: safeErrorCategory(error)
+      }, "warn");
     }
   }
 

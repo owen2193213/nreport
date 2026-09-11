@@ -543,6 +543,58 @@ describe("LifecycleRunner background scheduling", () => {
 });
 
 describe("LifecycleRunner safe outcomes", () => {
+  it("reports a scheduled retry instead of a completed lifecycle job", async () => {
+    const outcomes: unknown[] = [];
+    const retryable = new DiscordDsaHttpError("temporarily unavailable", 503);
+    const store = {
+      claimLifecycleJob: vi.fn(async () => ({
+        id: "job-1", report_id: "report-1", trace_id: "33333333-3333-4333-8333-333333333333",
+        kind: "request_code" as const, payload: {}, attempts: 1, max_attempts: 3, execution_token: 1
+      })),
+      getLifecycleReport: vi.fn(async () => report()),
+      setStatus: vi.fn(async () => true),
+      retryLifecycleJob: vi.fn(async () => true)
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      {} as never,
+      () => ({ sendEmailCode: vi.fn(async () => { throw retryable; }), close: vi.fn() }) as never,
+      undefined,
+      undefined,
+      (outcome) => { outcomes.push(outcome); }
+    );
+
+    await runner.processOne();
+
+    expect(outcomes.at(-1)).toMatchObject({
+      component: "job", stage: "lifecycle_job", outcome: "retry_scheduled",
+      jobKind: "request_code", attempts: 1, errorCategory: "discord_http_503", retryDelayMs: 10_000
+    });
+  });
+
+  it("does not claim a retry when its durable transition loses ownership", async () => {
+    const outcomes: unknown[] = [];
+    const retryable = new DiscordDsaHttpError("temporarily unavailable", 503);
+    const store = {
+      claimLifecycleJob: vi.fn(async () => ({
+        id: "job-1", report_id: "report-1", kind: "request_code" as const,
+        payload: {}, attempts: 1, max_attempts: 3, execution_token: 1
+      })),
+      getLifecycleReport: vi.fn(async () => report()),
+      setStatus: vi.fn(async () => true),
+      retryLifecycleJob: vi.fn(async () => false)
+    };
+    const runner = new LifecycleRunner(
+      store as never, {} as never,
+      () => ({ sendEmailCode: vi.fn(async () => { throw retryable; }), close: vi.fn() }) as never,
+      undefined, undefined, (outcome) => { outcomes.push(outcome); }
+    );
+
+    await runner.processOne();
+
+    expect(outcomes.at(-1)).toMatchObject({ component: "job", outcome: "ownership_lost" });
+  });
+
   it("keeps the job trace on a safe heartbeat failure outcome", async () => {
     vi.useFakeTimers();
     const releaseSubmission = deferred<{ report_id: string }>();

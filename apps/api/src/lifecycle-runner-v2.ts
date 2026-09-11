@@ -81,12 +81,14 @@ export type LifecycleRunnerOutcome =
   | {
       component: "job";
       stage: "lifecycle_job";
-      outcome: "completed" | "failed";
+      outcome: LifecycleJobResult["outcome"];
       jobKind: LifecycleJob["kind"];
       attempts: number;
       durationMs: number;
       traceId?: string;
       errorCategory?: string;
+      retryDelayMs?: number;
+      submissionCertainty?: "not_started" | "confirmed" | "ambiguous";
     }
   | {
       component: "loop" | "maintenance";
@@ -96,6 +98,13 @@ export type LifecycleRunnerOutcome =
       traceId?: string;
       errorCategory?: string;
     };
+
+interface LifecycleJobResult {
+  outcome: "completed" | "waiting_for_email" | "retry_scheduled" | "failed" | "ambiguous" | "ownership_lost";
+  errorCategory?: string;
+  retryDelayMs?: number;
+  submissionCertainty?: "not_started" | "confirmed" | "ambiguous";
+}
 
 export class LifecycleRunner {
   private running: Promise<void>[] | undefined;
@@ -166,11 +175,11 @@ export class LifecycleRunner {
     });
     const heartbeat = this.heartbeatJob(job, ownership, settled);
     try {
-      await this.dispatchJob(job, ownership);
+      const result = await this.dispatchJob(job, ownership);
       this.notify({
         component: "job",
         stage: "lifecycle_job",
-        outcome: "completed",
+        ...result,
         jobKind: job.kind,
         attempts: job.attempts,
         durationMs: elapsedSince(startedAt),
@@ -180,12 +189,12 @@ export class LifecycleRunner {
       this.notify({
         component: "job",
         stage: "lifecycle_job",
-        outcome: "failed",
+        outcome: isOwnershipLost(error) ? "ownership_lost" : "failed",
         jobKind: job.kind,
         attempts: job.attempts,
         durationMs: elapsedSince(startedAt),
         ...(job.trace_id === undefined ? {} : { traceId: job.trace_id }),
-        errorCategory: safeJobErrorCategory(error)
+        ...(isOwnershipLost(error) ? {} : { errorCategory: safeJobErrorCategory(error) })
       });
       if (!isOwnershipLost(error)) throw error;
     } finally {
@@ -194,24 +203,24 @@ export class LifecycleRunner {
     }
   }
 
-  private async dispatchJob(job: LifecycleJob, ownership: JobOwnership): Promise<void> {
-    if (job.kind === "request_code") await this.requestCode(job, ownership);
-    else if (job.kind === "verify_submit") await this.verifyAndSubmit(job, ownership);
-    else await this.submitReview(job, ownership);
+  private async dispatchJob(job: LifecycleJob, ownership: JobOwnership): Promise<LifecycleJobResult> {
+    if (job.kind === "request_code") return this.requestCode(job, ownership);
+    if (job.kind === "verify_submit") return this.verifyAndSubmit(job, ownership);
+    return this.submitReview(job, ownership);
   }
 
-  private async submitReview(job: LifecycleJob, ownership: JobOwnership): Promise<void> {
+  private async submitReview(job: LifecycleJob, ownership: JobOwnership): Promise<LifecycleJobResult> {
     const report = await this.requiredReport(job.report_id);
     const encryptedReviewUrl = job.payload.encryptedReviewUrl;
     if (typeof encryptedReviewUrl !== "string" || report.discord_report_id === null) {
       await this.store.failReview(job, "request_failed", "review_context_missing", "The automatic appeal could not be prepared.");
-      return;
+      return failedResult("review_context_missing");
     }
     const decoded = this.codecs.decrypt(encryptedReviewUrl);
     const reviewUrl = typeof decoded === "string" ? decoded : (decoded as { reviewUrl?: unknown }).reviewUrl;
     if (typeof reviewUrl !== "string") {
       await this.store.failReview(job, "request_failed", "review_url_invalid", "The automatic appeal link was invalid.");
-      return;
+      return failedResult("review_url_invalid");
     }
     const client = this.clientFactory(report);
     let submissionStarted = false;
@@ -221,7 +230,7 @@ export class LifecycleRunner {
       submissionStarted = await this.store.beginReviewSubmission(job);
       if (!submissionStarted) {
         await this.store.completeLifecycleJob(job);
-        return;
+        return ownershipLostResult();
       }
       let result: { report_id: string };
       try {
@@ -236,73 +245,81 @@ export class LifecycleRunner {
           if (isOwnershipLost(retryError)) throw retryError;
           if (discordResponseCode(retryError) === "521002") {
             await this.store.markReviewRequested(job, report.discord_report_id);
-            return;
+            return completedResult("confirmed");
           }
           throw retryError;
         }
       }
       if (result.report_id !== report.discord_report_id) {
         await this.store.failReview(job, "request_failed", "review_report_id_mismatch", "Discord returned a different report ID for the appeal.");
-        return;
+        return failedResult("review_report_id_mismatch");
       }
       await this.store.markReviewRequested(job, result.report_id);
+      return completedResult("confirmed");
     } catch (error) {
       if (isOwnershipLost(error)) throw error;
       const responseCode = discordResponseCode(error);
       if (responseCode === "521002") {
         await this.store.markReviewRequested(job, report.discord_report_id);
+        return completedResult("confirmed");
       } else if (responseCode === "521004") {
         await this.store.failReview(job, "ineligible", "discord_review_ineligible", "Discord says this report is ineligible for appeal.");
+        return failedResult("discord_review_ineligible");
       } else if (submissionStarted && ambiguous(error)) {
         await this.store.failReview(job, "request_ambiguous", "review_request_ambiguous", "The automatic appeal outcome could not be confirmed.");
+        return ambiguousResult("review_request_ambiguous");
       } else if (!submissionStarted && job.attempts < job.max_attempts && retryable(error)) {
-        await this.store.retryLifecycleJob(job, discordFailureCode(error), Math.min(60, 5 * 2 ** job.attempts));
+        const delaySeconds = retryDelaySeconds(job.attempts);
+        await this.store.retryLifecycleJob(job, discordFailureCode(error), delaySeconds);
+        return retryResult(discordFailureCode(error), delaySeconds);
       } else {
         await this.store.failReview(job, "request_failed", "review_request_failed", "Discord did not accept the automatic appeal.");
+        return failedResult("review_request_failed");
       }
     } finally {
       await client.close();
     }
   }
 
-  private async requestCode(job: LifecycleJob, ownership: JobOwnership): Promise<void> {
+  private async requestCode(job: LifecycleJob, ownership: JobOwnership): Promise<LifecycleJobResult> {
     const report = await this.requiredReport(job.report_id);
     const client = this.clientFactory(report);
     try {
-      if (!(await this.store.setStatus(job, "requesting_verification"))) return;
+      if (!(await this.store.setStatus(job, "requesting_verification"))) return ownershipLostResult();
       await ownership.wait(client.sendEmailCode(transportFlow(report.flow), report.reporter_email));
       const session = await ownership.wait(client.snapshotSession());
       await this.store.saveAwaitingVerification(job, this.codecs.encrypt(session));
+      return { outcome: "waiting_for_email", submissionCertainty: "not_started" };
     } catch (error) {
       if (isOwnershipLost(error)) throw error;
-      await this.handleBeforeBoundaryFailure(job, error);
+      return this.handleBeforeBoundaryFailure(job, error);
     } finally {
       await client.close();
     }
   }
 
-  private async verifyAndSubmit(job: LifecycleJob, ownership: JobOwnership): Promise<void> {
+  private async verifyAndSubmit(job: LifecycleJob, ownership: JobOwnership): Promise<LifecycleJobResult> {
     const report = await this.requiredReport(job.report_id);
     if (report.session_state === null) {
       await this.store.failBeforeSubmission(job, "session_not_ready", "Verification session was not ready.");
-      return;
+      return failedResult("session_not_ready");
     }
     const session = this.codecs.decrypt(report.session_state) as DiscordDsaSessionState;
     const rawCode = job.payload.encryptedCode ?? job.payload.code;
     if (typeof rawCode !== "string") {
       await this.store.failBeforeSubmission(job, "verification_code_missing", "Verification code was unavailable.");
-      return;
+      return failedResult("verification_code_missing");
     }
     const decoded = this.codecs.decrypt(rawCode);
     const code = typeof decoded === "string" ? decoded : (decoded as { code?: unknown }).code;
     if (typeof code !== "string") {
       await this.store.failBeforeSubmission(job, "verification_code_invalid", "Verification code was invalid.");
-      return;
+      return failedResult("verification_code_invalid");
     }
     const client = this.clientFactory(report, session);
     let crossedBoundary = false;
     try {
-      if (!(await this.store.setStatus(job, "verifying"))) return;
+      if (!(await this.store.setStatus(job, "verifying"))) return ownershipLostResult();
       const flow = transportFlow(report.flow);
       const token = await ownership.wait(client.verifyEmailCode(flow, report.reporter_email, code));
       const menu = await ownership.wait(client.getMenu(flow));
@@ -315,33 +332,39 @@ export class LifecycleRunner {
       crossedBoundary = await this.store.beginSubmission(job);
       if (!crossedBoundary) {
         await this.store.completeLifecycleJob(job);
-        return;
+        return ownershipLostResult();
       }
       const result = await ownership.wait(client.submitPrepared(payload as never));
       await this.store.markSubmitted(job, result.report_id);
+      return completedResult("confirmed");
     } catch (error) {
       if (isOwnershipLost(error)) throw error;
       if (crossedBoundary) {
+        const code = ambiguous(error) ? "ambiguous_submission_state" : discordFailureCode(error);
         await this.store.failAfterSubmission(
           job,
-          ambiguous(error) ? "ambiguous_submission_state" : discordFailureCode(error),
+          code,
           "Discord submission started, but its final outcome could not be safely retried."
         );
+        return ambiguous(error) ? ambiguousResult(code) : failedResult(code);
       } else {
-        await this.handleBeforeBoundaryFailure(job, error);
+        return this.handleBeforeBoundaryFailure(job, error);
       }
     } finally {
       await client.close();
     }
   }
 
-  private async handleBeforeBoundaryFailure(job: LifecycleJob, error: unknown): Promise<void> {
+  private async handleBeforeBoundaryFailure(job: LifecycleJob, error: unknown): Promise<LifecycleJobResult> {
     const code = discordFailureCode(error);
     if (job.attempts < job.max_attempts && retryable(error)) {
-      await this.store.retryLifecycleJob(job, code, Math.min(60, 5 * 2 ** job.attempts));
-      return;
+      const delaySeconds = retryDelaySeconds(job.attempts);
+      return (await this.store.retryLifecycleJob(job, code, delaySeconds))
+        ? retryResult(code, delaySeconds)
+        : ownershipLostResult();
     }
     await this.store.failBeforeSubmission(job, code, "Discord preparation failed safely.");
+    return failedResult(code);
   }
 
   private async requiredReport(reportId: string): Promise<LifecycleReport> {
@@ -579,4 +602,33 @@ function discordFailureCode(error: unknown): string {
   if (error instanceof DiscordDsaNetworkError) return "discord_network_error";
   if (error instanceof DiscordDsaHttpError) return `discord_http_${error.status}`;
   return "discord_lifecycle_failed";
+}
+
+function retryDelaySeconds(attempts: number): number {
+  return Math.min(60, 5 * 2 ** attempts);
+}
+
+function retryResult(errorCategory: string, delaySeconds: number): LifecycleJobResult {
+  return {
+    outcome: "retry_scheduled",
+    errorCategory,
+    retryDelayMs: delaySeconds * 1_000,
+    submissionCertainty: "not_started"
+  };
+}
+
+function failedResult(errorCategory: string): LifecycleJobResult {
+  return { outcome: "failed", errorCategory, submissionCertainty: "not_started" };
+}
+
+function ambiguousResult(errorCategory: string): LifecycleJobResult {
+  return { outcome: "ambiguous", errorCategory, submissionCertainty: "ambiguous" };
+}
+
+function completedResult(submissionCertainty: "confirmed"): LifecycleJobResult {
+  return { outcome: "completed", submissionCertainty };
+}
+
+function ownershipLostResult(): LifecycleJobResult {
+  return { outcome: "ownership_lost" };
 }

@@ -7,7 +7,7 @@ import {
 } from "../src/preparation/ai-client.js";
 
 const ACTOR: AiRequestContext = { traceId: "33333333-3333-4333-8333-333333333333", userId: "reporter-id" };
-const OPENROUTER_MODEL = "deepseek/deepseek-v4-flash-0731";
+const CEREBRAS_MODEL = "qwen-3.8-27b";
 
 function success(
   content = '{"ok":true}',
@@ -19,7 +19,7 @@ function success(
       id: "chatcmpl-safe-id",
       object: "chat.completion",
       created: 1,
-      model: OPENROUTER_MODEL,
+      model: CEREBRAS_MODEL,
       choices: [
         {
           index: 0,
@@ -55,10 +55,10 @@ function headers(request: ReturnType<typeof vi.fn>): Record<string, string> {
 }
 
 describe("AiClient", () => {
-  describe("OpenRouter transport", () => {
-    it("sends reasoning requests to OpenRouter with fallback routing", async () => {
+  describe("Cerebras transport", () => {
+    it("sends reasoning requests to Cerebras with the bounded completion budget", async () => {
       const request = vi.fn().mockResolvedValue(success());
-      const client = new AiClient("ai-secret", OPENROUTER_MODEL, {
+      const client = new AiClient("ai-secret", CEREBRAS_MODEL, {
         request: request as unknown as typeof fetch
       });
 
@@ -74,18 +74,18 @@ describe("AiClient", () => {
       );
 
       expect(request.mock.calls[0]?.[0]).toBe(
-        "https://openrouter.ai/api/v1/chat/completions"
+        "https://api.cerebras.ai/v1/chat/completions"
       );
       expect(headers(request).Authorization).toBe("Bearer ai-secret");
-      expect(headers(request)["HTTP-Referer"]).toBe("https://discord.com");
-      expect(headers(request)["X-Title"]).toBe("Discord DSA");
+      expect(headers(request)["HTTP-Referer"]).toBeUndefined();
+      expect(headers(request)["X-Title"]).toBeUndefined();
       expect(body(request)).toMatchObject({
-        model: OPENROUTER_MODEL,
-        max_completion_tokens: 8_192,
+        model: CEREBRAS_MODEL,
+        max_completion_tokens: 3_000,
         reasoning_effort: "high",
         stream: false
       });
-      expect(body(request).provider).toEqual({ allow_fallbacks: true });
+      expect(body(request).provider).toBeUndefined();
       expect(result).toEqual({
         content: '{"ok":true}',
         finishReason: "stop",
@@ -111,19 +111,19 @@ describe("AiClient", () => {
       );
 
       await expect(
-        new AiClient("key", OPENROUTER_MODEL, {
+        new AiClient("key", CEREBRAS_MODEL, {
           request: request as unknown as typeof fetch
         }).complete({}, Date.now() + 5_000, ACTOR, "plan")
       ).rejects.toMatchObject({
         kind: "provider",
-        message: "OpenRouter returned an upstream error."
+        message: "Cerebras returned an upstream error."
       });
     });
   });
 
   it("uses zero separate reasoning tokens when the response omits the detail", async () => {
     const request = vi.fn().mockResolvedValue(success('{"ok":true}', "stop", null));
-    const result = await new AiClient("key", OPENROUTER_MODEL, {
+    const result = await new AiClient("key", CEREBRAS_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({ messages: [] }, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -135,7 +135,7 @@ describe("AiClient", () => {
     const request = vi.fn().mockResolvedValue(success('{"ok":', "length"));
 
     await expect(
-      new AiClient("key", OPENROUTER_MODEL, {
+      new AiClient("key", CEREBRAS_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind: "incomplete" });
@@ -157,7 +157,7 @@ describe("AiClient", () => {
     );
 
     await expect(
-      new AiClient("key", OPENROUTER_MODEL, {
+      new AiClient("key", CEREBRAS_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({ messages: [] }, Date.now() + 5_000, ACTOR, "synthesize")
     ).rejects.toMatchObject({ kind: "refusal" });
@@ -175,7 +175,7 @@ describe("AiClient", () => {
     );
 
     await expect(
-      new AiClient("key", OPENROUTER_MODEL, {
+      new AiClient("key", CEREBRAS_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind });
@@ -188,7 +188,7 @@ describe("AiClient", () => {
       .mockResolvedValueOnce(new Response("temporary", { status }))
       .mockResolvedValueOnce(success());
 
-    const result = await new AiClient("key", OPENROUTER_MODEL, {
+    const result = await new AiClient("key", CEREBRAS_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -203,7 +203,7 @@ describe("AiClient", () => {
       .mockRejectedValueOnce(new Error("temporary network failure"))
       .mockResolvedValueOnce(success());
 
-    const result = await new AiClient("key", OPENROUTER_MODEL, {
+    const result = await new AiClient("key", CEREBRAS_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
@@ -220,7 +220,7 @@ describe("AiClient", () => {
     );
 
     await expect(
-      new AiClient("key", OPENROUTER_MODEL, {
+      new AiClient("key", CEREBRAS_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind: "malformed" });
@@ -229,7 +229,7 @@ describe("AiClient", () => {
 
   it("rejects exhausted deadlines without making a request", async () => {
     const request = vi.fn();
-    const client = new AiClient("key", OPENROUTER_MODEL, {
+    const client = new AiClient("key", CEREBRAS_MODEL, {
       request: request as unknown as typeof fetch
     });
 
@@ -253,7 +253,7 @@ describe("AiClient", () => {
     );
 
     await expect(
-      new AiClient("key", OPENROUTER_MODEL, {
+      new AiClient("key", CEREBRAS_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan")
     ).rejects.toMatchObject({ kind: "provider" });
@@ -279,7 +279,7 @@ describe("AiClient", () => {
     controller.abort(reason);
 
     await expect(
-      new AiClient("key", OPENROUTER_MODEL, {
+      new AiClient("key", CEREBRAS_MODEL, {
         request: request as unknown as typeof fetch
       }).complete({}, Date.now() + 5_000, ACTOR, "plan", controller.signal)
     ).rejects.toBe(reason);
@@ -300,7 +300,7 @@ describe("AiClient", () => {
           reject(requestSignal.reason instanceof Error ? requestSignal.reason : new Error("Request aborted."));
         }, { once: true });
       }));
-    const running = new AiClient("key", OPENROUTER_MODEL, {
+    const running = new AiClient("key", CEREBRAS_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "plan", controller.signal);
     await vi.waitFor(() => expect(activeListeners).toBe(1));
@@ -319,7 +319,7 @@ describe("AiClient", () => {
       choices: [{ finish_reason: canary, message: { content: null, refusal: "declined" } }]
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
 
-    await expect(new AiClient("key", OPENROUTER_MODEL, {
+    await expect(new AiClient("key", CEREBRAS_MODEL, {
       request: request as unknown as typeof fetch
     }).complete({}, Date.now() + 5_000, ACTOR, "plan")).rejects.toMatchObject({ kind: "refusal" });
 

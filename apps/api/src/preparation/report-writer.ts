@@ -30,9 +30,7 @@ import {
 export type { AiRequestContext } from "./ai-client.js";
 
 const MAX_REPORT_LENGTH = 512;
-const MECHANICAL_COMPLETION_TOKEN_LIMIT = 2_048;
-const PLAN_COMPLETION_TOKEN_LIMIT = 4_096;
-const RESEARCH_SYNTHESIS_COMPLETION_TOKEN_LIMIT = 6_144;
+const COMPLETION_TOKEN_LIMIT = 3_000;
 const WORKFLOW_TIMEOUT_MS = 300_000;
 
 const WRITER_SYSTEM_PROMPT = [
@@ -776,7 +774,7 @@ export class ReportWriter {
           { role: "system", content: PLANNER_SYSTEM_PROMPT },
           { role: "user", content: planUserPrompt }
         ],
-        max_completion_tokens: PLAN_COMPLETION_TOKEN_LIMIT,
+        max_completion_tokens: COMPLETION_TOKEN_LIMIT,
         reasoning_effort: "low"
       },
       deadline,
@@ -798,7 +796,7 @@ export class ReportWriter {
             { role: "assistant", content: firstPlanContent },
             { role: "user", content: plannerRepairPrompt(problem) }
           ],
-          max_completion_tokens: MECHANICAL_COMPLETION_TOKEN_LIMIT,
+          max_completion_tokens: COMPLETION_TOKEN_LIMIT,
           reasoning_effort: "none",
           response_format: planFormat
         },
@@ -932,7 +930,7 @@ export class ReportWriter {
     const first = await this.completeAi(
       {
         messages: [{ role: "system", content: WRITER_SYSTEM_PROMPT }, ...conversation],
-        max_completion_tokens: MECHANICAL_COMPLETION_TOKEN_LIMIT,
+        max_completion_tokens: COMPLETION_TOKEN_LIMIT,
         reasoning_effort: "low"
       },
       deadline,
@@ -956,7 +954,7 @@ export class ReportWriter {
             { role: "system", content: WRITER_SYSTEM_PROMPT },
             ...repairConversation
           ],
-          max_completion_tokens: MECHANICAL_COMPLETION_TOKEN_LIMIT,
+          max_completion_tokens: COMPLETION_TOKEN_LIMIT,
           reasoning_effort: "none",
           response_format: reportResponseFormat()
         },
@@ -1020,7 +1018,7 @@ export class ReportWriter {
                   content: schemaPrompt(prompt, responseFormat, synthesisExamples())
                 }
               ],
-              max_completion_tokens: RESEARCH_SYNTHESIS_COMPLETION_TOKEN_LIMIT,
+              max_completion_tokens: COMPLETION_TOKEN_LIMIT,
               reasoning_effort: "medium"
             }
           : {
@@ -1031,7 +1029,7 @@ export class ReportWriter {
                   content: schemaPrompt(prompt, responseFormat, synthesisExamples())
                 }
               ],
-              max_completion_tokens: MECHANICAL_COMPLETION_TOKEN_LIMIT,
+              max_completion_tokens: COMPLETION_TOKEN_LIMIT,
               reasoning_effort: "none",
               response_format: responseFormat
             },
@@ -1052,7 +1050,7 @@ export class ReportWriter {
               { role: "assistant", content },
               { role: "user", content: synthesisRepairPrompt(error.message) }
             ],
-            max_completion_tokens: MECHANICAL_COMPLETION_TOKEN_LIMIT,
+            max_completion_tokens: COMPLETION_TOKEN_LIMIT,
             reasoning_effort: "none",
             response_format: responseFormat
           },

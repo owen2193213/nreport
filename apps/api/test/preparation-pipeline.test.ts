@@ -62,7 +62,7 @@ describe("preparation pipeline reliability", () => {
     expect(failure).toMatchObject({ kind: "provider" });
     expect((failure as Error).cause).toMatchObject({
       kind: "provider",
-      message: "OpenRouter returned an upstream error."
+      message: "Cerebras returned an upstream error."
     });
     expect(String((failure as Error).cause)).not.toContain(canary);
   });

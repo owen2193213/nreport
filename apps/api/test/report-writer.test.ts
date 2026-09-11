@@ -154,7 +154,7 @@ function writer(
 ): ReportWriter {
   return new ReportWriter(
     "ai-secret",
-    "deepseek/deepseek-v4-flash-0731",
+    "qwen-3.8-27b",
     "brave-secret",
     COUNTRIES,
     {
@@ -193,7 +193,7 @@ function embeddedSchema(message: string): { properties: Record<string, unknown> 
   };
 }
 
-describe("OpenRouter and Brave report writer", () => {
+describe("Cerebras and Brave report writer", () => {
   it("skips Brave when the strict planner requires no research", async () => {
     const request = vi
       .fn()
@@ -209,10 +209,10 @@ describe("OpenRouter and Brave report writer", () => {
     expect(result.report.length).toBeLessThanOrEqual(512);
     expect(request).toHaveBeenCalledTimes(2);
     expect(urlAt(request, 0)).toBe(
-      "https://openrouter.ai/api/v1/chat/completions"
+      "https://api.cerebras.ai/v1/chat/completions"
     );
     expect(urlAt(request, 1)).toBe(
-      "https://openrouter.ai/api/v1/chat/completions"
+      "https://api.cerebras.ai/v1/chat/completions"
     );
     expect(recordUsage).toHaveBeenCalledTimes(2);
 
@@ -227,9 +227,9 @@ describe("OpenRouter and Brave report writer", () => {
     }>(request, 0);
     expect(planning.plugins).toBeUndefined();
     expect(planning.tools).toBeUndefined();
-    expect(planning.provider).toEqual({ allow_fallbacks: true });
+    expect(planning.provider).toBeUndefined();
     expect(planning.reasoning_effort).toBe("low");
-    expect(planning.max_completion_tokens).toBe(4_096);
+    expect(planning.max_completion_tokens).toBe(3_000);
     expect(planning.response_format).toBeUndefined();
     expect(JSON.stringify(planning.messages)).toContain("provisionalLawReference");
     const planningSchema = embeddedSchema(planning.messages[1]!.content);
@@ -247,7 +247,7 @@ describe("OpenRouter and Brave report writer", () => {
       };
     }>(request, 1);
     expect(synthesis.reasoning_effort).toBe("none");
-    expect(synthesis.max_completion_tokens).toBe(2_048);
+    expect(synthesis.max_completion_tokens).toBe(3_000);
     expect(synthesis.response_format.type).toBe("json_schema");
     expect(synthesis.response_format.json_schema.strict).toBeUndefined();
   });
@@ -319,7 +319,7 @@ describe("OpenRouter and Brave report writer", () => {
       response_format?: unknown;
     }>(request, 2);
     expect(synthesis.reasoning_effort).toBe("medium");
-    expect(synthesis.max_completion_tokens).toBe(6_144);
+    expect(synthesis.max_completion_tokens).toBe(3_000);
     expect(synthesis.response_format).toBeUndefined();
     expect(JSON.stringify(synthesis.messages)).toContain("researchSummary");
     const synthesisSchema = embeddedSchema(synthesis.messages[1]!.content);
@@ -377,7 +377,7 @@ describe("OpenRouter and Brave report writer", () => {
       resolveLaw = resolve;
     });
     const request = vi.fn(async (url: string) => {
-      if (url.includes("openrouter.ai") && request.mock.calls.length === 1) {
+      if (url.includes("api.cerebras.ai") && request.mock.calls.length === 1) {
         return baseten(
           plan({
             termResearchRequired: true,
@@ -417,7 +417,7 @@ describe("OpenRouter and Brave report writer", () => {
     }>(inconsistent, 1);
     expect(repair).toMatchObject({
       reasoning_effort: "none",
-      max_completion_tokens: 2_048
+      max_completion_tokens: 3_000
     });
     expect(repair.response_format).toBeDefined();
   });
@@ -527,7 +527,7 @@ describe("OpenRouter and Brave report writer", () => {
     expect(request).toHaveBeenCalledTimes(3);
     expect(bodyAt<{ reasoning_effort: string; max_completion_tokens: number }>(request, 2)).toMatchObject({
       reasoning_effort: "none",
-      max_completion_tokens: 2_048
+      max_completion_tokens: 3_000
     });
   });
 
@@ -550,7 +550,7 @@ describe("OpenRouter and Brave report writer", () => {
     expect(request).toHaveBeenCalledTimes(3);
   });
 
-  it("maps an OpenRouter refusal to a specific safe error", async () => {
+  it("maps a Cerebras refusal to a specific safe error", async () => {
     const request = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -732,7 +732,7 @@ describe("OpenRouter and Brave report writer", () => {
     );
   });
 
-  it("refines through OpenRouter without searching or changing research", async () => {
+  it("refines through Cerebras without searching or changing research", async () => {
     const reportDraft = draft();
     reportDraft.legalResearch = {
       country: "DE",
@@ -757,11 +757,11 @@ describe("OpenRouter and Brave report writer", () => {
     expect(result.legalResearch).toEqual(reportDraft.legalResearch);
     expect(request).toHaveBeenCalledTimes(1);
     expect(urlAt(request, 0)).toBe(
-      "https://openrouter.ai/api/v1/chat/completions"
+      "https://api.cerebras.ai/v1/chat/completions"
     );
     expect(bodyAt<{ reasoning_effort: string; max_completion_tokens: number }>(request, 0)).toMatchObject({
       reasoning_effort: "low",
-      max_completion_tokens: 2_048
+      max_completion_tokens: 3_000
     });
   });
 
@@ -829,7 +829,7 @@ describe("OpenRouter and Brave report writer", () => {
     }>(request, 2);
     expect(repair).toMatchObject({
       reasoning_effort: "none",
-      max_completion_tokens: 2_048
+      max_completion_tokens: 3_000
     });
     expect(repair.response_format).toBeDefined();
   });

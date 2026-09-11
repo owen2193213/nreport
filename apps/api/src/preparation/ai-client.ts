@@ -8,8 +8,9 @@ import {
 } from "./observability.js";
 import type { AiUsage } from "./types.js";
 
-export const OPENROUTER_CHAT_COMPLETIONS_URL =
-  "https://openrouter.ai/api/v1/chat/completions";
+export const CEREBRAS_CHAT_COMPLETIONS_URL =
+  "https://api.cerebras.ai/v1/chat/completions";
+export const MAX_COMPLETION_TOKENS = 3_000;
 const REQUEST_TIMEOUT_MS = 150_000;
 
 export interface AiRequestContext {
@@ -89,11 +90,11 @@ export class AiClient {
   }
 
   public get endpoint(): string {
-    return OPENROUTER_CHAT_COMPLETIONS_URL;
+    return CEREBRAS_CHAT_COMPLETIONS_URL;
   }
 
   public get providerName(): string {
-    return "OpenRouter";
+    return "Cerebras";
   }
 
   public async complete(
@@ -103,17 +104,21 @@ export class AiClient {
     stage: AiStage,
     signal?: AbortSignal
   ): Promise<AiCompletion> {
+    const requestedMaxCompletionTokens = body.max_completion_tokens;
+    const maxCompletionTokens =
+      typeof requestedMaxCompletionTokens === "number" &&
+      Number.isFinite(requestedMaxCompletionTokens)
+        ? Math.max(1, Math.min(MAX_COMPLETION_TOKENS, Math.floor(requestedMaxCompletionTokens)))
+        : MAX_COMPLETION_TOKENS;
     const requestBody: Record<string, unknown> = {
       ...body,
+      max_completion_tokens: maxCompletionTokens,
       model: this.model,
       stream: false
     };
-    if (!body.provider) requestBody.provider = { allow_fallbacks: true };
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://discord.com",
-      "X-Title": "Discord DSA"
+      "Content-Type": "application/json"
     };
     let attempts = 0;
     for (;;) {
@@ -268,7 +273,7 @@ export class AiClient {
         durationMs: Date.now() - startedAt,
         model: this.model,
         outputTokens: usage.outputTokens,
-        provider: "openrouter",
+        provider: "cerebras",
         reasoningTokens: usage.reasoningTokens,
         responseLength: choice.message.content.length,
         searchRequests: 0,
@@ -300,7 +305,7 @@ export class AiClient {
         ...(httpStatus === undefined ? {} : { httpStatus }),
         durationMs,
         model: this.model,
-        provider: "openrouter",
+        provider: "cerebras",
         stage,
         outcome: "failed",
         ...(attempts === undefined ? {} : { attempts }),

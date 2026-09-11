@@ -164,14 +164,14 @@ describe("API account security primitives", () => {
     expect(client.query.mock.calls.some(([sql, values]) => String(sql).includes("account_suspended") && values?.includes("retry-1"))).toBe(true);
   });
 
-  it("requires a provider-neutral AI key and defaults to the OpenRouter DeepSeek model", () => {
+  it("requires a provider-neutral AI key and defaults to the Cerebras Qwen model", () => {
     const base = configEnv();
 
     expect(loadConfig(base)).toMatchObject({
       adminApiKey: "a".repeat(32),
       apiKeyPepper: "p".repeat(32),
       aiApiKey: "ai-secret",
-      aiModel: "deepseek/deepseek-v4-flash-0731"
+      aiModel: "qwen-3.8-27b"
     });
     expect(() => loadConfig({ ...base, API_KEY_PEPPER: "short" })).toThrow(
       /API_KEY_PEPPER/

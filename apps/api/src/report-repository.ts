@@ -114,7 +114,7 @@ END;
 $$;
 DROP TRIGGER IF EXISTS account_report_events_serialize_insert ON account_report_events;
 CREATE TRIGGER account_report_events_serialize_insert
-  BEFORE INSERT ON account_report_events
+  AFTER INSERT ON account_report_events
   FOR EACH ROW EXECUTE FUNCTION serialize_account_report_event_inserts();
 
 CREATE TABLE IF NOT EXISTS account_report_jobs (
@@ -398,7 +398,7 @@ export class ReportRepository {
         );
         if (shouldSend) await client.query(
           `INSERT INTO operations_alert_outbox (alert_key, kind, payload)
-           VALUES ($1, $2, jsonb_build_object('alertKey', $1, 'severity', $3))
+           VALUES ($1, $2, jsonb_build_object('alertKey', $1::text, 'severity', $3::text))
            ON CONFLICT (alert_key, kind, state) DO NOTHING`,
           [alert.key, row?.state === "open" ? "reminder" : "open", alert.severity]
         );
@@ -408,7 +408,7 @@ export class ReportRepository {
         await client.query("UPDATE operational_alert_state SET state = 'closed', recovery_sent_at = now(), updated_at = now() WHERE alert_key = $1", [row.alert_key]);
         await client.query(
           `INSERT INTO operations_alert_outbox (alert_key, kind, payload)
-           VALUES ($1, 'recovery', jsonb_build_object('alertKey', $1, 'status', 'recovered'))
+           VALUES ($1, 'recovery', jsonb_build_object('alertKey', $1::text, 'status', 'recovered'))
            ON CONFLICT (alert_key, kind, state) DO NOTHING`, [row.alert_key]
         );
       }

@@ -217,13 +217,12 @@ export class AccountInteractionHandler {
     interaction: ChatInputCommandInteraction | MessageContextMenuCommandInteraction,
     pending: PendingTarget
   ): Promise<void> {
-    const resolved = await this.resolvePending(pending);
     const pendingId = await this.dependencies.database.savePendingForm(
       interaction.user.id,
-      encryptJson(resolved, this.dependencies.config.dataEncryptionKey)
+      encryptJson(pending, this.dependencies.config.dataEncryptionKey)
     );
-    const targetLabel = resolved.display?.handle ?? resolved.display?.name ?? (resolved.flow === "message" ? "@username's message" : resolved.flow === "profile" ? "@username" : "server");
-    await interaction.showModal(buildReportModal(`report:${pendingId}`, resolved.flow, targetLabel));
+    const targetLabel = pending.display?.handle ?? pending.display?.name ?? (pending.flow === "message" ? "@username's message" : pending.flow === "profile" ? "@username" : "server");
+    await interaction.showModal(buildReportModal(`report:${pendingId}`, pending.flow, targetLabel));
   }
 
   private async createInput(interaction: ModalSubmitInteraction, pending: PendingTarget): Promise<CreateReportInput> {

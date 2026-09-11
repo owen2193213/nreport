@@ -185,6 +185,7 @@ export function buildStatusCard(report: ReportDetail, context: TargetDisplayCont
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(visibleMetadata.map(([label, value]) => `**${safe(label)}:** ${safe(value)}`).join("\n")));
   }
   if (report.status === "queued") container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`Queue length: **${report.queueLength ?? 0}**`));
+  container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`Report ID: \`${safe(report.reportId)}\``));
   if (report.category || report.country) {
     container.addSeparatorComponents(separator()).addTextDisplayComponents(new TextDisplayBuilder().setContent([
       report.category ? `**Category:** ${safe(reportReasonLabel(report.flow, report.category))}` : null,

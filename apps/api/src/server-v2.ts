@@ -603,7 +603,8 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       : "internal_error";
     const code = typeof error === "object" && error !== null &&
       "validation" in error && error.validation !== undefined ? "invalid_request" : rawCode;
-    const statusCode = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number"
+    const isRateLimited = rawCode === "FST_ERR_RATE_LIMIT" || reply.getHeader("x-ratelimit-limit") !== undefined || reply.getHeader("retry-after") !== undefined;
+    const statusCode = isRateLimited ? 429 : typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number"
       ? error.statusCode
       : code === "account_not_found" ? 404
         : code === "username_conflict" || code === "credits_would_be_negative" ? 409
@@ -611,12 +612,15 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     const supportReference = statusCode >= 500
       ? createHash("sha256").update(`${request.method}:${request.routeOptions.url ?? "unknown"}:${code}:${error instanceof Error ? error.name : "UnknownError"}`).digest("hex").slice(0, 16)
       : undefined;
+    if (statusCode === 429) request.log.warn({
+      event: "api_request_rate_limited", operation: request.routeOptions.url ?? "unknown", httpStatus: statusCode
+    }, "Request rate limited");
     if (statusCode >= 500) request.log.error({
       event: "api_request_failed", operation: request.routeOptions.url ?? "unknown", errorCategory: error instanceof Error ? error.name : "unknown",
       supportReference, httpStatus: statusCode
     }, "Request failed");
-    const safeCode = statusCode >= 500 ? "internal_error" : code;
-    const message = statusCode >= 500 ? "An internal error occurred." : error instanceof Error ? error.message : "Request failed.";
+    const safeCode = statusCode >= 500 ? "internal_error" : statusCode === 429 ? "rate_limited" : code;
+    const message = statusCode >= 500 ? "An internal error occurred." : statusCode === 429 ? "Request rate limit exceeded." : error instanceof Error ? error.message : "Request failed.";
     return apiError(reply, request, statusCode, safeCode, message, supportReference);
   });
 

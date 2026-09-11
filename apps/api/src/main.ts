@@ -13,6 +13,7 @@ import { WebhookDestinationRepository } from "./webhook-destinations.js";
 import { AnalyticsRepository } from "./analytics-repository.js";
 import { QueueObservabilitySampler } from "./operational-observability.js";
 import { OperationsAlertWorker } from "./operations-alert-worker.js";
+import { randomUUID } from "node:crypto";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -20,6 +21,7 @@ async function main(): Promise<void> {
   await database.migrate();
   const accounts = new AccountRepository(database.pool, config.apiKeyPepper);
   const reports = new ReportRepository(database.pool);
+  const workerInstanceId = randomUUID();
   const destinations = new WebhookDestinationRepository(
     database.pool,
     config.sessionEncryptionKey,
@@ -71,6 +73,11 @@ async function main(): Promise<void> {
     (outcome) => {
       if (outcome.outcome === "failed") app.log.error(outcome, "Preparation worker outcome");
       else app.log.info(outcome, "Preparation worker outcome");
+      void reports.recordOperationalWorker({
+        component: "preparation", instanceId: workerInstanceId, configuredCapacity: config.preparationConcurrency,
+        progressed: outcome.outcome === "completed", failure: outcome.outcome === "failed",
+        rateLimited: outcome.errorCategory === "rate_limited"
+      }).catch(() => undefined);
     }
   );
   const lifecycleRunner = new LifecycleRunner(
@@ -82,6 +89,11 @@ async function main(): Promise<void> {
     (outcome) => {
       if (outcome.outcome === "failed") app.log.error(outcome, "Lifecycle runner outcome");
       else app.log.info(outcome, "Lifecycle runner outcome");
+      void reports.recordOperationalWorker({
+        component: "lifecycle", instanceId: workerInstanceId, configuredCapacity: config.lifecycleConcurrency ?? 2,
+        progressed: outcome.outcome === "completed" || outcome.outcome === "waiting_for_email",
+        failure: outcome.outcome === "failed", rateLimited: outcome.errorCategory === "rate_limited"
+      }).catch(() => undefined);
     }
   );
   const eventDeliveryWorker = new AccountEventDeliveryWorker(reports, {
@@ -95,7 +107,9 @@ async function main(): Promise<void> {
   const operationsAlertWorker = config.operationsAlertWebhookUrl === undefined ? undefined : new OperationsAlertWorker(
     reports,
     config.operationsAlertWebhookUrl,
-    { preparation: config.preparationConcurrency, lifecycle: config.lifecycleConcurrency ?? 2, delivery: 1 }
+    { preparation: config.preparationConcurrency, lifecycle: config.lifecycleConcurrency ?? 2, delivery: 1 },
+    undefined,
+    workerInstanceId
   );
   if (config.workerEnabled) {
     preparationWorker.start();

@@ -19,14 +19,15 @@ export interface OperationsAlertStore {
 export class OperationsAlertWorker {
   private stopping = false;
   private running: Promise<void> | undefined;
-  private readonly instanceId = randomUUID();
+  private readonly instanceId: string;
 
   public constructor(
     private readonly store: OperationsAlertStore,
     private readonly webhookUrl: string,
     private readonly configuredCapacity: { preparation: number; lifecycle: number; delivery: number },
-    private readonly fetcher: typeof fetch = fetch
-  ) {}
+    private readonly fetcher: typeof fetch = fetch,
+    instanceId = randomUUID()
+  ) { this.instanceId = instanceId; }
 
   public start(): void { if (this.running === undefined) { this.stopping = false; this.running = this.loop(); } }
   public async stop(): Promise<void> { this.stopping = true; await this.running; this.running = undefined; }
@@ -69,7 +70,11 @@ export class OperationsAlertWorker {
     let nextSampleAt = 0;
     while (!this.stopping) {
       try {
-        if (Date.now() >= nextSampleAt) { await this.sampleOnce(); nextSampleAt = Date.now() + 30_000; }
+        if (Date.now() >= nextSampleAt) {
+          // Schedule before sampling so a database failure cannot create a tight retry loop.
+          nextSampleAt = Date.now() + 30_000;
+          await this.sampleOnce();
+        }
         if (!(await this.deliverOne())) await delay(1_000);
       } catch { await delay(1_000); }
     }

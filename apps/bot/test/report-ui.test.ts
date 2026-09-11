@@ -115,6 +115,7 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     }));
     expect(value).toContain("<@123456789012345678> (@username)\\nhttps://discord.com/channels/@me/123456789012345678/123456789012345679\\n```\\nExample reported message content\\n```");
     expect(value).toContain("Queue length: **7**");
+    expect(value).toContain("Report ID: `11111111-1111-4111-8111-111111111111`");
     expect(value).toContain("- <t:1788775200:R> Added to submission queue");
     expect(value).not.toContain("Open reported message");
     expect(value).not.toContain("Discord ID:");

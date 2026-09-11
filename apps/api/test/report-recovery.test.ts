@@ -4,9 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { REPORT_SCHEMA_SQL, ReportRepository } from "../src/report-repository.js";
 
 describe("report worker recovery", () => {
-  it("declares an event-insert advisory-lock trigger in the schema", () => {
+  it("takes the event advisory lock after the event foreign keys are checked", () => {
     expect(REPORT_SCHEMA_SQL).toContain("pg_advisory_xact_lock");
-    expect(REPORT_SCHEMA_SQL).toContain("BEFORE INSERT ON account_report_events");
+    expect(REPORT_SCHEMA_SQL).toContain("AFTER INSERT ON account_report_events");
   });
 
   it("builds age-gated recovery queries and records mocked ambiguous submissions", async () => {

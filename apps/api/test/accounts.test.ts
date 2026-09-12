@@ -57,6 +57,36 @@ describe("API account security primitives", () => {
     expect(() => normalizeUsername("not valid spaces")).toThrow(ApiKeyError);
   });
 
+  it("assigns the managed webhook destination to a newly created account by default", async () => {
+    const query = vi.fn(async (sql: string, _values?: unknown[]) => {
+      void _values;
+      return {
+      rows: sql.includes("INSERT INTO api_accounts")
+        ? [{ created_at: new Date("2026-09-12T00:00:00.000Z") }]
+        : [],
+      rowCount: 1
+      };
+    });
+    const client = { query, release: vi.fn() };
+    const DefaultedAccountRepository = AccountRepository as unknown as new (
+      pool: { connect: () => Promise<typeof client> },
+      apiKeyPepper: string,
+      managedDefaultDestinationId?: string
+    ) => AccountRepository;
+    const repository = new DefaultedAccountRepository(
+      { connect: async () => client },
+      "p".repeat(32),
+      "default-destination"
+    );
+
+    await expect(repository.createAccount({ username: "Alice" })).resolves.toMatchObject({
+      webhookDestinationId: "default-destination"
+    });
+
+    const insert = query.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO api_accounts"));
+    expect(insert?.[1]).toContain("default-destination");
+  });
+
   it("returns plaintext once while inserting only its prefix and HMAC", async () => {
     const query = vi.fn(async (sql: string, _values?: unknown[]) => {
       void _values;
@@ -185,6 +215,22 @@ describe("API account security primitives", () => {
       ...configEnv(), NODE_ENV: "production",
       OPERATIONS_ALERT_WEBHOOK_URL: "https://discord.com/api/webhooks/123/token"
     }).operationsAlertWebhookUrl).toBe("https://discord.com/api/webhooks/123/token");
+  });
+
+  it("loads a complete managed bot webhook configuration", () => {
+    const webhook = loadConfig({
+      ...configEnv(),
+      BOT_EVENT_WEBHOOK_URL: "http://nreportdiscord-dsa-bot.railway.internal:3000/internal/report-events",
+      BOT_EVENT_WEBHOOK_SECRET: "b".repeat(32),
+      ALLOW_RAILWAY_PRIVATE_HTTP_WEBHOOKS: "true"
+    });
+
+    expect(webhook).toMatchObject({
+      botEventWebhook: {
+        url: "http://nreportdiscord-dsa-bot.railway.internal:3000/internal/report-events",
+        signingSecret: "b".repeat(32)
+      }
+    });
   });
 
   it("defaults lifecycle concurrency to two", () => {

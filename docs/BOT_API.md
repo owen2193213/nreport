@@ -216,7 +216,10 @@ it and clients must not render it to users. API and bot releases that introduce 
 deployed together. When the bot is deployed first, envelopes from an older API are rejected and
 remain in the API's durable delivery retry queue until the API deployment completes.
 
-Administrators may assign one destination to many accounts. Each event/destination delivery is
+Administrators may assign one destination to many accounts. In a single-bot deployment,
+`BOT_EVENT_WEBHOOK_URL` and `BOT_EVENT_WEBHOOK_SECRET` configure a managed default destination:
+on API startup it is refreshed, attached to active accounts with no destination, and used for new
+accounts. Explicit administrator assignments take precedence. Each event/destination delivery is
 unique, signed over the timestamp, event ID, and exact body, and retried with capped exponential
 backoff for seven days. The first `409` from the bot's narrow report-linking race is retried after a
 short 500–1000 ms delay. With no destination, events remain available from the feed. Public

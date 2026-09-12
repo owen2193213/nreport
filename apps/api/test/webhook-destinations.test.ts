@@ -24,4 +24,32 @@ describe("administrator-managed webhook destinations", () => {
     expect(values).not.toContain("s".repeat(32));
     expect(String(values?.[3])).not.toContain("s".repeat(32));
   });
+
+  it("configures the managed default and assigns only unassigned active accounts", async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({
+        rows: [{ id: "dest-1", name: "NReport bot", url: "http://bot.railway.internal/events", status: "active", created_at: new Date() }],
+        rowCount: 1
+      })
+      .mockResolvedValueOnce({ rows: [], rowCount: 3 });
+    const repository = new WebhookDestinationRepository({ query } as never, Buffer.alloc(32, 7), true);
+    const configure = (repository as unknown as {
+      configureManagedDefault?: (url: string, signingSecret: string) => Promise<{ destinationId: string; assignedAccountCount: number }>;
+    }).configureManagedDefault;
+
+    if (configure === undefined) {
+      expect(configure).toBeTypeOf("function");
+      return;
+    }
+
+    await expect(configure.call(repository, "http://bot.railway.internal/events", "s".repeat(32))).resolves.toEqual({
+      destinationId: "dest-1",
+      assignedAccountCount: 3
+    });
+
+    const assignment = query.mock.calls.find(([sql]) => String(sql).includes("UPDATE api_accounts"));
+    expect(assignment?.[0]).toContain("webhook_destination_id IS NULL");
+    expect(assignment?.[0]).toContain("status = 'active'");
+    expect(assignment?.[1]).toEqual(["dest-1"]);
+  });
 });

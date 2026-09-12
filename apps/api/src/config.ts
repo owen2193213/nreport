@@ -5,6 +5,7 @@ export interface AppConfig {
   apiKeyPepper: string;
   aiApiKey: string;
   aiModel: string;
+  botEventWebhook?: { url: string; signingSecret: string };
   braveSearchApiKey: string;
   lifecycleConcurrency: number;
   preparationConcurrency: number;
@@ -65,6 +66,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const emailDomain = required(env, "REPORT_EMAIL_DOMAIN").toLowerCase();
   const environment = env.NODE_ENV?.trim() || "development";
   const operationsAlertWebhookUrl = env.OPERATIONS_ALERT_WEBHOOK_URL?.trim();
+  const botEventWebhookUrl = env.BOT_EVENT_WEBHOOK_URL?.trim();
+  const botEventWebhookSecret = env.BOT_EVENT_WEBHOOK_SECRET?.trim();
+  if ((botEventWebhookUrl === undefined) !== (botEventWebhookSecret === undefined)) {
+    throw new Error("BOT_EVENT_WEBHOOK_URL and BOT_EVENT_WEBHOOK_SECRET must be configured together.");
+  }
+  if (botEventWebhookSecret !== undefined && botEventWebhookSecret.length < 32) {
+    throw new Error("BOT_EVENT_WEBHOOK_SECRET must contain at least 32 characters.");
+  }
   if (environment === "production" && !operationsAlertWebhookUrl) {
     throw new Error("OPERATIONS_ALERT_WEBHOOK_URL is required in production.");
   }
@@ -90,6 +99,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     apiKeyPepper,
     aiApiKey,
     aiModel,
+    ...(botEventWebhookUrl === undefined || botEventWebhookSecret === undefined
+      ? {}
+      : { botEventWebhook: { url: botEventWebhookUrl, signingSecret: botEventWebhookSecret } }),
     braveSearchApiKey: required(env, "BRAVE_SEARCH_API_KEY"),
     lifecycleConcurrency: positiveInteger(env.LIFECYCLE_CONCURRENCY, 2, "LIFECYCLE_CONCURRENCY"),
     preparationConcurrency: positiveInteger(env.PREPARATION_CONCURRENCY, 2, "PREPARATION_CONCURRENCY"),

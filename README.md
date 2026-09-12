@@ -40,8 +40,8 @@ email verification, consumes the credit immediately before final submission, tra
 and automatically handles eligible appeals.
 
 Clients recover every visible state through account-scoped report reads and the cursor event feed.
-Administrator-assigned signed webhooks reduce latency but are optional. Ambiguous final Discord
-submissions are never retried automatically.
+Signed webhooks reduce lifecycle-update latency but are optional; reconciliation remains the
+durable fallback. Ambiguous final Discord submissions are never retried automatically.
 
 ## New deployment
 
@@ -73,14 +73,17 @@ Deploy safely in this order:
 1. Create the new databases, Discord application, email domain/worker route, and independent secrets.
 2. Deploy and migrate the new API with `WORKER_ENABLED=false`; verify `/healthz` and
    `/openapi.json`.
-3. Create a webhook destination and test account through the admin API; assign the destination.
+3. Set `BOT_EVENT_WEBHOOK_URL` and `BOT_EVENT_WEBHOOK_SECRET` on the API to automatically manage
+   the bot destination for active accounts without an explicit assignment. Alternatively, create
+   and assign destinations through the admin API.
 4. Deploy the new bot, register its user-install commands, connect the test account, and validate
    mocked flows plus only explicitly authorized live flows.
 5. Enable the API workers and verify event-feed recovery as well as webhook delivery.
 
 Public webhook destinations require HTTPS. Railway private HTTP destinations require
-`ALLOW_RAILWAY_PRIVATE_HTTP_WEBHOOKS=true`. The event feed remains authoritative when no destination
-is assigned or all deliveries fail.
+`ALLOW_RAILWAY_PRIVATE_HTTP_WEBHOOKS=true`. The managed destination secret must match the bot's
+`REPORT_EVENT_WEBHOOK_SECRET`; explicit administrator assignments take precedence. The event feed
+remains authoritative when no destination is assigned or all deliveries fail.
 
 ## Cloudflare email worker
 

@@ -5,6 +5,8 @@ import type { Pool } from "pg";
 
 import { encryptJson } from "./security.js";
 
+const MANAGED_DEFAULT_DESTINATION_NAME = "NReport bot";
+
 export interface WebhookDestinationView {
   destinationId: string;
   name: string;
@@ -66,6 +68,32 @@ export class WebhookDestinationRepository {
       [{ destinationId: id, name: normalizedName }]
     );
     return destinationView(row);
+  }
+
+  public async configureManagedDefault(
+    urlValue: string,
+    signingSecret: string
+  ): Promise<{ destinationId: string; assignedAccountCount: number }> {
+    if (signingSecret.length < 32) throw new WebhookDestinationError("Webhook signing secret must contain at least 32 characters.");
+    const url = validateWebhookUrl(urlValue, this.allowRailwayPrivateHttp);
+    const destination = await this.pool.query<{ id: string }>(
+      `INSERT INTO webhook_destinations (id, name, url, encrypted_signing_secret)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (name) DO UPDATE
+       SET url = EXCLUDED.url, encrypted_signing_secret = EXCLUDED.encrypted_signing_secret,
+           status = 'active', updated_at = now()
+       RETURNING id`,
+      [randomUUID(), MANAGED_DEFAULT_DESTINATION_NAME, url.toString(), encryptJson(signingSecret, this.encryptionKey)]
+    );
+    const destinationId = destination.rows[0]?.id;
+    if (destinationId === undefined) throw new Error("Managed webhook destination was not returned.");
+    const assigned = await this.pool.query(
+      `UPDATE api_accounts
+       SET webhook_destination_id = $1, updated_at = now()
+       WHERE webhook_destination_id IS NULL AND status = 'active'`,
+      [destinationId]
+    );
+    return { destinationId, assignedAccountCount: assigned.rowCount ?? 0 };
   }
 
   public async list(): Promise<WebhookDestinationView[]> {

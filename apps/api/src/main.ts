@@ -19,13 +19,23 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const database = new PostgresDatabase(config.databaseUrl);
   await database.migrate();
-  const accounts = new AccountRepository(database.pool, config.apiKeyPepper);
   const reports = new ReportRepository(database.pool);
   const workerInstanceId = randomUUID();
   const destinations = new WebhookDestinationRepository(
     database.pool,
     config.sessionEncryptionKey,
     config.allowRailwayPrivateHttpWebhooks ?? false
+  );
+  const managedBotWebhook = config.botEventWebhook === undefined
+    ? undefined
+    : await destinations.configureManagedDefault(
+      config.botEventWebhook.url,
+      config.botEventWebhook.signingSecret
+    );
+  const accounts = new AccountRepository(
+    database.pool,
+    config.apiKeyPepper,
+    managedBotWebhook?.destinationId
   );
   const analytics = new AnalyticsRepository(database.pool);
   await reports.recoverInterruptedJobs();
@@ -36,6 +46,14 @@ async function main(): Promise<void> {
     destinations,
     analytics
   });
+  if (managedBotWebhook !== undefined) {
+    app.log.info({
+      event: "managed_bot_webhook_configured",
+      stage: "webhook",
+      outcome: "completed",
+      assignedAccountCount: managedBotWebhook.assignedAccountCount
+    }, "Managed bot webhook configured");
+  }
   const preparer = new ApiReportPreparer({
     aiApiKey: config.aiApiKey,
     aiModel: config.aiModel,

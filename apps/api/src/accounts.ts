@@ -160,7 +160,8 @@ export interface AccountPrincipal {
 export class AccountRepository {
   public constructor(
     private readonly pool: Pick<Pool, "query" | "connect">,
-    private readonly apiKeyPepper: string
+    private readonly apiKeyPepper: string,
+    private readonly managedDefaultDestinationId?: string
   ) {}
 
   public async createAccount(input: AdminCreateAccountInput): Promise<AdminAccountView> {
@@ -170,6 +171,7 @@ export class AccountRepository {
       throw new CreditError("credits_would_be_negative", "Initial credits must be a non-negative integer.");
     }
     const accountId = randomUUID();
+    const webhookDestinationId = input.webhookDestinationId ?? this.managedDefaultDestinationId ?? null;
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -178,7 +180,7 @@ export class AccountRepository {
            (id, username, username_normalized, available_credits, webhook_destination_id)
          VALUES ($1, $2, $3, $4, $5)
          RETURNING created_at`,
-        [accountId, username, normalized, initialCredits, input.webhookDestinationId ?? null]
+        [accountId, username, normalized, initialCredits, webhookDestinationId]
       );
       if (initialCredits > 0) {
         await client.query(
@@ -200,7 +202,7 @@ export class AccountRepository {
         status: "active",
         availableCredits: initialCredits,
         reservedCredits: 0,
-        webhookDestinationId: input.webhookDestinationId ?? null,
+        webhookDestinationId,
         createdAt: result.rows[0]?.created_at.toISOString() ?? new Date().toISOString()
       };
     } catch (error) {

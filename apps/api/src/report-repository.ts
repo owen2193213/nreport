@@ -250,7 +250,7 @@ UPDATE operational_alert_state AS alert SET notification_sequence = COALESCE((
 ), 0) WHERE alert.notification_sequence = 0;
 DO $$ BEGIN
   ALTER TABLE operations_alert_outbox ADD CONSTRAINT operations_alert_outbox_episode_seq_uniq UNIQUE (alert_key, episode, notification_sequence);
-EXCEPTION WHEN duplicate_object THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
 END $$;
 CREATE INDEX IF NOT EXISTS operations_alert_outbox_claim_idx
   ON operations_alert_outbox(state, run_at, locked_at, id);

@@ -25,24 +25,81 @@ async function hmac(secret: string, value: string): Promise<string> {
   return hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
 }
 
-async function diagnosticResponse(response: Response, sensitiveValues: string[]) {
-  const text = await response.clone().text();
-  const bounded = text.slice(0, 16_384);
-  const redact = (value: unknown): unknown => {
-    if (typeof value === "string") {
-      let safe = value;
-      for (const sensitive of sensitiveValues) safe = safe.replaceAll(sensitive, "[redacted]");
-      return safe.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[redacted-email]");
+function safeHeader(value: string | null, pattern: RegExp): string | undefined {
+  return value !== null && value.length <= 128 && pattern.test(value) ? value : undefined;
+}
+
+function contentLength(response: Response): number | undefined {
+  const value = response.headers.get("content-length");
+  return value !== null && /^\d{1,12}$/.test(value) ? Number(value) : undefined;
+}
+
+async function readAtMost(response: Response, maxBytes: number): Promise<string | undefined> {
+  if (response.body === null) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      if (!(next.value instanceof Uint8Array)) return undefined;
+      const chunk = next.value;
+      length += chunk.byteLength;
+      if (length > maxBytes) {
+        await reader.cancel();
+        return undefined;
+      }
+      chunks.push(chunk);
     }
-    return value;
-  };
-  const requestId = response.headers.get("x-request-id") ?? response.headers.get("request-id");
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+function diagnosticResponse(response: Response) {
+  const requestId = safeHeader(response.headers.get("x-request-id") ?? response.headers.get("request-id"), /^[A-Za-z0-9._:-]+$/);
+  const mediaType = safeHeader(response.headers.get("content-type")?.split(";", 1)[0]?.trim() ?? null, /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/);
   return {
     ...(requestId ? { requestId } : {}),
-    contentType: response.headers.get("content-type"),
-    body: redact(bounded),
-    bodyTruncated: text.length > 16_384
+    ...(mediaType ? { contentType: mediaType } : {}),
+    ...(contentLength(response) === undefined ? {} : { bodyBytes: contentLength(response) })
   };
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type IngestStatus = "accepted" | "duplicate" | "ignored" | "unknown_recipient" | "pending_report";
+
+interface IngestEnvelope {
+  status: IngestStatus;
+  correlation?: { reportId: string; traceId: string };
+}
+
+async function ingestEnvelope(response: Response): Promise<IngestEnvelope | undefined> {
+  const body = await readAtMost(response, 1_024);
+  if (body === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const candidate = parsed as { status?: unknown; reportId?: unknown; traceId?: unknown };
+    if (!["accepted", "duplicate", "ignored", "unknown_recipient", "pending_report"].includes(String(candidate.status))) return undefined;
+    const status = candidate.status as IngestStatus;
+    const correlation = typeof candidate.reportId === "string" && typeof candidate.traceId === "string" &&
+      UUID_PATTERN.test(candidate.reportId) && UUID_PATTERN.test(candidate.traceId)
+      ? { reportId: candidate.reportId, traceId: candidate.traceId }
+      : undefined;
+    return { status, ...(correlation === undefined ? {} : { correlation }) };
+  } catch {
+    return undefined;
+  }
 }
 
 function isDiscordEnvelopeSender(address: string): boolean {
@@ -105,7 +162,7 @@ export default {
         body: rawEmail
       });
       if (!response.ok) {
-        const diagnostic = await diagnosticResponse(response, [recipient, messageId]);
+        const diagnostic = diagnosticResponse(response);
         console.error(JSON.stringify({
           event: "email_forward_failed",
           messageIdDigest,
@@ -115,11 +172,16 @@ export default {
         }));
         throw new Error(`Railway email ingestion returned HTTP ${response.status}.`);
       }
+      const envelope = await ingestEnvelope(response);
       console.log(JSON.stringify({
         event: "email_forward_completed",
         messageIdDigest,
-        httpStatus: response.status
+        httpStatus: response.status,
+        ...(envelope?.correlation ?? {})
       }));
+      if ((envelope?.status === "accepted" || envelope?.status === "duplicate") && envelope.correlation === undefined) {
+        console.warn(JSON.stringify({ event: "email_forward_correlation_missing", messageIdDigest, httpStatus: response.status }));
+      }
     } catch (error) {
       if (!(error instanceof Error && error.message.startsWith("Railway email ingestion returned"))) {
         console.error(JSON.stringify({

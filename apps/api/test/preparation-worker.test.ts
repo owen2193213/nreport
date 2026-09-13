@@ -15,6 +15,7 @@ const baseReport = {
 describe("PreparationWorker", () => {
   it("keeps safe error correlation fields while excluding an error message", () => {
     const fields = preparationFailureLogFields({
+      reportId: "11111111-1111-4111-8111-111111111111",
       traceId: "33333333-3333-4333-8333-333333333333",
       errorCode: "preparation_failed",
       kind: "unknown",
@@ -25,6 +26,7 @@ describe("PreparationWorker", () => {
     });
 
     expect(fields).toEqual({
+      reportId: "11111111-1111-4111-8111-111111111111",
       traceId: "33333333-3333-4333-8333-333333333333",
       errorCode: "preparation_failed",
       errorCategory: "unknown",

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { CreateReportInput } from "@nreport/contracts";
 
 import type { PreparedResult, ReportPreparer } from "../preparation-worker.js";
+import type { ReportLogContext } from "../report-log-context.js";
 import { ReportWriter } from "./report-writer.js";
 import type { AiUsage, ReportDraft } from "./types.js";
 
@@ -39,7 +40,7 @@ export class ApiReportPreparer implements ReportPreparer {
     input: Extract<CreateReportInput, { useAi: true }>,
     progress: (stage: "researching" | "writing") => Promise<void>,
     signal: AbortSignal,
-    traceId: string,
+    context: ReportLogContext,
     recordUsage?: (usage: PreparedResult["usage"]) => Promise<void>
   ): Promise<PreparedResult> {
     if (signal.aborted) throw signal.reason;
@@ -61,7 +62,7 @@ export class ApiReportPreparer implements ReportPreparer {
     const result = await withAbort(
       writer.generate(
         toWriterDraft(input),
-        { traceId, userId: operationId },
+        { ...context, userId: operationId },
         async (event) => progress(event.stage === "research" ? "researching" : "writing"),
         signal
       ),

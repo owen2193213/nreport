@@ -309,6 +309,7 @@ export interface AccountReportRow extends QueryResultRow {
 export interface InboundEmailRegistration {
   status: "accepted" | "duplicate" | "unknown_recipient" | "pending_report";
   reportId: string | null;
+  traceId: string | null;
 }
 
 export class ReportRepository {
@@ -513,6 +514,7 @@ export class ReportRepository {
       );
       const ambiguous = await client.query<{
         id: string;
+        trace_id: string;
         account_id: string;
         lifecycle_attempt: number;
       }>(
@@ -1830,10 +1832,11 @@ export class ReportRepository {
       await client.query("BEGIN");
       const reportResult = await client.query<{
         id: string;
+        trace_id: string;
         account_id: string;
         lifecycle_attempt: number;
       }>(
-        `SELECT id, account_id, lifecycle_attempt FROM account_reports
+        `SELECT id, trace_id, account_id, lifecycle_attempt FROM account_reports
          WHERE reporter_email = $1
            AND status IN ('requesting_verification', 'awaiting_verification', 'verification_received')
          FOR UPDATE`,
@@ -1847,12 +1850,13 @@ export class ReportRepository {
         [input.messageId, report?.id ?? null, input.recipient.toLowerCase(), report === undefined ? "unknown_recipient" : "accepted"]
       );
       if (inserted.rowCount === 0) {
+        const duplicate = await duplicateInboundReport(client, input.messageId);
         await client.query("COMMIT");
-        return { status: "duplicate", reportId: report?.id ?? null };
+        return { status: "duplicate", reportId: duplicate?.id ?? report?.id ?? null, traceId: duplicate?.trace_id ?? report?.trace_id ?? null };
       }
       if (report === undefined) {
         await client.query("COMMIT");
-        return { status: "unknown_recipient", reportId: null };
+        return { status: "unknown_recipient", reportId: null, traceId: null };
       }
       await client.query(
         `INSERT INTO account_report_jobs
@@ -1871,7 +1875,7 @@ export class ReportRepository {
       );
       await insertEvent(client, report.account_id, report.id, "verification_received", report.lifecycle_attempt);
       await client.query("COMMIT");
-      return { status: "accepted", reportId: report.id };
+      return { status: "accepted", reportId: report.id, traceId: report.trace_id };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1913,12 +1917,13 @@ export class ReportRepository {
         ]
       );
       if (inserted.rowCount === 0) {
+        const duplicate = await duplicateInboundReport(client, input.messageId);
         await client.query("COMMIT");
-        return { status: "duplicate", reportId: report?.id ?? null };
+        return { status: "duplicate", reportId: duplicate?.id ?? report?.id ?? null, traceId: duplicate?.trace_id ?? report?.trace_id ?? null };
       }
       if (report === undefined) {
         await client.query("COMMIT");
-        return { status: "pending_report", reportId: null };
+        return { status: "pending_report", reportId: null, traceId: null };
       }
 
       if (
@@ -1969,7 +1974,7 @@ export class ReportRepository {
         await insertEvent(client, report.account_id, report.id, `discord:${input.discordStatus}`, report.lifecycle_attempt);
       }
       await client.query("COMMIT");
-      return { status: "accepted", reportId: report.id };
+      return { status: "accepted", reportId: report.id, traceId: report.trace_id };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -2000,12 +2005,13 @@ export class ReportRepository {
         [input.messageId, report?.id ?? null, input.recipient.toLowerCase(), report === undefined ? "pending_report" : "accepted", input.discordReportId]
       );
       if (inserted.rowCount === 0) {
+        const duplicate = await duplicateInboundReport(client, input.messageId);
         await client.query("COMMIT");
-        return { status: "duplicate", reportId: report?.id ?? null };
+        return { status: "duplicate", reportId: duplicate?.id ?? report?.id ?? null, traceId: duplicate?.trace_id ?? report?.trace_id ?? null };
       }
       if (report === undefined) {
         await client.query("COMMIT");
-        return { status: "pending_report", reportId: null };
+        return { status: "pending_report", reportId: null, traceId: null };
       }
       if (!new Set(["approved", "not_approved", "received"]).has(report.review_status ?? "")) {
         await client.query(
@@ -2017,7 +2023,7 @@ export class ReportRepository {
         await insertEvent(client, report.account_id, report.id, "review_received", report.lifecycle_attempt);
       }
       await client.query("COMMIT");
-      return { status: "accepted", reportId: report.id };
+      return { status: "accepted", reportId: report.id, traceId: report.trace_id };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -2088,6 +2094,17 @@ async function ownsPreparationJob(
     [jobId, reportId, executionToken]
   );
   return result.rowCount === 1;
+}
+
+async function duplicateInboundReport(client: PoolClient, messageId: string): Promise<{ id: string; trace_id: string } | undefined> {
+  const result = await client.query<{ id: string; trace_id: string }>(
+    `SELECT report.id, report.trace_id
+     FROM account_inbound_messages AS message
+     JOIN account_reports AS report ON report.id = message.report_id
+     WHERE message.message_id = $1`,
+    [messageId]
+  );
+  return result.rows[0];
 }
 
 async function lockReportCredit(client: PoolClient, reportId: string): Promise<LockedCreditRow | undefined> {

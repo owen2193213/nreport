@@ -302,7 +302,7 @@ export class BraveResearchClient {
         botLog(
           "ai_search_failed",
           {
-            traceId: actor.traceId,
+            reportId: actor.reportId, traceId: actor.traceId,
             failureCategory: timeout.kind,
             kind,
             searchRequests: timeout.searchRequests,
@@ -322,7 +322,7 @@ export class BraveResearchClient {
           throw new BraveResearchError("empty", "Brave returned no usable sources.", attempts);
         }
         botLog("ai_search_completed", {
-          traceId: actor.traceId,
+          reportId: actor.reportId, traceId: actor.traceId,
           kind,
           latencyAttempts: attempts,
           resultCount: sources.length,
@@ -353,7 +353,7 @@ export class BraveResearchClient {
         botLog(
           "ai_search_failed",
           {
-            traceId: actor.traceId,
+            reportId: actor.reportId, traceId: actor.traceId,
             failureCategory: finalError.kind,
             kind,
             searchRequests: finalError.searchRequests,
@@ -434,7 +434,7 @@ export class BraveResearchClient {
       botLog(
         "ai_search_http_failed",
         {
-          traceId: actor.traceId,
+          reportId: actor.reportId, traceId: actor.traceId,
           endpoint: kind === "term" ? "web_search" : "llm_context",
           httpStatus: response.status,
           attempt,

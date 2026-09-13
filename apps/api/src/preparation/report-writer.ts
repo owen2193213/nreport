@@ -862,7 +862,7 @@ export class ReportWriter {
           throw error;
         }
         botLog("ai_follow_up_query_rejected", {
-          traceId: actor.traceId,
+          reportId: actor.reportId, traceId: actor.traceId,
           followUpType: completion.followUpType,
           stage: `${completion.followUpType}_research`,
           outcome: "rejected",
@@ -1182,7 +1182,7 @@ export class ReportWriter {
       await this.recordUsage(userId, usage);
     } catch {
       botLog("ai_usage_record_failed", {
-        traceId: actor.traceId,
+        reportId: actor.reportId, traceId: actor.traceId,
         stage,
         outcome: "failed",
         durationMs: Date.now() - startedAt,
@@ -1198,7 +1198,7 @@ export class ReportWriter {
   ): void {
     botLog("ai_workflow_started", {
       action,
-      traceId: actor.traceId,
+      reportId: actor.reportId, traceId: actor.traceId,
       stage: "workflow",
       outcome: "started",
       durationMs: 0,

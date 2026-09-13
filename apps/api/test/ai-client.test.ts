@@ -6,7 +6,7 @@ import {
   type AiClientError
 } from "../src/preparation/ai-client.js";
 
-const ACTOR: AiRequestContext = { traceId: "33333333-3333-4333-8333-333333333333", userId: "reporter-id" };
+const ACTOR: AiRequestContext = { reportId: "11111111-1111-4111-8111-111111111111", traceId: "33333333-3333-4333-8333-333333333333", userId: "reporter-id" };
 const CEREBRAS_MODEL = "qwen-3.8-27b";
 
 function success(

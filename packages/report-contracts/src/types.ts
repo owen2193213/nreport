@@ -147,6 +147,7 @@ export interface ReportTimelineEvent {
 }
 export interface ReportSummary {
   reportId: string;
+  traceId: string;
   accountId: string;
   flow: ReportFlow;
   useAi: boolean;

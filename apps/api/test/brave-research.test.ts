@@ -7,7 +7,7 @@ import {
 import type { AiRequestContext } from "../src/preparation/ai-client.js";
 import type { ReportDraft } from "../src/preparation/types.js";
 
-const ACTOR: AiRequestContext = { traceId: "33333333-3333-4333-8333-333333333333", userId: "reporter-id" };
+const ACTOR: AiRequestContext = { reportId: "11111111-1111-4111-8111-111111111111", traceId: "33333333-3333-4333-8333-333333333333", userId: "reporter-id" };
 
 function draft(): ReportDraft {
   return {

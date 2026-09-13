@@ -87,7 +87,8 @@ export class AccountEventDeliveryWorker {
       if (!response.ok) throw new DeliveryHttpError(response.status);
       await this.store.completeEventDelivery(delivery.event_id, delivery.destination_id);
       this.safeLog("event_delivery_completed", {
-        traceId: delivery.trace_id, stage: "webhook", outcome: "completed",
+        reportId: delivery.report_id, traceId: delivery.trace_id, eventType: delivery.event_type,
+        lifecycleAttempt: delivery.lifecycle_attempt, stage: "webhook", outcome: "completed",
         durationMs: Math.max(0, this.now().getTime() - startedAt), attempts: delivery.attempts
       });
     } catch (error) {
@@ -98,7 +99,8 @@ export class AccountEventDeliveryWorker {
       const message = status === null ? "Webhook delivery failed." : `Webhook returned HTTP ${status}.`;
       await this.store.retryEventDelivery(delivery.event_id, delivery.destination_id, message, backoff);
       this.safeLog("event_delivery_retry", {
-        traceId: delivery.trace_id, stage: "webhook", outcome: "retry",
+        reportId: delivery.report_id, traceId: delivery.trace_id, eventType: delivery.event_type,
+        lifecycleAttempt: delivery.lifecycle_attempt, stage: "webhook", outcome: "retry",
         durationMs: Math.max(0, this.now().getTime() - startedAt), attempts: delivery.attempts,
         errorCategory: status === null ? "network" : "http"
       }, "warn");

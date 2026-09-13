@@ -166,6 +166,7 @@ export interface PendingReportLink extends QueryResultRow {
 
 export interface PendingCardRepair extends QueryResultRow {
   report_id: string;
+  trace_id: string | null;
   discord_user_id: string;
   encrypted_target_context: string | null;
   encrypted_api_key: string;
@@ -466,8 +467,12 @@ export class AccountBotDatabase {
          FROM due WHERE link.id = due.id RETURNING link.*
        )
        SELECT link.report_id, link.discord_user_id, link.encrypted_target_context, link.card_repair_attempts,
-              connection.encrypted_api_key
-       FROM claimed AS link JOIN api_connections AS connection ON connection.account_id = link.account_id`,
+              connection.encrypted_api_key, inbox.trace_id
+       FROM claimed AS link JOIN api_connections AS connection ON connection.account_id = link.account_id
+       LEFT JOIN LATERAL (
+         SELECT trace_id FROM lifecycle_inbox WHERE report_id = link.report_id
+         ORDER BY received_at DESC LIMIT 1
+       ) AS inbox ON TRUE`,
       [discordUserId]
     );
     return result.rows;

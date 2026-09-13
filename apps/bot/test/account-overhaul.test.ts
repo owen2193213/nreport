@@ -262,7 +262,7 @@ describe("account reconciliation", () => {
   it("logs an ingest failure with the event trace and leaves its cursor for retry", async () => {
     const event = {
       eventId: "sensitive-event-id", accountId: "sensitive-account-id",
-      reportId: "sensitive-report-id", traceId: "33333333-3333-4333-8333-333333333333",
+      reportId: "11111111-1111-4111-8111-111111111111", traceId: "33333333-3333-4333-8333-333333333333",
       type: "report_queued" as const, occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1
     };
     const database = {
@@ -287,13 +287,13 @@ describe("account reconciliation", () => {
     await worker.reconcileOnce();
 
     expect(logger).toHaveBeenCalledWith("account_reconciliation_event", {
-      traceId: event.traceId, eventType: event.type, stage: "event_ingestion", outcome: "failed",
+      reportId: event.reportId, traceId: event.traceId, eventType: event.type, stage: "event_ingestion", outcome: "failed",
       durationMs: expect.any(Number) as number, failureCategory: "unexpected"
     }, "error");
     expect(database.advanceCursor).not.toHaveBeenCalled();
     expect(secondApi.events).toHaveBeenCalledOnce();
     expect(logger).not.toHaveBeenCalledWith("account_reconciliation_failed", expect.anything(), "error");
-    expect(JSON.stringify(logger.mock.calls)).not.toMatch(/sensitive|database URL/);
+    expect(JSON.stringify(logger.mock.calls)).not.toMatch(/database URL|sensitive-account|sensitive-user/);
   });
 
   it("logs a safe failure and continues reconciling the next connection", async () => {
@@ -444,26 +444,31 @@ describe("account reconciliation", () => {
     expect(database.pendingReportLinks).toHaveBeenCalledWith("discord-1");
   });
 
-  it("restores the predecessor DM mapping when a replacement response is reconciled", async () => {
+  it("restores the predecessor DM mapping and logs correlation when a replacement response is reconciled", async () => {
     const database = {
       pendingReportLinks: vi.fn(async () => [{ id: "link-3", idempotency_key: "retry-key", encrypted_request: "retry-request" }]),
       abandonReportLink: vi.fn(), completeReportLink: vi.fn(), completeReplacementLink: vi.fn(),
       ingestEvent: vi.fn(), advanceCursor: vi.fn(), cleanupExpiredForms: vi.fn()
     };
     const api = {
-      createReport: vi.fn(), retryReport: vi.fn(async () => ({ reportId: "report-new" })),
+      createReport: vi.fn(), retryReport: vi.fn(async () => ({ reportId: "11111111-1111-4111-8111-111111111111", traceId: "22222222-2222-4222-8222-222222222222" })),
       events: vi.fn(async () => ({ items: [], next: null }))
     };
+    const logger = vi.fn();
     const worker = new AccountNotificationWorker(
       database as never, {} as never,
       { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
       () => api as never,
-      <T>() => ({ reportId: "report-old", input: { mode: "rewrite_ai" } }) as T
+      <T>() => ({ reportId: "33333333-3333-4333-8333-333333333333", input: { mode: "rewrite_ai" } }) as T,
+      logger
     );
 
     await worker.reconcileConnection({ discord_user_id: "discord-1", account_id: "account-1", encrypted_api_key: "key", event_cursor: "0" } as never);
 
-    expect(database.completeReplacementLink).toHaveBeenCalledWith("link-3", "report-new", "report-old");
+    expect(database.completeReplacementLink).toHaveBeenCalledWith("link-3", "11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333");
     expect(database.completeReportLink).not.toHaveBeenCalled();
+    expect(logger).toHaveBeenCalledWith("report_retry_recovered", expect.objectContaining({
+      reportId: "11111111-1111-4111-8111-111111111111", traceId: "22222222-2222-4222-8222-222222222222"
+    }));
   });
 });

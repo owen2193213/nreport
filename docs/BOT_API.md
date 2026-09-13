@@ -216,6 +216,11 @@ it and clients must not render it to users. API and bot releases that introduce 
 deployed together. When the bot is deployed first, envelopes from an older API are rejected and
 remain in the API's durable delivery retry queue until the API deployment completes.
 
+Report create, retry, list, and detail responses also include the required API-generated `traceId`.
+The trusted Cloudflare email-ingest response may include `reportId` and `traceId` only after the API
+has matched the accepted or duplicate mail to a report. These values are restricted operational
+correlation metadata and must never be rendered to Discord users.
+
 Administrators may assign one destination to many accounts. In a single-bot deployment,
 `BOT_EVENT_WEBHOOK_URL` and `BOT_EVENT_WEBHOOK_SECRET` configure a managed default destination:
 on API startup it is refreshed, attached to active accounts with no destination, and used for new

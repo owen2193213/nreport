@@ -140,8 +140,10 @@ Discord SDK, PostgreSQL, Fastify, or worker-runtime dependencies.
   expired, and untrusted input at the owning boundary.
 - Callers never provide reporter identity. The API generates identity, address, locale, timezone,
   and sticky proxy session from the selected country.
-- Treat Discord report IDs, internal report IDs, generated aliases, and full report context as
-  sensitive operational data. Structured logs use safe diagnostics only.
+- Treat Discord report IDs, generated aliases, and full report context as sensitive operational
+  data. Restricted structured operational logs may include the exact internal report UUID as
+  `reportId` and its opaque API-generated `traceId` for incident correlation; they must never
+  include aliases, identities, evidence, URLs, mail, verification codes, or external Discord IDs.
 - Preserve idempotency keys. Do not replace an ambiguous network failure with an automatic final
   Discord resubmission.
 - Do not make the bot's private webhook endpoint public. Assign its destination through the admin

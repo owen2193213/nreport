@@ -13,22 +13,27 @@ Answer for one report: where is it waiting, how long, which attempt/stage failed
 
 Generate a random opaque `traceId` when the API creates a report and persist it. Propagate that
 exact value through preparation/provider operations, lifecycle jobs, durable lifecycle events and
-the additive shared API contract to the bot. Provider logs use it as their sole correlation key and
-do not generate a workflow-local replacement. Each retry report gets its own trace while the durable
+the additive shared API contract to the bot. Report-scoped logs always carry this pair with the internal
+`reportId`; neither is replaced by a workflow-local value. Each retry report gets its own pair while the durable
 predecessor/successor report relationship remains authoritative. Use a separate `spanId`/parent span
 per stage and attempt; HTTP `requestId` identifies a request, not the entire report.
 
-The email worker starts an independent ingestion trace; after trusted parsing/correlation the API links it to the report trace. Never expose aliases, verification codes, Discord IDs, raw report IDs or message URLs to achieve correlation. Validate inbound trace format/length and generate server-owned values when absent. Traces remain access-controlled operational metadata, never metric labels. Additive DTO changes require updates to BOT_API.md and bot implementation documentation.
+The email worker starts an independent ingestion trace; after trusted parsing/correlation the API links it to the report trace. Restricted Railway and Cloudflare structured logs include the exact internal `reportId` beside `traceId` once a report is known, allowing either UUID to be searched directly. Never expose aliases, verification codes, Discord IDs, external Discord report IDs, or message URLs. Validate inbound correlation fields as UUIDs; unknown or rejected mail remains searchable only by `messageIdDigest`. Both IDs remain access-controlled operational metadata, never metric labels. Additive DTO changes require updates to BOT_API.md and bot implementation documentation.
 
 ## Structured schema and error preservation
 
-Use one allowlisted JSON logger per service: `schemaVersion`, UTC timestamp, severity, service, environment, commit/deployment, event, traceId, spanId, parentSpanId, stage, attempt, durationMs and outcome. Provider operations add provider, model, HTTP status, safe provider code, finish reason, token counts and remaining deadline. Error events add stable errorCode, errorKind, retryable, submissionCertainty, nextAttemptDelayMs, errorFingerprint and selected safe stack locations.
+Use one allowlisted JSON logger per service: `schemaVersion`, UTC timestamp, severity, service, environment, commit/deployment, event, reportId, traceId, spanId, parentSpanId, stage, attempt, durationMs and outcome. `reportId` is emitted only for report-scoped work. Provider operations add provider, model, HTTP status, safe provider code, finish reason, token counts and remaining deadline. Error events add stable errorCode, errorKind, retryable, submissionCertainty, nextAttemptDelayMs, errorFingerprint and selected safe stack locations.
 
 Preserve typed errors/causes through writer, search and preparation wrappers. Translate them once to safe user-facing codes/messages at the API boundary. Distinguish rate limit, provider outage, incomplete output, schema validation, timeout/cancel, database failure and unknown internal error. Do not print arbitrary Error.message/cause or assume all errors took three attempts. Unknown failures receive a support reference and an internal safe fingerprint, not fabricated explanations.
 
 Immediately replace raw `response` payload logging in AI error paths with selected counters/status fields. Never log prompts, generated text/reasoning, evidence, search query/results, raw mail, provider bodies, tokens, keys, proxy URLs, cookies or generated identities. Redaction helpers alone are insufficient; test actual emission with canary sensitive data. Apply access/retention policy to existing potentially sensitive logs; do not export them into tickets or silently delete historical evidence.
 
 ## Event vocabulary and lifecycle truth
+
+Search Railway for `reportId:"<internal UUID>"` or `traceId:"<UUID>"`; retry chains begin at
+`report_retry_completed` and follow `predecessorReportId`. Cloudflare uses `messageIdDigest` before the API
+matches mail. Verification, ambiguous submission, receipt timeout, webhook retry, and bot-card retry records
+retain stage, outcome, safe failure category, and the pair where a report exists.
 
 Emit report.queued; job.claimed; stage.started/completed; job.retry_scheduled; job.failed; job.recovered; submission.started/confirmed/ambiguous; email.ingest.accepted/rejected; event.delivery.succeeded/failed; card.updated/update_failed; notification.sent/failed; reconciliation.completed/failed.
 

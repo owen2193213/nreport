@@ -85,6 +85,7 @@ export type LifecycleRunnerOutcome =
       jobKind: LifecycleJob["kind"];
       attempts: number;
       durationMs: number;
+      reportId?: string;
       traceId?: string;
       errorCategory?: string;
       retryDelayMs?: number;
@@ -95,6 +96,7 @@ export type LifecycleRunnerOutcome =
       stage: "lifecycle_claim" | "lifecycle_heartbeat" | "lifecycle_maintenance";
       outcome: "completed" | "failed";
       durationMs: number;
+      reportId?: string;
       traceId?: string;
       errorCategory?: string;
     };
@@ -183,6 +185,7 @@ export class LifecycleRunner {
         jobKind: job.kind,
         attempts: job.attempts,
         durationMs: elapsedSince(startedAt),
+        reportId: job.report_id,
         ...(job.trace_id === undefined ? {} : { traceId: job.trace_id })
       });
     } catch (error) {
@@ -193,6 +196,7 @@ export class LifecycleRunner {
         jobKind: job.kind,
         attempts: job.attempts,
         durationMs: elapsedSince(startedAt),
+        reportId: job.report_id,
         ...(job.trace_id === undefined ? {} : { traceId: job.trace_id }),
         ...(isOwnershipLost(error) ? {} : { errorCategory: safeJobErrorCategory(error) })
       });
@@ -431,6 +435,7 @@ export class LifecycleRunner {
           stage: "lifecycle_heartbeat",
           outcome: "failed",
           durationMs: elapsedSince(heartbeatStartedAt),
+          reportId: job.report_id,
           ...(job.trace_id === undefined ? {} : { traceId: job.trace_id }),
           errorCategory: "lifecycle_heartbeat_failed"
         });

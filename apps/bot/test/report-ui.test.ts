@@ -20,6 +20,7 @@ const context: TargetDisplayContext = {
 function report(overrides: Partial<ReportDetail> = {}): ReportDetail {
   return {
     reportId: "11111111-1111-4111-8111-111111111111",
+    traceId: "33333333-3333-4333-8333-333333333333",
     accountId: "22222222-2222-4222-8222-222222222222",
     flow: "message",
     useAi: true,

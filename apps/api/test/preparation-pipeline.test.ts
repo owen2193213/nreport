@@ -37,7 +37,7 @@ describe("preparation pipeline reliability", () => {
     const removeEventListener = vi.spyOn(controller.signal, "removeEventListener");
     const running = preparer.prepare({ flow: "message", useAi: true,
       target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
-    }, () => Promise.resolve(), controller.signal, "33333333-3333-4333-8333-333333333333")
+    }, () => Promise.resolve(), controller.signal, { reportId: "11111111-1111-4111-8111-111111111111", traceId: "33333333-3333-4333-8333-333333333333" })
       .then(() => "resolved", () => "aborted");
     controller.abort(new DOMException("Deadline exceeded", "TimeoutError"));
     const observed = await Promise.race([running, new Promise<string>((resolve) => setImmediate(() => resolve("still-running")))]);
@@ -54,6 +54,7 @@ describe("preparation pipeline reliability", () => {
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     const failure = await new ReportWriter("test-key", "test-model", "test-search", ["DE"], { request })
       .generate({ flow: "message_urf", messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }, {
+        reportId: "11111111-1111-4111-8111-111111111111",
         traceId: "33333333-3333-4333-8333-333333333333",
         userId: "user"
       })

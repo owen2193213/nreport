@@ -34,6 +34,7 @@ describe("v2 account-owned server", () => {
   it("keeps a committed report successful when optional queue telemetry is unavailable", async () => {
     const report = {
       id: "22222222-2222-4222-8222-222222222222", account_id: principal.accountId,
+      trace_id: "33333333-3333-4333-8333-333333333333",
       flow: "message", use_ai: true,
       request_input: { flow: "message", useAi: true, target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" } },
       prepared_input: null, status: "queued", lifecycle_attempt: 1, created_at: new Date(), updated_at: new Date()
@@ -53,7 +54,7 @@ describe("v2 account-owned server", () => {
 
     expect(create).toHaveBeenCalledOnce();
     expect(response.statusCode).toBe(202);
-    expect(response.json()).toMatchObject({ reportId: report.id, queueLength: 0 });
+    expect(response.json()).toMatchObject({ reportId: report.id, traceId: report.trace_id, queueLength: 0 });
     await server.close();
   });
 

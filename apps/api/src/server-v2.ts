@@ -90,6 +90,7 @@ function publicReport(row: AccountReportRow, queueLength = 0): ReportDetail {
   } | null;
   return {
     reportId: row.id,
+    traceId: row.trace_id,
     accountId: row.account_id,
     flow: row.flow,
     useAi: row.use_ai,
@@ -307,7 +308,13 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
         return apiError(reply, request, 400, "invalid_request", error instanceof Error ? error.message : "Invalid report request.");
       }
       try {
+        const startedAt = Date.now();
         const result = await dependencies.reports.create(principal.accountId, idempotencyKey.trim(), input);
+        request.log.info({
+          event: "report_create_completed", reportId: result.report.id, traceId: result.report.trace_id,
+          stage: "creation", outcome: result.created ? "created" : "idempotent_replay",
+          lifecycleAttempt: result.report.lifecycle_attempt, durationMs: Math.max(0, Date.now() - startedAt)
+        }, "Report creation completed");
         return reply.code(202).send(publicReport(result.report, await safeQueueLength(dependencies.reports)));
       } catch (error) {
         const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
@@ -397,12 +404,19 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       try { retryInput = parseRetryReportInput(request.body); }
       catch (error) { return apiError(reply, request, 400, "invalid_request", error instanceof Error ? error.message : "Retry input is invalid."); }
       try {
+        const startedAt = Date.now();
         const result = await dependencies.reports.retry(
           principal.accountId,
           request.params.reportId,
           idempotencyKey.trim(),
           retryInput
         );
+        request.log.info({
+          event: "report_retry_completed", reportId: result.report.id, traceId: result.report.trace_id,
+          predecessorReportId: request.params.reportId, retryMode: retryInput.mode,
+          stage: "creation", outcome: result.created ? "created" : "idempotent_replay",
+          lifecycleAttempt: result.report.lifecycle_attempt, durationMs: Math.max(0, Date.now() - startedAt)
+        }, "Report retry completed");
         return reply.code(202).send(publicReport(result.report, await safeQueueLength(dependencies.reports)));
       } catch (error) {
         const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
@@ -599,7 +613,17 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
                 encryptedReviewUrl: encryptJson({ reviewUrl: parsed.reviewUrl }, config.sessionEncryptionKey)
               })
             });
-      return reply.code(202).send({ status: result.status });
+      if (result.reportId !== null && result.traceId !== null) {
+        request.log.info({
+          event: "inbound_email_correlated", reportId: result.reportId, traceId: result.traceId,
+          emailKind: parsed.kind, registrationStatus: result.status, messageIdDigest: sha256Hex(messageId).slice(0, 16),
+          stage: "email_ingest", outcome: result.status === "duplicate" ? "duplicate" : "accepted"
+        }, "Inbound email correlated");
+      }
+      return reply.code(202).send({
+        status: result.status,
+        ...(result.reportId === null || result.traceId === null ? {} : { reportId: result.reportId, traceId: result.traceId })
+      });
     }
   );
 
@@ -646,6 +670,7 @@ function publicReportSummary(row: AccountReportRow) {
   const report = publicReport(row);
   return {
     reportId: report.reportId,
+    traceId: report.traceId,
     accountId: report.accountId,
     flow: report.flow,
     useAi: report.useAi,

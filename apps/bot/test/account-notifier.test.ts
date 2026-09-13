@@ -5,7 +5,7 @@ import { AccountNotificationWorker, reportRecoveryDelaySeconds } from "../src/ac
 import { targetContextFromReport, visibleStatusHash } from "../src/report-ui.js";
 
 const report: ReportDetail = {
-  reportId: "11111111-1111-4111-8111-111111111111", accountId: "account", flow: "message", useAi: true,
+  reportId: "11111111-1111-4111-8111-111111111111", traceId: "33333333-3333-4333-8333-333333333333", accountId: "account", flow: "message", useAi: true,
   status: "failed", creditState: "consumed", lifecycleAttempt: 1, country: "DE", category: null, description: null,
   discordReportId: null, discordStatus: null, reviewStatus: null, predecessorReportId: null, successorReportId: null,
   retryableModes: ["regenerate"], createdAt: "2026-09-09T00:00:00Z", updatedAt: "2026-09-09T00:01:00Z",
@@ -74,21 +74,22 @@ describe("notification delivery against an existing report card", () => {
     expect(different.message.reply.mock.calls[0]?.[0]).toMatchObject({ nonce: "nreport-b4e3d14e7519279e", enforceNonce: true });
   });
 
-  it("logs claimed and completed outcomes without durable or Discord identifiers", async () => {
+  it("logs claimed and completed outcomes with internal report correlation only", async () => {
     const h = harness();
 
     await h.worker.processOne();
 
     expect(h.logger).toHaveBeenCalledWith("account_notification_claimed", {
+      reportId: report.reportId,
       traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1,
       stage: "notification", outcome: "claimed", durationMs: 0
     });
     expect(h.logger).toHaveBeenCalledWith("account_notification_completed", {
+      reportId: report.reportId,
       traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1,
       stage: "notification", outcome: "completed", durationMs: expect.any(Number) as number
     });
     const serializedLogs = JSON.stringify(h.logger.mock.calls);
-    expect(serializedLogs).not.toContain("11111111-1111-4111-8111-111111111111");
     expect(serializedLogs).not.toContain("original-card");
     expect(serializedLogs).not.toContain("user");
     expect(serializedLogs).not.toContain("event\"");
@@ -107,6 +108,7 @@ describe("notification delivery against an existing report card", () => {
     await h.worker.processOne();
     expect(h.database.retryNotification).toHaveBeenCalledWith("event", "unexpected");
     expect(h.logger).toHaveBeenCalledWith("account_notification_retry", {
+      reportId: report.reportId,
       traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1,
       stage: "notification", outcome: "retry", durationMs: expect.any(Number) as number,
       deliveryStage: operation === "edit" ? "edit_card" : "reply",

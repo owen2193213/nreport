@@ -15,6 +15,7 @@ const REQUEST_TIMEOUT_MS = 150_000;
 
 export interface AiRequestContext {
   userId: string;
+  reportId: string;
   traceId: string;
 }
 
@@ -279,7 +280,7 @@ export class AiClient {
         searchRequests: 0,
         stage,
         outcome: "completed",
-        traceId: actor.traceId
+        reportId: actor.reportId, traceId: actor.traceId
       });
       return { content: choice.message.content, finishReason, usage };
     }
@@ -309,7 +310,7 @@ export class AiClient {
         stage,
         outcome: "failed",
         ...(attempts === undefined ? {} : { attempts }),
-        traceId: actor.traceId,
+        reportId: actor.reportId, traceId: actor.traceId,
         ...metadata
       },
       "warn"

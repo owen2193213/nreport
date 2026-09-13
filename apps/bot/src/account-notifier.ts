@@ -78,7 +78,10 @@ export class AccountNotificationWorker {
     const startedAt = Date.now();
     const attempts = item.attempts;
     let deliveryStage: NotificationDeliveryStage = "load_preferences";
-    const traceFields = item.trace_id === null ? {} : { traceId: item.trace_id };
+    const traceFields = {
+      reportId: item.report_id,
+      ...(item.trace_id === null ? {} : { traceId: item.trace_id })
+    };
     this.safeLog("account_notification_claimed", {
       ...traceFields, eventType: item.event_type, attempts,
       stage: "notification", outcome: "claimed", durationMs: 0
@@ -185,7 +188,7 @@ export class AccountNotificationWorker {
           result = await this.database.ingestEvent(event);
         } catch (error) {
           this.safeLog("account_reconciliation_event", {
-            traceId: event.traceId,
+            reportId: event.reportId, traceId: event.traceId,
             eventType: event.type,
             stage: "event_ingestion",
             outcome: "failed",
@@ -195,7 +198,7 @@ export class AccountNotificationWorker {
           throw new ReconciliationEventIngestError();
         }
         this.safeLog("account_reconciliation_event", {
-          traceId: event.traceId,
+          reportId: event.reportId, traceId: event.traceId,
           eventType: event.type,
           stage: "event_ingestion",
           outcome: result,
@@ -248,11 +251,16 @@ export class AccountNotificationWorker {
             : this.decrypt<TargetDisplayContext>(link.encrypted_target_context, this.config.dataEncryptionKey);
           await this.ensureInitialCard(report, connection.discord_user_id, context);
           this.safeLog("report_create_recovered", {
+            reportId: report.reportId, traceId: report.traceId,
             stage: "creation_recovery", outcome: "completed", durationMs: Date.now() - startedAt
           });
         } else {
           const report = await api.retryReport(pending.reportId, link.idempotency_key, pending.input ?? { mode: pending.mode! });
           await this.database.completeReplacementLink(link.id, report.reportId, pending.reportId);
+          this.safeLog("report_retry_recovered", {
+            reportId: report.reportId, traceId: report.traceId,
+            stage: "creation_recovery", outcome: "completed", durationMs: Date.now() - startedAt
+          });
         }
       } catch (error) {
         if (error instanceof DsaApiError && error.status === 401) throw error;
@@ -281,6 +289,10 @@ export class AccountNotificationWorker {
             repair.report_id,
             reportRecoveryDelaySeconds(repair.card_repair_attempts, false)
           );
+          this.safeLog("initial_card_retry", {
+            reportId: report.reportId, traceId: report.traceId,
+            stage: "initial_card", outcome: "retry", durationMs: 0, failureCategory: "discord"
+          }, "warn");
         }
       } catch (error) {
         await this.database.rescheduleCardRepair(
@@ -288,6 +300,8 @@ export class AccountNotificationWorker {
           reportRecoveryDelaySeconds(repair.card_repair_attempts, false)
         );
         this.safeLog("initial_card_retry", {
+          reportId: repair.report_id,
+          ...(repair.trace_id === null ? {} : { traceId: repair.trace_id }),
           stage: "initial_card", outcome: "retry", durationMs: 0, failureCategory: safeErrorCategory(error)
         }, "warn");
       }
@@ -307,6 +321,7 @@ export class AccountNotificationWorker {
       await this.database.setDmMapping(report.reportId, message.channelId, message.id);
       await this.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
       this.safeLog("initial_card_created", {
+        reportId: report.reportId, traceId: report.traceId,
         stage: "initial_card", outcome: "completed", durationMs: Date.now() - startedAt
       });
       return "created";
@@ -317,6 +332,7 @@ export class AccountNotificationWorker {
         // A card-delivery cleanup failure must not cause the already-created report to be recovered again.
       }
       this.safeLog("initial_card_failed", {
+        reportId: report.reportId, traceId: report.traceId,
         stage: "initial_card", outcome: "retry", durationMs: Date.now() - startedAt,
         failureCategory: safeErrorCategory(error)
       }, "warn");

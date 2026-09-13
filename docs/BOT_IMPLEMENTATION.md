@@ -94,8 +94,8 @@ replayed with their original idempotency key before normal feed reconciliation.
 
 Notification and reconciliation operational events retain their stable event names and emit a
 bounded `stage`, `outcome`, and `durationMs`; failures also emit a safe error category. Where a
-lifecycle event supplies a trace, it is the only report-level correlation value in these logs. Raw
-report, account, event, message, and Discord user identifiers are never logged.
+lifecycle event supplies identifiers, logs include the exact internal `reportId` and `traceId`.
+They never include account, event, message, Discord user, or external Discord report identifiers.
 
 The status card is always maintained while the account is connected. Decision/problem messages reply
 to that card so the affected report remains clear. Terminal replies use an enforced, deterministic
@@ -194,10 +194,10 @@ submission, and review transitions require the same running job and token, so a 
 worker cannot mutate its replacement claim. A worker that loses heartbeat ownership abandons further
 progress and closes its Discord client where possible. Shutdown stops new claims, cancels idle
 cadence timers, and waits for in-flight lifecycle work.
-Lifecycle logs contain only the report trace, job kind, attempt count, duration, outcome, and a safe error category;
-they must never include report, job, account, or Discord identifiers, evidence, verification codes,
+Lifecycle logs contain the internal report ID and report trace, job kind, attempt count, duration, outcome, and a safe error category;
+they must never include job, account, or Discord identifiers, evidence, verification codes,
 URLs, provider responses, or arbitrary error messages.
-Bot notification logs similarly contain only the report trace, lifecycle event type, attempt count,
+Bot notification logs similarly contain the internal report ID and report trace, lifecycle event type, attempt count,
 duration, outcome, and safe error category. Reconciliation event logs use the trace and bounded event
 type/outcome fields; connection summaries contain only duration, outcome, and safe error category;
 failures are isolated per connection so one unavailable account does not stop later accounts.

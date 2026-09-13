@@ -78,6 +78,7 @@ async function main(): Promise<void> {
     undefined,
     (error) => app.log.error(
       {
+        event: "preparation_worker_iteration_failed",
         ...preparationFailureLogFields(error),
         traceId: diagnosticString(error, "traceId"),
         stage: diagnosticString(error, "stage") ?? "preparation",
@@ -89,8 +90,8 @@ async function main(): Promise<void> {
       "Preparation worker iteration failed"
     ),
     (outcome) => {
-      if (outcome.outcome === "failed") app.log.error(outcome, "Preparation worker outcome");
-      else app.log.info(outcome, "Preparation worker outcome");
+      if (outcome.outcome === "failed") app.log.error({ event: "preparation_worker_outcome", ...outcome }, "Preparation worker outcome");
+      else app.log.info({ event: "preparation_worker_outcome", ...outcome }, "Preparation worker outcome");
       void reports.recordOperationalWorker({
         component: "preparation", instanceId: workerInstanceId, configuredCapacity: config.preparationConcurrency,
         progressed: outcome.outcome === "completed", failure: outcome.outcome === "failed",
@@ -105,8 +106,8 @@ async function main(): Promise<void> {
     undefined,
     undefined,
     (outcome) => {
-      if (outcome.outcome === "failed") app.log.error(outcome, "Lifecycle runner outcome");
-      else app.log.info(outcome, "Lifecycle runner outcome");
+      if (outcome.outcome === "failed") app.log.error({ event: "lifecycle_runner_outcome", ...outcome }, "Lifecycle runner outcome");
+      else app.log.info({ event: "lifecycle_runner_outcome", ...outcome }, "Lifecycle runner outcome");
       void reports.recordOperationalWorker({
         component: "lifecycle", instanceId: workerInstanceId, configuredCapacity: config.lifecycleConcurrency ?? 2,
         progressed: outcome.outcome === "completed" || outcome.outcome === "waiting_for_email",

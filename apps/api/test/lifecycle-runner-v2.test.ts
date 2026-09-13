@@ -621,7 +621,7 @@ describe("LifecycleRunner safe outcomes", () => {
     const releaseSubmission = deferred<{ report_id: string }>();
     const outcomes: unknown[] = [];
     const job = {
-      id: "sensitive-job-id", report_id: "sensitive-report-id",
+      id: "sensitive-job-id", report_id: "11111111-1111-4111-8111-111111111111",
       trace_id: "33333333-3333-4333-8333-333333333333",
       kind: "verify_submit" as const, payload: { code: "123456" },
       attempts: 1, max_attempts: 3, execution_token: 1
@@ -656,7 +656,7 @@ describe("LifecycleRunner safe outcomes", () => {
         durationMs: expect.any(Number) as number,
         errorCategory: "lifecycle_heartbeat_failed"
       }));
-      expect(JSON.stringify(outcomes)).not.toMatch(/sensitive|123456/);
+      expect(JSON.stringify(outcomes)).not.toMatch(/123456|database URL/);
     } finally {
       releaseSubmission.resolve({ report_id: "discord-1" });
       await vi.advanceTimersByTimeAsync(0);
@@ -672,7 +672,7 @@ describe("LifecycleRunner safe outcomes", () => {
       expireDeadlines: vi.fn(),
       claimLifecycleJob: vi.fn(async () => ({
         id: "sensitive-job-id",
-        report_id: "sensitive-report-id",
+        report_id: "11111111-1111-4111-8111-111111111111",
         trace_id: "33333333-3333-4333-8333-333333333333",
         kind: "request_code",
         payload: { evidence: "sensitive evidence", code: "123456" },
@@ -702,7 +702,7 @@ describe("LifecycleRunner safe outcomes", () => {
       errorCategory: "lifecycle_job_failed"
     });
     expect(typeof (outcomes.at(-1) as { durationMs: unknown }).durationMs).toBe("number");
-    expect(JSON.stringify(outcomes)).not.toMatch(/sensitive|123456/);
+    expect(JSON.stringify(outcomes)).not.toMatch(/123456|provider response/);
   });
 
   it("reports maintenance completion without identifiers or payload data", async () => {

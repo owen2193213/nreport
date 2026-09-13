@@ -2,6 +2,7 @@ import type { CreateReportInput, LegalSourceAnnotation, ReportStatus } from "@nr
 import { createHash } from "node:crypto";
 
 import type { AccountReportRow } from "./report-repository.js";
+import type { ReportLogContext } from "./report-log-context.js";
 
 export const PREPARATION_WORKFLOW_TIMEOUT_MS = 300_000;
 
@@ -37,7 +38,7 @@ export interface ReportPreparer {
     input: Extract<CreateReportInput, { useAi: true }>,
     progress: (stage: "researching" | "writing") => Promise<void>,
     signal: AbortSignal,
-    traceId: string,
+    context: ReportLogContext,
     recordUsage?: (usage: PreparationUsage) => Promise<void>
   ): Promise<PreparedResult>;
 }
@@ -58,6 +59,7 @@ export interface PreparationStore {
 }
 
 export interface PreparationWorkerOutcome {
+  reportId: string;
   traceId: string;
   stage: "preparation";
   outcome: "completed" | "failed";
@@ -108,7 +110,7 @@ export class PreparationWorker {
       const prepared = report.retry_mode === "reuse"
         ? reusedPreparation(report)
         : report.request_input.useAi
-          ? await this.prepareWithAi(report.trace_id, report.id, jobId, executionToken, report.request_input)
+          ? await this.prepareWithAi({ reportId: report.id, traceId: report.trace_id }, jobId, executionToken, report.request_input)
           : manualPreparation(report.request_input);
       const identity = this.generateIdentity(prepared.country);
       const completed = await this.store.completePreparation(
@@ -121,6 +123,7 @@ export class PreparationWorker {
       );
       if (completed === false) return true;
       this.safeOutcome({
+        reportId: report.id,
         traceId: report.trace_id,
         stage: "preparation",
         outcome: "completed",
@@ -130,15 +133,23 @@ export class PreparationWorker {
       if (error instanceof PreparationCancelledError) return true;
       const details = preparationErrorDetails(error);
       const code = details.errorCode;
-      await this.store.failPreparation(
-        jobId,
-        report.id,
-        code,
-        preparationErrorMessage(code, error),
-        executionToken
-      );
-      this.safeIterationError(new PreparationFailureDiagnostic(details, report.trace_id, error));
+      try {
+        await this.store.failPreparation(
+          jobId,
+          report.id,
+          code,
+          preparationErrorMessage(code, error),
+          executionToken
+        );
+      } catch (persistenceError) {
+        this.safeIterationError(new PreparationFailureDiagnostic(
+          preparationErrorDetails(persistenceError), report.id, report.trace_id, persistenceError
+        ));
+        throw persistenceError;
+      }
+      this.safeIterationError(new PreparationFailureDiagnostic(details, report.id, report.trace_id, error));
       this.safeOutcome({
+        reportId: report.id,
         traceId: report.trace_id,
         stage: "preparation",
         outcome: "failed",
@@ -166,8 +177,7 @@ export class PreparationWorker {
   }
 
   private async prepareWithAi(
-    traceId: string,
-    reportId: string,
+    context: ReportLogContext,
     jobId: string,
     executionToken: number,
     input: Extract<CreateReportInput, { useAi: true }>
@@ -175,14 +185,14 @@ export class PreparationWorker {
     const result = await this.preparer.prepare(
       input,
       async (stage) => {
-        if (!(await this.store.transition(reportId, stage, jobId, executionToken))) throw new PreparationCancelledError();
+        if (!(await this.store.transition(context.reportId, stage, jobId, executionToken))) throw new PreparationCancelledError();
       },
       AbortSignal.timeout(PREPARATION_WORKFLOW_TIMEOUT_MS),
-      traceId,
+      context,
       async (usage) => {
         const recorded = this.store.recordPreparationUsage === undefined
           ? true
-          : await this.store.recordPreparationUsage(reportId, jobId, executionToken, usage);
+          : await this.store.recordPreparationUsage(context.reportId, jobId, executionToken, usage);
         if (recorded === false) {
           throw new PreparationCancelledError();
         }
@@ -295,12 +305,13 @@ function preparationErrorDetails(error: unknown): PreparationErrorDetails {
 }
 
 class PreparationFailureDiagnostic extends Error {
-  public constructor(details: PreparationErrorDetails, traceId: string, original: unknown) {
+  public constructor(details: PreparationErrorDetails, reportId: string, traceId: string, original: unknown) {
     super("Report preparation failed.");
     this.name = "PreparationFailureDiagnostic";
     this.errorCode = details.errorCode;
     this.kind = details.kind;
     this.stage = details.stage;
+    this.reportId = reportId;
     this.traceId = traceId;
     this.originalName = original instanceof Error ? original.name : "NonError";
     this.stackFingerprint = diagnosticFingerprint(original);
@@ -309,6 +320,7 @@ class PreparationFailureDiagnostic extends Error {
   public readonly errorCode: string;
   public readonly kind: string;
   public readonly stage: string;
+  public readonly reportId: string;
   public readonly traceId: string;
   public readonly originalName: string;
   public readonly stackFingerprint: string;
@@ -318,14 +330,15 @@ export function preparationFailureLogFields(error: unknown): Record<string, stri
   const candidate = typeof error === "object" && error !== null ? error as Record<string, unknown> : {};
   const string = (key: string): string | undefined => typeof candidate[key] === "string" ? candidate[key] : undefined;
   const traceId = string("traceId");
+  const reportId = string("reportId");
   const errorCode = string("errorCode");
   const kind = string("kind");
   const stage = string("stage");
   const originalName = string("originalName");
   const stackFingerprint = string("stackFingerprint");
-  if ([traceId, errorCode, kind, stage, originalName, stackFingerprint].some((value) => value === undefined)) return {};
+  if ([reportId, traceId, errorCode, kind, stage, originalName, stackFingerprint].some((value) => value === undefined)) return {};
   return {
-    traceId: traceId!, errorCode: errorCode!, errorCategory: kind!, preparationStage: stage!,
+    reportId: reportId!, traceId: traceId!, errorCode: errorCode!, errorCategory: kind!, preparationStage: stage!,
     originalErrorName: originalName!, stackFingerprint: stackFingerprint!
   };
 }

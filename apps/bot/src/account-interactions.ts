@@ -28,6 +28,7 @@ export { shouldAbandonReportLink } from "./report-link-recovery.js";
 import { shouldAbandonReportLink } from "./report-link-recovery.js";
 import type { BotConfig } from "./config.js";
 import { decryptJson, encryptJson } from "./crypto.js";
+import { botLog, safeErrorCategory } from "./observability.js";
 import { capturedMessageEvidence, resolvedMessageEvidence, unavailableMessageEvidence, type MessageResolver } from "./message-resolver.js";
 import type { ProfileResolver } from "./profile-resolver.js";
 import type { ServerResolver } from "./server-resolver.js";
@@ -304,9 +305,11 @@ export class AccountInteractionHandler {
         const message = await interaction.user.send(statusMessageOptions(report, context));
         await this.dependencies.database.setDmMapping(report.reportId, message.channelId, message.id);
         await this.dependencies.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
+        botLog("initial_card_created", { reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: "completed", durationMs: 0 });
       } catch (error) {
         await this.dependencies.database.releaseDmCard(report.reportId);
         await this.dependencies.database.rescheduleCardRepair(report.reportId, 5);
+        botLog("initial_card_failed", { reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: "retry", durationMs: 0, failureCategory: safeErrorCategory(error) }, "warn");
         const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
         dmWarning = code === 50007
           ? " I could not send the private status card; use `/reports status` to follow it."
@@ -426,9 +429,11 @@ export class AccountInteractionHandler {
           const message = await interaction.user.send(statusMessageOptions(report, context));
           await this.dependencies.database.setDmMapping(report.reportId, message.channelId, message.id);
           await this.dependencies.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
-        } catch {
+          botLog("initial_card_created", { reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: "completed", durationMs: 0 });
+        } catch (error) {
           await this.dependencies.database.releaseDmCard(report.reportId);
           await this.dependencies.database.rescheduleCardRepair(report.reportId, 5);
+          botLog("initial_card_failed", { reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: "retry", durationMs: 0, failureCategory: safeErrorCategory(error) }, "warn");
           warning = " I could not create the DM status card; use `/reports status`.";
         }
       } else {

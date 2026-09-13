@@ -84,6 +84,12 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(classifyReportView(report({ status: "failed", discordStatus: null, failure: { stage: "receipt", code: "discord_receipt_timeout", message: "Timed out" } })).key).toBe("report_timeout");
     expect(classifyReportView(report({ reviewStatus: "confirmation_timeout" })).key).toBe("appeal_timeout");
     expect(classifyReportView(report({ reviewStatus: "ineligible" })).key).toBe("ineligible");
+    expect(classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "request_failed" }))).toMatchObject({
+      key: "appeal_failed", title: "Appeal not submitted"
+    });
+    expect(classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "request_ambiguous" }))).toMatchObject({
+      key: "appeal_failed", title: "Appeal outcome unclear"
+    });
   });
 
   it("distinguishes an appeal waiting to submit from one already submitted", () => {
@@ -221,6 +227,8 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(shouldSendDecisionDm("discord:review_not_approved", "appeal_denied", defaults)).toBe(true);
     expect(shouldSendDecisionDm("discord:actioned", "report_accepted", defaults)).toBe(true);
     expect(shouldSendDecisionDm("report_receipt_timeout", "report_timeout", defaults)).toBe(true);
+    expect(shouldSendDecisionDm("review_request_failed", "appeal_failed", defaults)).toBe(true);
+    expect(shouldSendDecisionDm("review_request_ambiguous", "appeal_failed", defaults)).toBe(true);
     expect(shouldSendDecisionDm("report_writing", "preparing", defaults)).toBe(false);
   });
 });

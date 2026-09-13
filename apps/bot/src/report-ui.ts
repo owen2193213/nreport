@@ -45,7 +45,7 @@ export interface TargetDisplayContext {
 export type ReportViewKey =
   | "preparing" | "submitting" | "submitted" | "failed"
   | "report_denied" | "appeal_denied" | "report_accepted" | "appeal_accepted"
-  | "report_timeout" | "appeal_timeout" | "ineligible";
+  | "report_timeout" | "appeal_timeout" | "appeal_failed" | "ineligible";
 
 export interface ReportViewState {
   key: ReportViewKey;
@@ -65,6 +65,7 @@ export function shouldSendDecisionDm(
   if (viewKey === "appeal_denied") return eventType === "discord:review_not_approved" && preferences.decisionEnabled;
   if (viewKey === "report_timeout") return eventType === "report_receipt_timeout" && preferences.problemEnabled;
   if (viewKey === "appeal_timeout") return eventType === "review_confirmation_timeout" && preferences.problemEnabled;
+  if (viewKey === "appeal_failed") return (eventType === "review_request_failed" || eventType === "review_request_ambiguous") && preferences.problemEnabled;
   if (viewKey === "ineligible") return eventType === "review_ineligible" && preferences.problemEnabled;
   return viewKey === "failed" && eventType === "report_failed" && preferences.problemEnabled;
 }
@@ -117,6 +118,8 @@ const PREPARING = new Set(["planning", "researching", "writing"]);
 export function classifyReportView(report: ReportDetail): ReportViewState {
   if (report.reviewStatus === "confirmation_timeout") return state("appeal_timeout", "Appeal unconfirmed", "Discord did not confirm the appeal within 2 minutes. It will not be retried automatically.", "No retry", true);
   if (report.reviewStatus === "ineligible") return state("ineligible", "Appeal unavailable", "Discord marked this report as ineligible for appeal. No resend or appeal retry is available.", "Closed", true);
+  if (report.reviewStatus === "request_failed") return state("appeal_failed", "Appeal not submitted", "Discord did not accept the automatic appeal. The original report remains closed without action.", "Needs attention", true);
+  if (report.reviewStatus === "request_ambiguous") return state("appeal_failed", "Appeal outcome unclear", "Discord did not confirm whether the automatic appeal was accepted. It will not be retried automatically.", "No retry", true);
   if (report.discordStatus === "review_not_approved" || report.reviewStatus === "not_approved") return state("appeal_denied", "Appeal denied", "Discord did not approve the automatic appeal. You can create a replacement report.", "Action available", true);
   if (report.discordStatus === "actioned") {
     const appealed = report.reviewStatus === "approved" || report.timeline.some((event) => event.type === "review_requested");
@@ -371,6 +374,7 @@ function milestoneHistory(report: ReportDetail): string[] {
   if (view.key === "failed") milestones.push({ occurredAt: report.updatedAt, label: "Report failed" });
   else if (view.key === "report_timeout") milestones.push({ occurredAt: report.updatedAt, label: "Report unconfirmed" });
   else if (view.key === "appeal_timeout") milestones.push({ occurredAt: report.updatedAt, label: "Appeal unconfirmed" });
+  else if (view.key === "appeal_failed") milestones.push({ occurredAt: report.updatedAt, label: view.title });
   else if (view.key === "ineligible") milestones.push({ occurredAt: report.updatedAt, label: "Appeal unavailable" });
 
   return milestones.map(({ occurredAt, label }) => `- ${discordHistoryTime(occurredAt)} ${label}`);
@@ -409,6 +413,6 @@ function validHttpsUrl(value: string | undefined): boolean {
 function accent(key: ReportViewKey): number {
   if (key === "report_accepted" || key === "appeal_accepted") return 0x23a559;
   if (key === "report_denied") return 0xf0b232;
-  if (["appeal_denied", "report_timeout", "appeal_timeout", "ineligible", "failed"].includes(key)) return 0xda373c;
+  if (["appeal_denied", "report_timeout", "appeal_timeout", "appeal_failed", "ineligible", "failed"].includes(key)) return 0xda373c;
   return 0x5865f2;
 }

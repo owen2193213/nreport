@@ -7,6 +7,7 @@ import type { Client, Message } from "discord.js";
 import type { AccountBotDatabase, ApiConnection, ClaimedNotification } from "./account-database.js";
 import type { BotConfig } from "./config.js";
 import { decryptJson } from "./crypto.js";
+import { shouldAbandonReportLink } from "./report-link-recovery.js";
 import { botLog, errorFields, safeErrorCategory } from "./observability.js";
 import { classifyReportView, decisionMessageOptions, shouldSendDecisionDm, statusMessageOptions, targetContextFromReport, visibleStatusHash, type TargetDisplayContext } from "./report-ui.js";
 import type { ReportDetail } from "@nreport/contracts";
@@ -29,6 +30,15 @@ export function reportRecoveryDelaySeconds(attempt: number, rateLimited: boolean
 
 function notificationNonce(eventId: string): string {
   return `nreport-${createHash("sha256").update(eventId).digest("hex").slice(0, 16)}`;
+}
+
+function cardNonce(reportId: string): string {
+  return `nreport-card-${createHash("sha256").update(reportId).digest("hex").slice(0, 16)}`;
+}
+
+export function isDiscordUnknownMessage(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error &&
+    (error as { code?: unknown }).code === 10008;
 }
 
 export class AccountNotificationWorker {
@@ -92,7 +102,12 @@ export class AccountNotificationWorker {
       let message: Message | null = null;
       if (item.dm_message_id !== null) {
         deliveryStage = "fetch_card";
-        message = await dm.messages.fetch(item.dm_message_id).catch(() => null);
+        try {
+          message = await dm.messages.fetch(item.dm_message_id);
+        } catch (error) {
+          if (!isDiscordUnknownMessage(error)) throw error;
+          await this.database.clearStaleDmMapping(report.reportId, item.dm_message_id);
+        }
       }
       if (message === null) {
         deliveryStage = "claim_card";
@@ -106,7 +121,7 @@ export class AccountNotificationWorker {
         }
         try {
           deliveryStage = "send_card";
-          message = await dm.send(options);
+          message = await dm.send({ ...options, nonce: cardNonce(report.reportId), enforceNonce: true });
           deliveryStage = "save_card_mapping";
           await this.database.setDmMapping(report.reportId, message.channelId, message.id);
           deliveryStage = "save_card_hash";
@@ -198,7 +213,14 @@ export class AccountNotificationWorker {
     const connections = await this.database.connections();
     for (const connection of connections) {
       if (this.stopping) break;
-      await this.recoverConnection(connection, this.api(connection));
+      try {
+        await this.recoverConnection(connection, this.api(connection));
+      } catch (error) {
+        this.safeLog("account_recovery_failed", {
+          stage: "creation_recovery", outcome: "failed", durationMs: 0,
+          failureCategory: safeErrorCategory(error)
+        }, "warn");
+      }
     }
   }
 
@@ -234,7 +256,7 @@ export class AccountNotificationWorker {
         }
       } catch (error) {
         if (error instanceof DsaApiError && error.status === 401) throw error;
-        if (error instanceof DsaApiError && error.status < 500 && error.status !== 429) {
+        if (shouldAbandonReportLink(error)) {
           await this.database.abandonReportLink(link.id);
         } else {
           const rateLimited = error instanceof DsaApiError && error.status === 429;
@@ -281,7 +303,7 @@ export class AccountNotificationWorker {
     try {
       if (!(await this.database.claimDmCard(report.reportId))) return "busy";
       const user = await this.client.users.fetch(discordUserId);
-      const message = await user.send(statusMessageOptions(report, context));
+      const message = await user.send({ ...statusMessageOptions(report, context), nonce: cardNonce(report.reportId), enforceNonce: true });
       await this.database.setDmMapping(report.reportId, message.channelId, message.id);
       await this.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
       this.safeLog("initial_card_created", {

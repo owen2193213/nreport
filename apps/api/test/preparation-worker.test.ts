@@ -98,6 +98,7 @@ describe("PreparationWorker", () => {
     const store = {
       claimPreparation: vi.fn(async () => ({
         jobId: "job-1",
+        executionToken: 7,
         report: {
           ...baseReport,
           flow: "message" as const,
@@ -129,7 +130,8 @@ describe("PreparationWorker", () => {
       "report-1",
       expect.objectContaining({ finalText: "Manual report text." }),
       expect.objectContaining({ legalName: "Generated Name" }),
-      expect.objectContaining({ aiRequests: 0, searchRequests: 0 })
+      expect.objectContaining({ aiRequests: 0, searchRequests: 0 }),
+      7
     );
   });
 
@@ -246,7 +248,8 @@ describe("PreparationWorker", () => {
       "job-3",
       "report-1",
       "preparation_rate_limited",
-      "A preparation provider is rate limited. Retry the report shortly."
+      "A preparation provider is rate limited. Retry the report shortly.",
+      undefined
     );
   });
 

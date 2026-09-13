@@ -2,14 +2,28 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { AccountBotDatabase } from "../src/account-database.js";
-import { AccountNotificationWorker } from "../src/account-notifier.js";
+import { AccountNotificationWorker, isDiscordUnknownMessage } from "../src/account-notifier.js";
 import { loadBotConfig } from "../src/config.js";
 import { reportEventIngestionStatus } from "../src/health.js";
 import * as healthModule from "../src/health.js";
 import { DsaApiError } from "@nreport/contracts";
+import { shouldAbandonReportLink } from "../src/account-interactions.js";
 import { errorFields } from "../src/observability.js";
 
 describe("thin account client configuration", () => {
+  it("keeps pending links for ambiguous create and retry outcomes", () => {
+    expect(shouldAbandonReportLink(new DsaApiError(400, "invalid_request", "invalid"))).toBe(true);
+    expect(shouldAbandonReportLink(new DsaApiError(429, "rate_limited", "wait"))).toBe(false);
+    expect(shouldAbandonReportLink(new DsaApiError(202, "invalid_response", "malformed success"))).toBe(false);
+    expect(shouldAbandonReportLink(new Error("network interrupted"))).toBe(false);
+  });
+
+  it("only clears a card mapping for Discord's confirmed unknown-message response", () => {
+    expect(isDiscordUnknownMessage({ code: 10008 })).toBe(true);
+    expect(isDiscordUnknownMessage({ code: 50001 })).toBe(false);
+    expect(isDiscordUnknownMessage(new Error("network"))).toBe(false);
+  });
+
   it("requires a UUID trace ID on webhook lifecycle events", () => {
     const validate = (healthModule as unknown as {
       isReportLifecycleEvent?: (value: unknown) => boolean
@@ -61,8 +75,8 @@ describe("thin account client configuration", () => {
     expect(config).not.toHaveProperty("apiKey");
   });
 
-  it("returns 409 only for the narrow report-linking race", () => {
-    expect(reportEventIngestionStatus("not_tracked_yet")).toBe(409);
+  it("accepts lifecycle events while create-link recovery is in progress", () => {
+    expect(reportEventIngestionStatus("not_tracked_yet")).toBe(202);
     expect(reportEventIngestionStatus("accepted")).toBe(202);
     expect(reportEventIngestionStatus("disconnected")).toBe(202);
   });
@@ -94,7 +108,7 @@ describe("local account mapping", () => {
 
   it("removes encrypted request evidence as soon as the API report is linked", async () => {
     const query = vi.fn(async () => ({ rows: [], rowCount: 1 }));
-    const database = new AccountBotDatabase({ query } as never);
+    const database = new AccountBotDatabase({ connect: async () => ({ query, release: vi.fn() }) } as never);
 
     await database.completeReportLink("link-1", "report-1");
 
@@ -123,6 +137,24 @@ describe("local account mapping", () => {
 
     await expect(database.claimDmCard("report-1")).resolves.toBe(true);
     await expect(database.claimDmCard("report-1")).resolves.toBe(false);
+  });
+
+  it("clears a stale card mapping only when it still names the missing message", async () => {
+    const query = vi.fn(async () => ({ rows: [{ id: "link-1" }], rowCount: 1 }));
+    const database = new AccountBotDatabase({ query } as never);
+
+    await expect(database.clearStaleDmMapping("report-1", "message-1")).resolves.toBe(true);
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("dm_message_id = $2"), ["report-1", "message-1"]);
+  });
+
+  it("excludes a superseded predecessor from card repair claims", async () => {
+    const query = vi.fn(async () => ({ rows: [], rowCount: 0 }));
+    const database = new AccountBotDatabase({ query } as never);
+
+    await database.dueCardRepairs("discord-1");
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("superseded_by_report_id IS NULL"), ["discord-1"]);
   });
 
   it("purges expired pending forms", async () => {
@@ -157,6 +189,24 @@ describe("local account mapping", () => {
     expect(insert?.[1]).toContain("33333333-3333-4333-8333-333333333333");
   });
 
+  it("does not coalesce report-denied decisions behind later status events", async () => {
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("FROM api_connections")) return { rows: [{ discord_user_id: "discord-1" }], rowCount: 1 };
+        if (sql.includes("FROM bot_report_links")) return { rows: [{ id: "link-1" }], rowCount: 1 };
+        if (sql.includes("INSERT INTO lifecycle_inbox")) return { rows: [{ event_id: "10" }], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+      }),
+      release: vi.fn()
+    };
+    const database = new AccountBotDatabase({ connect: async () => client } as never);
+
+    await database.ingestEvent({ eventId: "10", accountId: "account-1", reportId: "report-1", traceId: "33333333-3333-4333-8333-333333333333", type: "report_writing", occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1 });
+
+    const coalescing = client.query.mock.calls.find(([sql]) => String(sql).includes("event_type NOT IN"));
+    expect(String(coalescing?.[0])).toContain("'discord:closed_no_action'");
+  });
+
   it("includes edit-spacing and terminal-event exemptions in the claim query", async () => {
     const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [], rowCount: 0 }));
     const database = new AccountBotDatabase({ query } as never);
@@ -167,6 +217,15 @@ describe("local account mapping", () => {
     expect(sql).toContain("last_card_edit_at <= now() - interval '5 seconds'");
     expect(sql).toContain("'discord:actioned'");
     expect(sql).toContain("'discord:review_not_approved'");
+  });
+
+  it("does not claim notifications for superseded reports", async () => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [], rowCount: 0 }));
+    const database = new AccountBotDatabase({ query } as never);
+
+    await database.claimNotification();
+
+    expect(String(query.mock.calls[0]?.[0])).toContain("card_link.superseded_by_report_id IS NULL");
   });
 
   it("returns a failed notification claim to pending with bounded retry metadata", async () => {
@@ -341,6 +400,31 @@ describe("account reconciliation", () => {
 
     expect(database.rescheduleReportLink).toHaveBeenCalledWith("link-1", 5, "upstream");
     expect(database.abandonReportLink).not.toHaveBeenCalled();
+  });
+
+  it("keeps an HTTP timeout recovery link for the same idempotency replay", async () => {
+    const database = {
+      pendingReportLinks: vi.fn(async () => [{
+        id: "link-timeout", idempotency_key: "create-key", encrypted_request: "request", recovery_attempts: 1
+      }]),
+      rescheduleReportLink: vi.fn(), abandonReportLink: vi.fn(), completeReportLink: vi.fn(),
+      completeReplacementLink: vi.fn(), ingestEvent: vi.fn(), advanceCursor: vi.fn(), cleanupExpiredForms: vi.fn()
+    };
+    const api = {
+      createReport: vi.fn(async () => { throw new DsaApiError(408, "request_timeout", "Timed out"); }),
+      retryReport: vi.fn(), events: vi.fn(async () => ({ items: [], next: null }))
+    };
+    const worker = new AccountNotificationWorker(
+      database as never, {} as never,
+      { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
+      () => api as never,
+      <T>() => ({ flow: "message", useAi: true, target: { messageUrl: "https://discord.com/channels/@me/1/2" } }) as T
+    );
+
+    await worker.reconcileConnection({ discord_user_id: "discord-1", account_id: "account-1", encrypted_api_key: "key", event_cursor: "0" } as never);
+
+    expect(database.abandonReportLink).not.toHaveBeenCalled();
+    expect(database.rescheduleReportLink).toHaveBeenCalledWith("link-timeout", 5, "unexpected");
   });
 
   it("runs due creation recovery without polling the lifecycle event feed", async () => {

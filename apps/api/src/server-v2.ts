@@ -125,6 +125,15 @@ function publicReport(row: AccountReportRow, queueLength = 0): ReportDetail {
   };
 }
 
+async function safeQueueLength(reports: V2Dependencies["reports"]): Promise<number> {
+  try {
+    return await reports.queueLength?.() ?? 0;
+  } catch {
+    // Queue depth is display telemetry. The report transaction has already committed.
+    return 0;
+  }
+}
+
 const openApiDocument = {
   openapi: "3.1.0",
   info: { title: "NReport API", version: "1.0.0" },
@@ -299,7 +308,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       }
       try {
         const result = await dependencies.reports.create(principal.accountId, idempotencyKey.trim(), input);
-        return reply.code(202).send(publicReport(result.report, await dependencies.reports.queueLength?.() ?? 0));
+        return reply.code(202).send(publicReport(result.report, await safeQueueLength(dependencies.reports)));
       } catch (error) {
         const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
         const message = error instanceof Error ? error.message : "Report creation failed.";
@@ -327,7 +336,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       if (row === null) {
         return apiError(reply, request, 404, "report_not_found", "Report was not found.");
       }
-      const detail = publicReport(row, await dependencies.reports.queueLength?.() ?? 0);
+      const detail = publicReport(row, await safeQueueLength(dependencies.reports));
       detail.timeline = await dependencies.reports.timeline(principal.accountId, row.id);
       return reply.send(detail);
     }
@@ -394,7 +403,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
           idempotencyKey.trim(),
           retryInput
         );
-        return reply.code(202).send(publicReport(result.report, await dependencies.reports.queueLength?.() ?? 0));
+        return reply.code(202).send(publicReport(result.report, await safeQueueLength(dependencies.reports)));
       } catch (error) {
         const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
         const message = error instanceof Error ? error.message : "Report retry failed.";
@@ -603,7 +612,8 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       : "internal_error";
     const code = typeof error === "object" && error !== null &&
       "validation" in error && error.validation !== undefined ? "invalid_request" : rawCode;
-    const isRateLimited = rawCode === "FST_ERR_RATE_LIMIT" || reply.getHeader("x-ratelimit-limit") !== undefined || reply.getHeader("retry-after") !== undefined;
+    const isRateLimited = rawCode === "FST_ERR_RATE_LIMIT" ||
+      (typeof error === "object" && error !== null && "statusCode" in error && (error as { statusCode?: unknown }).statusCode === 429);
     const statusCode = isRateLimited ? 429 : typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number"
       ? error.statusCode
       : code === "account_not_found" ? 404

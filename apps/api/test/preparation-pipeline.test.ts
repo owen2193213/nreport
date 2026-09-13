@@ -128,7 +128,8 @@ describe("preparation pipeline reliability", () => {
       "job",
       "report",
       "preparation_rate_limited",
-      "A preparation provider is rate limited. Retry the report shortly."
+      "A preparation provider is rate limited. Retry the report shortly.",
+      undefined
     );
   });
 });

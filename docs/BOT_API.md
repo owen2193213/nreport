@@ -221,13 +221,13 @@ Administrators may assign one destination to many accounts. In a single-bot depl
 on API startup it is refreshed, attached to active accounts with no destination, and used for new
 accounts. Explicit administrator assignments take precedence. Each event/destination delivery is
 unique, signed over the timestamp, event ID, and exact body, and retried with capped exponential
-backoff for seven days. The first `409` from the bot's narrow report-linking race is retried after a
-short 500–1000 ms delay. With no destination, events remain available from the feed. Public
+backoff for seven days. The bot stages webhook events even while its local create mapping is
+pending, and the account feed remains a reconciliation backstop. With no destination, events remain available from the feed. Public
 destinations require HTTPS; Railway private HTTP requires the explicit API configuration flag.
 
 Webhook receivers must reject stale timestamps and replayed event IDs, verify the HMAC before JSON
-parsing, and process the exact received bytes. A bot that cannot find the pre-created local mapping
-returns `409`; other successful duplicates return `2xx`.
+parsing, and process the exact received bytes. The bot records unmatched valid events for later link
+reconciliation and returns `2xx` for successful staging and duplicates.
 
 ## Analytics
 

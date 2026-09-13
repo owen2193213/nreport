@@ -269,7 +269,7 @@ export class LifecycleRunner {
         await this.store.failReview(job, "request_ambiguous", "review_request_ambiguous", "The automatic appeal outcome could not be confirmed.");
         return ambiguousResult("review_request_ambiguous");
       } else if (!submissionStarted && job.attempts < job.max_attempts && retryable(error)) {
-        const delaySeconds = retryDelaySeconds(job.attempts);
+        const delaySeconds = retryDelaySeconds(job.attempts, error);
         await this.store.retryLifecycleJob(job, discordFailureCode(error), delaySeconds);
         return retryResult(discordFailureCode(error), delaySeconds);
       } else {
@@ -358,7 +358,7 @@ export class LifecycleRunner {
   private async handleBeforeBoundaryFailure(job: LifecycleJob, error: unknown): Promise<LifecycleJobResult> {
     const code = discordFailureCode(error);
     if (job.attempts < job.max_attempts && retryable(error)) {
-      const delaySeconds = retryDelaySeconds(job.attempts);
+      const delaySeconds = retryDelaySeconds(job.attempts, error);
       return (await this.store.retryLifecycleJob(job, code, delaySeconds))
         ? retryResult(code, delaySeconds)
         : ownershipLostResult();
@@ -604,7 +604,10 @@ function discordFailureCode(error: unknown): string {
   return "discord_lifecycle_failed";
 }
 
-function retryDelaySeconds(attempts: number): number {
+function retryDelaySeconds(attempts: number, error?: unknown): number {
+  if (error instanceof DiscordDsaHttpError && error.retryAfterSeconds !== undefined) {
+    return Math.max(1, Math.ceil(error.retryAfterSeconds));
+  }
   return Math.min(60, 5 * 2 ** attempts);
 }
 

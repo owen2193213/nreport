@@ -208,12 +208,16 @@ CREATE TABLE IF NOT EXISTS operational_alert_state (
   last_observed_at timestamptz NOT NULL DEFAULT now(),
   last_sent_at timestamptz,
   recovery_sent_at timestamptz,
+  episode bigint NOT NULL DEFAULT 0,
+  notification_sequence bigint NOT NULL DEFAULT 0,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS operations_alert_outbox (
   id bigserial PRIMARY KEY,
   alert_key text NOT NULL,
+  episode bigint NOT NULL DEFAULT 0,
+  notification_sequence bigint NOT NULL DEFAULT 0,
   kind text NOT NULL CHECK (kind IN ('open', 'reminder', 'recovery')),
   payload jsonb NOT NULL,
   state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'sending', 'sent')),
@@ -223,8 +227,30 @@ CREATE TABLE IF NOT EXISTS operations_alert_outbox (
   last_error text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (alert_key, kind, state)
+  UNIQUE (alert_key, episode, notification_sequence)
 );
+ALTER TABLE operational_alert_state ADD COLUMN IF NOT EXISTS episode bigint NOT NULL DEFAULT 0;
+ALTER TABLE operational_alert_state ADD COLUMN IF NOT EXISTS notification_sequence bigint NOT NULL DEFAULT 0;
+ALTER TABLE operations_alert_outbox ADD COLUMN IF NOT EXISTS episode bigint NOT NULL DEFAULT 0;
+ALTER TABLE operations_alert_outbox ADD COLUMN IF NOT EXISTS notification_sequence bigint NOT NULL DEFAULT 0;
+ALTER TABLE operations_alert_outbox DROP CONSTRAINT IF EXISTS operations_alert_outbox_alert_key_kind_state_key;
+ALTER TABLE operations_alert_outbox DROP CONSTRAINT IF EXISTS operations_alert_outbox_alert_key_episode_kind_key;
+-- Rows created under the former (alert_key, kind, state) constraint may contain
+-- both a sent and a pending copy of the same kind. Give each legacy row a
+-- distinct episode before installing the stricter episode key.
+UPDATE operations_alert_outbox SET episode = id WHERE episode = 0;
+UPDATE operations_alert_outbox SET notification_sequence = id WHERE notification_sequence = 0;
+UPDATE operational_alert_state AS alert SET episode = COALESCE((
+  SELECT max(item.episode) FROM operations_alert_outbox AS item WHERE item.alert_key = alert.alert_key
+), 0) WHERE alert.episode = 0;
+UPDATE operational_alert_state AS alert SET notification_sequence = COALESCE((
+  SELECT max(item.notification_sequence) FROM operations_alert_outbox AS item
+  WHERE item.alert_key = alert.alert_key AND item.episode = alert.episode
+), 0) WHERE alert.notification_sequence = 0;
+DO $$ BEGIN
+  ALTER TABLE operations_alert_outbox ADD CONSTRAINT operations_alert_outbox_alert_key_episode_notification_sequence_key UNIQUE (alert_key, episode, notification_sequence);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 CREATE INDEX IF NOT EXISTS operations_alert_outbox_claim_idx
   ON operations_alert_outbox(state, run_at, locked_at, id);
 `;
@@ -384,32 +410,44 @@ export class ReportRepository {
       await client.query("BEGIN");
       const seen = new Set(alerts.map((alert) => alert.key));
       for (const alert of alerts) {
-        const prior = await client.query<{ state: "open" | "closed"; last_sent_at: Date | null }>(
-          "SELECT state, last_sent_at FROM operational_alert_state WHERE alert_key = $1 FOR UPDATE", [alert.key]
+        const prior = await client.query<{
+          state: "open" | "closed";
+          last_sent_at: Date | null;
+          episode: string;
+          notification_sequence: string;
+        }>(
+          "SELECT state, last_sent_at, episode::text, notification_sequence::text FROM operational_alert_state WHERE alert_key = $1 FOR UPDATE", [alert.key]
         );
         const row = prior.rows[0];
+        const episode = row === undefined ? 1 : row.state === "closed" ? Number(row.episode) + 1 : Number(row.episode);
         const shouldSend = row === undefined || row.state === "closed" || row.last_sent_at === null || row.last_sent_at < new Date(Date.now() - 30 * 60_000);
+        const notificationSequence = shouldSend ? (row === undefined || row.state === "closed" ? 1 : Number(row.notification_sequence) + 1) : Number(row.notification_sequence);
         await client.query(
-          `INSERT INTO operational_alert_state (alert_key, severity, state, last_sent_at)
-           VALUES ($1, $2, 'open', CASE WHEN $3 THEN now() ELSE NULL END)
+          `INSERT INTO operational_alert_state (alert_key, severity, state, last_sent_at, episode, notification_sequence)
+           VALUES ($1, $2, 'open', CASE WHEN $3 THEN now() ELSE NULL END, $4, $5)
            ON CONFLICT (alert_key) DO UPDATE SET severity = EXCLUDED.severity, state = 'open',
+             episode = EXCLUDED.episode, notification_sequence = EXCLUDED.notification_sequence,
              last_observed_at = now(), last_sent_at = CASE WHEN $3 THEN now() ELSE operational_alert_state.last_sent_at END, updated_at = now()`,
-          [alert.key, alert.severity, shouldSend]
+          [alert.key, alert.severity, shouldSend, episode, notificationSequence]
         );
         if (shouldSend) await client.query(
-          `INSERT INTO operations_alert_outbox (alert_key, kind, payload)
-           VALUES ($1, $2, jsonb_build_object('alertKey', $1::text, 'severity', $3::text))
-           ON CONFLICT (alert_key, kind, state) DO NOTHING`,
-          [alert.key, row?.state === "open" ? "reminder" : "open", alert.severity]
+          `INSERT INTO operations_alert_outbox (alert_key, episode, notification_sequence, kind, payload)
+           VALUES ($1, $2, $3, $4, jsonb_build_object('alertKey', $1::text, 'severity', $5::text))
+           ON CONFLICT (alert_key, episode, notification_sequence) DO NOTHING`,
+          [alert.key, episode, notificationSequence, row?.state === "open" ? "reminder" : "open", alert.severity]
         );
       }
-      const open = await client.query<{ alert_key: string }>("SELECT alert_key FROM operational_alert_state WHERE state = 'open' FOR UPDATE");
+      const open = await client.query<{ alert_key: string; episode: string; notification_sequence: string }>("SELECT alert_key, episode::text, notification_sequence::text FROM operational_alert_state WHERE state = 'open' FOR UPDATE");
       for (const row of open.rows) if (!seen.has(row.alert_key)) {
-        await client.query("UPDATE operational_alert_state SET state = 'closed', recovery_sent_at = now(), updated_at = now() WHERE alert_key = $1", [row.alert_key]);
+        const notificationSequence = Number(row.notification_sequence) + 1;
         await client.query(
-          `INSERT INTO operations_alert_outbox (alert_key, kind, payload)
-           VALUES ($1, 'recovery', jsonb_build_object('alertKey', $1::text, 'status', 'recovered'))
-           ON CONFLICT (alert_key, kind, state) DO NOTHING`, [row.alert_key]
+          "UPDATE operational_alert_state SET state = 'closed', recovery_sent_at = now(), notification_sequence = $2, updated_at = now() WHERE alert_key = $1",
+          [row.alert_key, notificationSequence]
+        );
+        await client.query(
+          `INSERT INTO operations_alert_outbox (alert_key, episode, notification_sequence, kind, payload)
+           VALUES ($1, $2, $3, 'recovery', jsonb_build_object('alertKey', $1::text, 'status', 'recovered'))
+           ON CONFLICT (alert_key, episode, notification_sequence) DO NOTHING`, [row.alert_key, Number(row.episode), notificationSequence]
         );
       }
       await client.query("COMMIT");
@@ -1016,11 +1054,11 @@ export class ReportRepository {
     }
   }
 
-  public async claimPreparation(): Promise<{ jobId: string; report: AccountReportRow } | null> {
+  public async claimPreparation(): Promise<{ jobId: string; executionToken: number; report: AccountReportRow } | null> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const job = await client.query<{ id: string; report_id: string }>(
+      const job = await client.query<{ id: string; report_id: string; attempts: number }>(
         `WITH candidate AS (
            SELECT id FROM account_report_jobs
            WHERE kind = 'prepare_report' AND state = 'pending' AND run_at <= now()
@@ -1029,7 +1067,7 @@ export class ReportRepository {
          UPDATE account_report_jobs AS job
          SET state = 'running', attempts = attempts + 1, locked_at = now(), updated_at = now()
          FROM candidate WHERE job.id = candidate.id
-         RETURNING job.id, job.report_id`
+         RETURNING job.id, job.report_id, job.attempts`
       );
       const claimed = job.rows[0];
       if (claimed === undefined) {
@@ -1043,7 +1081,7 @@ export class ReportRepository {
       await client.query("COMMIT");
       const row = report.rows[0];
       if (row === undefined) throw new Error("Claimed preparation report was not found.");
-      return { jobId: claimed.id, report: row };
+      return { jobId: claimed.id, executionToken: claimed.attempts, report: row };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1052,7 +1090,7 @@ export class ReportRepository {
     }
   }
 
-  public async transition(reportId: string, status: ReportStatus): Promise<boolean> {
+  public async transition(reportId: string, status: ReportStatus, jobId: string, executionToken: number): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -1064,8 +1102,12 @@ export class ReportRepository {
              SELECT 1 FROM api_accounts AS account
              WHERE account.id = report.account_id AND account.status = 'active'
            )
+           AND EXISTS (
+             SELECT 1 FROM account_report_jobs AS job
+             WHERE job.id = $3 AND job.report_id = report.id AND job.attempts = $4 AND job.state = 'running'
+           )
          RETURNING account_id, lifecycle_attempt`,
-        [reportId, status]
+        [reportId, status, jobId, executionToken]
       );
       const row = updated.rows[0];
       if (row !== undefined) await insertEvent(client, row.account_id, reportId, `report_${status}`, row.lifecycle_attempt);
@@ -1099,11 +1141,16 @@ export class ReportRepository {
       language: string;
       proxySessionId: string;
     },
-    _usage: { aiRequests: number; inputTokens: number; outputTokens: number; searchRequests: number }
-  ): Promise<void> {
+    _usage: { aiRequests: number; inputTokens: number; outputTokens: number; searchRequests: number },
+    executionToken: number
+  ): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      if (!(await ownsPreparationJob(client, jobId, reportId, executionToken))) {
+        await client.query("COMMIT");
+        return false;
+      }
       const recorded = await client.query<{
         account_id: string;
         preparation_ai_requests: string;
@@ -1161,8 +1208,8 @@ export class ReportRepository {
       const row = updated.rows[0];
       if (row === undefined) throw new Error("Report is not eligible for preparation completion.");
       await client.query(
-        "UPDATE account_report_jobs SET state = 'completed', locked_at = NULL, updated_at = now() WHERE id = $1 AND report_id = $2",
-        [jobId, reportId]
+        "UPDATE account_report_jobs SET state = 'completed', locked_at = NULL, updated_at = now() WHERE id = $1 AND report_id = $2 AND attempts = $3 AND state = 'running'",
+        [jobId, reportId, executionToken]
       );
       await client.query(
         `INSERT INTO account_report_jobs (report_id, kind, dedupe_key, max_attempts)
@@ -1172,6 +1219,7 @@ export class ReportRepository {
       await insertEvent(client, row.account_id, reportId, "report_prepared", row.lifecycle_attempt);
       await insertEvent(client, row.account_id, reportId, "verification_queued", row.lifecycle_attempt);
       await client.query("COMMIT");
+      return true;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1180,10 +1228,14 @@ export class ReportRepository {
     }
   }
 
-  public async failPreparation(jobId: string, reportId: string, code: string, message: string): Promise<void> {
+  public async failPreparation(jobId: string, reportId: string, code: string, message: string, executionToken: number): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      if (!(await ownsPreparationJob(client, jobId, reportId, executionToken))) {
+        await client.query("COMMIT");
+        return false;
+      }
       const locked = await lockReportCredit(client, reportId);
       if (locked !== undefined && locked.credit_state === "reserved") {
         await releaseCredit(client, locked.account_id, locked.credit_chain_id, "Preparation failed");
@@ -1198,14 +1250,15 @@ export class ReportRepository {
           [reportId, code, message]
         );
         await client.query(
-          "UPDATE account_report_jobs SET state = 'failed', locked_at = NULL, last_error = $2, updated_at = now() WHERE id = $1",
-          [jobId, code]
+          "UPDATE account_report_jobs SET state = 'failed', locked_at = NULL, last_error = $2, updated_at = now() WHERE id = $1 AND report_id = $3 AND attempts = $4 AND state = 'running'",
+          [jobId, code, reportId, executionToken]
         );
         if (failed.rowCount === 1) {
           await insertEvent(client, locked.account_id, reportId, "report_failed", locked.lifecycle_attempt, { errorCode: code });
         }
       }
       await client.query("COMMIT");
+      return locked !== undefined;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1216,11 +1269,17 @@ export class ReportRepository {
 
   public async recordPreparationUsage(
     reportId: string,
+    jobId: string,
+    executionToken: number,
     usage: { aiRequests: number; inputTokens: number; outputTokens: number; searchRequests: number }
-  ): Promise<void> {
+  ): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      if (!(await ownsPreparationJob(client, jobId, reportId, executionToken))) {
+        await client.query("COMMIT");
+        return false;
+      }
       const report = await client.query<{ account_id: string }>(
         `UPDATE account_reports SET
            preparation_ai_requests = preparation_ai_requests + $2,
@@ -1240,6 +1299,7 @@ export class ReportRepository {
         [row.account_id, usage.aiRequests, usage.inputTokens, usage.outputTokens, usage.searchRequests]
       );
       await client.query("COMMIT");
+      return true;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -2009,6 +2069,22 @@ async function ownsLifecycleJob(client: PoolClient, job: LifecycleJob): Promise<
      WHERE id = $1 AND attempts = $2 AND state = 'running'
      FOR UPDATE`,
     [job.id, job.execution_token]
+  );
+  return result.rowCount === 1;
+}
+
+async function ownsPreparationJob(
+  client: PoolClient,
+  jobId: string,
+  reportId: string,
+  executionToken: number
+): Promise<boolean> {
+  const result = await client.query(
+    `SELECT 1 FROM account_report_jobs
+     WHERE id = $1 AND report_id = $2 AND attempts = $3
+       AND kind = 'prepare_report' AND state = 'running'
+     FOR UPDATE`,
+    [jobId, reportId, executionToken]
   );
   return result.rowCount === 1;
 }

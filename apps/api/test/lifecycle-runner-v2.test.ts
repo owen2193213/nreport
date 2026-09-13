@@ -572,6 +572,27 @@ describe("LifecycleRunner safe outcomes", () => {
     });
   });
 
+  it("honors Discord's Retry-After delay for a retryable lifecycle request", async () => {
+    const rateLimited = new DiscordDsaHttpError("rate limited", 429, { retryAfterSeconds: 47 });
+    const store = {
+      claimLifecycleJob: vi.fn(async () => ({
+        id: "job-1", report_id: "report-1", kind: "request_code" as const,
+        payload: {}, attempts: 1, max_attempts: 3, execution_token: 1
+      })),
+      getLifecycleReport: vi.fn(async () => report()),
+      setStatus: vi.fn(async () => true),
+      retryLifecycleJob: vi.fn(async () => true)
+    };
+    const runner = new LifecycleRunner(
+      store as never, {} as never,
+      () => ({ sendEmailCode: vi.fn(async () => { throw rateLimited; }), close: vi.fn() }) as never
+    );
+
+    await runner.processOne();
+
+    expect(store.retryLifecycleJob).toHaveBeenCalledWith(expect.anything(), "discord_http_429", 47);
+  });
+
   it("does not claim a retry when its durable transition loses ownership", async () => {
     const outcomes: unknown[] = [];
     const retryable = new DiscordDsaHttpError("temporarily unavailable", 503);

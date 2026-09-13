@@ -32,7 +32,8 @@ function harness(hash: string | null = null, eventId = "event") {
       discord_user_id: "user", encrypted_api_key: "unused", encrypted_target_context: null,
       dm_message_id: "original-card", visible_payload_hash: hash }),
     notificationPreferences: vi.fn().mockResolvedValue({ decisionEnabled: true, reportDeniedEnabled: false, problemEnabled: true }),
-    completeCardUpdate: vi.fn(), completeNotification: vi.fn(), retryNotification: vi.fn(), claimDmCard: vi.fn().mockResolvedValue(false)
+    completeCardUpdate: vi.fn(), completeNotification: vi.fn(), retryNotification: vi.fn(),
+    claimDmCard: vi.fn().mockResolvedValue(false), clearStaleDmMapping: vi.fn().mockResolvedValue(true)
   };
   const api = { report: vi.fn().mockResolvedValue(report) };
   const client = { users: { fetch: vi.fn().mockResolvedValue({ createDM: vi.fn().mockResolvedValue(dm) }) } };
@@ -118,7 +119,7 @@ describe("notification delivery against an existing report card", () => {
 
   it("does not create a duplicate card while another worker owns its claim", async () => {
     const h = harness();
-    h.dm.messages.fetch.mockRejectedValue(new Error("Unknown Message"));
+    h.dm.messages.fetch.mockRejectedValue({ code: 10008 });
     await h.worker.processOne();
     expect(h.dm.send).not.toHaveBeenCalled();
     expect(h.database.retryNotification).toHaveBeenCalledWith("event", "status_card_creation_in_progress");

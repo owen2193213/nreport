@@ -45,7 +45,7 @@ export function evaluateOperationalAlerts(input: OperationalAlertInput): Operati
       alerts.push({ key: `queue.${component}.oldest_ready`, severity: "warning" });
     }
     const workers = input.workers.filter((worker) => worker.component === component);
-    if (queue.readyPending > 0 && workers.some((worker) =>
+    if (queue.readyPending > 0 && (queue.oldestReadyAgeMs ?? 0) > READY_STALLED_MS && workers.some((worker) =>
       worker.lastHeartbeatAgeMs <= HEARTBEAT_STALE_MS && (worker.lastProgressAgeMs ?? Infinity) > READY_STALLED_MS
     )) alerts.push({ key: `queue.${component}.no_progress`, severity: "critical" });
   }

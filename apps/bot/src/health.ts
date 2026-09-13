@@ -5,8 +5,9 @@ import type { ReportLifecycleEvent } from "@nreport/contracts";
 import type { AccountBotDatabase, EventIngestionResult } from "./account-database.js";
 import { verifyReportEventSignature } from "./crypto.js";
 
-export function reportEventIngestionStatus(result: EventIngestionResult): 202 | 409 {
-  return result === "not_tracked_yet" ? 409 : 202;
+export function reportEventIngestionStatus(result: EventIngestionResult): 202 {
+  void result;
+  return 202;
 }
 
 export class HealthServer {

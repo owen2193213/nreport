@@ -3,6 +3,19 @@ import { randomUUID } from "node:crypto";
 import type { ApiAccountView, ReportLifecycleEvent } from "@nreport/contracts";
 import { Pool, type QueryResultRow } from "pg";
 
+const IMMEDIATE_LIFECYCLE_EVENT_TYPES = [
+  "report_failed",
+  "report_receipt_timeout",
+  "review_confirmation_timeout",
+  "review_ineligible",
+  "review_request_failed",
+  "review_request_ambiguous",
+  "discord:actioned",
+  "discord:review_not_approved",
+  "discord:closed_no_action"
+] as const;
+const immediateLifecycleEventSql = IMMEDIATE_LIFECYCLE_EVENT_TYPES.map((type) => `'${type}'`).join(", ");
+
 export const BOT_ACCOUNT_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS api_connections (
   discord_user_id text PRIMARY KEY,
@@ -30,6 +43,7 @@ CREATE TABLE IF NOT EXISTS bot_report_links (
   account_id uuid NOT NULL,
   idempotency_key text NOT NULL UNIQUE,
   report_id uuid UNIQUE,
+  superseded_by_report_id uuid,
   encrypted_request text,
   encrypted_target_context text,
   dm_channel_id text,
@@ -59,6 +73,7 @@ ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS card_repair_claimed_at tim
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS encrypted_target_context text;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS visible_payload_hash text;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS last_card_edit_at timestamptz;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS superseded_by_report_id uuid;
 
 CREATE TABLE IF NOT EXISTS lifecycle_inbox (
   event_id bigint PRIMARY KEY,
@@ -267,12 +282,37 @@ export class AccountBotDatabase {
   }
 
   public async completeReportLink(linkId: string, reportId: string): Promise<void> {
-    await this.pool.query(
-      `UPDATE bot_report_links SET report_id = $2, encrypted_request = NULL,
-         recovery_claimed_at = NULL,
-         updated_at = now() WHERE id = $1`,
-      [linkId, reportId]
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const external = await client.query<{ id: string }>(
+        "SELECT id FROM bot_report_links WHERE report_id = $1 AND id <> $2 FOR UPDATE", [reportId, linkId]
+      );
+      if (external.rows[0] === undefined) {
+        await client.query(
+          `UPDATE bot_report_links SET report_id = $2, encrypted_request = NULL,
+             recovery_claimed_at = NULL, updated_at = now() WHERE id = $1`,
+          [linkId, reportId]
+        );
+      } else {
+        await client.query(
+          `WITH pending AS (
+             DELETE FROM bot_report_links WHERE id = $1
+             RETURNING idempotency_key, encrypted_target_context
+           )
+           UPDATE bot_report_links AS external SET idempotency_key = pending.idempotency_key,
+             encrypted_request = NULL,
+             encrypted_target_context = COALESCE(external.encrypted_target_context, pending.encrypted_target_context),
+             updated_at = now()
+           FROM pending WHERE external.id = $2`,
+          [linkId, external.rows[0].id]
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
   }
 
   public async completeReplacementLink(linkId: string, reportId: string, predecessorReportId: string): Promise<void> {
@@ -283,14 +323,38 @@ export class AccountBotDatabase {
         dm_channel_id: string | null; dm_message_id: string | null; encrypted_target_context: string | null; visible_payload_hash: string | null; last_card_edit_at: Date | null;
       }>("SELECT dm_channel_id, dm_message_id, encrypted_target_context, visible_payload_hash, last_card_edit_at FROM bot_report_links WHERE report_id = $1 FOR UPDATE", [predecessorReportId]);
       const prior = predecessor.rows[0];
-      await client.query(
-        `UPDATE bot_report_links SET report_id = $2, encrypted_request = NULL,
-           dm_channel_id = COALESCE(dm_channel_id, $3), dm_message_id = COALESCE(dm_message_id, $4),
-           encrypted_target_context = COALESCE(encrypted_target_context, $5),
-           visible_payload_hash = $6, last_card_edit_at = $7, updated_at = now() WHERE id = $1`,
-        [linkId, reportId, prior?.dm_channel_id ?? null, prior?.dm_message_id ?? null, prior?.encrypted_target_context ?? null, prior?.visible_payload_hash ?? null, prior?.last_card_edit_at ?? null]
+      const external = await client.query<{ id: string }>(
+        "SELECT id FROM bot_report_links WHERE report_id = $1 AND id <> $2 FOR UPDATE", [reportId, linkId]
       );
-      await client.query("UPDATE bot_report_links SET dm_channel_id = NULL, dm_message_id = NULL, updated_at = now() WHERE report_id = $1", [predecessorReportId]);
+      if (external.rows[0] === undefined) {
+        await client.query(
+          `UPDATE bot_report_links SET report_id = $2, encrypted_request = NULL,
+             dm_channel_id = COALESCE(dm_channel_id, $3), dm_message_id = COALESCE(dm_message_id, $4),
+             encrypted_target_context = COALESCE(encrypted_target_context, $5),
+             visible_payload_hash = $6, last_card_edit_at = $7, updated_at = now() WHERE id = $1`,
+          [linkId, reportId, prior?.dm_channel_id ?? null, prior?.dm_message_id ?? null, prior?.encrypted_target_context ?? null, prior?.visible_payload_hash ?? null, prior?.last_card_edit_at ?? null]
+        );
+      } else {
+        await client.query(
+          `WITH pending AS (
+             DELETE FROM bot_report_links WHERE id = $1
+             RETURNING idempotency_key, encrypted_target_context
+           )
+           UPDATE bot_report_links AS successor SET idempotency_key = pending.idempotency_key,
+             encrypted_request = NULL,
+             dm_channel_id = COALESCE(successor.dm_channel_id, $3),
+             dm_message_id = COALESCE(successor.dm_message_id, $4),
+             encrypted_target_context = COALESCE(successor.encrypted_target_context, pending.encrypted_target_context, $5),
+             visible_payload_hash = $6, last_card_edit_at = $7, updated_at = now()
+           FROM pending WHERE successor.id = $2`,
+          [linkId, external.rows[0].id, prior?.dm_channel_id ?? null, prior?.dm_message_id ?? null, prior?.encrypted_target_context ?? null, prior?.visible_payload_hash ?? null, prior?.last_card_edit_at ?? null]
+        );
+      }
+      await client.query(
+        `UPDATE bot_report_links SET dm_channel_id = NULL, dm_message_id = NULL,
+           superseded_by_report_id = $2, updated_at = now() WHERE report_id = $1`,
+        [predecessorReportId, reportId]
+      );
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -343,6 +407,17 @@ export class AccountBotDatabase {
     );
   }
 
+  /** Clear only the mapping that Discord has confirmed no longer exists. */
+  public async clearStaleDmMapping(reportId: string, messageId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE bot_report_links SET dm_channel_id = NULL, dm_message_id = NULL,
+         dm_claimed_at = NULL, visible_payload_hash = NULL, updated_at = now()
+       WHERE report_id = $1 AND dm_message_id = $2`,
+      [reportId, messageId]
+    );
+    return result.rowCount === 1;
+  }
+
   public async reportTargetContext(reportId: string): Promise<string | null> {
     const result = await this.pool.query<{ encrypted_target_context: string | null }>(
       "SELECT encrypted_target_context FROM bot_report_links WHERE report_id = $1",
@@ -361,7 +436,7 @@ export class AccountBotDatabase {
   public async claimDmCard(reportId: string): Promise<boolean> {
     const result = await this.pool.query(
       `UPDATE bot_report_links SET dm_claimed_at = now(), updated_at = now()
-       WHERE report_id = $1 AND dm_message_id IS NULL
+       WHERE report_id = $1 AND superseded_by_report_id IS NULL AND dm_message_id IS NULL
          AND (dm_claimed_at IS NULL OR dm_claimed_at < now() - interval '2 minutes')
        RETURNING id`,
       [reportId]
@@ -380,7 +455,8 @@ export class AccountBotDatabase {
   public async dueCardRepairs(discordUserId: string): Promise<PendingCardRepair[]> {
     const result = await this.pool.query<PendingCardRepair>(
       `WITH due AS (
-         SELECT id FROM bot_report_links WHERE discord_user_id = $1 AND report_id IS NOT NULL AND dm_message_id IS NULL
+         SELECT id FROM bot_report_links WHERE discord_user_id = $1 AND report_id IS NOT NULL
+           AND superseded_by_report_id IS NULL AND dm_message_id IS NULL
            AND card_repair_run_at <= now()
            AND (card_repair_claimed_at IS NULL OR card_repair_claimed_at < now() - interval '2 minutes')
          ORDER BY card_repair_run_at, created_at FOR UPDATE SKIP LOCKED LIMIT 20
@@ -428,15 +504,6 @@ export class AccountBotDatabase {
         [event.accountId, event.reportId]
       );
       if (link.rows[0] === undefined) {
-        const pending = await client.query<{ id: string }>(
-          `SELECT id FROM bot_report_links WHERE account_id = $1 AND report_id IS NULL
-           ORDER BY created_at DESC LIMIT 1`,
-          [event.accountId]
-        );
-        if (pending.rows[0] !== undefined) {
-          await client.query("COMMIT");
-          return "not_tracked_yet";
-        }
         await client.query(
           `INSERT INTO bot_report_links (id, discord_user_id, account_id, idempotency_key, report_id)
            VALUES ($1, $2, $3, $4, $5) ON CONFLICT (report_id) DO NOTHING`,
@@ -447,7 +514,7 @@ export class AccountBotDatabase {
         `INSERT INTO lifecycle_inbox
            (event_id, account_id, report_id, trace_id, event_type, occurred_at, lifecycle_attempt, run_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7,
-           CASE WHEN $5 IN ('report_failed', 'report_receipt_timeout', 'review_confirmation_timeout', 'review_ineligible', 'review_request_failed', 'review_request_ambiguous', 'discord:actioned', 'discord:review_not_approved')
+           CASE WHEN $5 IN (${immediateLifecycleEventSql})
              THEN now() ELSE now() + interval '2 seconds' END)
          ON CONFLICT (event_id) DO NOTHING
          RETURNING event_id`,
@@ -457,12 +524,14 @@ export class AccountBotDatabase {
         await client.query(
           `UPDATE lifecycle_inbox SET state = 'ignored', locked_at = NULL
            WHERE account_id = $1 AND report_id = $2 AND event_id < $3::bigint
-             AND state = 'pending'`,
+             AND state = 'pending'
+             AND event_type NOT IN (${immediateLifecycleEventSql})`,
           [event.accountId, event.reportId, event.eventId]
         );
         await client.query(
           `UPDATE lifecycle_inbox AS current SET state = 'ignored', locked_at = NULL
            WHERE current.event_id = $3::bigint
+             AND current.event_type NOT IN (${immediateLifecycleEventSql})
              AND EXISTS (
                SELECT 1 FROM lifecycle_inbox AS newer
                WHERE newer.account_id = $1 AND newer.report_id = $2
@@ -488,7 +557,8 @@ export class AccountBotDatabase {
        JOIN bot_report_links AS card_link ON card_link.report_id = inbox.report_id
          WHERE ((inbox.state = 'pending' AND inbox.run_at <= now())
             OR (inbox.state = 'sending' AND inbox.locked_at < now() - interval '2 minutes'))
-           AND (inbox.event_type IN ('report_failed', 'report_receipt_timeout', 'review_confirmation_timeout', 'review_ineligible', 'review_request_failed', 'review_request_ambiguous', 'discord:actioned', 'discord:review_not_approved')
+           AND card_link.superseded_by_report_id IS NULL
+           AND (inbox.event_type IN (${immediateLifecycleEventSql})
              OR card_link.last_card_edit_at IS NULL OR card_link.last_card_edit_at <= now() - interval '5 seconds')
          ORDER BY inbox.event_id FOR UPDATE OF inbox SKIP LOCKED LIMIT 1
        ), claimed AS (

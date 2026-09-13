@@ -31,6 +31,45 @@ const principal = {
 };
 
 describe("v2 account-owned server", () => {
+  it("keeps a committed report successful when optional queue telemetry is unavailable", async () => {
+    const report = {
+      id: "22222222-2222-4222-8222-222222222222", account_id: principal.accountId,
+      flow: "message", use_ai: true,
+      request_input: { flow: "message", useAi: true, target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" } },
+      prepared_input: null, status: "queued", lifecycle_attempt: 1, created_at: new Date(), updated_at: new Date()
+    };
+    const create = vi.fn(async () => ({ created: true, report }));
+    const server = await buildV2Server(config, {
+      healthcheck: vi.fn(),
+      accounts: { authenticate: vi.fn(async () => principal), accountView: vi.fn(), createAccount: vi.fn() },
+      reports: { create, queueLength: vi.fn(async () => { throw new Error("telemetry unavailable"); }) }
+    } as never);
+
+    const response = await server.inject({
+      method: "POST", url: "/v1/discord/dsa/reports",
+      headers: { authorization: "Bearer personal-key", "idempotency-key": "create:queue-failure" },
+      payload: { flow: "message", useAi: true, target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" } }
+    });
+
+    expect(create).toHaveBeenCalledOnce();
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ reportId: report.id, queueLength: 0 });
+    await server.close();
+  });
+
+  it("does not label internal failures as rate limits merely because rate-limit headers exist", async () => {
+    const server = await buildV2Server(config, {
+      healthcheck: vi.fn(async () => { throw new Error("database unavailable"); }),
+      accounts: { authenticate: vi.fn(), accountView: vi.fn(), createAccount: vi.fn() }, reports: { create: vi.fn() }
+    } as never);
+
+    const response = await server.inject({ method: "GET", url: "/healthz" });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe("internal_error");
+    await server.close();
+  });
+
   it("publishes OpenAPI and creates a queued report without doing preparation inline", async () => {
     const create = vi.fn(async () => ({
       created: true,

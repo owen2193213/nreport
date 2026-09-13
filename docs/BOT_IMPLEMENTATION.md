@@ -154,6 +154,29 @@ The bot database contains:
 It does not duplicate report evidence as readable columns, maintain credits, or become an
 alternative source of report truth.
 
+## Report-flow recovery
+
+The bot keeps its pre-created idempotency link after a timeout, rate-limit response, or malformed
+successful API response. It tells the user that the report is being checked and lets reconciliation
+replay the same idempotency key. Only definite client-side API rejections discard that link.
+
+Lifecycle events are staged even while a create link is pending, then merged into that link when
+the API response is recovered. Missing status cards are recreated only after Discord confirms the
+stored message is unknown; transient fetch failures remain retryable. A replacement report owns the
+card and its predecessor is excluded from card-repair work.
+
+For one controlled historical repair, run a preview first, then apply its returned run id:
+
+`npm run repair:report-flow -w @nreport/api -- --dry-run`
+
+`npm run repair:report-flow -w @nreport/discord-dsa-bot -- --dry-run`
+
+The dry run persists an exact candidate manifest without printing report IDs. The `--apply --run-id
+<id>` form locks that preview, accepts it only once, and changes only candidates whose state and
+lease timestamp remain unchanged. Preparation leases must be older than six minutes; other worker
+and notification leases must be older than two. It never resubmits a Discord report or changes
+credit state. Use `--verify --run-id <id>` to inspect candidates that still meet those conditions.
+
 ## Deployment
 
 Use a new Discord application, bot database, and `BOT_DATA_ENCRYPTION_KEY`. Configure

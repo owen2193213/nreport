@@ -43,17 +43,18 @@ export interface ReportPreparer {
 }
 
 export interface PreparationStore {
-  claimPreparation(): Promise<{ jobId: string; report: AccountReportRow } | null>;
-  transition(reportId: string, status: ReportStatus): Promise<boolean>;
+  claimPreparation(): Promise<{ jobId: string; executionToken: number; report: AccountReportRow } | null>;
+  transition(reportId: string, status: ReportStatus, jobId: string, executionToken: number): Promise<boolean>;
   completePreparation(
     jobId: string,
     reportId: string,
     prepared: PreparedResult,
     identity: GeneratedReportIdentity,
-    usage: PreparationUsage
-  ): Promise<void>;
-  failPreparation(jobId: string, reportId: string, code: string, message: string): Promise<void>;
-  recordPreparationUsage?(reportId: string, usage: PreparationUsage): Promise<void>;
+    usage: PreparationUsage,
+    executionToken: number
+  ): Promise<boolean>;
+  failPreparation(jobId: string, reportId: string, code: string, message: string, executionToken: number): Promise<boolean>;
+  recordPreparationUsage?(reportId: string, jobId: string, executionToken: number, usage: PreparationUsage): Promise<boolean>;
 }
 
 export interface PreparationWorkerOutcome {
@@ -97,26 +98,28 @@ export class PreparationWorker {
   public async processOne(): Promise<boolean> {
     const claimed = await this.store.claimPreparation();
     if (claimed === null) return false;
-    const { jobId, report } = claimed;
+    const { jobId, executionToken, report } = claimed;
     const startedAt = Date.now();
     try {
       if (report.retry_mode !== "reuse" && report.request_input.useAi &&
-          !(await this.store.transition(report.id, "planning"))) {
+          !(await this.store.transition(report.id, "planning", jobId, executionToken))) {
         return true;
       }
       const prepared = report.retry_mode === "reuse"
         ? reusedPreparation(report)
         : report.request_input.useAi
-          ? await this.prepareWithAi(report.trace_id, report.id, report.request_input)
+          ? await this.prepareWithAi(report.trace_id, report.id, jobId, executionToken, report.request_input)
           : manualPreparation(report.request_input);
       const identity = this.generateIdentity(prepared.country);
-      await this.store.completePreparation(
+      const completed = await this.store.completePreparation(
         jobId,
         report.id,
         prepared,
         identity,
-        prepared.usage
+        prepared.usage,
+        executionToken
       );
+      if (completed === false) return true;
       this.safeOutcome({
         traceId: report.trace_id,
         stage: "preparation",
@@ -131,7 +134,8 @@ export class PreparationWorker {
         jobId,
         report.id,
         code,
-        preparationErrorMessage(code, error)
+        preparationErrorMessage(code, error),
+        executionToken
       );
       this.safeIterationError(new PreparationFailureDiagnostic(details, report.trace_id, error));
       this.safeOutcome({
@@ -164,16 +168,25 @@ export class PreparationWorker {
   private async prepareWithAi(
     traceId: string,
     reportId: string,
+    jobId: string,
+    executionToken: number,
     input: Extract<CreateReportInput, { useAi: true }>
   ): Promise<PreparedResult> {
     const result = await this.preparer.prepare(
       input,
       async (stage) => {
-        if (!(await this.store.transition(reportId, stage))) throw new PreparationCancelledError();
+        if (!(await this.store.transition(reportId, stage, jobId, executionToken))) throw new PreparationCancelledError();
       },
       AbortSignal.timeout(PREPARATION_WORKFLOW_TIMEOUT_MS),
       traceId,
-      async (usage) => this.store.recordPreparationUsage?.(reportId, usage)
+      async (usage) => {
+        const recorded = this.store.recordPreparationUsage === undefined
+          ? true
+          : await this.store.recordPreparationUsage(reportId, jobId, executionToken, usage);
+        if (recorded === false) {
+          throw new PreparationCancelledError();
+        }
+      }
     );
     return {
       ...result,

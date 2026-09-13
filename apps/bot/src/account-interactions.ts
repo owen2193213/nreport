@@ -24,6 +24,8 @@ import {
 } from "discord.js";
 
 import { ConnectionConflictError, type AccountBotDatabase, type ApiConnection } from "./account-database.js";
+export { shouldAbandonReportLink } from "./report-link-recovery.js";
+import { shouldAbandonReportLink } from "./report-link-recovery.js";
 import type { BotConfig } from "./config.js";
 import { decryptJson, encryptJson } from "./crypto.js";
 import { capturedMessageEvidence, resolvedMessageEvidence, unavailableMessageEvidence, type MessageResolver } from "./message-resolver.js";
@@ -54,6 +56,15 @@ type PendingTarget =
   | { flow: "server"; serverOrInvite: string; display?: TargetDisplayContext };
 
 type PendingManualRetry = { kind: "manual-retry"; reportId: string; flow: "message" | "profile" | "server" };
+
+/**
+ * A mutation may have reached the API even when its response is unavailable or
+ * malformed. Keep the idempotency record for recovery unless the API gave a
+ * definite client-side rejection.
+ */
+function uncertainSubmissionError(): UserFacingError {
+  return new UserFacingError("Your report is being checked. Do not submit it again; its status will update automatically.");
+}
 
 export class AccountInteractionHandler {
   private readonly adminApi: DsaAdminApi;
@@ -280,7 +291,8 @@ export class AccountInteractionHandler {
     try {
       report = await this.api(connection).createReport(idempotencyKey, input);
     } catch (error) {
-      if (error instanceof DsaApiError && error.status < 500) await this.dependencies.database.abandonReportLink(linkId);
+      if (shouldAbandonReportLink(error)) await this.dependencies.database.abandonReportLink(linkId);
+      else throw uncertainSubmissionError();
       throw error;
     }
     await this.dependencies.database.completeReportLink(linkId, report.reportId);
@@ -325,7 +337,8 @@ export class AccountInteractionHandler {
     let report: ReportDetail;
     try { report = await this.api(connection).retryReport(predecessorReportId, idempotencyKey, input); }
     catch (error) {
-      if (error instanceof DsaApiError && error.status < 500) await this.dependencies.database.abandonReportLink(linkId);
+      if (shouldAbandonReportLink(error)) await this.dependencies.database.abandonReportLink(linkId);
+      else throw uncertainSubmissionError();
       throw error;
     }
     await this.dependencies.database.completeReplacementLink(linkId, report.reportId, predecessorReportId);
@@ -401,7 +414,8 @@ export class AccountInteractionHandler {
       try {
         report = await api.retryReport(reportId, idempotencyKey, { mode });
       } catch (error) {
-        if (error instanceof DsaApiError && error.status < 500) await this.dependencies.database.abandonReportLink(linkId);
+        if (shouldAbandonReportLink(error)) await this.dependencies.database.abandonReportLink(linkId);
+        else throw uncertainSubmissionError();
         throw error;
       }
       await this.dependencies.database.completeReportLink(linkId, report.reportId);

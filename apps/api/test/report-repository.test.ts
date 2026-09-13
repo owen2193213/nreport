@@ -99,10 +99,31 @@ describe("transactional report creation", () => {
 });
 
 describe("JSON persistence", () => {
+  it("rejects a stale preparation worker before it can change a report", async () => {
+    const client = {
+      query: vi.fn(async () => ({ rows: [], rowCount: 0 })),
+      release: vi.fn()
+    };
+    const repository = new ReportRepository({ connect: async () => client } as never);
+
+    await expect(repository.completePreparation(
+      "job-1", "report-1",
+      { country: "DE", category: "illegal", description: "Evidence", finalText: "Report", legalReference: null, researchSummary: null, sources: [] },
+      { legalName: "Name", email: "alias@example.test", locale: "de-DE", timezone: "Europe/Berlin", language: "de", proxySessionId: "proxy" },
+      { aiRequests: 0, inputTokens: 0, outputTokens: 0, searchRequests: 0 },
+      9
+    )).resolves.toBe(false);
+
+    expect(client.query.mock.calls.some((call) => String((call as unknown[])[0]).includes("prepared_input = $2"))).toBe(false);
+  });
+
   it("serializes legal source arrays as JSON instead of PostgreSQL arrays", async () => {
     const sources = [{ title: "EUR-Lex", url: "https://eur-lex.europa.eu/" }];
     const client = {
       query: vi.fn(async (sql: string, _values?: unknown[]) => {
+        if (sql.includes("kind = 'prepare_report'") && sql.includes("state = 'running'")) {
+          return { rows: [{ ok: 1 }], rowCount: 1 };
+        }
         if (sql.includes("SELECT account_id, preparation_ai_requests")) {
           return { rows: [{ account_id: "account-1", preparation_ai_requests: "0", preparation_input_tokens: "0", preparation_output_tokens: "0", preparation_search_requests: "0" }], rowCount: 1 };
         }
@@ -120,7 +141,8 @@ describe("JSON persistence", () => {
       "job-1", "report-1",
       { country: "DE", category: "illegal", description: "Evidence", finalText: "Report", legalReference: "Law", researchSummary: "Summary", sources },
       { legalName: "Name", email: "alias@example.test", locale: "de-DE", timezone: "Europe/Berlin", language: "de", proxySessionId: "proxy" },
-      { aiRequests: 0, inputTokens: 0, outputTokens: 0, searchRequests: 0 }
+      { aiRequests: 0, inputTokens: 0, outputTokens: 0, searchRequests: 0 },
+      1
     );
 
     const update = client.query.mock.calls.find(([sql]) => String(sql).includes("research_sources = $5"));
@@ -331,7 +353,7 @@ describe("credit boundary transitions", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    await repository.failPreparation("job-1", "report-1", "preparation_failed", "Preparation failed safely.");
+    await repository.failPreparation("job-1", "report-1", "preparation_failed", "Preparation failed safely.", 1);
 
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("available_credits = available_credits + 1"))).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("SET state = 'released'"))).toBe(true);
@@ -353,7 +375,7 @@ describe("credit boundary transitions", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    await repository.failPreparation("job-1", "report-1", "preparation_failed", "Preparation failed safely.");
+    await repository.failPreparation("job-1", "report-1", "preparation_failed", "Preparation failed safely.", 1);
 
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("available_credits = available_credits + 1"))).toBe(false);
     expect(client.query.mock.calls.some(([sql, values]) => String(sql).includes("account_report_events") && values?.includes("report_failed"))).toBe(false);

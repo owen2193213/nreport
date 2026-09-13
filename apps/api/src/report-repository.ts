@@ -235,6 +235,7 @@ ALTER TABLE operations_alert_outbox ADD COLUMN IF NOT EXISTS episode bigint NOT 
 ALTER TABLE operations_alert_outbox ADD COLUMN IF NOT EXISTS notification_sequence bigint NOT NULL DEFAULT 0;
 ALTER TABLE operations_alert_outbox DROP CONSTRAINT IF EXISTS operations_alert_outbox_alert_key_kind_state_key;
 ALTER TABLE operations_alert_outbox DROP CONSTRAINT IF EXISTS operations_alert_outbox_alert_key_episode_kind_key;
+ALTER TABLE operations_alert_outbox DROP CONSTRAINT IF EXISTS operations_alert_outbox_alert_key_episode_notification_sequence_key;
 -- Rows created under the former (alert_key, kind, state) constraint may contain
 -- both a sent and a pending copy of the same kind. Give each legacy row a
 -- distinct episode before installing the stricter episode key.
@@ -248,7 +249,7 @@ UPDATE operational_alert_state AS alert SET notification_sequence = COALESCE((
   WHERE item.alert_key = alert.alert_key AND item.episode = alert.episode
 ), 0) WHERE alert.notification_sequence = 0;
 DO $$ BEGIN
-  ALTER TABLE operations_alert_outbox ADD CONSTRAINT operations_alert_outbox_alert_key_episode_notification_sequence_key UNIQUE (alert_key, episode, notification_sequence);
+  ALTER TABLE operations_alert_outbox ADD CONSTRAINT operations_alert_outbox_episode_seq_uniq UNIQUE (alert_key, episode, notification_sequence);
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 CREATE INDEX IF NOT EXISTS operations_alert_outbox_claim_idx

@@ -189,6 +189,7 @@ export type PublicReportTarget =
     }
   | { guildIdOrInviteCode: string; guildElements: GuildElement[] };
 export interface ReportDetail extends ReportSummary {
+  reporterEmail?: string | null;
   target: PublicReportTarget;
   finalText: string | null;
   legalReference: string | null;

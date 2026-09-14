@@ -55,6 +55,7 @@ interface LifecycleStore {
   failReview(job: LifecycleJob, status: "ineligible" | "request_failed" | "request_ambiguous", code: string, message: string): Promise<boolean>;
   expireDeadlines?(): Promise<void>;
   recoverInterruptedJobs?(): Promise<void>;
+  reconcilePendingInboundMessages?(): Promise<{ processed: number; remaining: number; oldestPendingAgeMs: number | null }>;
 }
 
 interface LifecycleClient {
@@ -453,15 +454,19 @@ export class LifecycleRunner {
   private async runMaintenance(): Promise<void> {
     const startedAt = Date.now();
     try {
-      await Promise.all([
-        this.store.recoverInterruptedJobs?.(),
-        this.store.expireDeadlines?.()
-      ]);
+      const reconciliation = await this.store.reconcilePendingInboundMessages?.();
+      await this.store.recoverInterruptedJobs?.();
+      await this.store.expireDeadlines?.();
       this.notify({
         component: "maintenance",
         stage: "lifecycle_maintenance",
         outcome: "completed",
-        durationMs: elapsedSince(startedAt)
+        durationMs: elapsedSince(startedAt),
+        ...(reconciliation === undefined ? {} : {
+          pendingInboundProcessed: reconciliation.processed,
+          pendingInboundRemaining: reconciliation.remaining,
+          oldestPendingInboundAgeMs: reconciliation.oldestPendingAgeMs
+        })
       });
     } catch (error) {
       this.notify({

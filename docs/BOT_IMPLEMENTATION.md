@@ -50,7 +50,9 @@ local report/DM mapping. This ordering lets the webhook endpoint return `409` on
 linking race, which asks the API to retry. A timeout or lost create response is reconciled by
 replaying the same body and key. Definite client errors abandon that pending operation.
 
-The bot sends one private Components V2 DM card. Message cards keep the author mention with
+The bot sends one private Components V2 DM card. Once assigned, the card includes the generated
+reporter email alias beside the report ID so an operator can correlate Cloudflare mail events.
+Message cards keep the author mention with
 `@username`, the plain message URL, and a bounded code-blocked excerpt in the same reported-message
 block; account type, channel/location, posted time, and attachment counts are omitted. The fenced report
 section contains only the API's `finalText`; target identity and example message content are never
@@ -93,9 +95,11 @@ same event inbox so duplicate delivery cannot create duplicate DMs. Pending crea
 replayed with their original idempotency key before normal feed reconciliation.
 
 Notification and reconciliation operational events retain their stable event names and emit a
-bounded `stage`, `outcome`, and `durationMs`; failures also emit a safe error category. Where a
-lifecycle event supplies identifiers, logs include the exact internal `reportId` and `traceId`.
-They never include account, event, message, Discord user, or external Discord report identifiers.
+bounded `stage`, `outcome`, and `durationMs`. Where a lifecycle event supplies identifiers, logs include
+the internal `reportId` and `traceId`. Operational and error logs are also permitted to include Discord
+user, channel, guild, message, account, and external Discord report identifiers, generated reporter
+email aliases, message URLs, and diagnostic failure details needed for troubleshooting and bot maintenance. Secrets (tokens, keys) must
+never be logged.
 
 The status card is always maintained while the account is connected. Decision/problem messages reply
 to that card so the affected report remains clear. Terminal replies use an enforced, deterministic
@@ -194,7 +198,13 @@ submission, and review transitions require the same running job and token, so a 
 worker cannot mutate its replacement claim. A worker that loses heartbeat ownership abandons further
 progress and closes its Discord client where possible. Shutdown stops new claims, cancels idle
 cadence timers, and waits for in-flight lifecycle work.
-Lifecycle logs contain the internal report ID and report trace, job kind, attempt count, duration, outcome, and a safe error category;
+
+Inbound Discord lifecycle mail is durably staged by Message-ID and is correlated only when both its
+generated recipient alias and Discord report ID match the API report. Each maintenance pass first
+replays exact pending matches, then recovers interrupted jobs, then expires deadlines. A late valid
+receipt or appeal confirmation repairs the corresponding timeout and emits its lifecycle event
+(`report_receipt_recovered` for a recovered receipt); unmatched mail remains pending for diagnostics rather than being guessed onto a report.
+Lifecycle logs contain the internal report ID and report trace, generated reporter email alias, job kind, attempt count, duration, outcome, and a safe error category;
 they must never include job, account, or Discord identifiers, evidence, verification codes,
 URLs, provider responses, or arbitrary error messages.
 Bot notification logs similarly contain the internal report ID and report trace, lifecycle event type, attempt count,

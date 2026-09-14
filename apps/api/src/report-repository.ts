@@ -6,7 +6,8 @@ import type {
   ReportLifecycleEvent,
   ReportStatus,
   ReportTimelineEvent,
-  RetryReportInput
+  RetryReportInput,
+  DiscordReportStatus
 } from "@nreport/contracts";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import type { LifecycleJob, LifecycleReport } from "./lifecycle-runner-v2.js";
@@ -183,6 +184,9 @@ CREATE INDEX IF NOT EXISTS account_report_jobs_claim_idx
   ON account_report_jobs(kind, state, run_at, locked_at, id);
 CREATE INDEX IF NOT EXISTS event_destination_deliveries_claim_idx
   ON event_destination_deliveries(state, run_at, locked_at, event_id);
+CREATE INDEX IF NOT EXISTS account_inbound_messages_pending_correlation_idx
+  ON account_inbound_messages (external_report_id, recipient, received_at, message_id)
+  WHERE status = 'pending_report';
 
 -- Aggregate-only operations telemetry. These tables deliberately contain no report,
 -- account, Discord, or webhook destination identifiers.
@@ -299,6 +303,7 @@ export interface AccountReportRow extends QueryResultRow {
   error_message: string | null;
   predecessor_report_id: string | null;
   successor_report_id: string | null;
+  reporter_email: string | null;
   submission_started_at: Date | null;
   status: ReportStatus;
   credit_chain_id: string;
@@ -810,14 +815,18 @@ export class ReportRepository {
   public async operationalDiagnostics(): Promise<Record<string, unknown>> {
     const result = await this.pool.query<{
       reports: string; pending_jobs: string; running_jobs: string;
-      pending_deliveries: string; expired_deliveries: string;
+      pending_deliveries: string; expired_deliveries: string; pending_inbound_messages: string;
+      pending_inbound_older_than_two_minutes: string; oldest_pending_inbound_age_ms: string | null;
     }>(
       `SELECT
          (SELECT count(*) FROM account_reports)::text AS reports,
          (SELECT count(*) FROM account_report_jobs WHERE state = 'pending')::text AS pending_jobs,
          (SELECT count(*) FROM account_report_jobs WHERE state = 'running')::text AS running_jobs,
          (SELECT count(*) FROM event_destination_deliveries WHERE state = 'pending')::text AS pending_deliveries,
-         (SELECT count(*) FROM event_destination_deliveries WHERE state = 'expired')::text AS expired_deliveries`
+         (SELECT count(*) FROM event_destination_deliveries WHERE state = 'expired')::text AS expired_deliveries,
+         (SELECT count(*) FROM account_inbound_messages WHERE status = 'pending_report')::text AS pending_inbound_messages,
+         (SELECT count(*) FROM account_inbound_messages WHERE status = 'pending_report' AND received_at < now() - interval '2 minutes')::text AS pending_inbound_older_than_two_minutes,
+         (SELECT extract(epoch FROM (now() - min(received_at))) * 1000 FROM account_inbound_messages WHERE status = 'pending_report')::text AS oldest_pending_inbound_age_ms`
     );
     const row = result.rows[0];
     const [snapshot, workers, alerts] = await Promise.all([
@@ -831,6 +840,9 @@ export class ReportRepository {
       runningJobs: Number(row?.running_jobs ?? 0),
       pendingDeliveries: Number(row?.pending_deliveries ?? 0),
       expiredDeliveries: Number(row?.expired_deliveries ?? 0),
+      pendingInboundMessages: Number(row?.pending_inbound_messages ?? 0),
+      pendingInboundOlderThanTwoMinutes: Number(row?.pending_inbound_older_than_two_minutes ?? 0),
+      oldestPendingInboundAgeMs: age(row?.oldest_pending_inbound_age_ms),
       queues: snapshot,
       workers,
       openAlerts: alerts.rows.map((alert) => ({ key: alert.alert_key, severity: alert.severity }))
@@ -1597,12 +1609,12 @@ export class ReportRepository {
         await client.query("COMMIT");
         return false;
       }
-      const updated = await client.query<{ account_id: string; lifecycle_attempt: number }>(
+      const updated = await client.query<AccountReportRow>(
         `UPDATE account_reports
          SET status = 'submitted', discord_report_id = $2,
              receipt_deadline = now() + interval '120 seconds', updated_at = now()
          WHERE id = $1 AND status = 'submitting'
-         RETURNING account_id, lifecycle_attempt`,
+         RETURNING *`,
         [job.report_id, discordReportId]
       );
       const row = updated.rows[0];
@@ -1613,44 +1625,16 @@ export class ReportRepository {
         [job.id, job.report_id, job.execution_token]
       );
       await insertEvent(client, row.account_id, job.report_id, "report_submitted", row.lifecycle_attempt);
-      const pending = await client.query<{
-        message_id: string; external_status: string; encrypted_payload: string | null;
-      }>(
-        `SELECT message_id, external_status, encrypted_payload
+      const pending = await client.query<InboundMessageRow>(
+        `SELECT message_id, report_id, recipient, status, external_report_id, external_status,
+                encrypted_payload, received_at
          FROM account_inbound_messages
-         WHERE external_report_id = $1 AND status = 'pending_report'
+         WHERE external_report_id = $1 AND recipient = $2 AND status = 'pending_report'
          ORDER BY received_at, message_id FOR UPDATE`,
-        [discordReportId]
+        [discordReportId, row.reporter_email]
       );
-      let currentStatus: string | null = null;
       for (const inbound of pending.rows) {
-        if (shouldApplyDiscordStatus(currentStatus, inbound.external_status)) {
-          currentStatus = inbound.external_status;
-          await client.query(
-            `UPDATE account_reports SET discord_status = $2, discord_status_updated_at = now(),
-               receipt_deadline = NULL, updated_at = now() WHERE id = $1`,
-            [job.report_id, inbound.external_status]
-          );
-          await insertEvent(client, row.account_id, job.report_id, `discord:${inbound.external_status}`, row.lifecycle_attempt);
-        }
-        if (inbound.external_status === "closed_no_action" && inbound.encrypted_payload !== null) {
-          await client.query(
-            `UPDATE account_reports SET review_status = 'queued', review_status_updated_at = now(),
-               updated_at = now() WHERE id = $1 AND review_status IS NULL`,
-            [job.report_id]
-          );
-          await client.query(
-            `INSERT INTO account_report_jobs (report_id, kind, dedupe_key, payload, max_attempts)
-             VALUES ($1, 'submit_review', $2, $3, 3) ON CONFLICT (dedupe_key) DO NOTHING`,
-            [job.report_id, `submit-review:${job.report_id}`, { encryptedReviewUrl: inbound.encrypted_payload }]
-          );
-          await insertEvent(client, row.account_id, job.report_id, "review_queued", row.lifecycle_attempt);
-        }
-        await client.query(
-          `UPDATE account_inbound_messages SET report_id = $2, status = 'accepted'
-           WHERE message_id = $1`,
-          [inbound.message_id, job.report_id]
-        );
+        await this.applyInboundMessage(client, row, inbound);
       }
       await client.query("COMMIT");
       return true;
@@ -1670,23 +1654,30 @@ export class ReportRepository {
         await client.query("COMMIT");
         return false;
       }
-      const updated = await client.query<{ account_id: string; lifecycle_attempt: number }>(
-        `UPDATE account_reports
-         SET review_status = 'requested', review_status_updated_at = now(),
-             review_confirmation_deadline = now() + interval '2 minutes',
-             review_error_code = NULL, review_error_message = NULL, updated_at = now()
-         WHERE id = $1 AND discord_report_id = $2 AND review_status = 'queued'
-         RETURNING account_id, lifecycle_attempt`,
+      const locked = await client.query<AccountReportRow>(
+        `SELECT * FROM account_reports WHERE id = $1 AND discord_report_id = $2 FOR UPDATE`,
         [job.report_id, discordReportId]
       );
-      const row = updated.rows[0];
+      const row = locked.rows[0];
       if (row === undefined) throw new Error("Report is no longer waiting for automatic appeal submission.");
+      if (row.review_status === "queued") {
+        await client.query(
+          `UPDATE account_reports
+           SET review_status = 'requested', review_status_updated_at = now(),
+               review_confirmation_deadline = now() + interval '2 minutes',
+               review_error_code = NULL, review_error_message = NULL, updated_at = now()
+           WHERE id = $1`,
+          [job.report_id]
+        );
+        await insertEvent(client, row.account_id, job.report_id, "review_requested", row.lifecycle_attempt);
+      } else if (!new Set(["received", "approved", "not_approved"]).has(row.review_status ?? "")) {
+        throw new Error("Report is no longer waiting for automatic appeal submission.");
+      }
       await client.query(
         `UPDATE account_report_jobs SET state = 'completed', locked_at = NULL, updated_at = now()
          WHERE id = $1 AND report_id = $2 AND attempts = $3 AND state = 'running'`,
         [job.id, job.report_id, job.execution_token]
       );
-      await insertEvent(client, row.account_id, job.report_id, "review_requested", row.lifecycle_attempt);
       await client.query("COMMIT");
       return true;
     } catch (error) {
@@ -1884,6 +1875,93 @@ export class ReportRepository {
     }
   }
 
+  private async applyInboundMessage(
+    client: PoolClient,
+    report: AccountReportRow,
+    message: InboundMessageRow
+  ): Promise<InboundApplicationResult> {
+    if (
+      report.reporter_email === null || report.discord_report_id === null ||
+      report.reporter_email.toLowerCase() !== message.recipient.toLowerCase() ||
+      report.discord_report_id !== message.external_report_id || message.external_status === null
+    ) return "deferred";
+
+    if (message.external_status === "review_received") {
+      const eligible = report.review_submission_started_at !== null || new Set([
+        "requested", "confirmation_timeout", "request_failed", "request_ambiguous"
+      ]).has(report.review_status ?? "");
+      if (!eligible) return "deferred";
+      if (new Set(["received", "approved", "not_approved"]).has(report.review_status ?? "")) {
+        await this.consumeInboundMessage(client, report.id, message.message_id);
+        return "consumed";
+      }
+      await client.query(
+        `UPDATE account_reports SET review_status = 'received', review_status_updated_at = now(),
+           review_confirmation_deadline = NULL, review_error_code = NULL,
+           review_error_message = NULL, updated_at = now() WHERE id = $1`,
+        [report.id]
+      );
+      await insertEvent(client, report.account_id, report.id, "review_received", report.lifecycle_attempt);
+      await this.consumeInboundMessage(client, report.id, message.message_id);
+      return "applied";
+    }
+
+    if (!shouldApplyDiscordStatus(report.discord_status, message.external_status)) {
+      await this.consumeInboundMessage(client, report.id, message.message_id);
+      return "consumed";
+    }
+    if (report.error_code === "discord_receipt_timeout") {
+      await client.query(
+        `UPDATE account_reports SET status = 'submitted', failure_stage = NULL,
+           error_code = NULL, error_message = NULL, updated_at = now() WHERE id = $1`,
+        [report.id]
+      );
+      await insertEvent(client, report.account_id, report.id, "report_receipt_recovered", report.lifecycle_attempt);
+    }
+    await client.query(
+      `UPDATE account_reports
+       SET discord_status = $2, discord_status_updated_at = now(), receipt_deadline = NULL,
+           review_status = CASE
+             WHEN $2 = 'review_not_approved' THEN 'not_approved'
+             WHEN $2 = 'actioned' AND review_status IS NOT NULL THEN 'approved'
+             ELSE review_status END,
+           review_status_updated_at = CASE
+             WHEN $2 IN ('actioned', 'review_not_approved') THEN now()
+             ELSE review_status_updated_at END,
+           review_confirmation_deadline = CASE
+             WHEN $2 IN ('actioned', 'review_not_approved') THEN NULL
+             ELSE review_confirmation_deadline END,
+           updated_at = now()
+       WHERE id = $1`,
+      [report.id, message.external_status]
+    );
+    await insertEvent(client, report.account_id, report.id, `discord:${message.external_status}`, report.lifecycle_attempt);
+    if (message.external_status === "closed_no_action" && message.encrypted_payload !== null && report.review_status === null) {
+      await client.query(
+        `UPDATE account_reports SET review_status = 'queued', review_status_updated_at = now(),
+           review_error_code = NULL, review_error_message = NULL, updated_at = now()
+         WHERE id = $1 AND review_status IS NULL`,
+        [report.id]
+      );
+      await client.query(
+        `INSERT INTO account_report_jobs (report_id, kind, dedupe_key, payload, max_attempts)
+         VALUES ($1, 'submit_review', $2, $3, 3) ON CONFLICT (dedupe_key) DO NOTHING`,
+        [report.id, `submit-review:${report.id}`, { encryptedReviewUrl: message.encrypted_payload }]
+      );
+      await insertEvent(client, report.account_id, report.id, "review_queued", report.lifecycle_attempt);
+    }
+    await this.consumeInboundMessage(client, report.id, message.message_id);
+    return "applied";
+  }
+
+  private async consumeInboundMessage(client: PoolClient, reportId: string, messageId: string): Promise<void> {
+    await client.query(
+      `UPDATE account_inbound_messages SET report_id = $2, status = 'accepted'
+       WHERE message_id = $1`,
+      [messageId, reportId]
+    );
+  }
+
   public async registerReportUpdateEmail(input: {
     messageId: string;
     recipient: string;
@@ -1891,90 +1969,83 @@ export class ReportRepository {
     discordStatus: "received" | "actioned" | "closed_no_action" | "review_not_approved";
     encryptedReviewUrl?: string;
   }): Promise<InboundEmailRegistration> {
+    return this.registerInboundLifecycleEmail({ ...input, externalStatus: input.discordStatus, encryptedPayload: input.encryptedReviewUrl ?? null });
+  }
+
+  public async registerReviewUpdateEmail(input: {
+    messageId: string;
+    recipient: string;
+    discordReportId: string;
+  }): Promise<InboundEmailRegistration> {
+    return this.registerInboundLifecycleEmail({ ...input, externalStatus: "review_received", encryptedPayload: null });
+  }
+
+  private async registerInboundLifecycleEmail(input: {
+    messageId: string;
+    recipient: string;
+    discordReportId: string;
+    externalStatus: InboundExternalStatus;
+    encryptedPayload: string | null;
+  }): Promise<InboundEmailRegistration> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const reportResult = await client.query<AccountReportRow & {
-        discord_status: string | null;
-        review_status: string | null;
-        error_code: string | null;
-        lifecycle_attempt: number;
-      }>(
+      const recipient = input.recipient.toLowerCase();
+      const reportResult = await client.query<AccountReportRow>(
         `SELECT * FROM account_reports
-         WHERE discord_report_id = $1 AND reporter_email = $2 FOR UPDATE`,
-        [input.discordReportId, input.recipient.toLowerCase()]
+         WHERE reporter_email = $1
+         FOR UPDATE`,
+        [recipient]
       );
       const report = reportResult.rows[0];
+      // A recipient is only a lock/candidate key. Persisting an association is
+      // allowed only after the Discord report ID agrees as well.
+      const exactReport = report?.discord_report_id === input.discordReportId ? report : undefined;
       const inserted = await client.query(
         `INSERT INTO account_inbound_messages
            (message_id, report_id, recipient, status, external_report_id, external_status, encrypted_payload)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         VALUES ($1, $2, $3, 'pending_report', $4, $5, $6)
          ON CONFLICT (message_id) DO NOTHING RETURNING message_id`,
-        [
-          input.messageId, report?.id ?? null, input.recipient.toLowerCase(),
-          report === undefined ? "pending_report" : "accepted",
-          input.discordReportId, input.discordStatus, input.encryptedReviewUrl ?? null
-        ]
+        [input.messageId, exactReport?.id ?? null, recipient, input.discordReportId, input.externalStatus, input.encryptedPayload]
       );
       if (inserted.rowCount === 0) {
-        const duplicate = await duplicateInboundReport(client, input.messageId);
+        const duplicate = await client.query<InboundMessageRow>(
+          `SELECT message_id, report_id, recipient, status, external_report_id, external_status,
+                  encrypted_payload, received_at
+           FROM account_inbound_messages WHERE message_id = $1 FOR UPDATE`,
+          [input.messageId]
+        );
+        const stored = duplicate.rows[0];
+        if (
+          stored?.status === "pending_report" &&
+          stored.recipient === recipient &&
+          stored.external_report_id === input.discordReportId &&
+          exactReport !== undefined
+        ) {
+          const applied = await this.applyInboundMessage(client, exactReport, stored);
+          await client.query("COMMIT");
+          return applied === "deferred"
+            ? { status: "pending_report", reportId: null, traceId: null }
+            : { status: "accepted", reportId: exactReport.id, traceId: exactReport.trace_id };
+        }
         await client.query("COMMIT");
-        return { status: "duplicate", reportId: duplicate?.id ?? report?.id ?? null, traceId: duplicate?.trace_id ?? report?.trace_id ?? null };
+        const prior = await duplicateInboundReport(client, input.messageId);
+        return { status: "duplicate", reportId: prior?.id ?? report?.id ?? null, traceId: prior?.trace_id ?? report?.trace_id ?? null };
       }
-      if (report === undefined) {
+      if (exactReport === undefined) {
         await client.query("COMMIT");
         return { status: "pending_report", reportId: null, traceId: null };
       }
-
-      if (
-        input.discordStatus === "closed_no_action" &&
-        input.encryptedReviewUrl !== undefined &&
-        report.review_status === null
-      ) {
-        await client.query(
-          `UPDATE account_reports SET review_status = 'queued', review_status_updated_at = now(),
-             review_error_code = NULL, review_error_message = NULL, updated_at = now()
-           WHERE id = $1 AND review_status IS NULL`,
-          [report.id]
-        );
-        await client.query(
-          `INSERT INTO account_report_jobs (report_id, kind, dedupe_key, payload, max_attempts)
-           VALUES ($1, 'submit_review', $2, $3, 3)
-           ON CONFLICT (dedupe_key) DO NOTHING`,
-          [report.id, `submit-review:${report.id}`, { encryptedReviewUrl: input.encryptedReviewUrl }]
-        );
-        await insertEvent(client, report.account_id, report.id, "review_queued", report.lifecycle_attempt);
-      }
-      if (shouldApplyDiscordStatus(report.discord_status, input.discordStatus)) {
-        if (report.error_code === "discord_receipt_timeout") {
-          await client.query(
-            `UPDATE account_reports SET status = 'submitted', failure_stage = NULL,
-               error_code = NULL, error_message = NULL, updated_at = now() WHERE id = $1`,
-            [report.id]
-          );
-          await insertEvent(client, report.account_id, report.id, "report_receipt_recovered", report.lifecycle_attempt);
-        }
-        await client.query(
-          `UPDATE account_reports
-           SET discord_status = $2, discord_status_updated_at = now(), receipt_deadline = NULL,
-               review_status = CASE
-                 WHEN $2 = 'review_not_approved' THEN 'not_approved'
-                 WHEN $2 = 'actioned' AND review_status IS NOT NULL THEN 'approved'
-                 ELSE review_status END,
-               review_status_updated_at = CASE
-                 WHEN $2 IN ('actioned', 'review_not_approved') THEN now()
-                 ELSE review_status_updated_at END,
-               review_confirmation_deadline = CASE
-                 WHEN $2 IN ('actioned', 'review_not_approved') THEN NULL
-                 ELSE review_confirmation_deadline END,
-               updated_at = now()
-           WHERE id = $1`,
-          [report.id, input.discordStatus]
-        );
-        await insertEvent(client, report.account_id, report.id, `discord:${input.discordStatus}`, report.lifecycle_attempt);
-      }
+      const inbound: InboundMessageRow = {
+        message_id: input.messageId, report_id: exactReport.id, recipient, status: "pending_report",
+        external_report_id: input.discordReportId, external_status: input.externalStatus,
+        encrypted_payload: input.encryptedPayload, received_at: new Date()
+      };
+      const applied = await this.applyInboundMessage(client, exactReport, inbound);
       await client.query("COMMIT");
-      return { status: "accepted", reportId: report.id, traceId: report.trace_id };
+      return applied === "deferred"
+        ? { status: "pending_report", reportId: null, traceId: null }
+        : { status: "accepted", reportId: exactReport.id, traceId: exactReport.trace_id };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1983,52 +2054,67 @@ export class ReportRepository {
     }
   }
 
-  public async registerReviewUpdateEmail(input: {
-    messageId: string;
-    recipient: string;
-    discordReportId: string;
-  }): Promise<InboundEmailRegistration> {
+  public async reconcilePendingInboundMessages(limit = 100): Promise<InboundReconciliationResult> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const reportResult = await client.query<AccountReportRow & { review_status: string | null; lifecycle_attempt: number }>(
-        `SELECT * FROM account_reports
-         WHERE discord_report_id = $1 AND reporter_email = $2 FOR UPDATE`,
-        [input.discordReportId, input.recipient.toLowerCase()]
+      const candidates = await client.query<AccountReportRow & {
+        inbound_message_id: string;
+        inbound_status: string;
+        recipient: string;
+        external_report_id: string | null;
+        external_status: InboundExternalStatus | null;
+        encrypted_payload: string | null;
+        received_at: Date;
+      }>(
+        `SELECT report.*, message.message_id AS inbound_message_id, message.recipient,
+                message.status AS inbound_status, message.external_report_id,
+                message.external_status, message.encrypted_payload, message.received_at
+         FROM account_inbound_messages AS message
+         JOIN account_reports AS report
+           ON report.discord_report_id = message.external_report_id
+          AND report.reporter_email = message.recipient
+         WHERE message.status = 'pending_report'
+         ORDER BY message.received_at, message.message_id
+         LIMIT $1
+         FOR UPDATE OF message, report SKIP LOCKED`,
+        [Math.max(1, Math.min(1000, Math.floor(limit)))]
       );
-      const report = reportResult.rows[0];
-      const inserted = await client.query(
-        `INSERT INTO account_inbound_messages
-           (message_id, report_id, recipient, status, external_report_id, external_status)
-         VALUES ($1, $2, $3, $4, $5, 'review_received')
-         ON CONFLICT (message_id) DO NOTHING RETURNING message_id`,
-        [input.messageId, report?.id ?? null, input.recipient.toLowerCase(), report === undefined ? "pending_report" : "accepted", input.discordReportId]
-      );
-      if (inserted.rowCount === 0) {
-        const duplicate = await duplicateInboundReport(client, input.messageId);
-        await client.query("COMMIT");
-        return { status: "duplicate", reportId: duplicate?.id ?? report?.id ?? null, traceId: duplicate?.trace_id ?? report?.trace_id ?? null };
-      }
-      if (report === undefined) {
-        await client.query("COMMIT");
-        return { status: "pending_report", reportId: null, traceId: null };
-      }
-      if (!new Set(["approved", "not_approved", "received"]).has(report.review_status ?? "")) {
-        await client.query(
-          `UPDATE account_reports SET review_status = 'received', review_status_updated_at = now(),
-             review_confirmation_deadline = NULL, review_error_code = NULL,
-             review_error_message = NULL, updated_at = now() WHERE id = $1`,
-          [report.id]
+      let processed = 0;
+      for (const candidate of candidates.rows) {
+        // Several locked inbound rows can belong to the same report. Reload the
+        // row after every application so subsequent messages see prior changes
+        // in this transaction rather than the candidate query's initial state.
+        const current = await client.query<AccountReportRow>(
+          "SELECT * FROM account_reports WHERE id = $1 FOR UPDATE",
+          [candidate.id]
         );
-        await insertEvent(client, report.account_id, report.id, "review_received", report.lifecycle_attempt);
+        const report = current.rows[0];
+        if (report === undefined) continue;
+        const message: InboundMessageRow = {
+          message_id: candidate.inbound_message_id, report_id: null,
+          recipient: candidate.recipient, status: candidate.inbound_status,
+          external_report_id: candidate.external_report_id, external_status: candidate.external_status,
+          encrypted_payload: candidate.encrypted_payload, received_at: candidate.received_at
+        };
+        if ((await this.applyInboundMessage(client, report, message)) !== "deferred") processed += 1;
       }
+      const backlog = await client.query<{ remaining: string; oldest_ms: string | null }>(
+        `SELECT count(*)::text AS remaining,
+                extract(epoch FROM (now() - min(received_at))) * 1000 AS oldest_ms
+         FROM account_inbound_messages WHERE status = 'pending_report'`
+      );
       await client.query("COMMIT");
-      return { status: "accepted", reportId: report.id, traceId: report.trace_id };
+      return {
+        processed,
+        remaining: count(backlog.rows[0]?.remaining),
+        oldestPendingAgeMs: age(backlog.rows[0]?.oldest_ms)
+      };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
     } finally {
-      (client).release();
+      client.release();
     }
   }
 }
@@ -2105,6 +2191,26 @@ async function duplicateInboundReport(client: PoolClient, messageId: string): Pr
     [messageId]
   );
   return result.rows[0];
+}
+
+type InboundExternalStatus = DiscordReportStatus | "review_received";
+type InboundApplicationResult = "applied" | "consumed" | "deferred";
+
+interface InboundMessageRow extends QueryResultRow {
+  message_id: string;
+  report_id: string | null;
+  recipient: string;
+  status: string;
+  external_report_id: string | null;
+  external_status: InboundExternalStatus | null;
+  encrypted_payload: string | null;
+  received_at: Date;
+}
+
+export interface InboundReconciliationResult {
+  processed: number;
+  remaining: number;
+  oldestPendingAgeMs: number | null;
 }
 
 async function lockReportCredit(client: PoolClient, reportId: string): Promise<LockedCreditRow | undefined> {

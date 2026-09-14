@@ -55,11 +55,8 @@ function trustedSubjectEndingCode(parsed: ParsedMail): string | undefined {
 }
 
 function isDiscordSender(parsed: ParsedMail): boolean {
-  return (
-    parsed.from?.value.some(
-      (address) => address.address?.trim().toLowerCase() === "noreply@discord.com"
-    ) ?? false
-  );
+  const senders = parsed.from?.value ?? [];
+  return senders.length === 1 && senders[0]?.address?.trim().toLowerCase() === "noreply@discord.com";
 }
 
 function sanitizeDiagnosticText(value: string | undefined, limit: number): string {
@@ -178,7 +175,7 @@ export async function inspectDiscordEmail(rawEmail: Buffer): Promise<DiscordEmai
   if (!isDiscordSender(parsed)) return { kind: "ignored", diagnostic: ignoredDiagnostic(parsed) };
 
   const reviewConfirmation =
-    /^Report Review Request Received #(\d{15,22})$/i.exec(parsed.subject?.trim() ?? "");
+    /^Report Review Request Received #(\d{15,22})$/.exec(parsed.subject?.trim() ?? "");
   if (reviewConfirmation?.[1]) {
     return {
       kind: "parsed",
@@ -190,7 +187,7 @@ export async function inspectDiscordEmail(rawEmail: Buffer): Promise<DiscordEmai
     };
   }
 
-  const lifecycle = /^(Report Received|Report Actioned|Report Closed) #(\d{15,22})$/i.exec(
+  const lifecycle = /^(Report Received|Report Actioned|Report Closed) #(\d{15,22})$/.exec(
     parsed.subject?.trim() ?? ""
   );
   if (lifecycle) {

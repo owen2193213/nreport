@@ -47,4 +47,27 @@ describe("account report email correlation", () => {
       status: "duplicate", reportId: "report-advanced", traceId: "44444444-4444-4444-8444-444444444444"
     });
   });
+
+  it("locks the stable recipient before comparing a report receipt ID", async () => {
+    const client = {
+      query: vi.fn(async (sql: string, _values?: unknown[]) => {
+        if (sql.includes("WHERE reporter_email = $1") && sql.includes("FOR UPDATE")) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (sql.includes("INSERT INTO account_inbound_messages")) return { rows: [{ message_id: "mail-race" }], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+      }),
+      release: vi.fn()
+    };
+    const repository = new ReportRepository({ connect: async () => client } as never);
+
+    await expect(repository.registerReportUpdateEmail({
+      messageId: "mail-race", recipient: "Alias@Example.test", discordReportId: "1548921252872462416", discordStatus: "received"
+    })).resolves.toMatchObject({ status: "pending_report" });
+
+    expect(client.query).toHaveBeenCalledWith(
+      expect.stringContaining("WHERE reporter_email = $1\n         FOR UPDATE"),
+      ["alias@example.test"]
+    );
+  });
 });

@@ -100,6 +100,7 @@ function publicReport(row: AccountReportRow, queueLength = 0): ReportDetail {
     country: prepared?.country ?? null,
     category: prepared?.category ?? null,
     description: prepared?.description ?? null,
+    reporterEmail: row.reporter_email ?? null,
     target: sanitizeTarget(row.request_input.target),
     finalText: prepared?.finalText ?? null,
     legalReference: row.legal_reference ?? null,
@@ -596,7 +597,13 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
         return apiError(reply, request, 401, "invalid_signature", "Invalid email signature.");
       }
       const inspection = await inspectDiscordEmail(rawEmail);
-      if (inspection.kind === "ignored") return reply.code(202).send({ status: "ignored" });
+      if (inspection.kind === "ignored") {
+        request.log.info({
+          event: "inbound_email_ignored", classification: inspection.diagnostic.classification,
+          messageIdDigest: sha256Hex(messageId).slice(0, 16), stage: "email_ingest", outcome: "ignored"
+        }, "Inbound email ignored");
+        return reply.code(202).send({ status: "ignored" });
+      }
       const parsed = inspection.email;
       const result = parsed.kind === "verification"
         ? await dependencies.reports.registerVerificationEmail({
@@ -613,13 +620,12 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
                 encryptedReviewUrl: encryptJson({ reviewUrl: parsed.reviewUrl }, config.sessionEncryptionKey)
               })
             });
-      if (result.reportId !== null && result.traceId !== null) {
-        request.log.info({
-          event: "inbound_email_correlated", reportId: result.reportId, traceId: result.traceId,
-          emailKind: parsed.kind, registrationStatus: result.status, messageIdDigest: sha256Hex(messageId).slice(0, 16),
-          stage: "email_ingest", outcome: result.status === "duplicate" ? "duplicate" : "accepted"
-        }, "Inbound email correlated");
-      }
+      request.log.info({
+        event: "inbound_email_processed", emailKind: parsed.kind, registrationStatus: result.status,
+        messageIdDigest: sha256Hex(messageId).slice(0, 16),
+        ...(result.reportId === null || result.traceId === null ? {} : { reportId: result.reportId, traceId: result.traceId }),
+        stage: "email_ingest", outcome: result.status === "duplicate" ? "duplicate" : "accepted"
+      }, "Inbound email processed");
       return reply.code(202).send({
         status: result.status,
         ...(result.reportId === null || result.traceId === null ? {} : { reportId: result.reportId, traceId: result.traceId })

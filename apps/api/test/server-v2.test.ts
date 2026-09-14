@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/require-await, @typescript-eslint/no-unsafe-member-access */
 import { describe, expect, it, vi } from "vitest";
+import { createHmac } from "node:crypto";
 
 import type { AppConfig } from "../src/config.js";
 import { buildV2Server } from "../src/server-v2.js";
@@ -31,6 +32,35 @@ const principal = {
 };
 
 describe("v2 account-owned server", () => {
+  it("accepts a signed metadata-only Worker forwarding failure", async () => {
+    const recipient = "reporter.alias.23456789abcdefgh@reports.example.test";
+    const messageId = "<worker-diagnostic@example.test>";
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const rawHash = "a".repeat(64);
+    const signature = createHmac("sha256", config.webhookSecret)
+      .update(`${timestamp}\n${recipient}\n${messageId}\n${rawHash}`).digest("hex");
+    const recordWorkerEmailDiagnostic = vi.fn(async () => undefined);
+    const server = await buildV2Server(config, {
+      healthcheck: vi.fn(), accounts: { authenticate: vi.fn(), accountView: vi.fn(), createAccount: vi.fn() },
+      reports: { recordWorkerEmailDiagnostic }
+    } as never);
+
+    const response = await server.inject({
+      method: "POST", url: "/webhooks/cloudflare-email-diagnostic",
+      headers: {
+        "x-dsa-recipient": recipient, "x-dsa-message-id": messageId,
+        "x-dsa-timestamp": timestamp, "x-dsa-signature": signature, "x-dsa-raw-hash": rawHash
+      },
+      payload: { event: "email_forward_failed", httpStatus: 502, response: { requestId: "railway-1" } }
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(recordWorkerEmailDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+      recipient, event: "email_forward_failed", details: { httpStatus: 502, response: { requestId: "railway-1" } }
+    }));
+    await server.close();
+  });
+
   it("keeps a committed report successful when optional queue telemetry is unavailable", async () => {
     const report = {
       id: "22222222-2222-4222-8222-222222222222", account_id: principal.accountId,
@@ -55,6 +85,30 @@ describe("v2 account-owned server", () => {
     expect(create).toHaveBeenCalledOnce();
     expect(response.statusCode).toBe(202);
     expect(response.json()).toMatchObject({ reportId: report.id, traceId: report.trace_id, queueLength: 0 });
+    await server.close();
+  });
+
+  it("returns the generated reporter email only on the owning report response", async () => {
+    const report = {
+      id: "22222222-2222-4222-8222-222222222222", account_id: principal.accountId,
+      trace_id: "33333333-3333-4333-8333-333333333333", flow: "message", use_ai: true,
+      request_input: { flow: "message", useAi: true, target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" } },
+      prepared_input: null, reporter_email: "reporter.alias.23456789abcdefgh@reports.example.test",
+      status: "awaiting_verification", lifecycle_attempt: 1, created_at: new Date(), updated_at: new Date()
+    };
+    const server = await buildV2Server(config, {
+      healthcheck: vi.fn(),
+      accounts: { authenticate: vi.fn(async () => principal), accountView: vi.fn(), createAccount: vi.fn() },
+      reports: { findOwned: vi.fn(async () => report), timeline: vi.fn(async () => []) }
+    } as never);
+
+    const response = await server.inject({
+      method: "GET", url: `/v1/discord/dsa/reports/${report.id}`,
+      headers: { authorization: "Bearer personal-key" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ reporterEmail: report.reporter_email });
     await server.close();
   });
 

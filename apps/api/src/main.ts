@@ -90,8 +90,15 @@ async function main(): Promise<void> {
       "Preparation worker iteration failed"
     ),
     (outcome) => {
+      void reports.recordDiagnostic({ reportId: outcome.reportId, traceId: outcome.traceId, service: "api", severity: outcome.outcome === "failed" ? "error" : "info", event: "preparation_worker_outcome", stage: outcome.stage, outcome: outcome.outcome, ...(outcome.reporterEmail === undefined ? {} : { reporterEmail: outcome.reporterEmail }), ...(outcome.errorCategory === undefined ? {} : { errorCode: outcome.errorCategory }), details: outcome }).catch(() => undefined);
       if (outcome.outcome === "failed") app.log.error({ event: "preparation_worker_outcome", ...outcome }, "Preparation worker outcome");
-      else app.log.info({ event: "preparation_worker_outcome", ...outcome }, "Preparation worker outcome");
+      else {
+        app.log.info({ event: "preparation_worker_outcome", ...outcome }, "Preparation worker outcome");
+        if (outcome.reporterEmail !== undefined) app.log.info({
+          event: "reporter_email_assigned", reportId: outcome.reportId, traceId: outcome.traceId,
+          reporterEmail: outcome.reporterEmail, stage: "identity", outcome: "assigned"
+        }, "Reporter email assigned");
+      }
       void reports.recordOperationalWorker({
         component: "preparation", instanceId: workerInstanceId, configuredCapacity: config.preparationConcurrency,
         progressed: outcome.outcome === "completed", failure: outcome.outcome === "failed",
@@ -106,6 +113,7 @@ async function main(): Promise<void> {
     undefined,
     undefined,
     (outcome) => {
+      if (outcome.component === "job" && "reportId" in outcome) void reports.recordDiagnostic({ reportId: outcome.reportId, traceId: outcome.traceId, service: "api", severity: outcome.outcome === "failed" || outcome.outcome === "ambiguous" ? "error" : "info", event: "lifecycle_worker_outcome", stage: outcome.stage, outcome: outcome.outcome, ...("attempts" in outcome ? { lifecycleAttempt: outcome.attempts } : {}), ...(outcome.errorCategory === undefined ? {} : { errorCode: outcome.errorCategory }), details: outcome }).catch(() => undefined);
       if (outcome.outcome === "failed") app.log.error({ event: "lifecycle_runner_outcome", ...outcome }, "Lifecycle runner outcome");
       else app.log.info({ event: "lifecycle_runner_outcome", ...outcome }, "Lifecycle runner outcome");
       void reports.recordOperationalWorker({

@@ -52,8 +52,8 @@ search; a second follow-up is rejected.
 - Provider/search transports use bounded retries, but the overall preparation deadline is 300
   seconds.
 - Images and avatar, banner, attachment, and embed URLs are excluded from all AI and Brave input.
-- Structured logs contain safe counts, stages, timings, and error categories, never credentials,
-  raw evidence, prompts, or model reasoning.
+- Structured logs contain stage timings, error categories, and failure details for diagnostics;
+  credentials, provider keys, and auth secrets must never be logged.
 
 Provider request, input-token, output-token, reasoning-token, and search totals are recorded
 incrementally against the API account, including usage incurred before a later preparation failure.

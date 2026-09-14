@@ -1,6 +1,17 @@
 interface Env {
   INGEST_URL: string;
+  DIAGNOSTIC_URL?: string;
   INGEST_SHARED_SECRET: string;
+}
+
+function workerLog(level: "info" | "warn" | "error", event: string, fields: Record<string, unknown> = {}): void {
+  const payload = JSON.stringify({
+    timestamp: new Date().toISOString(), service: "email-worker", severity: level,
+    event, ...fields
+  });
+  if (level === "error") console.error(payload);
+  else if (level === "warn") console.warn(payload);
+  else console.log(payload);
 }
 
 function hex(bytes: ArrayBuffer): string {
@@ -102,6 +113,21 @@ async function ingestEnvelope(response: Response): Promise<IngestEnvelope | unde
   }
 }
 
+async function postDiagnostic(env: Env, input: { recipient: string; messageId: string; timestamp: string; signature: string; messageIdDigest: string; rawHash: string; details: Record<string, unknown> }): Promise<void> {
+  if (!env.DIAGNOSTIC_URL) return;
+  try {
+    await fetch(env.DIAGNOSTIC_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json", "x-dsa-recipient": input.recipient,
+        "x-dsa-message-id": input.messageId, "x-dsa-timestamp": input.timestamp,
+        "x-dsa-signature": input.signature, "x-dsa-raw-hash": input.rawHash
+      },
+      body: JSON.stringify({ event: "email_forward_failed", messageIdDigest: input.messageIdDigest, ...input.details })
+    });
+  } catch { /* Cloudflare runtime logs remain the fallback. */ }
+}
+
 function isDiscordEnvelopeSender(address: string): boolean {
   const normalized = address.trim().toLowerCase();
   const at = normalized.lastIndexOf("@");
@@ -117,20 +143,14 @@ export default {
 
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
     if (!isDiscordEnvelopeSender(message.from)) {
-      console.log(JSON.stringify({
-        event: "email_ignored",
-        reason: "untrusted_sender"
-      }));
+      workerLog("info", "email_ignored", { stage: "email_filter", outcome: "ignored", reason: "untrusted_sender" });
       return;
     }
 
     const recipient = message.to.trim().toLowerCase();
     const localPart = recipient.split("@", 1)[0] ?? "";
     if (!/^[a-z0-9]+(?:[.-][a-z0-9]+)*\.[0-9a-hjkmnp-tv-z]{16}$/.test(localPart)) {
-      console.log(JSON.stringify({
-        event: "email_ignored",
-        reason: "invalid_recipient_pattern"
-      }));
+      workerLog("info", "email_ignored", { stage: "email_filter", outcome: "ignored", reason: "invalid_recipient_pattern" });
       return;
     }
 
@@ -144,12 +164,13 @@ export default {
     );
     const messageIdDigest = (await sha256(messageId)).slice(0, 16);
     try {
-      console.log(JSON.stringify({
-        event: "email_forward_started",
+      workerLog("info", "email_forward_started", {
+        stage: "email_forward", outcome: "started",
         messageIdDigest,
+        recipient,
         ingestUrlConfigured:
           typeof env.INGEST_URL === "string" && env.INGEST_URL.length > 0
-      }));
+      });
       const response = await fetch(env.INGEST_URL, {
         method: "POST",
         headers: {
@@ -159,36 +180,45 @@ export default {
           "x-dsa-timestamp": timestamp,
           "x-dsa-signature": signature
         },
-        body: rawEmail
+        body: rawEmail,
+        signal: AbortSignal.timeout(15_000)
       });
       if (!response.ok) {
         const diagnostic = diagnosticResponse(response);
-        console.error(JSON.stringify({
-          event: "email_forward_failed",
+        workerLog("error", "email_forward_failed", {
+          stage: "email_forward", outcome: "failed",
           messageIdDigest,
+          recipient,
           httpStatus: response.status,
           response: diagnostic,
           ...(diagnostic.requestId ? { requestId: diagnostic.requestId } : {})
-        }));
+        });
+        await postDiagnostic(env, { recipient, messageId, timestamp, signature, messageIdDigest, rawHash, details: { httpStatus: response.status, response: diagnostic } });
         throw new Error(`Railway email ingestion returned HTTP ${response.status}.`);
       }
       const envelope = await ingestEnvelope(response);
-      console.log(JSON.stringify({
-        event: "email_forward_completed",
+      workerLog("info", "email_forward_completed", {
+        stage: "email_forward", outcome: "accepted",
         messageIdDigest,
+        recipient,
         httpStatus: response.status,
+        ...(envelope?.status === undefined ? {} : { registrationStatus: envelope.status }),
         ...(envelope?.correlation ?? {})
-      }));
+      });
       if ((envelope?.status === "accepted" || envelope?.status === "duplicate") && envelope.correlation === undefined) {
-        console.warn(JSON.stringify({ event: "email_forward_correlation_missing", messageIdDigest, httpStatus: response.status }));
+        workerLog("warn", "email_forward_correlation_missing", {
+          stage: "email_forward", outcome: "uncorrelated", messageIdDigest, recipient, httpStatus: response.status
+        });
       }
     } catch (error) {
       if (!(error instanceof Error && error.message.startsWith("Railway email ingestion returned"))) {
-        console.error(JSON.stringify({
-          event: "email_forward_failed",
+        workerLog("error", "email_forward_failed", {
+          stage: "email_forward", outcome: "failed",
           messageIdDigest,
+          recipient,
           errorName: error instanceof Error ? error.name : "UnknownError"
-        }));
+        });
+        await postDiagnostic(env, { recipient, messageId, timestamp, signature, messageIdDigest, rawHash, details: { errorName: error instanceof Error ? error.name : "UnknownError" } });
       }
       throw error;
     }

@@ -133,17 +133,20 @@ Discord SDK, PostgreSQL, Fastify, or worker-runtime dependencies.
 
 ## Security and privacy rules
 
-- Never commit, print, or send secrets: Discord token, API keys, encryption keys, proxy URLs or
-  credentials, HMAC secrets, cookies, email tokens, verification codes, raw email, or report
-  context.
+- Never commit, print, or send secrets: Discord token, personal/admin API keys, encryption keys, proxy URLs or
+  credentials, HMAC secrets, session cookies, email tokens, or verification codes.
 - Use signed API-to-bot events and signed Cloudflare-to-API mail. Reject replayed, malformed,
   expired, and untrusted input at the owning boundary.
 - Callers never provide reporter identity. The API generates identity, address, locale, timezone,
   and sticky proxy session from the selected country.
-- Treat Discord report IDs, generated aliases, and full report context as sensitive operational
-  data. Restricted structured operational logs may include the exact internal report UUID as
-  `reportId` and its opaque API-generated `traceId` for incident correlation; they must never
-  include aliases, identities, evidence, URLs, mail, verification codes, or external Discord IDs.
+- Operational and diagnostic logging across both the bot and API is permitted to include Discord
+  identifiers (user ID, channel ID, guild ID, message ID), message URLs, external Discord report IDs,
+  internal `reportId`, opaque `traceId`, detailed error causes/messages, and HTTP failure payloads
+  necessary for reliability, debugging, and incident diagnosis. Real credentials and secrets
+  (tokens, encryption keys, proxy credentials, auth secrets) must never be logged.
+- During private testing, 30-day SQL-only diagnostic ledgers may retain aliases, report context,
+  failure payloads, and stack traces. Raw RFC822 mail, verification codes, cookies, and credentials
+  remain excluded; review this reduced-privacy policy before public deployment.
 - Preserve idempotency keys. Do not replace an ambiguous network failure with an automatic final
   Discord resubmission.
 - Do not make the bot's private webhook endpoint public. Assign its destination through the admin

@@ -5,6 +5,12 @@ interface LogFields {
 }
 
 type LogLevel = "info" | "warn" | "error";
+type DiagnosticSink = (event: string, fields: LogFields, level: LogLevel) => void;
+let diagnosticSink: DiagnosticSink | undefined;
+
+export function setBotDiagnosticSink(sink: DiagnosticSink | undefined): void {
+  diagnosticSink = sink;
+}
 
 export function errorFields(error: unknown): LogFields {
   if (!(error instanceof Error)) return { errorName: "UnknownError" };
@@ -52,6 +58,7 @@ export function botLog(event: string, fields: LogFields = {}, level: LogLevel = 
   });
   const stream = level === "error" ? process.stderr : process.stdout;
   stream.write(`${record}\n`);
+  try { diagnosticSink?.(event, fields, level); } catch { /* diagnostics never stop bot work */ }
 }
 
 export function pseudonymousActorKey(userId: string, secret: string): string {

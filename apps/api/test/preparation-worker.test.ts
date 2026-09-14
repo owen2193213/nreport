@@ -97,6 +97,7 @@ describe("PreparationWorker", () => {
     const transition = vi.fn();
     const completePreparation = vi.fn();
     const identity = vi.fn(() => ({ legalName: "Generated Name", email: "alias@example.test", locale: "de-DE", timezone: "Europe/Berlin", language: "de", proxySessionId: "session" }));
+    const onOutcome = vi.fn();
     const store = {
       claimPreparation: vi.fn(async () => ({
         jobId: "job-1",
@@ -120,7 +121,7 @@ describe("PreparationWorker", () => {
       completePreparation,
       failPreparation: vi.fn()
     };
-    const worker = new PreparationWorker(store as never, { prepare }, identity);
+    const worker = new PreparationWorker(store as never, { prepare }, identity, 2, undefined, undefined, onOutcome);
 
     await worker.processOne();
 
@@ -135,6 +136,9 @@ describe("PreparationWorker", () => {
       expect.objectContaining({ aiRequests: 0, searchRequests: 0 }),
       7
     );
+    expect(onOutcome).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "completed", reporterEmail: "alias@example.test"
+    }));
   });
 
   it("preserves supplied hints and creates identity only after AI resolves country", async () => {

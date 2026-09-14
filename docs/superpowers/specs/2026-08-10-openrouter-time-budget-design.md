@@ -14,7 +14,7 @@ The existing `require_parameters: true`, strict JSON schema, and router-metadata
 
 ## Error Handling and Privacy
 
-No raw prompt, completion, router body, or credentials will be logged. The existing safe stage and latency fields remain the only operational diagnostics.
+Credentials, keys, and auth tokens must never be logged. Diagnostic error codes, HTTP statuses, and failure details may be logged to investigate provider issues.
 
 ## Verification
 

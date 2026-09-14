@@ -16,7 +16,8 @@ describe("email worker", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch"); const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     await worker.email(message, { INGEST_URL: "https://example.com/ingest", INGEST_SHARED_SECRET: "test-secret" });
     expect(setReject).not.toHaveBeenCalled(); expect(fetchSpy).not.toHaveBeenCalled();
-    expect(logSpy).toHaveBeenCalledWith(JSON.stringify({ event: "email_ignored", reason: "untrusted_sender" }));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"event":"email_ignored"'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"reason":"untrusted_sender"'));
     fetchSpy.mockRestore(); logSpy.mockRestore();
   });
 
@@ -62,7 +63,8 @@ describe("email worker", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch"); const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     await worker.email(message, { INGEST_URL: "https://example.com/ingest", INGEST_SHARED_SECRET: "test-secret" });
     expect(setReject).not.toHaveBeenCalled(); expect(fetchSpy).not.toHaveBeenCalled();
-    expect(logSpy).toHaveBeenCalledWith(JSON.stringify({ event: "email_ignored", reason: "invalid_recipient_pattern" }));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"event":"email_ignored"'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"reason":"invalid_recipient_pattern"'));
     fetchSpy.mockRestore(); logSpy.mockRestore();
   });
 
@@ -90,6 +92,7 @@ describe("email worker", () => {
     await worker.email(emailMessage(), { INGEST_URL: "https://example.com/ingest", INGEST_SHARED_SECRET: "test-secret" });
     expect(logSpy.mock.calls[1]?.[0]).toContain('"reportId":"11111111-1111-4111-8111-111111111111"');
     expect(logSpy.mock.calls[1]?.[0]).toContain('"traceId":"22222222-2222-4222-8222-222222222222"');
+    expect(logSpy.mock.calls[1]?.[0]).toContain('"registrationStatus":"accepted"');
     fetchSpy.mockRestore(); logSpy.mockRestore();
   });
 
@@ -121,13 +124,23 @@ describe("email worker", () => {
     error.mockRestore(); vi.unstubAllGlobals();
   });
 
-  it("logs bounded API failure metadata without the response body", async () => {
+  it("logs the generated alias with bounded API failure metadata", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "recipient alias@example.test rejected" }), { status: 422, headers: { "content-type": "application/json", "x-request-id": "ingest-1" } })));
     await expect(worker.email(emailMessage(), { INGEST_URL: "https://api.example", INGEST_SHARED_SECRET: "secret" })).rejects.toThrow(/HTTP 422/);
     const event: unknown = JSON.parse(String(error.mock.calls[0]?.[0]));
     expect(event).toMatchObject({ event: "email_forward_failed", httpStatus: 422, requestId: "ingest-1", response: { contentType: "application/json" } });
-    expect(JSON.stringify(event)).not.toContain("alias@example.test");
+    expect(event).toMatchObject({ recipient: "omar.kuznetsov.23456789abcdefgh@example.com" });
     error.mockRestore(); vi.unstubAllGlobals();
+  });
+
+  it("posts signed metadata diagnostics when forwarding fails", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("failed", { status: 502 }))
+      .mockResolvedValueOnce(new Response(null, { status: 202 }));
+    await expect(worker.email(emailMessage(), { INGEST_URL: "https://api.example/ingest", DIAGNOSTIC_URL: "https://api.example/email-diagnostics", INGEST_SHARED_SECRET: "secret" })).rejects.toThrow(/HTTP 502/);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[1]?.[0]).toBe("https://api.example/email-diagnostics");
+    fetchSpy.mockRestore();
   });
 });

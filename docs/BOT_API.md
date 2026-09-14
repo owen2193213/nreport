@@ -260,6 +260,10 @@ The administrator diagnostics response additionally includes `pendingInboundMess
 the durable inbound-email correlation backlog without including recipients, message content, or
 verification values.
 
+During private testing, API diagnostic ledger rows are retained for 30 days and are available only to
+operators through SQL. They may contain report context and external failure details, but never raw
+mail, credentials, cookies, proxy credentials, or verification codes.
+
 ## Client behavior
 
 Use `DsaApi` from `@nreport/contracts` with a personal key and `DsaAdminApi` only for trusted

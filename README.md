@@ -105,6 +105,7 @@ npx wrangler versions upload --config apps/email-worker/wrangler.jsonc
 
 ```text
 INGEST_URL=https://<new-api-domain>/webhooks/cloudflare-email
+DIAGNOSTIC_URL=https://<new-api-domain>/webhooks/cloudflare-email-diagnostic
 INGEST_SHARED_SECRET=<same value as CLOUDFLARE_EMAIL_WEBHOOK_SECRET>
 ```
 
@@ -132,11 +133,20 @@ environment and EU proxy.
 
 ## Security rules
 
-- Never commit or log personal/admin keys, provider credentials, signing/encryption secrets,
-  cookies, proxy details, verification codes, raw mail, prompts, or report evidence.
+- Never commit or log secrets: personal/admin keys, provider credentials, signing/encryption secrets,
+  proxy credentials, session cookies, email tokens, or verification codes. Operational logs for bot and API
+  diagnostics may include generated reporter email aliases, Discord identifiers (users, channels, messages), message URLs, external Discord report IDs,
+  error causes, and failure payloads to troubleshoot operations.
 - Callers never supply reporter identity or the submitting Discord user's identity.
 - Keep original evidence immutable and exclude media content/URLs from AI and search.
 - Preserve idempotency keys across uncertain responses.
+
+### Testing diagnostics
+
+During the private testing phase, API and bot PostgreSQL diagnostic ledgers retain report context,
+aliases, Discord identifiers, failure payloads, and safe stack traces for 30 days. They are queried
+only through operator SQL. Raw RFC822 mail, credentials, cookies, proxy credentials, and verification
+codes are never retained. Review this reduced-privacy policy before any public deployment.
 - Treat ownership/nonexistence identically and derive personal analytics only from authentication.
 - Consume credit at the final Discord-attempt boundary; never refund or automatically repeat an
   ambiguous attempt.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { readDiagnosticResponse, sanitizeDiagnostic } from "../src/index.js";
+import { boundedDiagnostic, readDiagnosticResponse, sanitizeDiagnostic } from "../src/index.js";
 
 describe("diagnostics", () => {
   it("redacts sensitive keys and supplied report values", () => {
@@ -8,6 +8,22 @@ describe("diagnostics", () => {
       detail: "bad [redacted]",
       token: "[redacted]"
     });
+  });
+
+  it("keeps stable error codes while redacting verification values", () => {
+    expect(sanitizeDiagnostic({ errorCode: "discord_network_error", verificationCode: "123456", code: "654321" })).toEqual({
+      errorCode: "discord_network_error",
+      verificationCode: "[redacted]",
+      code: "[redacted]"
+    });
+  });
+
+  it("caps the entire diagnostic payload and handles cyclic data", () => {
+    const cyclic: Record<string, unknown> = { token: "secret", first: "x".repeat(65_536), second: "y".repeat(65_536) };
+    cyclic.self = cyclic;
+    const result = boundedDiagnostic(cyclic, ["secret"]);
+    expect(JSON.stringify(result).length).toBeLessThanOrEqual(65_536);
+    expect(JSON.stringify(result)).not.toContain("secret");
   });
 
   it("captures a bounded JSON provider error and request id", async () => {

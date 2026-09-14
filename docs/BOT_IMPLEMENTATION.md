@@ -204,13 +204,20 @@ generated recipient alias and Discord report ID match the API report. Each maint
 replays exact pending matches, then recovers interrupted jobs, then expires deadlines. A late valid
 receipt or appeal confirmation repairs the corresponding timeout and emits its lifecycle event
 (`report_receipt_recovered` for a recovered receipt); unmatched mail remains pending for diagnostics rather than being guessed onto a report.
-Lifecycle logs contain the internal report ID and report trace, generated reporter email alias, job kind, attempt count, duration, outcome, and a safe error category;
-they must never include job, account, or Discord identifiers, evidence, verification codes,
-URLs, provider responses, or arbitrary error messages.
+Lifecycle logs contain the internal report ID and report trace, generated reporter email alias, job kind, attempt count, duration, outcome, and a safe error category. During private testing,
+the centralized diagnostic ledger may additionally retain Discord identifiers, evidence/report context,
+URLs, provider failure payloads, and error messages after redaction. Verification codes, raw RFC822
+mail, credentials, cookies, proxy credentials, and configured secrets are permanently excluded.
 Bot notification logs similarly contain the internal report ID and report trace, lifecycle event type, attempt count,
 duration, outcome, and safe error category. Reconciliation event logs use the trace and bounded event
 type/outcome fields; connection summaries contain only duration, outcome, and safe error category;
 failures are isolated per connection so one unavailable account does not stop later accounts.
+
+Private testing additionally retains bot diagnostic rows for 30 days, searchable by report ID or trace
+through SQL. The Worker logs its generated alias for every forwarding outcome and, on forwarding
+failure, sends signed metadata-only diagnostics to the API ledger. The API correlates accepted mail
+by that alias; a total API outage leaves Cloudflare's structured Worker log as the fallback.
+Raw RFC822 mail, credentials, cookies, proxy credentials, and verification codes are never retained.
 
 The health endpoint becomes ready only when PostgreSQL and the Discord gateway are ready. The bot
 webhook is intended for Railway private networking and does not need a public domain.

@@ -81,6 +81,30 @@ export function verifyInboundSignature(input: {
   );
 }
 
+/**
+ * Worker diagnostic events reuse the email envelope signature.  They contain
+ * metadata only, so the raw message is never sent a second time.
+ */
+export function verifyEmailDiagnosticSignature(input: {
+  secret: string;
+  timestamp: string;
+  recipient: string;
+  messageId: string;
+  rawHash: string;
+  signature: string;
+  now?: number;
+}): boolean {
+  const timestampMs = Number(input.timestamp) * 1000;
+  const now = input.now ?? Date.now();
+  if (!Number.isFinite(timestampMs) || Math.abs(now - timestampMs) > 5 * 60_000) {
+    return false;
+  }
+  const expected = createHmac("sha256", input.secret)
+    .update(`${input.timestamp}\n${input.recipient}\n${input.messageId}\n${input.rawHash}`)
+    .digest("hex");
+  return safeEqual(expected, input.signature);
+}
+
 export function signReportEvent(
   secret: string,
   timestamp: string,

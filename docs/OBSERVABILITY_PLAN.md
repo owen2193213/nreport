@@ -7,7 +7,13 @@ Preserve service/database ownership and avoid ambiguous Discord resubmission.
 
 ## Objectives
 
-Answer for one report: where is it waiting, how long, which attempt/stage failed, is retry safe, was Discord submission confirmed, and did the bot update its card? Answer for the fleet: are queues progressing, where is capacity spent, and are user-visible errors increasing? Logs must not contain report evidence or credentials.
+Answer for one report: where is it waiting, how long, which attempt/stage failed, is retry safe, was Discord submission confirmed, and did the bot update its card? Answer for the fleet: are queues progressing, where is capacity spent, and are user-visible errors increasing? Logs must not contain credentials or auth secrets (Discord tokens, encryption keys, API keys, proxy passwords). Operational logs may include Discord identifiers, message URLs, external Discord report IDs, and HTTP failure payloads to support bot and API diagnostics.
+
+Testing-only persistence uses separate API and bot diagnostic ledgers, indexed by report ID, trace ID,
+and time and purged after 30 days. Entries are SQL-only operational data. Aliases, evidence/report
+context, failure bodies, and stack traces are permitted in this private phase; raw RFC822 mail,
+credentials, cookies, proxy credentials, and verification codes remain prohibited. Review this policy
+before public deployment.
 
 ## One correlation model
 
@@ -18,15 +24,15 @@ the additive shared API contract to the bot. Report-scoped logs always carry thi
 predecessor/successor report relationship remains authoritative. Use a separate `spanId`/parent span
 per stage and attempt; HTTP `requestId` identifies a request, not the entire report.
 
-The email worker starts an independent ingestion trace; after trusted parsing/correlation the API links it to the report trace. Restricted Railway and Cloudflare structured logs include the exact internal `reportId` beside `traceId` once a report is known, allowing either UUID to be searched directly. Never expose aliases, verification codes, Discord IDs, external Discord report IDs, or message URLs. Validate inbound correlation fields as UUIDs; unknown or rejected mail remains searchable only by `messageIdDigest`. Both IDs remain access-controlled operational metadata, never metric labels. Additive DTO changes require updates to BOT_API.md and bot implementation documentation.
+The email worker starts an independent ingestion trace; after trusted parsing/correlation the API links it to the report trace. Restricted Railway and Cloudflare structured logs include the exact internal `reportId` beside `traceId` once a report is known, allowing either UUID to be searched directly. Worker forwarding failures additionally send signed metadata-only events to the API ledger, correlated by alias; if the API is unavailable the Worker log remains the fallback. Operational logs may include Discord IDs, external Discord report IDs, generated reporter email aliases, and message URLs where needed for diagnostics, while keeping real credentials and verification codes protected. Validate inbound correlation fields as UUIDs; unknown or rejected mail remains searchable only by `messageIdDigest`. Both IDs remain access-controlled operational metadata, never metric labels. Additive DTO changes require updates to BOT_API.md and bot implementation documentation.
 
 ## Structured schema and error preservation
 
 Use one allowlisted JSON logger per service: `schemaVersion`, UTC timestamp, severity, service, environment, commit/deployment, event, reportId, traceId, spanId, parentSpanId, stage, attempt, durationMs and outcome. `reportId` is emitted only for report-scoped work. Provider operations add provider, model, HTTP status, safe provider code, finish reason, token counts and remaining deadline. Error events add stable errorCode, errorKind, retryable, submissionCertainty, nextAttemptDelayMs, errorFingerprint and selected safe stack locations.
 
-Preserve typed errors/causes through writer, search and preparation wrappers. Translate them once to safe user-facing codes/messages at the API boundary. Distinguish rate limit, provider outage, incomplete output, schema validation, timeout/cancel, database failure and unknown internal error. Do not print arbitrary Error.message/cause or assume all errors took three attempts. Unknown failures receive a support reference and an internal safe fingerprint, not fabricated explanations.
+Preserve typed errors/causes through writer, search and preparation wrappers. Translate them once to safe user-facing codes/messages at the API boundary. Distinguish rate limit, provider outage, incomplete output, schema validation, timeout/cancel, database failure and unknown internal error. Do not emit unsanitized arbitrary Error.message/cause or assume all errors took three attempts. Unknown failures receive a support reference and an internal safe fingerprint, not fabricated explanations.
 
-Immediately replace raw `response` payload logging in AI error paths with selected counters/status fields. Never log prompts, generated text/reasoning, evidence, search query/results, raw mail, provider bodies, tokens, keys, proxy URLs, cookies or generated identities. Redaction helpers alone are insufficient; test actual emission with canary sensitive data. Apply access/retention policy to existing potentially sensitive logs; do not export them into tickets or silently delete historical evidence.
+Error and diagnostic logs across the bot and API may include error messages, causes, stack traces, and HTTP failure payloads to debug issues. Never log auth tokens, API keys, encryption secrets, proxy credentials, or session cookies. Apply access/retention policy to existing logs; do not export them into public tickets or silently delete historical evidence.
 
 ## Event vocabulary and lifecycle truth
 
@@ -67,7 +73,7 @@ No new user-facing “still queued after five minutes” explanation is proposed
 
 ## Delivery plan and acceptance gates
 
-1. Privacy/error taxonomy: remove payload logging, preserve safe causes, convert known-defect tests to ordinary tests after fixes. Gate on canary non-disclosure and exact error classification.
+1. Error taxonomy & diagnostics: preserve error causes, enable diagnostic payload logging for failures while protecting credentials, convert known-defect tests to ordinary tests after fixes.
 2. Correlation: additive persisted trace fields and shared contracts, API/event/bot propagation. Test webhook/reconciliation/retry flows across boundaries and backwards compatibility. Deploy API and bot together as required by contract changes.
 3. Queue/worker instrumentation: safe startup configuration, phase metrics, progress heartbeats and loop errors. Run controlled saturation/restart tests with fake provider dependencies and disposable PostgreSQL.
 4. Reliability: cancellation, maintenance scheduling, leases/fencing and delivery idempotency. Prove no duplicate final submissions and progress under slow/failing dependencies before production rollout.

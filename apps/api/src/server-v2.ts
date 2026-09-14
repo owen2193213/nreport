@@ -29,7 +29,7 @@ import type { AccountPrincipal } from "./accounts.js";
 import type { AppConfig } from "./config.js";
 import { reportRetryableModes, type AccountReportRow, type ReportRepository } from "./report-repository.js";
 import { inspectDiscordEmail } from "./email.js";
-import { encryptJson, safeEqual, sha256Hex, verifyInboundSignature } from "./security.js";
+import { encryptJson, safeEqual, sha256Hex, verifyEmailDiagnosticSignature, verifyInboundSignature } from "./security.js";
 import { parseCreateReportInput, parseRetryReportInput } from "./validation.js";
 import { supportedCountries } from "./pseudonyms.js";
 import type { WebhookDestinationRepository } from "./webhook-destinations.js";
@@ -59,7 +59,7 @@ interface V2Dependencies {
   reports: Pick<ReportRepository,
     "create" | "findOwned" | "listOwned" | "timeline" | "listEvents" | "retry" |
     "registerVerificationEmail" | "registerReportUpdateEmail" | "registerReviewUpdateEmail" | "operationalDiagnostics"
-  > & { queueLength?: () => Promise<number> };
+  > & { queueLength?: () => Promise<number>; recordDiagnostic?: (input: { reportId?: string; traceId?: string; service: string; severity: string; event: string; stage?: string; outcome?: string; reporterEmail?: string; details?: unknown }) => Promise<void>; recordWorkerEmailDiagnostic?: (input: { recipient: string; event: string; details?: unknown }) => Promise<void> };
   destinations?: Pick<WebhookDestinationRepository, "create" | "list" | "update" | "assign">;
   analytics?: Pick<AnalyticsRepository, "analytics" | "actionHistory" | "digest">;
 }
@@ -288,6 +288,40 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       elements: { profile: PROFILE_ELEMENTS, server: GUILD_ELEMENTS }
     })
   );
+  app.post<{ Body: unknown }>(
+    "/webhooks/cloudflare-email-diagnostic",
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const recipient = singleHeader(request, "x-dsa-recipient")?.trim().toLowerCase();
+      const messageId = singleHeader(request, "x-dsa-message-id")?.trim();
+      const timestamp = singleHeader(request, "x-dsa-timestamp")?.trim();
+      const signature = singleHeader(request, "x-dsa-signature")?.trim();
+      const rawHash = singleHeader(request, "x-dsa-raw-hash")?.trim();
+      const body = request.body;
+      const event = typeof body === "object" && body !== null && "event" in body
+        ? (body as { event?: unknown }).event
+        : undefined;
+      const hasRawMail = typeof body === "object" && body !== null &&
+        ("raw" in body || "rawEmail" in body || "rfc822" in body);
+      if (
+        !recipient || !messageId || !timestamp || !signature || !rawHash ||
+        !/^[a-f0-9]{64}$/i.test(rawHash) || event !== "email_forward_failed" || hasRawMail ||
+        recipient.length > 320 || messageId.length > 500
+      ) {
+        return apiError(reply, request, 400, "invalid_email_diagnostic", "Invalid email diagnostic.");
+      }
+      if (!verifyEmailDiagnosticSignature({
+        secret: config.webhookSecret, timestamp, recipient, messageId, rawHash, signature
+      })) {
+        return apiError(reply, request, 401, "invalid_signature", "Invalid email diagnostic signature.");
+      }
+      const details = { ...(body as Record<string, unknown>) };
+      delete details.event;
+      await dependencies.reports.recordWorkerEmailDiagnostic?.({ recipient, event, details });
+      return reply.code(202).send({ status: "accepted" });
+    }
+  );
+
   app.post(
     `${DSA_API_BASE_PATH}/reports`,
     {
@@ -626,6 +660,11 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
         ...(result.reportId === null || result.traceId === null ? {} : { reportId: result.reportId, traceId: result.traceId }),
         stage: "email_ingest", outcome: result.status === "duplicate" ? "duplicate" : "accepted"
       }, "Inbound email processed");
+      if (result.reportId !== null && result.traceId !== null) void dependencies.reports.recordDiagnostic?.({
+        reportId: result.reportId, traceId: result.traceId, service: "api", severity: "info",
+        event: "inbound_email_processed", stage: "email_ingest", outcome: result.status,
+        reporterEmail: recipient, details: { emailKind: parsed.kind, messageIdDigest: sha256Hex(messageId).slice(0, 16) }
+      }).catch(() => undefined);
       return reply.code(202).send({
         status: result.status,
         ...(result.reportId === null || result.traceId === null ? {} : { reportId: result.reportId, traceId: result.traceId })

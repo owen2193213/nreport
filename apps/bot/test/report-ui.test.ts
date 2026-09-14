@@ -132,6 +132,14 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(value).not.toContain("Attachments");
   });
 
+  it("shows the generated reporter email alias on the private report card", () => {
+    const withAlias = { ...report(), reporterEmail: "reporter.alias.23456789abcdefgh@reports.example.test" } as ReportDetail;
+
+    expect(JSON.stringify(statusMessageOptions(withAlias, context))).toContain(
+      "Reporter email: `reporter.alias.23456789abcdefgh@reports.example.test`"
+    );
+  });
+
   it("shows meaningful AI preparation stages with stage-specific icons", () => {
     const value = JSON.stringify(statusMessageOptions(report({ status: "writing" }), context));
     expect(value).toContain("### AI preparation");

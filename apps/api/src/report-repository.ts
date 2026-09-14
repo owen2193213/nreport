@@ -9,6 +9,7 @@ import type {
   RetryReportInput,
   DiscordReportStatus
 } from "@nreport/contracts";
+import { boundedDiagnostic } from "@nreport/contracts";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import type { LifecycleJob, LifecycleReport } from "./lifecycle-runner-v2.js";
 import type { AccountEventDelivery } from "./event-delivery-v2.js";
@@ -105,6 +106,25 @@ CREATE TABLE IF NOT EXISTS account_report_events (
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS account_report_diagnostics (
+  id bigserial PRIMARY KEY,
+  report_id uuid REFERENCES account_reports(id) ON DELETE SET NULL,
+  trace_id uuid,
+  service text NOT NULL,
+  severity text NOT NULL,
+  event text NOT NULL,
+  stage text,
+  outcome text,
+  lifecycle_attempt integer,
+  reporter_email text,
+  error_code text,
+  details jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS account_report_diagnostics_report_idx ON account_report_diagnostics(report_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS account_report_diagnostics_trace_idx ON account_report_diagnostics(trace_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS account_report_diagnostics_created_idx ON account_report_diagnostics(created_at);
 
 CREATE OR REPLACE FUNCTION serialize_account_report_event_inserts()
 RETURNS trigger LANGUAGE plpgsql AS $$
@@ -1952,6 +1972,47 @@ export class ReportRepository {
     }
     await this.consumeInboundMessage(client, report.id, message.message_id);
     return "applied";
+  }
+
+  public async recordDiagnostic(input: {
+    reportId?: string; traceId?: string; service: string; severity: string; event: string;
+    stage?: string; outcome?: string; lifecycleAttempt?: number; reporterEmail?: string;
+    errorCode?: string; details?: unknown;
+  }): Promise<void> {
+    const details = boundedDiagnostic(input.details ?? {});
+    await this.pool.query(
+      `INSERT INTO account_report_diagnostics
+       (report_id, trace_id, service, severity, event, stage, outcome, lifecycle_attempt, reporter_email, error_code, details)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [input.reportId ?? null, input.traceId ?? null, input.service, input.severity, input.event,
+        input.stage ?? null, input.outcome ?? null, input.lifecycleAttempt ?? null, input.reporterEmail ?? null,
+        input.errorCode ?? null, details]
+    );
+  }
+
+  public async recordWorkerEmailDiagnostic(input: {
+    recipient: string;
+    event: string;
+    details?: unknown;
+  }): Promise<void> {
+    const result = await this.pool.query<{ id: string; trace_id: string; lifecycle_attempt: number }>(
+      `SELECT id, trace_id, lifecycle_attempt FROM account_reports
+       WHERE reporter_email = $1 ORDER BY created_at DESC LIMIT 1`,
+      [input.recipient]
+    );
+    const report = result.rows[0];
+    await this.recordDiagnostic({
+      ...(report === undefined ? {} : {
+        reportId: report.id, traceId: report.trace_id, lifecycleAttempt: report.lifecycle_attempt
+      }),
+      service: "email-worker", severity: "error", event: input.event,
+      stage: "email_forward", outcome: "failed", reporterEmail: input.recipient,
+      details: input.details
+    });
+  }
+
+  public async purgeDiagnostics(): Promise<void> {
+    await this.pool.query("DELETE FROM account_report_diagnostics WHERE created_at < now() - interval '30 days'");
   }
 
   private async consumeInboundMessage(client: PoolClient, reportId: string, messageId: string): Promise<void> {

@@ -64,6 +64,7 @@ export interface PreparationWorkerOutcome {
   stage: "preparation";
   outcome: "completed" | "failed";
   durationMs: number;
+  reporterEmail?: string;
   errorCategory?: string;
 }
 
@@ -127,7 +128,8 @@ export class PreparationWorker {
         traceId: report.trace_id,
         stage: "preparation",
         outcome: "completed",
-        durationMs: elapsedSince(startedAt)
+        durationMs: elapsedSince(startedAt),
+        reporterEmail: identity.email
       });
     } catch (error) {
       if (error instanceof PreparationCancelledError) return true;

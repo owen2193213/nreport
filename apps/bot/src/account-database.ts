@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { ApiAccountView, ReportLifecycleEvent } from "@nreport/contracts";
+import { boundedDiagnostic } from "@nreport/contracts";
 import { Pool, type QueryResultRow } from "pg";
 
 const IMMEDIATE_LIFECYCLE_EVENT_TYPES = [
@@ -116,6 +117,22 @@ CREATE TABLE IF NOT EXISTS digest_deliveries (
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (discord_user_id, kind, period_start)
 );
+
+CREATE TABLE IF NOT EXISTS bot_report_diagnostics (
+  id bigserial PRIMARY KEY,
+  report_id uuid,
+  trace_id uuid,
+  service text NOT NULL,
+  severity text NOT NULL,
+  event text NOT NULL,
+  stage text,
+  outcome text,
+  details jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS bot_report_diagnostics_report_idx ON bot_report_diagnostics(report_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS bot_report_diagnostics_trace_idx ON bot_report_diagnostics(trace_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS bot_report_diagnostics_created_idx ON bot_report_diagnostics(created_at);
 `;
 
 export class ConnectionConflictError extends Error {
@@ -183,6 +200,23 @@ export class AccountBotDatabase {
   }
 
   public async migrate(): Promise<void> { await this.pool.query(BOT_ACCOUNT_SCHEMA_SQL); }
+
+  public async recordDiagnostic(input: {
+    reportId?: string; traceId?: string; service: string; severity: string; event: string;
+    stage?: string; outcome?: string; details?: unknown;
+  }): Promise<void> {
+    const details = boundedDiagnostic(input.details ?? {});
+    await this.pool.query(
+      `INSERT INTO bot_report_diagnostics (report_id, trace_id, service, severity, event, stage, outcome, details)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [input.reportId ?? null, input.traceId ?? null, input.service, input.severity, input.event,
+        input.stage ?? null, input.outcome ?? null, details]
+    );
+  }
+
+  public async purgeDiagnostics(): Promise<void> {
+    await this.pool.query("DELETE FROM bot_report_diagnostics WHERE created_at < now() - interval '30 days'");
+  }
   public async healthcheck(): Promise<void> { await this.pool.query("SELECT 1"); }
   public async close(): Promise<void> { await this.pool.end(); }
 

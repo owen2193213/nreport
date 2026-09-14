@@ -55,6 +55,7 @@ interface LifecycleStore {
   failReview(job: LifecycleJob, status: "ineligible" | "request_failed" | "request_ambiguous", code: string, message: string): Promise<boolean>;
   expireDeadlines?(): Promise<void>;
   recoverInterruptedJobs?(): Promise<void>;
+  purgeDiagnostics?(): Promise<void>;
   reconcilePendingInboundMessages?(): Promise<{ processed: number; remaining: number; oldestPendingAgeMs: number | null }>;
 }
 
@@ -120,6 +121,7 @@ export class LifecycleRunner {
   private running: Promise<void>[] | undefined;
   private stopping = false;
   private lastMaintenanceAt = 0;
+  private lastDiagnosticsPurgeAt = 0;
   private stopSignal: Promise<void> | undefined;
   private resolveStop: (() => void) | undefined;
   private readonly clientFactory: (report: LifecycleReport, session?: DiscordDsaSessionState) => LifecycleClient;
@@ -285,8 +287,9 @@ export class LifecycleRunner {
         await this.store.retryLifecycleJob(job, discordFailureCode(error), delaySeconds);
         return retryResult(discordFailureCode(error), delaySeconds);
       } else {
-        await this.store.failReview(job, "request_failed", "review_request_failed", "Discord did not accept the automatic appeal.");
-        return failedResult("review_request_failed");
+        const code = discordFailureCode(error);
+        await this.store.failReview(job, "request_failed", code, `Discord did not accept the automatic appeal (${code}).`);
+        return failedResult(code);
       }
     } finally {
       await client.close();
@@ -457,6 +460,19 @@ export class LifecycleRunner {
       const reconciliation = await this.store.reconcilePendingInboundMessages?.();
       await this.store.recoverInterruptedJobs?.();
       await this.store.expireDeadlines?.();
+      if (Date.now() - this.lastDiagnosticsPurgeAt >= 60 * 60_000) {
+        // Diagnostics are best-effort: a retention failure must not prevent
+        // deadline recovery or the next lifecycle maintenance pass.
+        try {
+          await this.store.purgeDiagnostics?.();
+        } catch (error) {
+          this.notify({
+            component: "maintenance", stage: "lifecycle_maintenance", outcome: "failed",
+            durationMs: 0, errorCategory: error instanceof Error ? error.name : "UnknownError"
+          });
+        }
+        this.lastDiagnosticsPurgeAt = Date.now();
+      }
       this.notify({
         component: "maintenance",
         stage: "lifecycle_maintenance",

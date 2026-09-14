@@ -11,6 +11,7 @@ import { BOT_PRESENCE } from "./presence.js";
 import { ProfileResolver } from "./profile-resolver.js";
 import { ServerResolver } from "./server-resolver.js";
 import { DigestWorker } from "./digest-worker.js";
+import { setBotDiagnosticSink } from "./observability.js";
 
 async function main(): Promise<void> {
   const config = loadBotConfig();
@@ -20,6 +21,11 @@ async function main(): Promise<void> {
   }
   const database = new AccountBotDatabase(config.databaseUrl);
   await database.migrate();
+  setBotDiagnosticSink((event, fields, level) => {
+    const reportId = typeof fields.reportId === "string" ? fields.reportId : undefined;
+    const traceId = typeof fields.traceId === "string" ? fields.traceId : undefined;
+    if (reportId !== undefined || traceId !== undefined) void database.recordDiagnostic({ ...(reportId === undefined ? {} : { reportId }), ...(traceId === undefined ? {} : { traceId }), service: "bot", severity: level, event, ...(typeof fields.stage === "string" ? { stage: fields.stage } : {}), ...(typeof fields.outcome === "string" ? { outcome: fields.outcome } : {}), details: fields }).catch(() => undefined);
+  });
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
     presence: BOT_PRESENCE
@@ -44,6 +50,7 @@ async function main(): Promise<void> {
   await client.login(config.token);
   const notifier = new AccountNotificationWorker(database, client, config);
   const digests = new DigestWorker(database, client, config);
+  const diagnosticsPurge = setInterval(() => void database.purgeDiagnostics().catch(() => undefined), 60 * 60_000);
   notifier.start();
   digests.start();
 
@@ -54,6 +61,8 @@ async function main(): Promise<void> {
     process.stdout.write(`Shutting down after ${signal}.\n`);
     await notifier.stop();
     await digests.stop();
+    clearInterval(diagnosticsPurge);
+    setBotDiagnosticSink(undefined);
     await client.destroy();
     await health.close();
     await database.close();

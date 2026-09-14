@@ -8,7 +8,7 @@ import { REPORT_SCHEMA_SQL, ReportRepository } from "../src/report-repository.js
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const suite = databaseUrl === undefined ? describe.skip : describe;
 const schema = `inbound_email_${randomUUID().replaceAll("-", "")}`;
-const pool = databaseUrl === undefined ? undefined : new Pool({ connectionString: databaseUrl });
+let pool = databaseUrl === undefined ? undefined : new Pool({ connectionString: databaseUrl });
 let repositoryPool: Pool | undefined;
 
 async function seedReport(overrides: Partial<{ status: string; reporterEmail: string; discordReportId: string | null }> = {}) {
@@ -39,10 +39,12 @@ suite("inbound email PostgreSQL migration", () => {
       await client.query(`SET search_path TO ${schema}`);
       await client.query(ACCOUNT_SCHEMA_SQL);
       await client.query(REPORT_SCHEMA_SQL);
-      repositoryPool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schema}` });
     } finally {
       client.release();
     }
+    await pool!.end();
+    pool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schema}` });
+    repositoryPool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schema}` });
   });
 
   afterAll(async () => {

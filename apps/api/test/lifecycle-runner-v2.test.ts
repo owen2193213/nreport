@@ -651,7 +651,7 @@ describe("LifecycleRunner safe outcomes", () => {
     try {
       await vi.advanceTimersByTimeAsync(30_000);
       expect(outcomes).toContainEqual(expect.objectContaining({
-        component: "loop", traceId: "33333333-3333-4333-8333-333333333333",
+        component: "job", reportId: "11111111-1111-4111-8111-111111111111", traceId: "33333333-3333-4333-8333-333333333333",
         stage: "lifecycle_heartbeat", outcome: "failed",
         durationMs: expect.any(Number) as number,
         errorCategory: "lifecycle_heartbeat_failed"

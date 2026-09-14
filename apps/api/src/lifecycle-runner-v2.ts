@@ -18,12 +18,12 @@ export interface LifecycleJob {
   attempts: number;
   max_attempts: number;
   execution_token: number;
-  trace_id?: string;
+  trace_id: string;
 }
 
 export interface LifecycleReport {
   id: string;
-  trace_id?: string;
+  trace_id: string;
   flow: "message" | "profile" | "server";
   country: string;
   reporter_email: string;
@@ -85,19 +85,26 @@ export type LifecycleRunnerOutcome =
       jobKind: LifecycleJob["kind"];
       attempts: number;
       durationMs: number;
-      reportId?: string;
-      traceId?: string;
+      reportId: string;
+      traceId: string;
       errorCategory?: string;
       retryDelayMs?: number;
       submissionCertainty?: "not_started" | "confirmed" | "ambiguous";
     }
   | {
       component: "loop" | "maintenance";
-      stage: "lifecycle_claim" | "lifecycle_heartbeat" | "lifecycle_maintenance";
+      stage: "lifecycle_claim" | "lifecycle_maintenance";
       outcome: "completed" | "failed";
       durationMs: number;
-      reportId?: string;
-      traceId?: string;
+      errorCategory?: string;
+    }
+  | {
+      component: "job";
+      stage: "lifecycle_heartbeat";
+      outcome: "failed";
+      durationMs: number;
+      reportId: string;
+      traceId: string;
       errorCategory?: string;
     };
 
@@ -186,7 +193,7 @@ export class LifecycleRunner {
         attempts: job.attempts,
         durationMs: elapsedSince(startedAt),
         reportId: job.report_id,
-        ...(job.trace_id === undefined ? {} : { traceId: job.trace_id })
+        traceId: job.trace_id
       });
     } catch (error) {
       this.notify({
@@ -197,7 +204,7 @@ export class LifecycleRunner {
         attempts: job.attempts,
         durationMs: elapsedSince(startedAt),
         reportId: job.report_id,
-        ...(job.trace_id === undefined ? {} : { traceId: job.trace_id }),
+        traceId: job.trace_id,
         ...(isOwnershipLost(error) ? {} : { errorCategory: safeJobErrorCategory(error) })
       });
       if (!isOwnershipLost(error)) throw error;
@@ -431,12 +438,12 @@ export class LifecycleRunner {
         }
       } catch {
         this.notify({
-          component: "loop",
+          component: "job",
           stage: "lifecycle_heartbeat",
           outcome: "failed",
           durationMs: elapsedSince(heartbeatStartedAt),
           reportId: job.report_id,
-          ...(job.trace_id === undefined ? {} : { traceId: job.trace_id }),
+          traceId: job.trace_id,
           errorCategory: "lifecycle_heartbeat_failed"
         });
       }

@@ -50,8 +50,9 @@ local report/DM mapping. This ordering lets the webhook endpoint return `409` on
 linking race, which asks the API to retry. A timeout or lost create response is reconciled by
 replaying the same body and key. Definite client errors abandon that pending operation.
 
-The bot sends one private Components V2 DM card. Once assigned, the card includes the generated
-reporter email alias beside the report ID so an operator can correlate Cloudflare mail events.
+The bot sends one private Components V2 DM card. Once assigned, the card includes only the local
+part of the generated reporter email alias beside the report ID; the full alias remains available to
+operators in restricted diagnostics for Cloudflare mail correlation.
 Message cards keep the author mention with
 `@username`, the plain message URL, and a bounded code-blocked excerpt in the same reported-message
 block; account type, channel/location, posted time, and attachment counts are omitted. The fenced report
@@ -209,8 +210,9 @@ the centralized diagnostic ledger may additionally retain Discord identifiers, e
 URLs, provider failure payloads, and error messages after redaction. Verification codes, raw RFC822
 mail, credentials, cookies, proxy credentials, and configured secrets are permanently excluded.
 Bot notification logs similarly contain the internal report ID and report trace, lifecycle event type, attempt count,
-duration, outcome, and safe error category. Reconciliation event logs use the trace and bounded event
-type/outcome fields; connection summaries contain only duration, outcome, and safe error category;
+duration, outcome, and safe error category. Permanent Discord validation failures are recorded with safe
+validation paths and are terminal rather than retried. Reconciliation event logs use the trace and bounded event
+type/outcome fields; connection summaries include the account, duration, and normalized safe error details;
 failures are isolated per connection so one unavailable account does not stop later accounts.
 
 Private testing additionally retains bot diagnostic rows for 30 days, searchable by report ID or trace

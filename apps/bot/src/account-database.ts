@@ -71,6 +71,8 @@ ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS recovery_error text;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS card_repair_attempts integer NOT NULL DEFAULT 0;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS card_repair_run_at timestamptz NOT NULL DEFAULT now();
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS card_repair_claimed_at timestamptz;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS card_repair_terminal_at timestamptz;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS card_repair_error text;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS encrypted_target_context text;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS visible_payload_hash text;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS last_card_edit_at timestamptz;
@@ -492,6 +494,7 @@ export class AccountBotDatabase {
       `WITH due AS (
          SELECT id FROM bot_report_links WHERE discord_user_id = $1 AND report_id IS NOT NULL
            AND superseded_by_report_id IS NULL AND dm_message_id IS NULL
+           AND card_repair_terminal_at IS NULL
            AND card_repair_run_at <= now()
            AND (card_repair_claimed_at IS NULL OR card_repair_claimed_at < now() - interval '2 minutes')
          ORDER BY card_repair_run_at, created_at FOR UPDATE SKIP LOCKED LIMIT 20
@@ -503,10 +506,10 @@ export class AccountBotDatabase {
        SELECT link.report_id, link.discord_user_id, link.encrypted_target_context, link.card_repair_attempts,
               connection.encrypted_api_key, inbox.trace_id
        FROM claimed AS link JOIN api_connections AS connection ON connection.account_id = link.account_id
-       LEFT JOIN LATERAL (
-         SELECT trace_id FROM lifecycle_inbox WHERE report_id = link.report_id
-         ORDER BY received_at DESC LIMIT 1
-       ) AS inbox ON TRUE`,
+        LEFT JOIN LATERAL (
+          SELECT trace_id FROM lifecycle_inbox WHERE report_id = link.report_id
+          ORDER BY created_at DESC LIMIT 1
+        ) AS inbox ON TRUE`,
       [discordUserId]
     );
     return result.rows;
@@ -518,6 +521,14 @@ export class AccountBotDatabase {
          card_repair_run_at = now() + ($2::text || ' seconds')::interval, updated_at = now()
        WHERE report_id = $1 AND dm_message_id IS NULL`,
       [reportId, Math.max(1, Math.floor(delaySeconds))]
+    );
+  }
+
+  public async terminalCardRepair(reportId: string, error: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE bot_report_links SET card_repair_claimed_at = NULL, card_repair_terminal_at = now(),
+         card_repair_error = $2, updated_at = now() WHERE report_id = $1 AND dm_message_id IS NULL`,
+      [reportId, error.slice(0, 300)]
     );
   }
 
@@ -623,6 +634,13 @@ export class AccountBotDatabase {
     await this.pool.query(
       `UPDATE lifecycle_inbox SET state = 'pending', locked_at = NULL, last_error = $2,
          run_at = now() + interval '30 seconds' WHERE event_id = $1`,
+      [eventId, error.slice(0, 300)]
+    );
+  }
+
+  public async ignoreNotification(eventId: string, error: string): Promise<void> {
+    await this.pool.query(
+      "UPDATE lifecycle_inbox SET state = 'ignored', locked_at = NULL, last_error = $2 WHERE event_id = $1",
       [eventId, error.slice(0, 300)]
     );
   }

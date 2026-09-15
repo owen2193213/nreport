@@ -26,11 +26,42 @@ export function errorFields(error: unknown): LogFields {
   const status = Number.isInteger(candidate.status) && candidate.status! >= 100 && candidate.status! <= 599
     ? candidate.status
     : undefined;
+  const rawError = (error as Error & { rawError?: unknown }).rawError;
   return {
     errorName: allowedNames.has(error.name) ? error.name : "Error",
     ...(code === undefined ? {} : { errorCode: code }),
-    ...(status === undefined ? {} : { httpStatus: status })
+    ...(status === undefined ? {} : { httpStatus: status }),
+    ...(isDiscordValidationFailure(error) ? { discordValidation: discordValidationSummary(rawError) } : {})
   };
+}
+
+export function isDiscordValidationFailure(error: unknown): boolean {
+  const candidate = error as { code?: unknown; status?: unknown } | null;
+  return candidate?.status === 400 && String(candidate.code) === "50035";
+}
+
+function discordValidationSummary(rawError: unknown): { message?: string; paths: string[] } {
+  const candidate = rawError as { message?: unknown; errors?: unknown } | null;
+  const paths: string[] = [];
+  collectValidationPaths(candidate?.errors, [], paths);
+  return {
+    ...(typeof candidate?.message === "string" ? { message: candidate.message.slice(0, 1_000) } : {}),
+    paths: paths.slice(0, 50)
+  };
+}
+
+function collectValidationPaths(value: unknown, parents: string[], output: string[]): void {
+  if (typeof value !== "object" || value === null) return;
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "_errors" && Array.isArray(child)) {
+      for (const issue of child) {
+        const code = typeof (issue as { code?: unknown })?.code === "string" ? (issue as { code: string }).code : "invalid";
+        output.push(`${parents.join(".")}:${code}`.slice(0, 256));
+      }
+    } else {
+      collectValidationPaths(child, [...parents, key], output);
+    }
+  }
 }
 
 export function safeErrorCategory(error: unknown): string {

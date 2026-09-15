@@ -7,8 +7,8 @@ import { loadBotConfig } from "../src/config.js";
 import { reportEventIngestionStatus } from "../src/health.js";
 import * as healthModule from "../src/health.js";
 import { DsaApiError } from "@nreport/contracts";
-import { shouldAbandonReportLink } from "../src/account-interactions.js";
-import { errorFields } from "../src/observability.js";
+import { AccountInteractionHandler, shouldAbandonReportLink } from "../src/account-interactions.js";
+import { errorFields, setBotDiagnosticSink } from "../src/observability.js";
 
 describe("thin account client configuration", () => {
   it("keeps pending links for ambiguous create and retry outcomes", () => {
@@ -79,6 +79,54 @@ describe("thin account client configuration", () => {
     expect(reportEventIngestionStatus("not_tracked_yet")).toBe(202);
     expect(reportEventIngestionStatus("accepted")).toBe(202);
     expect(reportEventIngestionStatus("disconnected")).toBe(202);
+  });
+});
+
+describe("initial card interaction diagnostics", () => {
+  it("records safe payload metadata when an interaction card fails Discord validation", async () => {
+    const report = {
+      reportId: "11111111-1111-4111-8111-111111111111", traceId: "22222222-2222-4222-8222-222222222222", accountId: "account-1",
+      flow: "message", useAi: true, status: "queued", creditState: "reserved", lifecycleAttempt: 1,
+      country: "DE", category: null, description: null, discordReportId: null, discordStatus: null, reviewStatus: null,
+      predecessorReportId: null, successorReportId: null, retryableModes: [], createdAt: "2026-09-09T00:00:00Z", updatedAt: "2026-09-09T00:00:00Z",
+      target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }, finalText: null,
+      legalReference: null, researchSummary: null, sources: [], timeline: [], failure: null
+    } as const;
+    const validationError = Object.assign(new Error("Invalid Form Body"), {
+      code: 50035, status: 400,
+      rawError: { message: "Invalid Form Body", errors: { components: { _errors: [{ code: "BASE_TYPE_REQUIRED" }] } } }
+    });
+    const database = {
+      connection: vi.fn(async () => ({ account_id: "account-1", encrypted_api_key: "key" })),
+      beginReportLink: vi.fn(async () => "link-1"), completeReportLink: vi.fn(), claimDmCard: vi.fn(async () => true),
+      terminalCardRepair: vi.fn()
+    };
+    const handler = new AccountInteractionHandler({
+      client: {} as never,
+      config: { apiBaseUrl: "https://api.example.test", adminApiKey: "admin", dataEncryptionKey: Buffer.alloc(32) } as never,
+      database: database as never, messageResolver: {} as never, profileResolver: {} as never, serverResolver: {} as never
+    });
+    const privateHandler = handler as unknown as {
+      api: () => { createReport: () => Promise<typeof report> };
+      submit: (interaction: unknown, input: unknown, idempotencyKey: string) => Promise<void>;
+    };
+    vi.spyOn(privateHandler, "api").mockReturnValue({ createReport: vi.fn(async () => report) });
+    const diagnostics: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    setBotDiagnosticSink((event, fields) => diagnostics.push({ event, fields }));
+    try {
+      await privateHandler.submit({
+        user: { id: "discord-1", send: vi.fn(async () => { throw validationError; }) },
+        editReply: vi.fn()
+      }, { flow: "message" }, "create-1");
+    } finally {
+      setBotDiagnosticSink(undefined);
+    }
+
+    const diagnostic = diagnostics.find(({ event }) => event === "initial_card_ignored");
+    expect(diagnostic?.fields).toMatchObject({
+      discordValidation: { message: "Invalid Form Body", paths: ["components:BASE_TYPE_REQUIRED"] },
+      payload: { flags: 32768, nonceLength: 0 }
+    });
   });
 });
 
@@ -155,6 +203,29 @@ describe("local account mapping", () => {
     await database.dueCardRepairs("discord-1");
 
     expect(query).toHaveBeenCalledWith(expect.stringContaining("superseded_by_report_id IS NULL"), ["discord-1"]);
+  });
+
+  it("does not claim a card repair after a permanent validation failure", async () => {
+    const query = vi.fn<(sql: string, values?: unknown[]) => Promise<{ rows: never[]; rowCount: number }>>(async () => ({ rows: [], rowCount: 1 }));
+    const database = new AccountBotDatabase({ query } as never);
+
+    await database.terminalCardRepair("report-1", "discord_validation_50035");
+    await database.dueCardRepairs("discord-1");
+
+    expect(String(query.mock.calls[0]?.[0])).toContain("card_repair_terminal_at = now()");
+    expect(query.mock.calls[0]?.[1]).toEqual(["report-1", "discord_validation_50035"]);
+    expect(String(query.mock.calls[1]?.[0])).toContain("card_repair_terminal_at IS NULL");
+  });
+
+  it("uses the lifecycle inbox creation time when correlating a card repair", async () => {
+    const query = vi.fn<(sql: string, values?: unknown[]) => Promise<{ rows: never[]; rowCount: number }>>(async () => ({ rows: [], rowCount: 0 }));
+    const database = new AccountBotDatabase({ query } as never);
+
+    await database.dueCardRepairs("discord-1");
+
+    const [sql] = query.mock.calls[0]!;
+    expect(sql).toContain("ORDER BY created_at DESC");
+    expect(sql).not.toContain("received_at");
   });
 
   it("purges expired pending forms", async () => {
@@ -444,6 +515,68 @@ describe("account reconciliation", () => {
     expect(database.pendingReportLinks).toHaveBeenCalledWith("discord-1");
   });
 
+  it("correlates a recovery failure with its account and measured duration", async () => {
+    const connection = { discord_user_id: "discord-1", account_id: "account-1", encrypted_api_key: "key", event_cursor: "0" };
+    const database = {
+      connections: vi.fn(async () => [connection]),
+      cleanupExpiredForms: vi.fn(),
+      pendingReportLinks: vi.fn(async () => { throw Object.assign(new Error("Invalid Form Body"), {
+        code: 50035,
+        status: 400,
+        rawError: { message: "Invalid Form Body", errors: { nonce: { _errors: [{ code: "BASE_TYPE_MAX_LENGTH" }] } } }
+      }); })
+    };
+    const logger = vi.fn();
+    const worker = new AccountNotificationWorker(
+      database as never, {} as never,
+      { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
+      undefined, undefined, logger
+    );
+
+    await worker.recoverOnce();
+
+    expect(logger).toHaveBeenCalledWith("account_recovery_failed", expect.objectContaining({
+      accountId: "account-1",
+      durationMs: expect.any(Number) as number
+    }), "warn");
+  });
+
+  it("retains safe Discord error and payload metadata when retrying a card repair", async () => {
+    const connection = { discord_user_id: "discord-1", account_id: "account-1", encrypted_api_key: "key", event_cursor: "0" };
+    const repairedReport = {
+      reportId: "11111111-1111-4111-8111-111111111111", traceId: "22222222-2222-4222-8222-222222222222", accountId: "account-1",
+      flow: "message", useAi: true, status: "queued", creditState: "reserved", lifecycleAttempt: 1,
+      country: "DE", category: null, description: null, discordReportId: null, discordStatus: null, reviewStatus: null,
+      predecessorReportId: null, successorReportId: null, retryableModes: [], createdAt: "2026-09-09T00:00:00Z", updatedAt: "2026-09-09T00:00:00Z",
+      target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }, finalText: null,
+      legalReference: null, researchSummary: null, sources: [], timeline: [], failure: null
+    } as const;
+    const database = {
+      connections: vi.fn(async () => [connection]), cleanupExpiredForms: vi.fn(), pendingReportLinks: vi.fn(async () => []),
+      dueCardRepairs: vi.fn(async () => [{ report_id: repairedReport.reportId, discord_user_id: "discord-1", encrypted_target_context: null, card_repair_attempts: 1, trace_id: repairedReport.traceId }]),
+      claimDmCard: vi.fn(async () => true), releaseDmCard: vi.fn(), rescheduleCardRepair: vi.fn()
+    };
+    const deliveryError = Object.assign(new Error("Discord gateway unavailable"), { code: "ECONNRESET", status: 502 });
+    const logger = vi.fn();
+    const worker = new AccountNotificationWorker(
+      database as never,
+      { users: { fetch: vi.fn(async () => ({ send: vi.fn(async () => { throw deliveryError; }) })) } } as never,
+      { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
+      () => ({ report: vi.fn(async () => repairedReport) }) as never,
+      undefined,
+      logger
+    );
+
+    await worker.recoverOnce();
+
+    expect(logger).toHaveBeenCalledWith("initial_card_retry", expect.objectContaining({
+      reportId: repairedReport.reportId,
+      errorCode: "ECONNRESET",
+      httpStatus: 502,
+      payload: expect.objectContaining({ flags: 32768, nonceLength: 21 }) as Record<string, unknown>
+    }), "warn");
+  });
+
   it("restores the predecessor DM mapping and logs correlation when a replacement response is reconciled", async () => {
     const database = {
       pendingReportLinks: vi.fn(async () => [{ id: "link-3", idempotency_key: "retry-key", encrypted_request: "retry-request" }]),
@@ -470,5 +603,18 @@ describe("account reconciliation", () => {
     expect(logger).toHaveBeenCalledWith("report_retry_recovered", expect.objectContaining({
       reportId: "11111111-1111-4111-8111-111111111111", traceId: "22222222-2222-4222-8222-222222222222"
     }));
+  });
+
+  it("marks a permanent notification failure ignored without scheduling another run", async () => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [], rowCount: 1 }));
+    const database = new AccountBotDatabase({ query } as never);
+
+    await database.ignoreNotification("event-1", "discord_validation_50035");
+
+    const [sql, values] = query.mock.calls[0]!;
+    expect(sql).toContain("state = 'ignored'");
+    expect(sql).toContain("locked_at = NULL");
+    expect(sql).not.toContain("run_at =");
+    expect(values).toEqual(["event-1", "discord_validation_50035"]);
   });
 });

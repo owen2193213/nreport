@@ -6,9 +6,10 @@ import type { Client, Message } from "discord.js";
 
 import type { AccountBotDatabase, ApiConnection, ClaimedNotification } from "./account-database.js";
 import type { BotConfig } from "./config.js";
+import { cardPayloadDiagnostics } from "./card-diagnostics.js";
 import { decryptJson } from "./crypto.js";
 import { shouldAbandonReportLink } from "./report-link-recovery.js";
-import { botLog, errorFields, safeErrorCategory } from "./observability.js";
+import { botLog, errorFields, isDiscordValidationFailure, safeErrorCategory } from "./observability.js";
 import { classifyReportView, decisionMessageOptions, shouldSendDecisionDm, statusMessageOptions, targetContextFromReport, visibleStatusHash, type TargetDisplayContext } from "./report-ui.js";
 import type { ReportDetail } from "@nreport/contracts";
 
@@ -18,6 +19,9 @@ type NotificationDeliveryStage =
   | "load_preferences" | "fetch_report" | "resolve_context" | "render_card"
   | "fetch_user" | "open_dm" | "fetch_card" | "claim_card" | "send_card"
   | "save_card_mapping" | "save_card_hash" | "edit_card" | "reply" | "complete_notification";
+type CardCreationResult =
+  | { outcome: "created" | "busy" | "terminal" }
+  | { outcome: "failed"; diagnostics: Record<string, unknown> };
 
 class ReconciliationEventIngestError extends Error {}
 
@@ -33,7 +37,7 @@ function notificationNonce(eventId: string): string {
 }
 
 function cardNonce(reportId: string): string {
-  return `nreport-card-${createHash("sha256").update(reportId).digest("hex").slice(0, 16)}`;
+  return `card-${createHash("sha256").update(reportId).digest("hex").slice(0, 16)}`;
 }
 
 export function isDiscordUnknownMessage(error: unknown): boolean {
@@ -78,6 +82,8 @@ export class AccountNotificationWorker {
     const startedAt = Date.now();
     const attempts = item.attempts;
     let deliveryStage: NotificationDeliveryStage = "load_preferences";
+    let payload: Record<string, unknown> | undefined;
+    let attemptedCardSend = false;
     const traceFields = {
       reportId: item.report_id,
       ...(item.trace_id === null ? {} : { traceId: item.trace_id })
@@ -124,7 +130,10 @@ export class AccountNotificationWorker {
         }
         try {
           deliveryStage = "send_card";
-          message = await dm.send({ ...options, nonce: cardNonce(report.reportId), enforceNonce: true });
+          const nonce = cardNonce(report.reportId);
+          payload = cardPayloadDiagnostics(options, nonce);
+          attemptedCardSend = true;
+          message = await dm.send({ ...options, nonce, enforceNonce: true });
           deliveryStage = "save_card_mapping";
           await this.database.setDmMapping(report.reportId, message.channelId, message.id);
           deliveryStage = "save_card_hash";
@@ -165,10 +174,18 @@ export class AccountNotificationWorker {
         });
       } else {
         const failureCategory = safeErrorCategory(error);
-        await this.database.retryNotification(item.event_id, failureCategory);
-        this.safeLog("account_notification_retry", {
+        const validationFailure = isDiscordValidationFailure(error);
+        const errorCode = validationFailure ? "discord_validation_50035" : failureCategory;
+        if (validationFailure) {
+          await this.database.ignoreNotification(item.event_id, errorCode);
+          if (attemptedCardSend) await this.database.terminalCardRepair(item.report_id, errorCode);
+        } else {
+          await this.database.retryNotification(item.event_id, errorCode);
+        }
+        this.safeLog(validationFailure ? "account_notification_ignored" : "account_notification_retry", {
           ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
-          deliveryStage, ...errorFields(error), failureCategory, stage: "notification", outcome: "retry"
+          deliveryStage, ...errorFields(error), ...(payload === undefined ? {} : { payload }), failureCategory,
+          stage: "notification", outcome: validationFailure ? "ignored" : "retry"
         }, "warn");
       }
     }
@@ -216,12 +233,13 @@ export class AccountNotificationWorker {
     const connections = await this.database.connections();
     for (const connection of connections) {
       if (this.stopping) break;
+      const startedAt = Date.now();
       try {
         await this.recoverConnection(connection, this.api(connection));
       } catch (error) {
         this.safeLog("account_recovery_failed", {
-          stage: "creation_recovery", outcome: "failed", durationMs: 0,
-          failureCategory: safeErrorCategory(error)
+          accountId: connection.account_id, stage: "creation_recovery", outcome: "failed", durationMs: Date.now() - startedAt,
+          ...errorFields(error), failureCategory: safeErrorCategory(error)
         }, "warn");
       }
     }
@@ -284,14 +302,14 @@ export class AccountNotificationWorker {
           ? targetContextFromReport(report)
           : this.decrypt<TargetDisplayContext>(repair.encrypted_target_context, this.config.dataEncryptionKey);
         const result = await this.ensureInitialCard(report, repair.discord_user_id, context);
-        if (result === "failed") {
+        if (result.outcome === "failed") {
           await this.database.rescheduleCardRepair(
             repair.report_id,
             reportRecoveryDelaySeconds(repair.card_repair_attempts, false)
           );
           this.safeLog("initial_card_retry", {
             reportId: report.reportId, traceId: report.traceId,
-            stage: "initial_card", outcome: "retry", durationMs: 0, failureCategory: "discord"
+            stage: "initial_card", outcome: "retry", durationMs: 0, ...result.diagnostics
           }, "warn");
         }
       } catch (error) {
@@ -302,7 +320,8 @@ export class AccountNotificationWorker {
         this.safeLog("initial_card_retry", {
           reportId: repair.report_id,
           ...(repair.trace_id === null ? {} : { traceId: repair.trace_id }),
-          stage: "initial_card", outcome: "retry", durationMs: 0, failureCategory: safeErrorCategory(error)
+          stage: "initial_card", outcome: "retry", durationMs: 0,
+          ...errorFields(error), failureCategory: safeErrorCategory(error)
         }, "warn");
       }
     }
@@ -312,31 +331,41 @@ export class AccountNotificationWorker {
     report: ReportDetail,
     discordUserId: string,
     context = targetContextFromReport(report)
-  ): Promise<"created" | "busy" | "failed"> {
+  ): Promise<CardCreationResult> {
     const startedAt = Date.now();
+    let payload: Record<string, unknown> | undefined;
     try {
-      if (!(await this.database.claimDmCard(report.reportId))) return "busy";
+      if (!(await this.database.claimDmCard(report.reportId))) return { outcome: "busy" };
       const user = await this.client.users.fetch(discordUserId);
-      const message = await user.send({ ...statusMessageOptions(report, context), nonce: cardNonce(report.reportId), enforceNonce: true });
+      const options = statusMessageOptions(report, context);
+      const nonce = cardNonce(report.reportId);
+      payload = cardPayloadDiagnostics(options, nonce);
+      const message = await user.send({ ...options, nonce, enforceNonce: true });
       await this.database.setDmMapping(report.reportId, message.channelId, message.id);
       await this.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
       this.safeLog("initial_card_created", {
         reportId: report.reportId, traceId: report.traceId,
         stage: "initial_card", outcome: "completed", durationMs: Date.now() - startedAt
       });
-      return "created";
+      return { outcome: "created" };
     } catch (error) {
+      const validationFailure = isDiscordValidationFailure(error);
+      const errorCode = validationFailure ? "discord_validation_50035" : undefined;
       try {
-        await this.database.releaseDmCard(report.reportId);
+        if (errorCode === undefined) await this.database.releaseDmCard(report.reportId);
+        else await this.database.terminalCardRepair(report.reportId, errorCode);
       } catch {
         // A card-delivery cleanup failure must not cause the already-created report to be recovered again.
       }
-      this.safeLog("initial_card_failed", {
+      const diagnostics = {
+        ...errorFields(error), ...(payload === undefined ? {} : { payload }), failureCategory: safeErrorCategory(error)
+      };
+      this.safeLog(validationFailure ? "initial_card_ignored" : "initial_card_failed", {
         reportId: report.reportId, traceId: report.traceId,
-        stage: "initial_card", outcome: "retry", durationMs: Date.now() - startedAt,
-        failureCategory: safeErrorCategory(error)
+        stage: "initial_card", outcome: validationFailure ? "ignored" : "retry", durationMs: Date.now() - startedAt,
+        ...diagnostics
       }, "warn");
-      return "failed";
+      return validationFailure ? { outcome: "terminal" } : { outcome: "failed", diagnostics };
     }
   }
 

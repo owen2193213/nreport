@@ -24,7 +24,14 @@ async function main(): Promise<void> {
   setBotDiagnosticSink((event, fields, level) => {
     const reportId = typeof fields.reportId === "string" ? fields.reportId : undefined;
     const traceId = typeof fields.traceId === "string" ? fields.traceId : undefined;
-    if (reportId !== undefined || traceId !== undefined) void database.recordDiagnostic({ ...(reportId === undefined ? {} : { reportId }), ...(traceId === undefined ? {} : { traceId }), service: "bot", severity: level, event, ...(typeof fields.stage === "string" ? { stage: fields.stage } : {}), ...(typeof fields.outcome === "string" ? { outcome: fields.outcome } : {}), details: fields }).catch(() => undefined);
+    if ((reportId !== undefined || traceId !== undefined || level !== "info") && event !== "bot_diagnostic_persistence_failed") {
+      void database.recordDiagnostic({
+        ...(reportId === undefined ? {} : { reportId }), ...(traceId === undefined ? {} : { traceId }), service: "bot", severity: level, event,
+        ...(typeof fields.stage === "string" ? { stage: fields.stage } : {}), ...(typeof fields.outcome === "string" ? { outcome: fields.outcome } : {}), details: fields
+      }).catch(() => {
+        process.stderr.write(`${JSON.stringify({ timestamp: new Date().toISOString(), level: "error", service: "nreport-discord-dsa-bot", event: "bot_diagnostic_persistence_failed", stage: "diagnostics", outcome: "failed" })}\n`);
+      });
+    }
   });
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],

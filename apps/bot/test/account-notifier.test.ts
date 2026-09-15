@@ -22,7 +22,7 @@ describe("report recovery scheduling", () => {
   });
 });
 
-function harness(hash: string | null = null, eventId = "event") {
+function harness(hash: string | null = null, eventId = "event", dmMessageId: string | null = "original-card") {
   const message = { edit: vi.fn().mockResolvedValue(undefined), reply: vi.fn().mockResolvedValue(undefined) };
   const dm = { messages: { fetch: vi.fn().mockResolvedValue(message) }, send: vi.fn() };
   const database = {
@@ -30,10 +30,10 @@ function harness(hash: string | null = null, eventId = "event") {
       trace_id: "33333333-3333-4333-8333-333333333333",
       attempts: 1,
       discord_user_id: "user", encrypted_api_key: "unused", encrypted_target_context: null,
-      dm_message_id: "original-card", visible_payload_hash: hash }),
+      dm_message_id: dmMessageId, visible_payload_hash: hash }),
     notificationPreferences: vi.fn().mockResolvedValue({ decisionEnabled: true, reportDeniedEnabled: false, problemEnabled: true }),
-    completeCardUpdate: vi.fn(), completeNotification: vi.fn(), retryNotification: vi.fn(),
-    claimDmCard: vi.fn().mockResolvedValue(false), clearStaleDmMapping: vi.fn().mockResolvedValue(true)
+    completeCardUpdate: vi.fn(), completeNotification: vi.fn(), retryNotification: vi.fn(), ignoreNotification: vi.fn(),
+    claimDmCard: vi.fn().mockResolvedValue(false), releaseDmCard: vi.fn(), terminalCardRepair: vi.fn(), clearStaleDmMapping: vi.fn().mockResolvedValue(true)
   };
   const api = { report: vi.fn().mockResolvedValue(report) };
   const client = { users: { fetch: vi.fn().mockResolvedValue({ createDM: vi.fn().mockResolvedValue(dm) }) } };
@@ -72,6 +72,28 @@ describe("notification delivery against an existing report card", () => {
     expect(first.message.reply.mock.calls[0]?.[0]).toMatchObject({ nonce: "nreport-b8e1f80bd70ae078", enforceNonce: true });
     expect(retry.message.reply.mock.calls[0]?.[0]).toMatchObject({ nonce: "nreport-b8e1f80bd70ae078", enforceNonce: true });
     expect(different.message.reply.mock.calls[0]?.[0]).toMatchObject({ nonce: "nreport-b4e3d14e7519279e", enforceNonce: true });
+  });
+
+  it("uses a deterministic Discord-valid nonce when it must create a status card", async () => {
+    const first = harness(null, "event", null);
+    const retry = harness(null, "event", null);
+    const created = { channelId: "dm", id: "card" };
+    first.database.claimDmCard.mockResolvedValue(true);
+    retry.database.claimDmCard.mockResolvedValue(true);
+    first.dm.send.mockResolvedValue(created);
+    retry.dm.send.mockResolvedValue(created);
+
+    await first.worker.processOne();
+    await retry.worker.processOne();
+
+    const firstPayload = first.dm.send.mock.calls[0]?.[0] as { nonce?: string; enforceNonce?: boolean } | undefined;
+    const retryPayload = retry.dm.send.mock.calls[0]?.[0] as { nonce?: string } | undefined;
+    const firstNonce = firstPayload?.nonce;
+    const retryNonce = retryPayload?.nonce;
+    expect(firstNonce).toBe("card-bd7662a5eeb41614");
+    expect(firstNonce).toHaveLength(21);
+    expect(retryNonce).toBe(firstNonce);
+    expect(firstPayload).toMatchObject({ enforceNonce: true });
   });
 
   it("logs claimed and completed outcomes with internal report correlation only", async () => {
@@ -117,6 +139,32 @@ describe("notification delivery against an existing report card", () => {
     expect(JSON.stringify(h.logger.mock.calls)).not.toContain("canary-secret");
     expect(h.database.completeNotification).not.toHaveBeenCalled();
     if (operation === "edit") expect(h.message.reply).not.toHaveBeenCalled();
+  });
+
+  it("stops a Discord validation failure and records safe send-card diagnostics", async () => {
+    const h = harness(null, "event", null);
+    h.database.claimDmCard.mockResolvedValue(true);
+    h.dm.send.mockRejectedValue(Object.assign(new Error("Invalid Form Body"), {
+      code: 50035,
+      status: 400,
+      rawError: {
+        message: "Invalid Form Body",
+        errors: { nonce: { _errors: [{ code: "BASE_TYPE_MAX_LENGTH", message: "Must be 25 or fewer in length." }] } }
+      }
+    }));
+
+    await h.worker.processOne();
+
+    expect(h.database.ignoreNotification).toHaveBeenCalledWith("event", "discord_validation_50035");
+    expect(h.database.retryNotification).not.toHaveBeenCalled();
+    expect(h.logger).toHaveBeenCalledWith("account_notification_ignored", expect.objectContaining({
+      reportId: report.reportId,
+      deliveryStage: "send_card",
+      errorCode: "50035",
+      httpStatus: 400,
+      discordValidation: { message: "Invalid Form Body", paths: ["nonce:BASE_TYPE_MAX_LENGTH"] },
+      payload: expect.objectContaining({ nonceLength: 21 }) as Record<string, unknown>
+    }), "warn");
   });
 
   it("does not create a duplicate card while another worker owns its claim", async () => {

@@ -194,9 +194,10 @@ export function buildStatusCard(report: ReportDetail, context: TargetDisplayCont
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(visibleMetadata.map(([label, value]) => `**${safe(label)}:** ${safe(value)}`).join("\n")));
   }
   if (report.status === "queued") container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`Queue length: **${report.queueLength ?? 0}**`));
+  const reporterAlias = reporterEmailAlias(report.reporterEmail);
   container.addTextDisplayComponents(new TextDisplayBuilder().setContent([
     `Report ID: \`${safe(report.reportId)}\``,
-    typeof report.reporterEmail === "string" ? `Reporter email: \`${safe(report.reporterEmail)}\`` : null
+    reporterAlias === undefined ? null : `Reporter email: \`${safe(reporterAlias)}\``
   ].filter((value): value is string => value !== null).join("\n")));
   if (report.category || report.country) {
     container.addSeparatorComponents(separator()).addTextDisplayComponents(new TextDisplayBuilder().setContent([
@@ -405,6 +406,12 @@ function reportCodeBlock(finalText: string): string {
 
 function safe(value: string): string {
   return value.replaceAll("`", "ˋ").slice(0, 1_000);
+}
+
+function reporterEmailAlias(value: string | null | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const at = value.indexOf("@");
+  return at > 0 ? value.slice(0, at) : undefined;
 }
 
 function validHttpsUrl(value: string | undefined): boolean {

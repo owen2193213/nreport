@@ -114,7 +114,7 @@ async function main(): Promise<void> {
     undefined,
     (outcome) => {
       if (outcome.component === "job" && "reportId" in outcome) void reports.recordDiagnostic({ reportId: outcome.reportId, traceId: outcome.traceId, service: "api", severity: outcome.outcome === "failed" || outcome.outcome === "ambiguous" ? "error" : "info", event: "lifecycle_worker_outcome", stage: outcome.stage, outcome: outcome.outcome, ...("attempts" in outcome ? { lifecycleAttempt: outcome.attempts } : {}), ...(outcome.errorCategory === undefined ? {} : { errorCode: outcome.errorCategory }), details: outcome }).catch(() => undefined);
-      if (outcome.outcome === "failed") app.log.error({ event: "lifecycle_runner_outcome", ...outcome }, "Lifecycle runner outcome");
+      if (outcome.outcome === "failed" || outcome.outcome === "ambiguous") app.log.error({ event: "lifecycle_runner_outcome", ...outcome }, "Lifecycle runner outcome");
       else app.log.info({ event: "lifecycle_runner_outcome", ...outcome }, "Lifecycle runner outcome");
       void reports.recordOperationalWorker({
         component: "lifecycle", instanceId: workerInstanceId, configuredCapacity: config.lifecycleConcurrency ?? 2,

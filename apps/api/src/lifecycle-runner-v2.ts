@@ -90,6 +90,7 @@ export type LifecycleRunnerOutcome =
       reportId: string;
       traceId: string;
       errorCategory?: string;
+      errorMessage?: string;
       retryDelayMs?: number;
       submissionCertainty?: "not_started" | "confirmed" | "ambiguous";
     }
@@ -113,6 +114,7 @@ export type LifecycleRunnerOutcome =
 interface LifecycleJobResult {
   outcome: "completed" | "waiting_for_email" | "retry_scheduled" | "failed" | "ambiguous" | "ownership_lost";
   errorCategory?: string;
+  errorMessage?: string;
   retryDelayMs?: number;
   submissionCertainty?: "not_started" | "confirmed" | "ambiguous";
 }
@@ -281,7 +283,7 @@ export class LifecycleRunner {
         return failedResult("discord_review_ineligible");
       } else if (submissionStarted && ambiguous(error)) {
         await this.store.failReview(job, "request_ambiguous", "review_request_ambiguous", "The automatic appeal outcome could not be confirmed.");
-        return ambiguousResult("review_request_ambiguous");
+        return ambiguousResult("review_request_ambiguous", errorMessageOf(error));
       } else if (!submissionStarted && job.attempts < job.max_attempts && retryable(error)) {
         const delaySeconds = retryDelaySeconds(job.attempts, error);
         await this.store.retryLifecycleJob(job, discordFailureCode(error), delaySeconds);
@@ -361,7 +363,7 @@ export class LifecycleRunner {
           code,
           "Discord submission started, but its final outcome could not be safely retried."
         );
-        return ambiguous(error) ? ambiguousResult(code) : failedResult(code);
+        return ambiguous(error) ? ambiguousResult(code, errorMessageOf(error)) : failedResult(code, errorMessageOf(error));
       } else {
         return this.handleBeforeBoundaryFailure(job, error);
       }
@@ -653,12 +655,16 @@ function retryResult(errorCategory: string, delaySeconds: number): LifecycleJobR
   };
 }
 
-function failedResult(errorCategory: string): LifecycleJobResult {
-  return { outcome: "failed", errorCategory, submissionCertainty: "not_started" };
+function failedResult(errorCategory: string, errorMessage?: string): LifecycleJobResult {
+  return { outcome: "failed", errorCategory, submissionCertainty: "not_started", ...(errorMessage === undefined ? {} : { errorMessage }) };
 }
 
-function ambiguousResult(errorCategory: string): LifecycleJobResult {
-  return { outcome: "ambiguous", errorCategory, submissionCertainty: "ambiguous" };
+function ambiguousResult(errorCategory: string, errorMessage?: string): LifecycleJobResult {
+  return { outcome: "ambiguous", errorCategory, submissionCertainty: "ambiguous", ...(errorMessage === undefined ? {} : { errorMessage }) };
+}
+
+function errorMessageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function completedResult(submissionCertainty: "confirmed"): LifecycleJobResult {

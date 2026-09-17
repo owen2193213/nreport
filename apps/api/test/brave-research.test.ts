@@ -8,6 +8,7 @@ import type { AiRequestContext } from "../src/preparation/ai-client.js";
 import type { ReportDraft } from "../src/preparation/types.js";
 
 const ACTOR: AiRequestContext = { reportId: "11111111-1111-4111-8111-111111111111", traceId: "33333333-3333-4333-8333-333333333333", userId: "reporter-id" };
+type Sleep = (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 
 function draft(): ReportDraft {
   return {
@@ -241,12 +242,45 @@ describe("BraveResearchClient", () => {
       .fn()
       .mockResolvedValueOnce(new Response("temporary", { status }))
       .mockResolvedValueOnce(termResponse());
+    const sleep = vi.fn<Sleep>(() => Promise.resolve());
     const result = await new BraveResearchClient("key", {
-      request: request as unknown as typeof fetch
+      request: request as unknown as typeof fetch,
+      sleep
     }).search("term", "coded term meaning", "DE", Date.now() + 5_000, ACTOR);
 
     expect(request).toHaveBeenCalledTimes(2);
     expect(result.searchRequests).toBe(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep.mock.calls[0]?.[0]).toBeGreaterThanOrEqual(1_000);
+    expect(sleep.mock.calls[0]?.[0]).toBeLessThan(1_300);
+  });
+
+  it("honors a numeric Retry-After header on the single retry", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("busy", { status: 429, headers: { "Retry-After": "4" } }))
+      .mockResolvedValueOnce(termResponse());
+    const sleep = vi.fn<Sleep>(() => Promise.resolve());
+    await new BraveResearchClient("key", {
+      request: request as unknown as typeof fetch,
+      sleep
+    }).search("term", "coded term meaning", "DE", Date.now() + 30_000, ACTOR);
+
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep.mock.calls[0]?.[0]).toBeGreaterThanOrEqual(4_000);
+    expect(sleep.mock.calls[0]?.[0]).toBeLessThan(5_000);
+  });
+
+  it("does not retry past the research deadline", async () => {
+    const request = vi.fn().mockResolvedValue(new Response("temporary", { status: 500 }));
+    const sleep = vi.fn<Sleep>(() => Promise.resolve());
+    await expect(
+      new BraveResearchClient("key", { request: request as unknown as typeof fetch, sleep })
+        .search("term", "coded term meaning", "DE", Date.now() + 200, ACTOR)
+    ).rejects.toMatchObject({ kind: "provider" });
+
+    expect(sleep).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it("does not retry permanent errors", async () => {

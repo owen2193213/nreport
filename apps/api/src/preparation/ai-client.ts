@@ -75,12 +75,52 @@ function usageFrom(value: ChatCompletionResponse["usage"]): AiUsage {
   };
 }
 
+export type AiClientSleep = (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+
 export interface AiClientOptions {
   request?: typeof globalThis.fetch;
+  sleep?: AiClientSleep;
+}
+
+function defaultSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const rejectAbort: (reason: unknown) => void = reject;
+    if (signal?.aborted) {
+      rejectAbort(signal.reason);
+      return;
+    }
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rejectAbort(signal?.reason);
+    };
+    const timer = setTimeout(finish, milliseconds);
+    timer.unref?.();
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function retryAfterSecondsFromHeader(response: Response): number | undefined {
+  const header = response.headers.get("retry-after");
+  if (header === null) return undefined;
+  const trimmed = header.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return undefined;
+  const value = Number(trimmed);
+  return Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 export class AiClient {
   private readonly request: typeof globalThis.fetch;
+  private readonly sleep: AiClientSleep;
 
   public constructor(
     private readonly apiKey: string,
@@ -88,6 +128,27 @@ export class AiClient {
     options: AiClientOptions = {}
   ) {
     this.request = options.request ?? globalThis.fetch;
+    this.sleep = options.sleep ?? defaultSleep;
+  }
+
+  /**
+   * Waits before a retry, honoring a numeric Retry-After (seconds) when given,
+   * else exponential backoff (1s, then 2s) with small jitter. Returns false
+   * without sleeping when the wait would cross the workflow deadline, so the
+   * caller can give up instead of retrying past it.
+   */
+  private async waitBeforeRetry(
+    attempt: number,
+    deadline: number,
+    signal?: AbortSignal,
+    retryAfterSeconds?: number
+  ): Promise<boolean> {
+    const base =
+      retryAfterSeconds !== undefined ? retryAfterSeconds * 1_000 : attempt === 1 ? 1_000 : 2_000;
+    const delayMs = base + Math.random() * base * 0.2;
+    if (delayMs > deadline - Date.now()) return false;
+    await this.sleep(delayMs, signal);
+    return true;
   }
 
   public get endpoint(): string {
@@ -155,7 +216,9 @@ export class AiClient {
           undefined,
           attempts
         );
-        if (attempts < 3 && deadline > Date.now()) continue;
+        if (attempts < 3 && deadline > Date.now() && (await this.waitBeforeRetry(attempts, deadline, signal))) {
+          continue;
+        }
         throw new AiClientError(
           failureCategory,
           isTimeout
@@ -177,7 +240,14 @@ export class AiClient {
           attempts
         );
         const retryable = response.status === 429 || response.status >= 500;
-        if (attempts < 3 && retryable && deadline > Date.now()) continue;
+        if (
+          attempts < 3 &&
+          retryable &&
+          deadline > Date.now() &&
+          (await this.waitBeforeRetry(attempts, deadline, signal, retryAfterSecondsFromHeader(response)))
+        ) {
+          continue;
+        }
         throw new AiClientError(
           kind,
           response.status === 429

@@ -128,7 +128,7 @@ describe("API account security primitives", () => {
 
   it("enforces read limits by account instead of by rotating key", async () => {
     const query = vi.fn()
-      .mockResolvedValueOnce({ rows: [{ request_count: 120 }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ request_count: 300 }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 });
     const repository = new AccountRepository({ query } as never, "p".repeat(32));
 
@@ -138,6 +138,7 @@ describe("API account security primitives", () => {
       statusCode: 429
     });
     expect(query).toHaveBeenNthCalledWith(1, expect.stringContaining("account_read"), ["account-1"]);
+    expect(query.mock.calls[0]?.[0]).toEqual(expect.stringContaining("request_count < 300"));
   });
 
   it("locks an account balance and refuses an adjustment below zero", async () => {

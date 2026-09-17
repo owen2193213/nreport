@@ -128,6 +128,12 @@ async function postDiagnostic(env: Env, input: { recipient: string; messageId: s
   } catch { /* Cloudflare runtime logs remain the fallback. */ }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const MAX_FORWARD_ATTEMPTS = 3;
+
 function isDiscordEnvelopeSender(address: string): boolean {
   const normalized = address.trim().toLowerCase();
   const at = normalized.lastIndexOf("@");
@@ -157,33 +163,66 @@ export default {
     const rawEmail = await new Response(message.raw).arrayBuffer();
     const rawHash = await sha256(rawEmail);
     const messageId = message.headers.get("message-id")?.trim() || `sha256:${rawHash}`;
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    const signature = await hmac(
-      env.INGEST_SHARED_SECRET,
-      `${timestamp}\n${recipient}\n${messageId}\n${rawHash}`
-    );
     const messageIdDigest = (await sha256(messageId)).slice(0, 16);
-    try {
-      workerLog("info", "email_forward_started", {
-        stage: "email_forward", outcome: "started",
-        messageIdDigest,
-        recipient,
-        ingestUrlConfigured:
-          typeof env.INGEST_URL === "string" && env.INGEST_URL.length > 0
-      });
-      const response = await fetch(env.INGEST_URL, {
-        method: "POST",
-        headers: {
-          "content-type": "message/rfc822",
-          "x-dsa-recipient": recipient,
-          "x-dsa-message-id": messageId,
-          "x-dsa-timestamp": timestamp,
-          "x-dsa-signature": signature
-        },
-        body: rawEmail,
-        signal: AbortSignal.timeout(15_000)
-      });
+    workerLog("info", "email_forward_started", {
+      stage: "email_forward", outcome: "started",
+      messageIdDigest,
+      recipient,
+      ingestUrlConfigured:
+        typeof env.INGEST_URL === "string" && env.INGEST_URL.length > 0
+    });
+
+    for (let attempt = 1; attempt <= MAX_FORWARD_ATTEMPTS; attempt++) {
+      // Re-sign every attempt: the signature covers the timestamp, so a retry cannot reuse it.
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const signature = await hmac(
+        env.INGEST_SHARED_SECRET,
+        `${timestamp}\n${recipient}\n${messageId}\n${rawHash}`
+      );
+      const isFinalAttempt = attempt === MAX_FORWARD_ATTEMPTS;
+
+      let response: Response;
+      try {
+        response = await fetch(env.INGEST_URL, {
+          method: "POST",
+          headers: {
+            "content-type": "message/rfc822",
+            "x-dsa-recipient": recipient,
+            "x-dsa-message-id": messageId,
+            "x-dsa-timestamp": timestamp,
+            "x-dsa-signature": signature
+          },
+          body: rawEmail,
+          signal: AbortSignal.timeout(10_000)
+        });
+      } catch (error) {
+        const errorName = error instanceof Error ? error.name : "UnknownError";
+        if (!isFinalAttempt) {
+          workerLog("warn", "email_forward_retrying", {
+            stage: "email_forward", outcome: "retrying", messageIdDigest, recipient, attempt, errorName
+          });
+          await sleep(attempt === 1 ? 1_000 : 3_000);
+          continue;
+        }
+        workerLog("error", "email_forward_failed", {
+          stage: "email_forward", outcome: "failed",
+          messageIdDigest,
+          recipient,
+          errorName
+        });
+        await postDiagnostic(env, { recipient, messageId, timestamp, signature, messageIdDigest, rawHash, details: { errorName } });
+        throw error;
+      }
+
       if (!response.ok) {
+        const retryable = response.status === 429 || response.status >= 500;
+        if (retryable && !isFinalAttempt) {
+          workerLog("warn", "email_forward_retrying", {
+            stage: "email_forward", outcome: "retrying", messageIdDigest, recipient, attempt, httpStatus: response.status
+          });
+          await sleep(attempt === 1 ? 1_000 : 3_000);
+          continue;
+        }
         const diagnostic = diagnosticResponse(response);
         workerLog("error", "email_forward_failed", {
           stage: "email_forward", outcome: "failed",
@@ -196,6 +235,7 @@ export default {
         await postDiagnostic(env, { recipient, messageId, timestamp, signature, messageIdDigest, rawHash, details: { httpStatus: response.status, response: diagnostic } });
         throw new Error(`Railway email ingestion returned HTTP ${response.status}.`);
       }
+
       const envelope = await ingestEnvelope(response);
       workerLog("info", "email_forward_completed", {
         stage: "email_forward", outcome: "accepted",
@@ -210,17 +250,7 @@ export default {
           stage: "email_forward", outcome: "uncorrelated", messageIdDigest, recipient, httpStatus: response.status
         });
       }
-    } catch (error) {
-      if (!(error instanceof Error && error.message.startsWith("Railway email ingestion returned"))) {
-        workerLog("error", "email_forward_failed", {
-          stage: "email_forward", outcome: "failed",
-          messageIdDigest,
-          recipient,
-          errorName: error instanceof Error ? error.name : "UnknownError"
-        });
-        await postDiagnostic(env, { recipient, messageId, timestamp, signature, messageIdDigest, rawHash, details: { errorName: error instanceof Error ? error.name : "UnknownError" } });
-      }
-      throw error;
+      return;
     }
   }
 } satisfies ExportedHandler<Env>;

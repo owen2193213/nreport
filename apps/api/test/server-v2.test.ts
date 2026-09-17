@@ -61,6 +61,43 @@ describe("v2 account-owned server", () => {
     await server.close();
   });
 
+  it("raises the default global read rate limit to 300 per minute", async () => {
+    const server = await buildV2Server(config, {
+      healthcheck: vi.fn(async () => undefined),
+      accounts: { authenticate: vi.fn(), accountView: vi.fn(), createAccount: vi.fn() }
+    } as never);
+
+    const response = await server.inject({ method: "GET", url: "/healthz" });
+
+    expect(response.headers["x-ratelimit-limit"]).toBe("300");
+    await server.close();
+  });
+
+  it.each(["/webhooks/cloudflare-email", "/webhooks/cloudflare-email-diagnostic"])(
+    "keys the %s rate limit by route with a max of 1000, not by request.ip",
+    async (url) => {
+      const server = await buildV2Server(config, {
+        healthcheck: vi.fn(),
+        accounts: { authenticate: vi.fn(), accountView: vi.fn(), createAccount: vi.fn() },
+        reports: {}
+      } as never);
+
+      const first = await server.inject({ method: "POST", url, remoteAddress: "1.1.1.1", payload: {} });
+      const second = await server.inject({ method: "POST", url, remoteAddress: "2.2.2.2", payload: {} });
+
+      expect(first.headers["x-ratelimit-limit"]).toBe("1000");
+      expect(second.headers["x-ratelimit-limit"]).toBe("1000");
+      // Both requests share one counter despite different remote addresses: the route is
+      // HMAC-signed and sits behind Railway's shared proxy IP, so the limit keys on the
+      // route rather than request.ip.
+      expect(Number(second.headers["x-ratelimit-remaining"])).toBeLessThan(
+        Number(first.headers["x-ratelimit-remaining"])
+      );
+
+      await server.close();
+    }
+  );
+
   it("keeps a committed report successful when optional queue telemetry is unavailable", async () => {
     const report = {
       id: "22222222-2222-4222-8222-222222222222", account_id: principal.accountId,

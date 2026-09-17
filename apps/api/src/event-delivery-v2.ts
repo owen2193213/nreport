@@ -28,13 +28,16 @@ interface EventDeliveryOptions {
   fetcher?: typeof fetch;
   now?: () => Date;
   log?: (event: string, fields: Record<string, unknown>, level?: "info" | "warn" | "error") => void;
+  /** Number of concurrent claim/delivery loops. Defaults to 4. */
+  concurrency?: number;
 }
 
 export class AccountEventDeliveryWorker {
   private stopping = false;
-  private running: Promise<void> | undefined;
+  private running: Promise<void>[] = [];
   private readonly fetcher: typeof fetch;
   private readonly now: () => Date;
+  private readonly concurrency: number;
 
   public constructor(
     private readonly store: AccountEventDeliveryStore,
@@ -42,18 +45,19 @@ export class AccountEventDeliveryWorker {
   ) {
     this.fetcher = options.fetcher ?? fetch;
     this.now = options.now ?? (() => new Date());
+    this.concurrency = Math.max(1, Math.floor(options.concurrency ?? 4));
   }
 
   public start(): void {
-    if (this.running !== undefined) return;
+    if (this.running.length > 0) return;
     this.stopping = false;
-    this.running = this.loop();
+    this.running = Array.from({ length: this.concurrency }, () => this.loop());
   }
 
   public async stop(): Promise<void> {
     this.stopping = true;
-    await this.running;
-    this.running = undefined;
+    await Promise.all(this.running);
+    this.running = [];
   }
 
   public async processOne(): Promise<boolean> {

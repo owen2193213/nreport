@@ -318,6 +318,14 @@ export class LifecycleRunner {
   private async verifyAndSubmit(job: LifecycleJob, ownership: JobOwnership): Promise<LifecycleJobResult> {
     const report = await this.requiredReport(job.report_id);
     if (report.session_state === null) {
+      // The verification email can arrive, and this job can be scheduled, before the
+      // request_code job has finished saving session_state. Retry instead of failing
+      // outright so the credit is not released for a race that will resolve itself.
+      if (job.attempts < job.max_attempts) {
+        return (await this.store.retryLifecycleJob(job, "session_not_ready", 3))
+          ? retryResult("session_not_ready", 3)
+          : ownershipLostResult();
+      }
       await this.store.failBeforeSubmission(job, "session_not_ready", "Verification session was not ready.");
       return failedResult("session_not_ready");
     }

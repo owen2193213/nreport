@@ -8,6 +8,7 @@ import {
 
 const ACTOR: AiRequestContext = { reportId: "11111111-1111-4111-8111-111111111111", traceId: "33333333-3333-4333-8333-333333333333", userId: "reporter-id" };
 const CEREBRAS_MODEL = "qwen-3.8-27b";
+type Sleep = (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 
 function success(
   content = '{"ok":true}',
@@ -187,13 +188,16 @@ describe("AiClient", () => {
       .mockResolvedValueOnce(new Response("temporary", { status }))
       .mockResolvedValueOnce(new Response("temporary", { status }))
       .mockResolvedValueOnce(success());
+    const sleep = vi.fn<Sleep>(() => Promise.resolve());
 
     const result = await new AiClient("key", CEREBRAS_MODEL, {
-      request: request as unknown as typeof fetch
+      request: request as unknown as typeof fetch,
+      sleep
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
     expect(request).toHaveBeenCalledTimes(3);
     expect(result.content).toBe('{"ok":true}');
+    expect(sleep).toHaveBeenCalledTimes(2);
   });
 
   it("retries transient network failures up to three attempts", async () => {
@@ -202,13 +206,87 @@ describe("AiClient", () => {
       .mockRejectedValueOnce(new Error("temporary network failure"))
       .mockRejectedValueOnce(new Error("temporary network failure"))
       .mockResolvedValueOnce(success());
+    const sleep = vi.fn<Sleep>(() => Promise.resolve());
 
     const result = await new AiClient("key", CEREBRAS_MODEL, {
-      request: request as unknown as typeof fetch
+      request: request as unknown as typeof fetch,
+      sleep
     }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
 
     expect(request).toHaveBeenCalledTimes(3);
     expect(result.content).toBe('{"ok":true}');
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it("backs off before each retry, roughly 1s then 2s absent a Retry-After header", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("temporary", { status: 500 }))
+      .mockResolvedValueOnce(new Response("temporary", { status: 500 }))
+      .mockResolvedValueOnce(success());
+    const sleep = vi.fn<Sleep>(() => Promise.resolve());
+
+    await new AiClient("key", CEREBRAS_MODEL, {
+      request: request as unknown as typeof fetch,
+      sleep
+    }).complete({}, Date.now() + 5_000, ACTOR, "synthesize");
+
+    expect(sleep.mock.calls[0]?.[0]).toBeGreaterThanOrEqual(1_000);
+    expect(sleep.mock.calls[0]?.[0]).toBeLessThan(1_300);
+    expect(sleep.mock.calls[1]?.[0]).toBeGreaterThanOrEqual(2_000);
+    expect(sleep.mock.calls[1]?.[0]).toBeLessThan(2_600);
+  });
+
+  it("honors a numeric Retry-After header instead of the exponential backoff", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("busy", { status: 429, headers: { "Retry-After": "7" } }))
+      .mockResolvedValueOnce(success());
+    const sleep = vi.fn<Sleep>(() => Promise.resolve());
+
+    await new AiClient("key", CEREBRAS_MODEL, {
+      request: request as unknown as typeof fetch,
+      sleep
+    }).complete({}, Date.now() + 30_000, ACTOR, "synthesize");
+
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep.mock.calls[0]?.[0]).toBeGreaterThanOrEqual(7_000);
+    expect(sleep.mock.calls[0]?.[0]).toBeLessThan(8_500);
+  });
+
+  it("throws instead of sleeping past the workflow deadline", async () => {
+    const request = vi.fn().mockResolvedValue(new Response("busy", { status: 429 }));
+    const sleep = vi.fn<Sleep>(() => Promise.resolve());
+
+    await expect(
+      new AiClient("key", CEREBRAS_MODEL, {
+        request: request as unknown as typeof fetch,
+        sleep
+      }).complete({}, Date.now() + 200, ACTOR, "synthesize")
+    ).rejects.toMatchObject({ kind: "rate_limited" });
+
+    expect(sleep).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes the retry backoff sleep abort-aware via the passed signal", async () => {
+    const controller = new AbortController();
+    const request = vi.fn().mockResolvedValue(new Response("temporary", { status: 500 }));
+    const sleep = vi.fn<Sleep>((_ms, signal) => new Promise<void>((_resolve, reject) => {
+      const rejectAbort: (reason: unknown) => void = reject;
+      if (signal?.aborted) { rejectAbort(signal.reason); return; }
+      signal?.addEventListener("abort", () => rejectAbort(signal.reason), { once: true });
+    }));
+
+    const pending = new AiClient("key", CEREBRAS_MODEL, {
+      request: request as unknown as typeof fetch,
+      sleep
+    }).complete({}, Date.now() + 30_000, ACTOR, "synthesize", controller.signal);
+
+    controller.abort(new Error("caller aborted"));
+
+    await expect(pending).rejects.toThrow("caller aborted");
+    expect(sleep).toHaveBeenCalledWith(expect.any(Number), controller.signal);
   });
 
   it("does not retry malformed provider payloads", async () => {

@@ -70,4 +70,75 @@ describe("account report email correlation", () => {
       ["alias@example.test"]
     );
   });
+
+  it("adopts a report stuck as ambiguous_submission_state when a report-update email proves the submission reached Discord", async () => {
+    const client = {
+      query: vi.fn(async (sql: string, values?: unknown[]) => {
+        if (sql.includes("WHERE reporter_email = $1") && sql.includes("FOR UPDATE") && !sql.includes("discord_report_id")) {
+          return {
+            rows: [{
+              id: "report-1", account_id: "account-1", trace_id: "33333333-3333-4333-8333-333333333333",
+              discord_report_id: null, error_code: "ambiguous_submission_state",
+              submission_started_at: new Date("2026-09-01T00:00:00Z"), lifecycle_attempt: 1,
+              reporter_email: "alias@example.test"
+            }],
+            rowCount: 1
+          };
+        }
+        if (sql.startsWith("UPDATE account_reports SET discord_report_id")) {
+          return {
+            rows: [{
+              id: "report-1", account_id: "account-1", trace_id: "33333333-3333-4333-8333-333333333333",
+              discord_report_id: values?.[1], error_code: null, status: "submitted",
+              discord_status: null, review_status: null, lifecycle_attempt: 1, reporter_email: "alias@example.test"
+            }],
+            rowCount: 1
+          };
+        }
+        if (sql.includes("INSERT INTO account_inbound_messages")) return { rows: [{ message_id: "mail-recover" }], rowCount: 1 };
+        if (sql.includes("INSERT INTO account_report_events")) return { rows: [{ id: "1" }], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+      }),
+      release: vi.fn()
+    };
+    const repository = new ReportRepository({ connect: async () => client } as never);
+
+    const result = await repository.registerReportUpdateEmail({
+      messageId: "mail-recover", recipient: "alias@example.test",
+      discordReportId: "1548921252872462416", discordStatus: "received"
+    });
+
+    expect(result).toMatchObject({ status: "accepted", reportId: "report-1" });
+    const adopt = client.query.mock.calls.find(([sql]) => String(sql).startsWith("UPDATE account_reports SET discord_report_id"));
+    expect(adopt?.[1]).toEqual(["report-1", "1548921252872462416"]);
+    const event = client.query.mock.calls.find(([sql, values]) => String(sql).includes("INSERT INTO account_report_events") && values?.includes("report_receipt_recovered"));
+    expect(event).toBeDefined();
+  });
+
+  it("does not adopt an ambiguous report from a review_received email", async () => {
+    const client = {
+      query: vi.fn(async (sql: string, _values?: unknown[]) => {
+        if (sql.includes("WHERE reporter_email = $1") && sql.includes("FOR UPDATE") && !sql.includes("discord_report_id")) {
+          return {
+            rows: [{
+              id: "report-1", account_id: "account-1", discord_report_id: null,
+              error_code: "ambiguous_submission_state", submission_started_at: new Date("2026-09-01T00:00:00Z"),
+              lifecycle_attempt: 1, reporter_email: "alias@example.test"
+            }],
+            rowCount: 1
+          };
+        }
+        if (sql.includes("INSERT INTO account_inbound_messages")) return { rows: [{ message_id: "mail-review" }], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+      }),
+      release: vi.fn()
+    };
+    const repository = new ReportRepository({ connect: async () => client } as never);
+
+    await repository.registerReviewUpdateEmail({
+      messageId: "mail-review", recipient: "alias@example.test", discordReportId: "1548921252872462416"
+    });
+
+    expect(client.query.mock.calls.some(([sql]) => String(sql).startsWith("UPDATE account_reports SET discord_report_id"))).toBe(false);
+  });
 });

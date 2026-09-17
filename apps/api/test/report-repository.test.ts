@@ -177,21 +177,85 @@ describe("deadline expiry", () => {
   it("fails consumed retry chains on verification timeout without refunding them", async () => {
     const client = {
       query: vi.fn(async (sql: string, _values?: unknown[]) => {
-        if (sql.includes("report.verification_deadline")) {
-          return { rows: [{ id: "retry-1", account_id: "account-1", credit_chain_id: "chain-1", credit_state: "consumed", lifecycle_attempt: 2 }], rowCount: 1 };
+        if (sql.includes("SELECT account_id FROM account_reports WHERE id = $1")) {
+          return { rows: [{ account_id: "account-1" }], rowCount: 1 };
+        }
+        if (sql.includes("FROM api_accounts WHERE id = $1 FOR UPDATE")) {
+          return { rows: [{ ok: 1 }], rowCount: 1 };
+        }
+        if (sql.includes("report.verification_deadline") && sql.includes("FOR UPDATE OF report, chain")) {
+          return { rows: [{ account_id: "account-1", credit_chain_id: "chain-1", credit_state: "consumed", lifecycle_attempt: 2 }], rowCount: 1 };
         }
         if (sql.includes("INSERT INTO account_report_events")) return { rows: [{ id: "1" }], rowCount: 1 };
         return { rows: [], rowCount: 1 };
       }),
       release: vi.fn()
     };
-    const repository = new ReportRepository({ connect: async () => client } as never);
+    const poolQuery = vi.fn(async (sql: string) => (
+      sql.includes("report.verification_deadline") ? { rows: [{ id: "retry-1" }], rowCount: 1 } : { rows: [], rowCount: 0 }
+    ));
+    const repository = new ReportRepository({ connect: async () => client, query: poolQuery } as never);
 
     await repository.expireDeadlines();
 
-    expect(client.query.mock.calls.some(([sql]) => String(sql).includes("chain.state IN ('reserved', 'consumed')"))).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("available_credits = available_credits + 1"))).toBe(false);
     expect(client.query.mock.calls.some(([sql, values]) => String(sql).includes("verification_timeout") && values?.includes("retry-1"))).toBe(true);
+  });
+
+  it("locks the account row before the report/chain, matching create()'s lock order, and releases a reserved credit", async () => {
+    const client = {
+      query: vi.fn(async (sql: string, _values?: unknown[]) => {
+        if (sql.includes("SELECT account_id FROM account_reports WHERE id = $1")) {
+          return { rows: [{ account_id: "account-1" }], rowCount: 1 };
+        }
+        if (sql.includes("FROM api_accounts WHERE id = $1 FOR UPDATE")) {
+          return { rows: [{ ok: 1 }], rowCount: 1 };
+        }
+        if (sql.includes("report.verification_deadline") && sql.includes("FOR UPDATE OF report, chain")) {
+          return { rows: [{ account_id: "account-1", credit_chain_id: "chain-1", credit_state: "reserved", lifecycle_attempt: 1 }], rowCount: 1 };
+        }
+        if (sql.startsWith("UPDATE api_accounts") && sql.includes("reserved_credits > 0")) {
+          return { rows: [{ id: "account-1" }], rowCount: 1 };
+        }
+        if (sql.startsWith("UPDATE report_credit_chains") && sql.includes("state = 'released'")) {
+          return { rows: [{ id: "chain-1" }], rowCount: 1 };
+        }
+        if (sql.includes("INSERT INTO account_report_events")) return { rows: [{ id: "1" }], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+      }),
+      release: vi.fn()
+    };
+    const poolQuery = vi.fn(async (sql: string) => (
+      sql.includes("report.verification_deadline") ? { rows: [{ id: "report-1" }], rowCount: 1 } : { rows: [], rowCount: 0 }
+    ));
+    const repository = new ReportRepository({ connect: async () => client, query: poolQuery } as never);
+
+    await repository.expireDeadlines();
+
+    const calls = client.query.mock.calls.map(([sql]) => String(sql));
+    const accountLockIndex = calls.findIndex((sql) => sql.includes("FROM api_accounts WHERE id = $1 FOR UPDATE"));
+    const reportLockIndex = calls.findIndex((sql) => sql.includes("FOR UPDATE OF report, chain"));
+    expect(accountLockIndex).toBeGreaterThanOrEqual(0);
+    expect(reportLockIndex).toBeGreaterThan(accountLockIndex);
+    expect(calls.some((sql) => sql.includes("available_credits = available_credits + 1"))).toBe(true);
+  });
+
+  it("runs receipt-timeout and review-timeout expiry in their own transactions, separate from the verification loop", async () => {
+    const connectCalls: string[] = [];
+    const client = { query: vi.fn(async (_sql: string) => ({ rows: [], rowCount: 0 })), release: vi.fn() };
+    const poolQuery = vi.fn(async (_sql: string) => ({ rows: [], rowCount: 0 }));
+    const repository = new ReportRepository({
+      connect: async () => { connectCalls.push("connect"); return client; },
+      query: poolQuery
+    } as never);
+
+    await repository.expireDeadlines();
+
+    // No verification candidates, so only the two batch passes should connect.
+    expect(connectCalls.length).toBe(2);
+    const sqlCalls = client.query.mock.calls.map(([sql]) => String(sql));
+    expect(sqlCalls.some((sql) => sql.includes("discord_receipt_timeout"))).toBe(true);
+    expect(sqlCalls.some((sql) => sql.includes("review_confirmation_timeout"))).toBe(true);
   });
 });
 
@@ -629,5 +693,67 @@ describe("serial report retries", () => {
       flow: "profile", useAi: false, country: "DE", category: "new", finalText: "A complete replacement.",
       target: { reportedUserId: "123456789012345678", profileElements: ["photos"] }
     });
+  });
+});
+
+describe("durable event delivery claims", () => {
+  it("excludes a delivery when an earlier same-report event is still pending or sending for the destination", async () => {
+    const query = vi.fn(async (_sql: string) => ({ rows: [], rowCount: 0 }));
+    const repository = new ReportRepository({ query } as never);
+
+    await repository.claimEventDelivery();
+
+    const claim = query.mock.calls.find(([sql]) => String(sql).includes("claimed AS ("));
+    expect(claim).toBeDefined();
+    const sql = String(claim?.[0]);
+    expect(sql).toContain("NOT EXISTS");
+    expect(sql).toContain("blocker.destination_id = delivery.destination_id");
+    expect(sql).toContain("blocker.event_id < delivery.event_id");
+    expect(sql).toContain("blocker_event.report_id = event.report_id");
+    expect(sql).toContain("blocker.state IN ('pending', 'sending')");
+  });
+
+  it("throttles the 7-day expiry sweep to at most once a minute across concurrent claim loops", async () => {
+    const query = vi.fn(async (_sql: string) => ({ rows: [], rowCount: 0 }));
+    const repository = new ReportRepository({ query } as never);
+
+    await Promise.all([repository.claimEventDelivery(), repository.claimEventDelivery(), repository.claimEventDelivery()]);
+
+    const expiryCalls = query.mock.calls.filter(([sql]) => String(sql).includes("SET state = 'expired'"));
+    expect(expiryCalls.length).toBe(1);
+  });
+});
+
+describe("ambiguous submission recovery", () => {
+  it("adopts a report stuck as ambiguous_submission_state once a matching pending report-update email proves the submission, oldest message first", async () => {
+    const client = {
+      query: vi.fn(async (sql: string, values?: unknown[]) => {
+        if (sql.includes("FROM account_reports AS report") && sql.includes("EXISTS")) {
+          return { rows: [{ id: "report-1", account_id: "account-1", lifecycle_attempt: 1 }], rowCount: 1 };
+        }
+        if (sql.includes("SELECT external_report_id FROM account_inbound_messages")) {
+          return { rows: [{ external_report_id: "1548921252872462416" }], rowCount: 1 };
+        }
+        if (sql.startsWith("UPDATE account_reports SET discord_report_id")) {
+          return { rows: [{ id: "report-1", account_id: "account-1", lifecycle_attempt: 1 }], rowCount: 1 };
+        }
+        if (sql.includes("INSERT INTO account_report_events")) return { rows: [{ id: "1" }], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn()
+    };
+    const repository = new ReportRepository({ connect: async () => client } as never);
+
+    await repository.reconcilePendingInboundMessages();
+
+    const adopt = client.query.mock.calls.find(([sql]) => String(sql).startsWith("UPDATE account_reports SET discord_report_id"));
+    expect(adopt?.[1]).toEqual(["report-1", "1548921252872462416"]);
+    expect(adopt?.[0]).toContain("error_code = NULL");
+    expect(adopt?.[0]).toContain("status = 'submitted'");
+    const event = client.query.mock.calls.find(([sql, values]) => String(sql).includes("INSERT INTO account_report_events") && values?.includes("report_receipt_recovered"));
+    expect(event).toBeDefined();
+    const oldest = client.query.mock.calls.find(([sql]) => String(sql).includes("SELECT external_report_id FROM account_inbound_messages"));
+    expect(String(oldest?.[0])).toContain("ORDER BY received_at, message_id LIMIT 1");
+    expect(String(oldest?.[0])).toContain("external_status IS DISTINCT FROM 'review_received'");
   });
 });

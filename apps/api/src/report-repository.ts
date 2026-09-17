@@ -202,8 +202,14 @@ CREATE INDEX IF NOT EXISTS account_report_events_owner_idx
   ON account_report_events(account_id, id);
 CREATE INDEX IF NOT EXISTS account_report_jobs_claim_idx
   ON account_report_jobs(kind, state, run_at, locked_at, id);
+CREATE INDEX IF NOT EXISTS account_report_jobs_pending_claim_idx
+  ON account_report_jobs(kind, run_at, id) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS account_report_jobs_queue_length_idx
+  ON account_report_jobs(report_id) WHERE state IN ('pending', 'running');
 CREATE INDEX IF NOT EXISTS event_destination_deliveries_claim_idx
   ON event_destination_deliveries(state, run_at, locked_at, event_id);
+CREATE INDEX IF NOT EXISTS event_destination_deliveries_ordering_idx
+  ON event_destination_deliveries(destination_id, event_id) WHERE state IN ('pending', 'sending');
 CREATE INDEX IF NOT EXISTS account_inbound_messages_pending_correlation_idx
   ON account_inbound_messages (external_report_id, recipient, received_at, message_id)
   WHERE status = 'pending_report';
@@ -338,6 +344,8 @@ export interface InboundEmailRegistration {
 }
 
 export class ReportRepository {
+  private lastDeliveryExpiryAt = 0;
+
   public constructor(private readonly pool: Pick<Pool, "connect" | "query">) {}
 
   public async queueSnapshot(): Promise<QueueSnapshot> {
@@ -605,41 +613,95 @@ export class ReportRepository {
   }
 
   public async expireDeadlines(): Promise<void> {
+    // Each expired report is handled in its own short transaction that locks
+    // in the same order as create(): the api_accounts row first, then the
+    // report/chain. A single wrapping transaction previously called
+    // releaseCredit (which locks api_accounts) after an earlier insertEvent
+    // in the loop had already taken account_report_events' global advisory
+    // lock, inverting create()'s lock order and risking deadlock.
+    const candidates = await this.pool.query<{ id: string }>(
+      `SELECT report.id
+       FROM account_reports AS report
+       JOIN report_credit_chains AS chain ON chain.id = report.credit_chain_id
+       WHERE report.verification_deadline <= now()
+         AND report.status IN ('requesting_verification', 'awaiting_verification', 'verification_received')
+         AND report.submission_started_at IS NULL
+         AND chain.state IN ('reserved', 'consumed')`
+    );
+    for (const candidate of candidates.rows) {
+      await this.expireVerificationDeadline(candidate.id);
+    }
+    await this.expireReceiptDeadlines();
+    await this.expireReviewDeadlines();
+  }
+
+  private async expireVerificationDeadline(reportId: string): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const verification = await client.query<{
-        id: string; account_id: string; credit_chain_id: string;
-        credit_state: "reserved" | "consumed"; lifecycle_attempt: number;
+      const owner = await client.query<{ account_id: string }>(
+        "SELECT account_id FROM account_reports WHERE id = $1",
+        [reportId]
+      );
+      const accountId = owner.rows[0]?.account_id;
+      if (accountId === undefined) {
+        await client.query("COMMIT");
+        return;
+      }
+      // Lock the account row first, matching create()'s lock order, before
+      // locking the report/chain and re-checking the expiry predicate.
+      await client.query("SELECT 1 FROM api_accounts WHERE id = $1 FOR UPDATE", [accountId]);
+      const locked = await client.query<{
+        account_id: string; credit_chain_id: string;
+        credit_state: "available" | "reserved" | "consumed" | "released"; lifecycle_attempt: number;
       }>(
-        `SELECT report.id, report.account_id, report.credit_chain_id,
-                chain.state AS credit_state, report.lifecycle_attempt
+        `SELECT report.account_id, report.credit_chain_id, chain.state AS credit_state, report.lifecycle_attempt
          FROM account_reports AS report
          JOIN report_credit_chains AS chain ON chain.id = report.credit_chain_id
-         WHERE report.verification_deadline <= now()
+         WHERE report.id = $1
+           AND report.verification_deadline <= now()
            AND report.status IN ('requesting_verification', 'awaiting_verification', 'verification_received')
            AND report.submission_started_at IS NULL
            AND chain.state IN ('reserved', 'consumed')
-         FOR UPDATE OF report, chain`
+         FOR UPDATE OF report, chain`,
+        [reportId]
       );
-      for (const report of verification.rows) {
-        if (report.credit_state === "reserved") {
-          await releaseCredit(client, report.account_id, report.credit_chain_id, "Verification email timed out");
-        }
-        await client.query(
-          `UPDATE account_reports SET status = 'failed', failure_stage = status,
-             error_code = 'verification_timeout', error_message = 'Discord verification email timed out.',
-             verification_deadline = NULL, updated_at = now() WHERE id = $1`,
-          [report.id]
-        );
-        await client.query(
-          `UPDATE account_report_jobs SET state = 'failed', locked_at = NULL,
-             last_error = 'verification_timeout', updated_at = now()
-           WHERE report_id = $1 AND state IN ('pending', 'running')`,
-          [report.id]
-        );
-        await insertEvent(client, report.account_id, report.id, "report_failed", report.lifecycle_attempt, { errorCode: "verification_timeout" });
+      const report = locked.rows[0];
+      if (report === undefined) {
+        // No longer eligible: already handled by another pass, or the report
+        // advanced past the deadline concurrently.
+        await client.query("COMMIT");
+        return;
       }
+      if (report.credit_state === "reserved") {
+        await releaseCredit(client, report.account_id, report.credit_chain_id, "Verification email timed out");
+      }
+      await client.query(
+        `UPDATE account_reports SET status = 'failed', failure_stage = status,
+           error_code = 'verification_timeout', error_message = 'Discord verification email timed out.',
+           verification_deadline = NULL, updated_at = now() WHERE id = $1`,
+        [reportId]
+      );
+      await client.query(
+        `UPDATE account_report_jobs SET state = 'failed', locked_at = NULL,
+           last_error = 'verification_timeout', updated_at = now()
+         WHERE report_id = $1 AND state IN ('pending', 'running')`,
+        [reportId]
+      );
+      await insertEvent(client, report.account_id, reportId, "report_failed", report.lifecycle_attempt, { errorCode: "verification_timeout" });
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      (client).release();
+    }
+  }
+
+  private async expireReceiptDeadlines(): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
       const receipts = await client.query<{ id: string; account_id: string; lifecycle_attempt: number }>(
         `UPDATE account_reports SET status = 'failed', failure_stage = 'submitted',
            error_code = 'discord_receipt_timeout',
@@ -651,6 +713,19 @@ export class ReportRepository {
       for (const report of receipts.rows) {
         await insertEvent(client, report.account_id, report.id, "report_receipt_timeout", report.lifecycle_attempt, { errorCode: "discord_receipt_timeout" });
       }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      (client).release();
+    }
+  }
+
+  private async expireReviewDeadlines(): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
       const reviews = await client.query<{ id: string; account_id: string; lifecycle_attempt: number }>(
         `UPDATE account_reports SET review_status = 'confirmation_timeout',
            review_status_updated_at = now(), review_confirmation_deadline = NULL,
@@ -1775,18 +1850,37 @@ export class ReportRepository {
   }
 
   public async claimEventDelivery(): Promise<AccountEventDelivery | null> {
-    await this.pool.query(
-      `UPDATE event_destination_deliveries SET state = 'expired', locked_at = NULL, updated_at = now()
-       WHERE state IN ('pending', 'sending') AND created_at < now() - interval '7 days'`
-    );
+    // The 7-day expiry sweep used to run before every single claim, adding an
+    // extra write on the hot path for each of the (now concurrent) delivery
+    // loops. Throttle it to at most once a minute per repository instance.
+    const now = Date.now();
+    if (now - this.lastDeliveryExpiryAt >= 60_000) {
+      // Claim the throttle slot synchronously (before the await below) so
+      // concurrent delivery loops calling this at nearly the same instant
+      // cannot all observe the stale timestamp and each run the sweep.
+      this.lastDeliveryExpiryAt = now;
+      await this.pool.query(
+        `UPDATE event_destination_deliveries SET state = 'expired', locked_at = NULL, updated_at = now()
+         WHERE state IN ('pending', 'sending') AND created_at < now() - interval '7 days'`
+      );
+    }
     const result = await this.pool.query<AccountEventDelivery & QueryResultRow>(
       `WITH candidate AS (
          SELECT delivery.event_id, delivery.destination_id
          FROM event_destination_deliveries AS delivery
          JOIN webhook_destinations AS destination ON destination.id = delivery.destination_id
+         JOIN account_report_events AS event ON event.id = delivery.event_id
          WHERE destination.status = 'active'
            AND delivery.run_at <= now()
            AND (delivery.state = 'pending' OR (delivery.state = 'sending' AND delivery.locked_at < now() - interval '2 minutes'))
+           AND NOT EXISTS (
+             SELECT 1 FROM event_destination_deliveries AS blocker
+             JOIN account_report_events AS blocker_event ON blocker_event.id = blocker.event_id
+             WHERE blocker.destination_id = delivery.destination_id
+               AND blocker.event_id < delivery.event_id
+               AND blocker.state IN ('pending', 'sending')
+               AND blocker_event.report_id = event.report_id
+           )
          ORDER BY delivery.run_at, delivery.event_id
          FOR UPDATE OF delivery SKIP LOCKED LIMIT 1
        ), claimed AS (
@@ -2013,6 +2107,39 @@ export class ReportRepository {
 
   public async purgeDiagnostics(): Promise<void> {
     await this.pool.query("DELETE FROM account_report_diagnostics WHERE created_at < now() - interval '30 days'");
+    await this.pool.query("DELETE FROM account_rate_limit_windows WHERE window_start < now() - interval '1 day'");
+    await this.pool.query(
+      "DELETE FROM event_destination_deliveries WHERE state IN ('sent', 'expired') AND updated_at < now() - interval '30 days'"
+    );
+    await this.pool.query(
+      "DELETE FROM account_report_jobs WHERE state IN ('completed', 'failed') AND updated_at < now() - interval '30 days'"
+    );
+  }
+
+  // Adopts a report stuck as status='failed', error_code='ambiguous_submission_state'
+  // (discord_report_id never recorded because the final submission HTTP call
+  // outcome was uncertain) once a later Discord lifecycle email proves the
+  // submission actually reached Discord as `discordReportId`. Credits were
+  // already consumed at submission start, so nothing changes there.
+  private async adoptAmbiguousReport(
+    client: PoolClient,
+    reportId: string,
+    accountId: string,
+    lifecycleAttempt: number,
+    discordReportId: string
+  ): Promise<AccountReportRow | undefined> {
+    const updated = await client.query<AccountReportRow>(
+      `UPDATE account_reports SET discord_report_id = $2, status = 'submitted',
+         failure_stage = NULL, error_code = NULL, error_message = NULL, updated_at = now()
+       WHERE id = $1 AND discord_report_id IS NULL AND error_code = 'ambiguous_submission_state'
+       RETURNING *`,
+      [reportId, discordReportId]
+    );
+    const row = updated.rows[0];
+    if (row !== undefined) {
+      await insertEvent(client, accountId, reportId, "report_receipt_recovered", lifecycleAttempt);
+    }
+    return row;
   }
 
   private async consumeInboundMessage(client: PoolClient, reportId: string, messageId: string): Promise<void> {
@@ -2058,7 +2185,13 @@ export class ReportRepository {
          FOR UPDATE`,
         [recipient]
       );
-      const report = reportResult.rows[0];
+      let report = reportResult.rows[0];
+      if (report !== undefined && input.externalStatus !== "review_received" && isAdoptableAmbiguousReport(report)) {
+        // reporter_email is UNIQUE per report, so this locked row is already
+        // proven to be the submission this email belongs to even though the
+        // ambiguous final HTTP outcome never recorded a discord_report_id.
+        report = (await this.adoptAmbiguousReport(client, report.id, report.account_id, report.lifecycle_attempt, input.discordReportId)) ?? report;
+      }
       // A recipient is only a lock/candidate key. Persisting an association is
       // allowed only after the Discord report ID agrees as well.
       const exactReport = report?.discord_report_id === input.discordReportId ? report : undefined;
@@ -2119,6 +2252,41 @@ export class ReportRepository {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      // Recover reports stuck with status='failed', error_code='ambiguous_submission_state'
+      // (discord_report_id was never recorded) whose reporter_email already has a
+      // matching pending report-update email proving Discord received the
+      // submission. The oldest such message per report decides the adopted ID;
+      // adopting here (rather than only on new inbound email) also recovers
+      // messages that arrived and went pending before this fix shipped.
+      const ambiguousReports = await client.query<{ id: string; account_id: string; lifecycle_attempt: number }>(
+        `SELECT report.id, report.account_id, report.lifecycle_attempt
+         FROM account_reports AS report
+         WHERE report.discord_report_id IS NULL
+           AND report.error_code = 'ambiguous_submission_state'
+           AND report.submission_started_at IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM account_inbound_messages AS message
+             WHERE message.recipient = report.reporter_email
+               AND message.status = 'pending_report'
+               AND message.external_status IS DISTINCT FROM 'review_received'
+               AND message.external_report_id IS NOT NULL
+           )
+         FOR UPDATE OF report SKIP LOCKED`
+      );
+      for (const candidate of ambiguousReports.rows) {
+        const oldest = await client.query<{ external_report_id: string }>(
+          `SELECT external_report_id FROM account_inbound_messages
+           WHERE recipient = (SELECT reporter_email FROM account_reports WHERE id = $1)
+             AND status = 'pending_report'
+             AND external_status IS DISTINCT FROM 'review_received'
+             AND external_report_id IS NOT NULL
+           ORDER BY received_at, message_id LIMIT 1`,
+          [candidate.id]
+        );
+        const externalReportId = oldest.rows[0]?.external_report_id;
+        if (externalReportId === undefined) continue;
+        await this.adoptAmbiguousReport(client, candidate.id, candidate.account_id, candidate.lifecycle_attempt, externalReportId);
+      }
       const candidates = await client.query<AccountReportRow & {
         inbound_message_id: string;
         inbound_status: string;
@@ -2415,6 +2583,16 @@ function replacementRequest(predecessor: AccountReportRow, input: RetryReportInp
   if (predecessor.flow === "profile" && "reportedUsername" in target && input.profileElements !== undefined) target.profileElements = input.profileElements;
   if (predecessor.flow === "server" && "guildIdOrInviteCode" in target && input.guildElements !== undefined) target.guildElements = input.guildElements;
   return { flow: predecessor.flow, useAi: false, target, country: input.country, category: input.category, description: input.finalText, finalText: input.finalText };
+}
+
+function isAdoptableAmbiguousReport(report: {
+  discord_report_id: string | null;
+  error_code: string | null;
+  submission_started_at: Date | null;
+}): boolean {
+  return report.discord_report_id === null
+    && report.error_code === "ambiguous_submission_state"
+    && report.submission_started_at !== null;
 }
 
 function shouldApplyDiscordStatus(current: string | null, incoming: string): boolean {

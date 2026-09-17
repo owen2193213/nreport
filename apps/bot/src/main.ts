@@ -57,7 +57,10 @@ async function main(): Promise<void> {
   await client.login(config.token);
   const notifier = new AccountNotificationWorker(database, client, config);
   const digests = new DigestWorker(database, client, config);
-  const diagnosticsPurge = setInterval(() => void database.purgeDiagnostics().catch(() => undefined), 60 * 60_000);
+  const diagnosticsPurge = setInterval(() => {
+    void database.purgeDiagnostics().catch(() => undefined);
+    void database.purgeLifecycleInbox().catch(() => undefined);
+  }, 60 * 60_000);
   notifier.start();
   digests.start();
 

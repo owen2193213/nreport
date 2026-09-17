@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS lifecycle_inbox (
 );
 ALTER TABLE lifecycle_inbox ADD COLUMN IF NOT EXISTS trace_id uuid;
 CREATE INDEX IF NOT EXISTS lifecycle_inbox_claim_idx ON lifecycle_inbox(state, run_at, event_id);
+CREATE INDEX IF NOT EXISTS lifecycle_inbox_account_report_event_idx ON lifecycle_inbox(account_id, report_id, event_id);
+CREATE INDEX IF NOT EXISTS lifecycle_inbox_report_created_idx ON lifecycle_inbox(report_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS notification_preferences (
   discord_user_id text PRIMARY KEY,
@@ -218,6 +220,13 @@ export class AccountBotDatabase {
 
   public async purgeDiagnostics(): Promise<void> {
     await this.pool.query("DELETE FROM bot_report_diagnostics WHERE created_at < now() - interval '30 days'");
+  }
+
+  /** Trims settled lifecycle_inbox rows so the claim and coalescing indexes stay small. */
+  public async purgeLifecycleInbox(): Promise<void> {
+    await this.pool.query(
+      "DELETE FROM lifecycle_inbox WHERE state IN ('sent', 'ignored') AND created_at < now() - interval '30 days'"
+    );
   }
   public async healthcheck(): Promise<void> { await this.pool.query("SELECT 1"); }
   public async close(): Promise<void> { await this.pool.end(); }
@@ -536,7 +545,19 @@ export class AccountBotDatabase {
     await this.pool.query("DELETE FROM pending_report_forms WHERE expires_at <= now()");
   }
 
+  /** Batch membership check so reconciliation can skip already-known events without a per-event round trip. */
+  public async existingEventIds(eventIds: readonly string[]): Promise<Set<string>> {
+    if (eventIds.length === 0) return new Set();
+    const result = await this.pool.query<{ event_id: string }>(
+      "SELECT event_id FROM lifecycle_inbox WHERE event_id = ANY($1::bigint[])",
+      [eventIds]
+    );
+    return new Set(result.rows.map((row) => row.event_id));
+  }
+
   public async ingestEvent(event: ReportLifecycleEvent): Promise<EventIngestionResult> {
+    const known = await this.pool.query("SELECT 1 FROM lifecycle_inbox WHERE event_id = $1", [event.eventId]);
+    if ((known.rowCount ?? 0) > 0) return "duplicate";
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -610,6 +631,11 @@ export class AccountBotDatabase {
            AND card_link.superseded_by_report_id IS NULL
            AND (inbox.event_type IN (${immediateLifecycleEventSql})
              OR card_link.last_card_edit_at IS NULL OR card_link.last_card_edit_at <= now() - interval '5 seconds')
+           AND NOT EXISTS (
+             SELECT 1 FROM lifecycle_inbox AS other
+             WHERE other.report_id = inbox.report_id AND other.event_id <> inbox.event_id
+               AND other.state = 'sending' AND other.locked_at > now() - interval '2 minutes'
+           )
          ORDER BY inbox.event_id FOR UPDATE OF inbox SKIP LOCKED LIMIT 1
        ), claimed AS (
          UPDATE lifecycle_inbox AS inbox SET state = 'sending', attempts = attempts + 1,

@@ -27,6 +27,9 @@ class ReconciliationEventIngestError extends Error {}
 
 const RECOVERY_DELAYS_SECONDS = [5, 15, 30, 60, 120, 300] as const;
 
+/** Number of concurrent notification-delivery loops; per-report ordering is enforced in claimNotification. */
+export const NOTIFICATION_LOOP_COUNT = 3;
+
 export function reportRecoveryDelaySeconds(attempt: number, rateLimited: boolean): number {
   if (rateLimited) return 120;
   return RECOVERY_DELAYS_SECONDS[Math.min(Math.max(attempt, 1), RECOVERY_DELAYS_SECONDS.length) - 1]!;
@@ -36,7 +39,7 @@ function notificationNonce(eventId: string): string {
   return `nreport-${createHash("sha256").update(eventId).digest("hex").slice(0, 16)}`;
 }
 
-function cardNonce(reportId: string): string {
+export function cardNonce(reportId: string): string {
   return `card-${createHash("sha256").update(reportId).digest("hex").slice(0, 16)}`;
 }
 
@@ -47,7 +50,7 @@ export function isDiscordUnknownMessage(error: unknown): boolean {
 
 export class AccountNotificationWorker {
   private stopping = false;
-  private notificationLoop: Promise<void> | undefined;
+  private notificationLoops: Promise<void>[] = [];
   private reconciliationLoop: Promise<void> | undefined;
   private recoveryLoop: Promise<void> | undefined;
 
@@ -61,17 +64,17 @@ export class AccountNotificationWorker {
   ) {}
 
   public start(): void {
-    if (this.notificationLoop !== undefined) return;
+    if (this.notificationLoops.length > 0) return;
     this.stopping = false;
-    this.notificationLoop = this.notifications();
+    this.notificationLoops = Array.from({ length: NOTIFICATION_LOOP_COUNT }, () => this.notifications());
     this.reconciliationLoop = this.reconcile();
     this.recoveryLoop = this.recover();
   }
 
   public async stop(): Promise<void> {
     this.stopping = true;
-    await Promise.all([this.notificationLoop, this.reconciliationLoop, this.recoveryLoop]);
-    this.notificationLoop = undefined;
+    await Promise.all([...this.notificationLoops, this.reconciliationLoop, this.recoveryLoop]);
+    this.notificationLoops = [];
     this.reconciliationLoop = undefined;
     this.recoveryLoop = undefined;
   }
@@ -198,31 +201,48 @@ export class AccountNotificationWorker {
     let after = String(connection.event_cursor ?? "0");
     for (let pageCount = 0; pageCount < 20; pageCount += 1) {
       const page = await api.events({ after, limit: 100 });
-      for (const event of page.items) {
-        const startedAt = Date.now();
-        let result: Awaited<ReturnType<AccountBotDatabase["ingestEvent"]>>;
-        try {
-          result = await this.database.ingestEvent(event);
-        } catch (error) {
+      if (page.items.length > 0) {
+        // One query per page identifies already-known events so a 15-minute reconcile (or restart)
+        // does not re-run the full ingestEvent BEGIN/lock path for hundreds of duplicates.
+        const known = await this.database.existingEventIds(page.items.map((event) => event.eventId));
+        let lastProcessedEventId: string | undefined;
+        let stopped = false;
+        for (const event of page.items) {
+          const startedAt = Date.now();
+          let result: Awaited<ReturnType<AccountBotDatabase["ingestEvent"]>>;
+          if (known.has(event.eventId)) {
+            result = "duplicate";
+          } else {
+            try {
+              result = await this.database.ingestEvent(event);
+            } catch (error) {
+              this.safeLog("account_reconciliation_event", {
+                reportId: event.reportId, traceId: event.traceId,
+                eventType: event.type,
+                stage: "event_ingestion",
+                outcome: "failed",
+                durationMs: Date.now() - startedAt,
+                failureCategory: safeErrorCategory(error)
+              }, "error");
+              throw new ReconciliationEventIngestError();
+            }
+          }
           this.safeLog("account_reconciliation_event", {
             reportId: event.reportId, traceId: event.traceId,
             eventType: event.type,
             stage: "event_ingestion",
-            outcome: "failed",
-            durationMs: Date.now() - startedAt,
-            failureCategory: safeErrorCategory(error)
-          }, "error");
-          throw new ReconciliationEventIngestError();
+            outcome: result,
+            durationMs: Date.now() - startedAt
+          });
+          if (result === "not_tracked_yet") { stopped = true; break; }
+          lastProcessedEventId = event.eventId;
         }
-        this.safeLog("account_reconciliation_event", {
-          reportId: event.reportId, traceId: event.traceId,
-          eventType: event.type,
-          stage: "event_ingestion",
-          outcome: result,
-          durationMs: Date.now() - startedAt
-        });
-        if (result === "not_tracked_yet") return;
-        await this.database.advanceCursor(connection.discord_user_id, event.eventId);
+        // Advance the cursor once per page, past the last contiguous processed event only. Webhook
+        // ingestion never advances the cursor, since webhooks can arrive out of order.
+        if (lastProcessedEventId !== undefined) {
+          await this.database.advanceCursor(connection.discord_user_id, lastProcessedEventId);
+        }
+        if (stopped) return;
       }
       if (page.next === null) break;
       after = page.next;

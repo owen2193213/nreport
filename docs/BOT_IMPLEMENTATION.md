@@ -91,9 +91,13 @@ but the bot never renders it. The bot migration adds the nullable column before 
 tightened so existing inbox rows remain readable; every newly accepted event has a valid trace.
 
 The bot also polls each connected account's cursor-based event feed every 15 minutes. It does not
-advance a cursor past an event that cannot yet be linked. Webhook and polling ingestion share the
-same event inbox so duplicate delivery cannot create duplicate DMs. Pending create/retry calls are
-replayed with their original idempotency key before normal feed reconciliation.
+advance a cursor past an event that cannot yet be linked, and only the poller ever advances it
+(the webhook path never does, since webhooks can arrive out of order); each fetched page runs one
+membership check against the inbox so already-known events are skipped instead of replayed through
+full ingestion, and the cursor advances once per page to the last contiguously processed event.
+Webhook and polling ingestion share the same event inbox so duplicate delivery cannot create
+duplicate DMs. Pending create/retry calls are replayed with their original idempotency key before
+normal feed reconciliation.
 
 Notification and reconciliation operational events retain their stable event names and emit a
 bounded `stage`, `outcome`, and `durationMs`. Where a lifecycle event supplies identifiers, logs include

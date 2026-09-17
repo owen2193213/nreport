@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { AccountBotDatabase } from "../src/account-database.js";
-import { AccountNotificationWorker, isDiscordUnknownMessage } from "../src/account-notifier.js";
+import { AccountNotificationWorker, isDiscordUnknownMessage, NOTIFICATION_LOOP_COUNT } from "../src/account-notifier.js";
 import { loadBotConfig } from "../src/config.js";
 import { reportEventIngestionStatus } from "../src/health.js";
 import * as healthModule from "../src/health.js";
@@ -125,8 +125,43 @@ describe("initial card interaction diagnostics", () => {
     const diagnostic = diagnostics.find(({ event }) => event === "initial_card_ignored");
     expect(diagnostic?.fields).toMatchObject({
       discordValidation: { message: "Invalid Form Body", paths: ["components:BASE_TYPE_REQUIRED"] },
-      payload: { flags: 32768, nonceLength: 0 }
+      payload: { flags: 32768, nonceLength: 21 }
     });
+  });
+
+  it("sends the interaction-path status card with the same deterministic nonce as the notifier", async () => {
+    const report = {
+      reportId: "11111111-1111-4111-8111-111111111111", traceId: "22222222-2222-4222-8222-222222222222", accountId: "account-1",
+      flow: "message", useAi: true, status: "queued", creditState: "reserved", lifecycleAttempt: 1,
+      country: "DE", category: null, description: null, discordReportId: null, discordStatus: null, reviewStatus: null,
+      predecessorReportId: null, successorReportId: null, retryableModes: [], createdAt: "2026-09-09T00:00:00Z", updatedAt: "2026-09-09T00:00:00Z",
+      target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }, finalText: null,
+      legalReference: null, researchSummary: null, sources: [], timeline: [], failure: null
+    } as const;
+    const database = {
+      connection: vi.fn(async () => ({ account_id: "account-1", encrypted_api_key: "key" })),
+      beginReportLink: vi.fn(async () => "link-1"), completeReportLink: vi.fn(), claimDmCard: vi.fn(async () => true),
+      setDmMapping: vi.fn(), completeCardUpdate: vi.fn()
+    };
+    const handler = new AccountInteractionHandler({
+      client: {} as never,
+      config: { apiBaseUrl: "https://api.example.test", adminApiKey: "admin", dataEncryptionKey: Buffer.alloc(32) } as never,
+      database: database as never, messageResolver: {} as never, profileResolver: {} as never, serverResolver: {} as never
+    });
+    const privateHandler = handler as unknown as {
+      api: () => { createReport: () => Promise<typeof report> };
+      submit: (interaction: unknown, input: unknown, idempotencyKey: string) => Promise<void>;
+    };
+    vi.spyOn(privateHandler, "api").mockReturnValue({ createReport: vi.fn(async () => report) });
+    const send = vi.fn(async (_options: unknown) => ({ channelId: "dm", id: "card" }));
+
+    await privateHandler.submit({
+      user: { id: "discord-1", send },
+      editReply: vi.fn()
+    }, { flow: "message" }, "create-1");
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0]).toMatchObject({ nonce: "card-bd7662a5eeb41614", enforceNonce: true });
   });
 });
 
@@ -247,7 +282,8 @@ describe("local account mapping", () => {
       }),
       release: vi.fn()
     };
-    const database = new AccountBotDatabase({ connect: async () => client } as never);
+    const poolQuery = vi.fn(async () => ({ rows: [], rowCount: 0 }));
+    const database = new AccountBotDatabase({ query: poolQuery, connect: async () => client } as never);
 
     await database.ingestEvent({ eventId: "9", accountId: "account-1", reportId: "report-1", traceId: "33333333-3333-4333-8333-333333333333", type: "report_writing", occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1 });
 
@@ -270,7 +306,8 @@ describe("local account mapping", () => {
       }),
       release: vi.fn()
     };
-    const database = new AccountBotDatabase({ connect: async () => client } as never);
+    const poolQuery = vi.fn(async () => ({ rows: [], rowCount: 0 }));
+    const database = new AccountBotDatabase({ query: poolQuery, connect: async () => client } as never);
 
     await database.ingestEvent({ eventId: "10", accountId: "account-1", reportId: "report-1", traceId: "33333333-3333-4333-8333-333333333333", type: "report_writing", occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1 });
 
@@ -297,6 +334,19 @@ describe("local account mapping", () => {
     await database.claimNotification();
 
     expect(String(query.mock.calls[0]?.[0])).toContain("card_link.superseded_by_report_id IS NULL");
+  });
+
+  it("keeps per-report ordering by skipping a candidate while another event for the same report is in flight", async () => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [], rowCount: 0 }));
+    const database = new AccountBotDatabase({ query } as never);
+
+    await database.claimNotification();
+
+    const sql = String(query.mock.calls[0]?.[0]);
+    expect(sql).toContain("other.report_id = inbox.report_id");
+    expect(sql).toContain("other.event_id <> inbox.event_id");
+    expect(sql).toContain("other.state = 'sending'");
+    expect(sql).toContain("other.locked_at > now() - interval '2 minutes'");
   });
 
   it("returns a failed notification claim to pending with bounded retry metadata", async () => {
@@ -342,6 +392,7 @@ describe("account reconciliation", () => {
         { discord_user_id: "other-user-id", account_id: "other-account-id", encrypted_api_key: "second-key", event_cursor: "0" }
       ]),
       pendingReportLinks: vi.fn(async () => []), cleanupExpiredForms: vi.fn(),
+      existingEventIds: vi.fn(async () => new Set<string>()),
       ingestEvent: vi.fn().mockRejectedValue(new Error("sensitive database URL")),
       advanceCursor: vi.fn()
     };
@@ -374,7 +425,8 @@ describe("account reconciliation", () => {
     ];
     const database = {
       connections: vi.fn(async () => connections), pendingReportLinks: vi.fn(async () => []),
-      cleanupExpiredForms: vi.fn(), ingestEvent: vi.fn(), advanceCursor: vi.fn()
+      cleanupExpiredForms: vi.fn(), existingEventIds: vi.fn(async () => new Set<string>()),
+      ingestEvent: vi.fn(), advanceCursor: vi.fn()
     };
     const firstApi = { events: vi.fn().mockRejectedValue(Object.assign(new Error("network failure secret"), { code: "ECONNRESET" })) };
     const secondApi = { events: vi.fn(async () => ({ items: [], next: null })) };
@@ -418,6 +470,7 @@ describe("account reconciliation", () => {
       abandonReportLink: vi.fn(),
       completeReportLink: vi.fn(),
       completeReplacementLink: vi.fn(),
+      existingEventIds: vi.fn(async () => new Set<string>()),
       ingestEvent: vi.fn(async () => "accepted"),
       advanceCursor: vi.fn(),
       cleanupExpiredForms: vi.fn()
@@ -616,5 +669,100 @@ describe("account reconciliation", () => {
     expect(sql).toContain("locked_at = NULL");
     expect(sql).not.toContain("run_at =");
     expect(values).toEqual(["event-1", "discord_validation_50035"]);
+  });
+
+  it("returns duplicate from a single lookup without opening a transaction for an already-known event", async () => {
+    const poolQuery = vi.fn(async () => ({ rows: [{ event_id: "9" }], rowCount: 1 }));
+    const connect = vi.fn();
+    const database = new AccountBotDatabase({ query: poolQuery, connect } as never);
+
+    const result = await database.ingestEvent({
+      eventId: "9", accountId: "account-1", reportId: "report-1", traceId: "33333333-3333-4333-8333-333333333333",
+      type: "report_writing", occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1
+    });
+
+    expect(result).toBe("duplicate");
+    expect(connect).not.toHaveBeenCalled();
+    expect(poolQuery).toHaveBeenCalledWith(expect.stringContaining("SELECT 1 FROM lifecycle_inbox WHERE event_id"), ["9"]);
+  });
+
+  it("batches a single membership check per reconciliation page and skips ingesting known events", async () => {
+    const events = [
+      { eventId: "1", accountId: "account-1", reportId: "report-1", traceId: "33333333-3333-4333-8333-333333333333", type: "report_queued" as const, occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1 },
+      { eventId: "2", accountId: "account-1", reportId: "report-1", traceId: "33333333-3333-4333-8333-333333333333", type: "report_writing" as const, occurredAt: "2026-09-04T00:00:01.000Z", lifecycleAttempt: 1 },
+      { eventId: "3", accountId: "account-1", reportId: "report-1", traceId: "33333333-3333-4333-8333-333333333333", type: "report_sent" as const, occurredAt: "2026-09-04T00:00:02.000Z", lifecycleAttempt: 1 }
+    ];
+    const database = {
+      pendingReportLinks: vi.fn(async () => []), cleanupExpiredForms: vi.fn(),
+      existingEventIds: vi.fn(async () => new Set(["1", "2"])),
+      ingestEvent: vi.fn(async () => "accepted"),
+      advanceCursor: vi.fn()
+    };
+    const api = { events: vi.fn(async () => ({ items: events, next: null })) };
+    const worker = new AccountNotificationWorker(
+      database as never, {} as never,
+      { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
+      () => api as never
+    );
+
+    await worker.reconcileConnection({ discord_user_id: "discord-1", account_id: "account-1", encrypted_api_key: "key", event_cursor: "0" } as never);
+
+    expect(database.existingEventIds).toHaveBeenCalledOnce();
+    expect(database.existingEventIds).toHaveBeenCalledWith(["1", "2", "3"]);
+    expect(database.ingestEvent).toHaveBeenCalledOnce();
+    expect(database.ingestEvent).toHaveBeenCalledWith(events[2]);
+    expect(database.advanceCursor).toHaveBeenCalledOnce();
+    expect(database.advanceCursor).toHaveBeenCalledWith("discord-1", "3");
+  });
+
+  it("advances the cursor once to the last contiguous processed event when a later one is not tracked yet", async () => {
+    const events = [
+      { eventId: "1", accountId: "account-1", reportId: "report-1", traceId: "33333333-3333-4333-8333-333333333333", type: "report_queued" as const, occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1 },
+      { eventId: "2", accountId: "account-1", reportId: "report-2", traceId: "33333333-3333-4333-8333-333333333333", type: "report_queued" as const, occurredAt: "2026-09-04T00:00:01.000Z", lifecycleAttempt: 1 }
+    ];
+    const database = {
+      pendingReportLinks: vi.fn(async () => []), cleanupExpiredForms: vi.fn(),
+      existingEventIds: vi.fn(async () => new Set<string>()),
+      ingestEvent: vi.fn(async (event: { eventId: string }) => (event.eventId === "2" ? "not_tracked_yet" : "accepted")),
+      advanceCursor: vi.fn()
+    };
+    const api = { events: vi.fn(async () => ({ items: events, next: "3" })) };
+    const worker = new AccountNotificationWorker(
+      database as never, {} as never,
+      { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
+      () => api as never
+    );
+
+    await worker.reconcileConnection({ discord_user_id: "discord-1", account_id: "account-1", encrypted_api_key: "key", event_cursor: "0" } as never);
+
+    expect(database.advanceCursor).toHaveBeenCalledOnce();
+    expect(database.advanceCursor).toHaveBeenCalledWith("discord-1", "1");
+    expect(api.events).toHaveBeenCalledOnce();
+  });
+});
+
+describe("notification delivery concurrency", () => {
+  it("runs a small fixed number of notification loops and awaits every one on stop", async () => {
+    const worker = new AccountNotificationWorker(
+      {} as never, {} as never,
+      { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
+      () => ({}) as never,
+      undefined,
+      vi.fn()
+    );
+    const privateWorker = worker as unknown as {
+      notifications: () => Promise<void>; reconcile: () => Promise<void>; recover: () => Promise<void>;
+    };
+    const resolveNotifications: (() => void)[] = [];
+    const notifications = vi.spyOn(privateWorker, "notifications")
+      .mockImplementation(async () => new Promise((resolve) => { resolveNotifications.push(resolve); }));
+    vi.spyOn(privateWorker, "reconcile").mockImplementation(async () => undefined);
+    vi.spyOn(privateWorker, "recover").mockImplementation(async () => undefined);
+
+    worker.start();
+    expect(notifications).toHaveBeenCalledTimes(NOTIFICATION_LOOP_COUNT);
+
+    resolveNotifications.forEach((resolve) => resolve());
+    await worker.stop();
   });
 });

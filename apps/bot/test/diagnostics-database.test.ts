@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AccountBotDatabase } from "../src/account-database.js";
+import { AccountBotDatabase, BOT_ACCOUNT_SCHEMA_SQL } from "../src/account-database.js";
 import { botLog, setBotDiagnosticSink } from "../src/observability.js";
 
 describe("bot diagnostics", () => {
@@ -21,5 +21,19 @@ describe("bot diagnostics", () => {
     expect(JSON.stringify(params[7]).length).toBeLessThanOrEqual(65_536);
     expect(params[7]).toMatchObject({ truncated: true });
     expect(query.mock.calls[1]?.[0]).toContain("created_at < now() - interval '30 days'");
+  });
+
+  it("purges settled lifecycle inbox rows past retention", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
+    const database = new AccountBotDatabase({ query } as never);
+
+    await database.purgeLifecycleInbox();
+
+    expect(query).toHaveBeenCalledWith(expect.stringMatching(/state IN \('sent', 'ignored'\).*created_at < now\(\) - interval '30 days'/s));
+  });
+
+  it("declares the coalescing and card-repair lookup indexes on lifecycle_inbox", () => {
+    expect(BOT_ACCOUNT_SCHEMA_SQL).toContain("ON lifecycle_inbox(account_id, report_id, event_id)");
+    expect(BOT_ACCOUNT_SCHEMA_SQL).toContain("ON lifecycle_inbox(report_id, created_at DESC)");
   });
 });

@@ -62,7 +62,7 @@ webhooks; failed operations-alert delivery cannot affect reporting or customer n
 - `GET /v1/discord/dsa/catalog` returns `{ service: { category: "discord", type: "dsa", version: "v1" } }`
   with supported countries, semantic categories, and flow-specific elements.
 
-Default account limits are sixty report mutations per minute and 120 reads per minute. AI report
+Default account limits are sixty report mutations per minute and 300 reads per minute. AI report
 preparation has no separate per-account quota. Limits are enforced at the API and are not reset by
 running more bot workers.
 

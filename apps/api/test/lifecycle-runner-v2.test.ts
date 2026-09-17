@@ -166,6 +166,50 @@ describe("LifecycleRunner irreversible boundary", () => {
   });
 });
 
+describe("LifecycleRunner verify_submit session readiness race", () => {
+  it("retries instead of failing when session_state has not been saved yet and attempts remain", async () => {
+    const job = {
+      id: "job-1", report_id: "report-1", kind: "verify_submit" as const,
+      payload: { code: "123456" }, attempts: 1, max_attempts: 3, execution_token: 1
+    };
+    const store = {
+      claimLifecycleJob: vi.fn().mockResolvedValueOnce(job).mockResolvedValue(null),
+      getLifecycleReport: vi.fn(async () => ({ ...report(), session_state: null })),
+      failBeforeSubmission: vi.fn(),
+      retryLifecycleJob: vi.fn(async () => true)
+    };
+    const runner = new LifecycleRunner(store as never, {} as never, undefined, {
+      decrypt: (value: string) => value
+    });
+
+    await runner.processOne();
+
+    expect(store.retryLifecycleJob).toHaveBeenCalledWith(job, "session_not_ready", 3);
+    expect(store.failBeforeSubmission).not.toHaveBeenCalled();
+  });
+
+  it("fails once attempts are exhausted and session_state is still missing", async () => {
+    const job = {
+      id: "job-1", report_id: "report-1", kind: "verify_submit" as const,
+      payload: { code: "123456" }, attempts: 3, max_attempts: 3, execution_token: 1
+    };
+    const store = {
+      claimLifecycleJob: vi.fn().mockResolvedValueOnce(job).mockResolvedValue(null),
+      getLifecycleReport: vi.fn(async () => ({ ...report(), session_state: null })),
+      failBeforeSubmission: vi.fn(),
+      retryLifecycleJob: vi.fn()
+    };
+    const runner = new LifecycleRunner(store as never, {} as never, undefined, {
+      decrypt: (value: string) => value
+    });
+
+    await runner.processOne();
+
+    expect(store.retryLifecycleJob).not.toHaveBeenCalled();
+    expect(store.failBeforeSubmission).toHaveBeenCalledWith(job, "session_not_ready", "Verification session was not ready.");
+  });
+});
+
 describe("LifecycleRunner automatic appeal", () => {
   function reviewStore() {
     return {

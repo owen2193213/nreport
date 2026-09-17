@@ -223,7 +223,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
   });
   await app.register(rateLimit, {
     global: true,
-    max: 120,
+    max: 300,
     timeWindow: "1 minute",
     errorResponseBuilder: (request) => ({
       error: {
@@ -290,7 +290,16 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
   );
   app.post<{ Body: unknown }>(
     "/webhooks/cloudflare-email-diagnostic",
-    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    {
+      config: {
+        rateLimit: {
+          max: 1000,
+          timeWindow: "1 minute",
+          // HMAC-signed and shared behind Railway's proxy: key on the route, not request.ip.
+          keyGenerator: () => "cloudflare-email-diagnostic"
+        }
+      }
+    },
     async (request, reply) => {
       const recipient = singleHeader(request, "x-dsa-recipient")?.trim().toLowerCase();
       const messageId = singleHeader(request, "x-dsa-message-id")?.trim();
@@ -613,7 +622,16 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
   });
   app.post(
     "/webhooks/cloudflare-email",
-    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    {
+      config: {
+        rateLimit: {
+          max: 1000,
+          timeWindow: "1 minute",
+          // HMAC-signed and shared behind Railway's proxy: key on the route, not request.ip.
+          keyGenerator: () => "cloudflare-email"
+        }
+      }
+    },
     async (request, reply) => {
       const rawEmail = request.body;
       const recipient = singleHeader(request, "x-dsa-recipient")?.trim().toLowerCase();

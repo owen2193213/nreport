@@ -259,7 +259,7 @@ export class AccountRepository {
        VALUES ($1, 'account_read', date_trunc('minute', now()), 1)
        ON CONFLICT (account_id, kind, window_start)
        DO UPDATE SET request_count = account_rate_limit_windows.request_count + 1
-       WHERE account_rate_limit_windows.request_count < 120
+       WHERE account_rate_limit_windows.request_count < 300
        RETURNING request_count`,
       [accountId]
     );

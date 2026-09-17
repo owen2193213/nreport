@@ -92,7 +92,8 @@ export class BraveResearchError extends Error {
     public readonly kind: BraveResearchErrorKind,
     message: string,
     public readonly searchRequests = 0,
-    public readonly retryable = false
+    public readonly retryable = false,
+    public readonly retryAfterSeconds?: number
   ) {
     super(message);
     this.name = "BraveResearchError";
@@ -270,14 +271,71 @@ function compactContext(payload: BraveContextResponse): ResearchSource[] {
   return sources;
 }
 
+type BraveResearchSleep = (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+
+function defaultSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const rejectAbort: (reason: unknown) => void = reject;
+    if (signal?.aborted) {
+      rejectAbort(signal.reason);
+      return;
+    }
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rejectAbort(signal?.reason);
+    };
+    const timer = setTimeout(finish, milliseconds);
+    timer.unref?.();
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function retryAfterSecondsFromHeader(response: Response): number | undefined {
+  const header = response.headers.get("retry-after");
+  if (header === null) return undefined;
+  const trimmed = header.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return undefined;
+  const value = Number(trimmed);
+  return Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 export class BraveResearchClient {
   private readonly request: typeof globalThis.fetch;
+  private readonly sleep: BraveResearchSleep;
 
   public constructor(
     private readonly apiKey: string,
-    options: { request?: typeof globalThis.fetch } = {}
+    options: { request?: typeof globalThis.fetch; sleep?: BraveResearchSleep } = {}
   ) {
     this.request = options.request ?? globalThis.fetch;
+    this.sleep = options.sleep ?? defaultSleep;
+  }
+
+  /**
+   * Waits before the single retry, honoring a numeric Retry-After (seconds)
+   * when given, else a 1s backoff with small jitter. Returns false without
+   * sleeping when the wait would cross the workflow deadline.
+   */
+  private async waitBeforeRetry(
+    deadline: number,
+    signal?: AbortSignal,
+    retryAfterSeconds?: number
+  ): Promise<boolean> {
+    const base = retryAfterSeconds !== undefined ? retryAfterSeconds * 1_000 : 1_000;
+    const delayMs = base + Math.random() * base * 0.2;
+    if (delayMs > deadline - Date.now()) return false;
+    await this.sleep(delayMs, signal);
+    return true;
   }
 
   public async search(
@@ -343,7 +401,9 @@ export class BraveResearchClient {
                 true
               );
         const retryable = attempts === 1 && researchError.retryable && deadline > Date.now();
-        if (retryable) continue;
+        if (retryable && (await this.waitBeforeRetry(deadline, signal, researchError.retryAfterSeconds))) {
+          continue;
+        }
         const finalError = new BraveResearchError(
           researchError.kind,
           researchError.message,
@@ -451,7 +511,13 @@ export class BraveResearchClient {
         },
         "warn"
       );
-      throw new BraveResearchError(failureKind, "Brave search is unavailable.", 0, retryable);
+      throw new BraveResearchError(
+        failureKind,
+        "Brave search is unavailable.",
+        0,
+        retryable,
+        retryAfterSecondsFromHeader(response)
+      );
     }
     try {
       return (await response.json()) as BraveWebResponse | BraveContextResponse;

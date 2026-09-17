@@ -113,6 +113,11 @@ describe("email worker", () => {
 
   it("does not log attacker-controlled failed response headers", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+      callback();
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("x", {
       status: 502,
       headers: { "content-type": "application/json; secret=attacker-controlled", "x-request-id": "attacker-controlled request id" }
@@ -120,8 +125,9 @@ describe("email worker", () => {
 
     await expect(worker.email(emailMessage(), { INGEST_URL: "https://api.example", INGEST_SHARED_SECRET: "secret" })).rejects.toThrow(/HTTP 502/);
     expect(JSON.stringify(error.mock.calls)).not.toContain("attacker-controlled");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("attacker-controlled");
 
-    error.mockRestore(); vi.unstubAllGlobals();
+    error.mockRestore(); warn.mockRestore(); setTimeoutSpy.mockRestore(); vi.unstubAllGlobals();
   });
 
   it("logs the generated alias with bounded API failure metadata", async () => {
@@ -134,13 +140,85 @@ describe("email worker", () => {
     error.mockRestore(); vi.unstubAllGlobals();
   });
 
-  it("posts signed metadata diagnostics when forwarding fails", async () => {
+  it("does not retry other 4xx failures", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("failed", { status: 400 }));
+    await expect(worker.email(emailMessage(), { INGEST_URL: "https://api.example/ingest", INGEST_SHARED_SECRET: "secret" })).rejects.toThrow(/HTTP 400/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
+  });
+
+  it("retries transient HTTP 429/5xx forwarding failures with backoff, then succeeds", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+      callback();
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("busy", { status: 429 }))
+      .mockResolvedValueOnce(new Response("down", { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 202 }));
+
+    await worker.email(emailMessage(), { INGEST_URL: "https://api.example/ingest", INGEST_SHARED_SECRET: "secret" });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls[0]?.[0]).toEqual(expect.stringContaining('"event":"email_forward_retrying"'));
+    expect(warn.mock.calls[0]?.[0]).toEqual(expect.stringContaining('"attempt":1'));
+    expect(warn.mock.calls[1]?.[0]).toEqual(expect.stringContaining('"attempt":2'));
+    // Each attempt is re-signed: a timestamp and matching signature header are sent every time.
+    for (const call of fetchSpy.mock.calls) {
+      const headers = call[1]?.headers as Record<string, string>;
+      expect(headers["x-dsa-timestamp"]).toMatch(/^\d+$/);
+      expect(headers["x-dsa-signature"]).toMatch(/^[a-f0-9]{64}$/);
+    }
+    // Delays follow the ~1s then ~3s schedule.
+    expect(setTimeoutSpy.mock.calls[0]?.[1]).toBe(1_000);
+    expect(setTimeoutSpy.mock.calls[1]?.[1]).toBe(3_000);
+
+    fetchSpy.mockRestore(); warn.mockRestore(); logSpy.mockRestore(); setTimeoutSpy.mockRestore();
+  });
+
+  it("retries transient network errors up to three attempts", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+      callback();
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(new Response(null, { status: 202 }));
+
+    await worker.email(emailMessage(), { INGEST_URL: "https://api.example/ingest", INGEST_SHARED_SECRET: "secret" });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toEqual(expect.stringContaining('"event":"email_forward_retrying"'));
+
+    fetchSpy.mockRestore(); warn.mockRestore(); logSpy.mockRestore(); setTimeoutSpy.mockRestore();
+  });
+
+  it("does not retry a fourth time, and posts signed metadata diagnostics only after the final attempt", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+      callback();
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
     const fetchSpy = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response("failed", { status: 502 }))
+      .mockResolvedValueOnce(new Response("failed", { status: 502 }))
+      .mockResolvedValueOnce(new Response("failed", { status: 502 }))
       .mockResolvedValueOnce(new Response(null, { status: 202 }));
+
     await expect(worker.email(emailMessage(), { INGEST_URL: "https://api.example/ingest", DIAGNOSTIC_URL: "https://api.example/email-diagnostics", INGEST_SHARED_SECRET: "secret" })).rejects.toThrow(/HTTP 502/);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(fetchSpy.mock.calls[1]?.[0]).toBe("https://api.example/email-diagnostics");
-    fetchSpy.mockRestore();
+
+    // Exactly 3 forward attempts, then the diagnostic post as the 4th fetch call.
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[3]?.[0]).toBe("https://api.example/email-diagnostics");
+
+    fetchSpy.mockRestore(); warn.mockRestore(); error.mockRestore(); setTimeoutSpy.mockRestore();
   });
 });

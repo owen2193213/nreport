@@ -441,8 +441,9 @@ export class AccountInteractionHandler {
         try {
           const context = targetContextFromReport(report);
           const options = statusMessageOptions(report, context);
-          payload = cardPayloadDiagnostics(options);
-          const message = await interaction.user.send(options);
+          const nonce = cardNonce(report.reportId);
+          payload = cardPayloadDiagnostics(options, nonce);
+          const message = await interaction.user.send({ ...options, nonce, enforceNonce: true });
           await this.dependencies.database.setDmMapping(report.reportId, message.channelId, message.id);
           await this.dependencies.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
           botLog("initial_card_created", { reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: "completed", durationMs: 0 });

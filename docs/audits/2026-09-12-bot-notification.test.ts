@@ -51,10 +51,10 @@ function worker(db:any, client:any, api:any){return new AccountNotificationWorke
 {
  let ingests=0,advanced=0;
  const query=async(sql:string)=>{if(sql.includes('FROM api_connections'))return {rows:[{discord_user_id:'synthetic-user'}]};if(sql.includes('AND report_id = $2'))return {rows:[]};if(sql.includes('report_id IS NULL'))return {rows:[{id:'synthetic-unrelated-pending'}]};return {rows:[]}};
- const sqlDb=new AccountBotDatabase({connect:async()=>({query,release:quiet})} as any);
- const db:any={cleanupExpiredForms:async()=>{},pendingReportLinks:async()=>[],ingestEvent:async(e:any)=>{ingests++;return sqlDb.ingestEvent(e)},advanceCursor:async()=>{advanced++}};
+ const sqlDb=new AccountBotDatabase({query:async()=>({rows:[],rowCount:0}),connect:async()=>({query,release:quiet})} as any);
+ const db:any={cleanupExpiredForms:async()=>{},pendingReportLinks:async()=>[],existingEventIds:async()=>new Set(),ingestEvent:async(e:any)=>{ingests++;return sqlDb.ingestEvent(e)},advanceCursor:async()=>{advanced++}};
  const event={eventId:'1',accountId:'synthetic-account',reportId:'synthetic-external',traceId:'synthetic',type:'report_queued',occurredAt:'2026-09-09T00:00:00Z',lifecycleAttempt:1};
- const w=worker(db,{}, {events:async()=>({items:[event,{...event,eventId:'2'}],next:null})});await w.reconcileConnection(connection);assert.equal(ingests,2);assert.equal(advanced,2);
+ const w=worker(db,{}, {events:async()=>({items:[event,{...event,eventId:'2'}],next:null})});await w.reconcileConnection(connection);assert.equal(ingests,2);assert.equal(advanced,1);
  console.log('PASS: reconciliation continues after an unrelated pending create');
 }
 // Recovery isolates a pending-operation authorization failure per account.

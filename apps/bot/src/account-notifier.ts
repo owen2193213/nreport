@@ -211,7 +211,8 @@ export class AccountNotificationWorker {
           const startedAt = Date.now();
           let result: Awaited<ReturnType<AccountBotDatabase["ingestEvent"]>>;
           if (known.has(event.eventId)) {
-            result = "duplicate";
+            lastProcessedEventId = event.eventId;
+            continue;
           } else {
             try {
               result = await this.database.ingestEvent(event);

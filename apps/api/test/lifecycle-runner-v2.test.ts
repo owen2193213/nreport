@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DiscordDsaHttpError } from "@discord-dsa/client";
 
-import { LifecycleRunner } from "../src/lifecycle-runner-v2.js";
+import { LifecycleRunner, type LifecycleFailureSignal } from "../src/lifecycle-runner-v2.js";
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -894,6 +894,63 @@ describe("LifecycleRunner safe outcomes", () => {
       outcome: "completed"
     });
     expect(typeof (maintenanceOutcome as { durationMs: unknown }).durationMs).toBe("number");
+  });
+
+  it("surfaces committed receipt deadlines and recovered ambiguous reports with correlation", async () => {
+    const outcomes: unknown[] = [];
+    const store = {
+      recoverInterruptedJobs: vi.fn().mockResolvedValue([{
+        reportId: "22222222-2222-4222-8222-222222222222",
+        traceId: "44444444-4444-4444-8444-444444444444",
+        lifecycleAttempt: 2,
+        stage: "submitting",
+        eventType: "report_failed",
+        outcome: "ambiguous",
+        errorCategory: "ambiguous_submission_state"
+      }]),
+      expireDeadlines: vi.fn((onFailure?: (failure: LifecycleFailureSignal) => void) => {
+        onFailure?.({
+          reportId: "11111111-1111-4111-8111-111111111111",
+          traceId: "33333333-3333-4333-8333-333333333333",
+          lifecycleAttempt: 1,
+          stage: "submitted",
+          eventType: "report_receipt_timeout",
+          outcome: "failed",
+          errorCategory: "discord_receipt_timeout"
+        });
+        return Promise.resolve();
+      }),
+      claimLifecycleJob: vi.fn(async () => null)
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      (outcome) => { outcomes.push(outcome); }
+    );
+
+    await runner.processOne();
+
+    expect(outcomes).toContainEqual(expect.objectContaining({
+      component: "report_failure",
+      stage: "submitted",
+      outcome: "failed",
+      reportId: "11111111-1111-4111-8111-111111111111",
+      traceId: "33333333-3333-4333-8333-333333333333",
+      eventType: "report_receipt_timeout",
+      errorCategory: "discord_receipt_timeout"
+    }));
+    expect(outcomes).toContainEqual(expect.objectContaining({
+      component: "report_failure",
+      stage: "submitting",
+      outcome: "ambiguous",
+      reportId: "22222222-2222-4222-8222-222222222222",
+      traceId: "44444444-4444-4444-8444-444444444444",
+      eventType: "report_failed",
+      errorCategory: "ambiguous_submission_state"
+    }));
   });
 
   it("reports a claim-loop failure using a fixed safe category and keeps running", async () => {

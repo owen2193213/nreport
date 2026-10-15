@@ -30,6 +30,17 @@ const RECOVERY_DELAYS_SECONDS = [5, 15, 30, 60, 120, 300] as const;
 
 /** Number of concurrent notification-delivery loops; per-report ordering is enforced in claimNotification. */
 export const NOTIFICATION_LOOP_COUNT = 3;
+const NOTIFICATION_HEALTH_SAMPLE_SECONDS = 60;
+const NOTIFICATION_HEALTH_THRESHOLD_MS = 5 * 60_000;
+const NOTIFICATION_HEALTH_BAD_SAMPLES = 2;
+const NOTIFICATION_HEALTH_RECOVERY_SAMPLES = 2;
+
+type NotificationHealthSignalKey = "notification_backlog" | "stuck_card_updates";
+interface NotificationHealthSignalState {
+  unhealthySamples: number;
+  healthySamples: number;
+  reported: boolean;
+}
 
 type BotFailureContext = Omit<LifecycleFailureContext, "service">;
 
@@ -77,6 +88,8 @@ export class AccountNotificationWorker {
   private notificationLoops: Promise<void>[] = [];
   private reconciliationLoop: Promise<void> | undefined;
   private recoveryLoop: Promise<void> | undefined;
+  private healthLoop: Promise<void> | undefined;
+  private readonly notificationHealthSignals = new Map<NotificationHealthSignalKey, NotificationHealthSignalState>();
 
   public constructor(
     private readonly database: AccountBotDatabase,
@@ -93,14 +106,16 @@ export class AccountNotificationWorker {
     this.notificationLoops = Array.from({ length: NOTIFICATION_LOOP_COUNT }, () => this.notifications());
     this.reconciliationLoop = this.reconcile();
     this.recoveryLoop = this.recover();
+    this.healthLoop = this.monitorNotificationHealth();
   }
 
   public async stop(): Promise<void> {
     this.stopping = true;
-    await Promise.all([...this.notificationLoops, this.reconciliationLoop, this.recoveryLoop]);
+    await Promise.all([...this.notificationLoops, this.reconciliationLoop, this.recoveryLoop, this.healthLoop]);
     this.notificationLoops = [];
     this.reconciliationLoop = undefined;
     this.recoveryLoop = undefined;
+    this.healthLoop = undefined;
   }
 
   public async processOne(): Promise<boolean> {
@@ -296,6 +311,17 @@ export class AccountNotificationWorker {
   }
 
   public async recoverOnce(): Promise<void> {
+    try {
+      await this.database.cleanupExpiredForms();
+      this.clearCapturedFailure("report_recovery:expired_forms");
+    } catch (error) {
+      this.safeLog("expired_report_forms_cleanup_failed", {
+        stage: "form_cleanup", outcome: "retrying", ...errorFields(error), failureCategory: safeErrorCategory(error)
+      }, "warn");
+      this.captureFailureOnce("report_recovery:expired_forms", error, {
+        operation: "report_form_cleanup", stage: "form_cleanup", outcome: "retrying", severity: "warning"
+      });
+    }
     const connections = await this.database.connections();
     for (const connection of connections) {
       if (this.stopping) break;
@@ -316,7 +342,6 @@ export class AccountNotificationWorker {
   }
 
   private async recoverConnection(connection: ApiConnection, api: AccountApi): Promise<void> {
-    await this.database.cleanupExpiredForms();
     const pendingLinks = await this.database.pendingReportLinks(connection.discord_user_id);
     for (const link of pendingLinks) {
       let pending: CreateReportInput | { reportId: string; input?: RetryReportInput; mode?: "reuse" | "regenerate" };
@@ -557,6 +582,76 @@ export class AccountNotificationWorker {
         await delay(2_000);
       }
     }
+  }
+
+  public async sampleNotificationHealthOnce(): Promise<void> {
+    const snapshot = await this.database.notificationHealthSnapshot();
+    this.clearCapturedFailure("notification_health:sample");
+    this.observeNotificationHealthSignal(
+      "notification_backlog",
+      snapshot.pendingNotificationCount,
+      snapshot.oldestPendingNotificationAgeMs,
+      "Bot lifecycle notifications remain pending beyond the delivery threshold."
+    );
+    this.observeNotificationHealthSignal(
+      "stuck_card_updates",
+      snapshot.pendingCardUpdateCount,
+      snapshot.oldestPendingCardUpdateAgeMs,
+      "Bot report status card delivery work remains pending beyond the threshold."
+    );
+  }
+
+  private async monitorNotificationHealth(): Promise<void> {
+    while (!this.stopping) {
+      try {
+        await this.sampleNotificationHealthOnce();
+      } catch (error) {
+        this.captureFailureOnce("notification_health:sample", error, {
+          operation: "notification_health_sampling", stage: "notification_health", outcome: "retrying", severity: "warning"
+        });
+      }
+      for (let second = 0; second < NOTIFICATION_HEALTH_SAMPLE_SECONDS && !this.stopping; second += 1) {
+        await delay(1_000);
+      }
+    }
+  }
+
+  private observeNotificationHealthSignal(
+    key: NotificationHealthSignalKey,
+    queueCount: number,
+    oldestAgeMs: number | null,
+    message: string
+  ): void {
+    const current = this.notificationHealthSignals.get(key) ?? {
+      unhealthySamples: 0, healthySamples: 0, reported: false
+    };
+    const unhealthy = queueCount > 0 && oldestAgeMs !== null && oldestAgeMs >= NOTIFICATION_HEALTH_THRESHOLD_MS;
+    if (unhealthy) {
+      current.unhealthySamples += 1;
+      current.healthySamples = 0;
+      if (!current.reported && current.unhealthySamples >= NOTIFICATION_HEALTH_BAD_SAMPLES) {
+        current.reported = true;
+        captureLifecycleFailure(new Error(message), {
+          service: "bot",
+          operation: key,
+          stage: "notification_health",
+          outcome: "stuck",
+          severity: "warning",
+          queueCount,
+          ...(oldestAgeMs === null ? {} : { oldestAgeMs })
+        });
+      }
+    } else {
+      current.unhealthySamples = 0;
+      if (current.reported) {
+        current.healthySamples += 1;
+        if (current.healthySamples >= NOTIFICATION_HEALTH_RECOVERY_SAMPLES) {
+          current.reported = false;
+          current.healthySamples = 0;
+        }
+      }
+    }
+    this.notificationHealthSignals.set(key, current);
   }
 
   private async reconcile(): Promise<void> {

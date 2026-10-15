@@ -3,7 +3,7 @@ import { captureLifecycleFailure, flushSentry, safeErrorSummary } from "@nreport
 import type { LifecycleFailureContext } from "@nreport/observability";
 import { loadConfig } from "./config.js";
 import { AccountRepository } from "./accounts.js";
-import { LifecycleRunner } from "./lifecycle-runner-v2.js";
+import { LifecycleRunner, type LifecycleFailureSignal } from "./lifecycle-runner-v2.js";
 import { AccountEventDeliveryWorker } from "./event-delivery-v2.js";
 import { PostgresDatabase } from "./postgres.js";
 import { PreparationWorker, preparationFailureLogFields } from "./preparation-worker.js";
@@ -16,6 +16,28 @@ import { WebhookDestinationRepository } from "./webhook-destinations.js";
 import { AnalyticsRepository } from "./analytics-repository.js";
 import { OperationalHealthSampler, QueueObservabilitySampler } from "./operational-observability.js";
 import { randomUUID } from "node:crypto";
+
+function captureReportFailure(failure: LifecycleFailureSignal): void {
+  const messages: Record<LifecycleFailureSignal["errorCategory"], string> = {
+    verification_timeout: "Discord verification did not complete before the deadline.",
+    discord_receipt_timeout: "Discord report receipt was not recorded before the deadline.",
+    review_confirmation_timeout: "Discord appeal confirmation was not recorded before the deadline.",
+    ambiguous_submission_state: "Discord report submission ended with an ambiguous outcome.",
+    review_request_ambiguous: "Discord appeal submission ended with an ambiguous outcome."
+  };
+  captureLifecycleFailure(new Error(messages[failure.errorCategory]), {
+    service: "api",
+    operation: "report_lifecycle_outcome",
+    reportId: failure.reportId,
+    traceId: failure.traceId,
+    lifecycleAttempt: failure.lifecycleAttempt,
+    stage: failure.stage,
+    eventType: failure.eventType,
+    outcome: failure.outcome,
+    errorCategory: failure.errorCategory,
+    severity: "error"
+  });
+}
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -49,7 +71,7 @@ async function startApi(config: ReturnType<typeof loadConfig>, database: Postgre
     managedBotWebhook?.destinationId
   );
   const analytics = new AnalyticsRepository(database.pool);
-  await reports.recoverInterruptedJobs();
+  for (const failure of await reports.recoverInterruptedJobs()) captureReportFailure(failure);
   const app = await buildV2Server(config, {
     healthcheck: () => database.healthcheck(),
     accounts,
@@ -166,7 +188,9 @@ async function startApi(config: ReturnType<typeof loadConfig>, database: Postgre
     undefined,
     undefined,
     (outcome) => {
-      if (outcome.component === "job" && "reportId" in outcome) {
+      if (outcome.component === "report_failure") {
+        captureReportFailure(outcome);
+      } else if (outcome.component === "job" && "reportId" in outcome) {
         const { error, ...details } = outcome;
         const jobKind = "jobKind" in outcome ? outcome.jobKind : undefined;
         const lifecycleAttempt = "attempts" in outcome ? outcome.attempts : undefined;
@@ -187,7 +211,8 @@ async function startApi(config: ReturnType<typeof loadConfig>, database: Postgre
             })
           }
         }).catch(() => undefined);
-        if ((outcome.outcome === "failed" || outcome.outcome === "ambiguous") && error !== undefined) {
+        if ((outcome.outcome === "failed" || outcome.outcome === "ambiguous") && error !== undefined &&
+            outcome.errorCategory !== "discord_review_ineligible") {
           const details = {
             service: "api" as const,
             operation: jobKind === undefined ? "lifecycle_heartbeat" : "report_lifecycle",
@@ -217,7 +242,9 @@ async function startApi(config: ReturnType<typeof loadConfig>, database: Postgre
       if (outcome.component === "maintenance" && outcome.outcome === "completed") {
         lastOperationalCapture.delete("lifecycle_lifecycle_maintenance");
       }
-      const { error, ...outcomeFields } = outcome;
+      const error = "error" in outcome ? outcome.error : undefined;
+      const outcomeFields: Record<string, unknown> = { ...outcome };
+      delete outcomeFields.error;
       const fields = {
         event: "lifecycle_runner_outcome", ...outcomeFields,
         ...(error === undefined ? {} : safeErrorLogFields(error)),

@@ -1,6 +1,7 @@
 import type { ActionHistoryPage, AnalyticsPeriod, DigestActivity, ReportAnalytics } from "./analytics.js";
 import type {
   AdminAccountView,
+  AdminApiKeyInventoryPage,
   AdminApiKeyView,
   AdminCreateAccountInput,
   ApiAccountView,
@@ -188,6 +189,10 @@ export class DsaAdminApi extends HttpClient {
 
   public keys(accountId: string): Promise<{ items: AdminApiKeyView[] }> {
     return this.request(`${DSA_ADMIN_BASE_PATH}/accounts/${encodeURIComponent(accountId)}/keys`);
+  }
+
+  public keyInventory(page = 1): Promise<AdminApiKeyInventoryPage> {
+    return this.request(`${DSA_ADMIN_BASE_PATH}/keys?${new URLSearchParams({ page: String(page) })}`);
   }
 
   public async revokeKey(accountId: string, keyId: string, reason: string): Promise<void> {

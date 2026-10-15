@@ -257,6 +257,38 @@ describe("deadline expiry", () => {
     expect(sqlCalls.some((sql) => sql.includes("discord_receipt_timeout"))).toBe(true);
     expect(sqlCalls.some((sql) => sql.includes("review_confirmation_timeout"))).toBe(true);
   });
+
+  it("returns committed report deadline failures with trace correlation for Sentry", async () => {
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("failure_stage = 'submitted'")) {
+          return { rows: [{ id: "receipt-report", trace_id: "receipt-trace", account_id: "account-1", lifecycle_attempt: 2 }], rowCount: 1 };
+        }
+        if (sql.includes("review_status = 'confirmation_timeout'")) {
+          return { rows: [{ id: "review-report", trace_id: "review-trace", account_id: "account-1", lifecycle_attempt: 3 }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn()
+    };
+    const repository = new ReportRepository({
+      connect: async () => client,
+      query: vi.fn(async () => ({ rows: [], rowCount: 0 }))
+    } as never);
+
+    const failures: unknown[] = [];
+    await expect(repository.expireDeadlines((failure) => failures.push(failure))).resolves.toBeUndefined();
+    expect(failures).toEqual([
+      {
+        reportId: "receipt-report", traceId: "receipt-trace", stage: "submitted",
+        lifecycleAttempt: 2, eventType: "report_receipt_timeout", outcome: "failed", errorCategory: "discord_receipt_timeout"
+      },
+      {
+        reportId: "review-report", traceId: "review-trace", stage: "review_confirmation",
+        lifecycleAttempt: 3, eventType: "review_confirmation_timeout", outcome: "failed", errorCategory: "review_confirmation_timeout"
+      }
+    ]);
+  });
 });
 
 describe("lifecycle job leases", () => {

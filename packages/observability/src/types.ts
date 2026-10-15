@@ -28,6 +28,8 @@ export interface LifecycleFailureContext {
   upstreamResponseSummary?: string;
   discordErrorCode?: string | number;
   discordHttpStatus?: number;
+  queueCount?: number;
+  oldestAgeMs?: number;
 }
 
 export interface SafeErrorCause {

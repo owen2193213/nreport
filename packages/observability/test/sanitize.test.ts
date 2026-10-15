@@ -75,9 +75,11 @@ describe("Sentry privacy filters", () => {
       stage: "verification",
       attempt: 2,
       statusCode: 502,
-      providerErrorCode: "upstream_unavailable"
+      providerErrorCode: "upstream_unavailable",
+      queueCount: 3,
+      oldestAgeMs: 420_000
     });
-    expect(context).toMatchObject({ service: "api", operation: "report.submit", stage: "verification", attempt: 2, statusCode: 502 });
+    expect(context).toMatchObject({ service: "api", operation: "report.submit", stage: "verification", attempt: 2, statusCode: 502, queueCount: 3, oldestAgeMs: 420_000 });
     expect(context).not.toHaveProperty("route");
     expect(context).not.toHaveProperty("providerErrorCode", "https://");
     expect(context.reportId).toBe("8a637427-81d0-4115-9098-21bd9520048c");

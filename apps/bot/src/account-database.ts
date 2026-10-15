@@ -197,6 +197,13 @@ export interface PendingCardRepair extends QueryResultRow {
   card_repair_attempts: number;
 }
 
+export interface NotificationHealthSnapshot {
+  pendingNotificationCount: number;
+  oldestPendingNotificationAgeMs: number | null;
+  pendingCardUpdateCount: number;
+  oldestPendingCardUpdateAgeMs: number | null;
+}
+
 export type EventIngestionResult = "accepted" | "duplicate" | "not_tracked_yet" | "disconnected";
 
 export class AccountBotDatabase {
@@ -632,6 +639,7 @@ export class AccountBotDatabase {
          WHERE ((inbox.state = 'pending' AND inbox.run_at <= now())
             OR (inbox.state = 'sending' AND inbox.locked_at < now() - interval '2 minutes'))
            AND card_link.superseded_by_report_id IS NULL
+           AND EXISTS (SELECT 1 FROM api_connections AS active_connection WHERE active_connection.account_id = inbox.account_id)
            AND (inbox.event_type IN (${immediateLifecycleEventSql})
              OR card_link.last_card_edit_at IS NULL OR card_link.last_card_edit_at <= now() - interval '5 seconds')
            AND NOT EXISTS (
@@ -653,6 +661,58 @@ export class AccountBotDatabase {
        JOIN bot_report_links AS link ON link.report_id = claimed.report_id`
     );
     return result.rows[0] ?? null;
+  }
+
+  public async notificationHealthSnapshot(): Promise<NotificationHealthSnapshot> {
+    const result = await this.pool.query<{
+      pending_notification_count: string | number;
+      oldest_pending_notification_age_ms: string | number | null;
+      pending_card_update_count: string | number;
+      oldest_pending_card_update_age_ms: string | number | null;
+    }>(
+      `WITH notification_backlog AS (
+         SELECT inbox.created_at, inbox.report_id
+         FROM lifecycle_inbox AS inbox
+         JOIN bot_report_links AS link ON link.report_id = inbox.report_id
+         JOIN api_connections AS connection ON connection.account_id = inbox.account_id
+         WHERE inbox.state IN ('pending', 'sending') AND link.superseded_by_report_id IS NULL
+       ), card_updates AS (
+         SELECT inbox.created_at AS queued_at
+         FROM lifecycle_inbox AS inbox
+         JOIN bot_report_links AS link ON link.report_id = inbox.report_id
+         JOIN api_connections AS connection ON connection.account_id = inbox.account_id
+         WHERE inbox.state IN ('pending', 'sending') AND link.superseded_by_report_id IS NULL
+           AND link.dm_message_id IS NOT NULL
+           AND (link.last_card_edit_at IS NULL OR inbox.created_at > link.last_card_edit_at)
+         UNION ALL
+         SELECT link.created_at AS queued_at
+         FROM bot_report_links AS link
+         JOIN api_connections AS connection ON connection.account_id = link.account_id
+         WHERE link.report_id IS NOT NULL AND link.superseded_by_report_id IS NULL
+           AND link.dm_message_id IS NULL AND link.card_repair_terminal_at IS NULL
+       )
+       SELECT
+         (SELECT count(*) FROM notification_backlog)::text AS pending_notification_count,
+         (SELECT floor(extract(epoch FROM (now() - min(created_at))) * 1000) FROM notification_backlog)::text AS oldest_pending_notification_age_ms,
+         (SELECT count(*) FROM card_updates)::text AS pending_card_update_count,
+         (SELECT floor(extract(epoch FROM (now() - min(queued_at))) * 1000) FROM card_updates)::text AS oldest_pending_card_update_age_ms`
+    );
+    const row = result.rows[0];
+    const count = (value: string | number | null | undefined): number => {
+      const parsed = Number(value ?? 0);
+      return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+    };
+    const age = (value: string | number | null | undefined): number | null => {
+      if (value === null || value === undefined) return null;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : null;
+    };
+    return {
+      pendingNotificationCount: count(row?.pending_notification_count),
+      oldestPendingNotificationAgeMs: age(row?.oldest_pending_notification_age_ms),
+      pendingCardUpdateCount: count(row?.pending_card_update_count),
+      oldestPendingCardUpdateAgeMs: age(row?.oldest_pending_card_update_age_ms)
+    };
   }
 
   public async completeNotification(eventId: string): Promise<void> {

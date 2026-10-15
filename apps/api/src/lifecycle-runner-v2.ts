@@ -38,6 +38,16 @@ export interface LifecycleReport {
   discord_report_id: string | null;
 }
 
+export interface LifecycleFailureSignal {
+  reportId: string;
+  traceId: string;
+  lifecycleAttempt: number;
+  stage: "verification" | "submitted" | "review_confirmation" | "submitting" | "review_submission";
+  eventType: "report_failed" | "report_receipt_timeout" | "review_confirmation_timeout" | "review_request_ambiguous";
+  outcome: "failed" | "ambiguous";
+  errorCategory: "verification_timeout" | "discord_receipt_timeout" | "review_confirmation_timeout" | "ambiguous_submission_state" | "review_request_ambiguous";
+}
+
 interface LifecycleStore {
   claimLifecycleJob(): Promise<LifecycleJob | null>;
   heartbeatLifecycleJob(job: LifecycleJob): Promise<boolean>;
@@ -53,8 +63,8 @@ interface LifecycleStore {
   markReviewRequested(job: LifecycleJob, discordReportId: string): Promise<boolean>;
   beginReviewSubmission(job: LifecycleJob): Promise<boolean>;
   failReview(job: LifecycleJob, status: "ineligible" | "request_failed" | "request_ambiguous", code: string, message: string): Promise<boolean>;
-  expireDeadlines?(): Promise<void>;
-  recoverInterruptedJobs?(): Promise<void>;
+  expireDeadlines?(onFailure?: (failure: LifecycleFailureSignal) => void): Promise<void>;
+  recoverInterruptedJobs?(): Promise<LifecycleFailureSignal[] | void>;
   purgeDiagnostics?(): Promise<void>;
   reconcilePendingInboundMessages?(): Promise<{ processed: number; remaining: number; oldestPendingAgeMs: number | null }>;
 }
@@ -101,6 +111,17 @@ export type LifecycleRunnerOutcome =
       durationMs: number;
       errorCategory?: string;
       error?: unknown;
+    }
+  | {
+      component: "report_failure";
+      stage: LifecycleFailureSignal["stage"];
+      outcome: LifecycleFailureSignal["outcome"];
+      durationMs: number;
+      reportId: string;
+      traceId: string;
+      lifecycleAttempt: number;
+      eventType: LifecycleFailureSignal["eventType"];
+      errorCategory: LifecycleFailureSignal["errorCategory"];
     }
   | {
       component: "job";
@@ -473,8 +494,19 @@ export class LifecycleRunner {
     const startedAt = Date.now();
     try {
       const reconciliation = await this.store.reconcilePendingInboundMessages?.();
-      await this.store.recoverInterruptedJobs?.();
-      await this.store.expireDeadlines?.();
+      const recoveredFailures = await this.store.recoverInterruptedJobs?.();
+      for (const failure of recoveredFailures ?? []) {
+        this.notify({
+          component: "report_failure",
+          durationMs: 0,
+          ...failure
+        });
+      }
+      await this.store.expireDeadlines?.((failure) => this.notify({
+        component: "report_failure",
+        durationMs: 0,
+        ...failure
+      }));
       if (Date.now() - this.lastDiagnosticsPurgeAt >= 60 * 60_000) {
         // Diagnostics are best-effort: a retention failure must not prevent
         // deadline recovery or the next lifecycle maintenance pass.

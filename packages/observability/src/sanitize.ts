@@ -154,7 +154,9 @@ export function sanitizeFailureContext(context: LifecycleFailureContext): Record
     ["attempt", context.attempt, 1, 1_000_000],
     ["statusCode", context.statusCode, 100, 599],
     ["providerStatusCode", context.providerStatusCode, 100, 599],
-    ["discordHttpStatus", context.discordHttpStatus, 100, 599]
+    ["discordHttpStatus", context.discordHttpStatus, 100, 599],
+    ["queueCount", context.queueCount, 0, 1_000_000],
+    ["oldestAgeMs", context.oldestAgeMs, 0, 31_536_000_000]
   ];
   for (const [key, value, min, max] of numbers) {
     const safe = safeNumber(value, min, max);

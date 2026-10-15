@@ -11,8 +11,9 @@ import type {
 } from "@nreport/contracts";
 import { boundedDiagnostic } from "@nreport/contracts";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
-import type { LifecycleJob, LifecycleReport } from "./lifecycle-runner-v2.js";
+import type { LifecycleFailureSignal, LifecycleJob, LifecycleReport } from "./lifecycle-runner-v2.js";
 import type { AccountEventDelivery } from "./event-delivery-v2.js";
+import { isEventCursor, isReportCursor } from "./pagination.js";
 
 export const REPORT_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS report_credit_chains (
@@ -544,8 +545,9 @@ export class ReportRepository {
     await this.pool.query(REPORT_SCHEMA_SQL);
   }
 
-  public async recoverInterruptedJobs(): Promise<void> {
+  public async recoverInterruptedJobs(): Promise<LifecycleFailureSignal[]> {
     const client = await this.pool.connect();
+    const failures: LifecycleFailureSignal[] = [];
     try {
       await client.query("BEGIN");
       await client.query(
@@ -585,7 +587,7 @@ export class ReportRepository {
            AND job.kind = 'verify_submit' AND report.submission_started_at IS NOT NULL
            AND job.locked_at < now() - interval '2 minutes'
            AND report.status <> 'submitted'
-         RETURNING report.id, report.account_id, report.lifecycle_attempt`
+        RETURNING report.id, report.trace_id, report.account_id, report.lifecycle_attempt`
       );
       for (const row of ambiguous.rows) {
         await client.query(
@@ -597,9 +599,19 @@ export class ReportRepository {
         await insertEvent(client, row.account_id, row.id, "report_failed", row.lifecycle_attempt, {
           errorCode: "ambiguous_submission_state"
         });
+        failures.push({
+          reportId: row.id,
+          traceId: row.trace_id,
+          lifecycleAttempt: row.lifecycle_attempt,
+          stage: "submitting",
+          eventType: "report_failed",
+          outcome: "ambiguous",
+          errorCategory: "ambiguous_submission_state"
+        });
       }
       const ambiguousReviews = await client.query<{
         id: string;
+        trace_id: string;
         account_id: string;
         lifecycle_attempt: number;
       }>(
@@ -614,7 +626,7 @@ export class ReportRepository {
            AND job.kind = 'submit_review' AND report.review_status = 'queued'
            AND job.locked_at < now() - interval '2 minutes'
            AND report.review_submission_started_at IS NOT NULL
-         RETURNING report.id, report.account_id, report.lifecycle_attempt`
+         RETURNING report.id, report.trace_id, report.account_id, report.lifecycle_attempt`
       );
       for (const row of ambiguousReviews.rows) {
         await client.query(
@@ -626,8 +638,18 @@ export class ReportRepository {
         await insertEvent(client, row.account_id, row.id, "review_request_ambiguous", row.lifecycle_attempt, {
           errorCode: "review_request_ambiguous"
         });
+        failures.push({
+          reportId: row.id,
+          traceId: row.trace_id,
+          lifecycleAttempt: row.lifecycle_attempt,
+          stage: "review_submission",
+          eventType: "review_request_ambiguous",
+          outcome: "ambiguous",
+          errorCategory: "review_request_ambiguous"
+        });
       }
       await client.query("COMMIT");
+      return failures;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -636,7 +658,7 @@ export class ReportRepository {
     }
   }
 
-  public async expireDeadlines(): Promise<void> {
+  public async expireDeadlines(onFailure?: (failure: LifecycleFailureSignal) => void): Promise<void> {
     // Each expired report is handled in its own short transaction that locks
     // in the same order as create(): the api_accounts row first, then the
     // report/chain. A single wrapping transaction previously called
@@ -653,13 +675,14 @@ export class ReportRepository {
          AND chain.state IN ('reserved', 'consumed')`
     );
     for (const candidate of candidates.rows) {
-      await this.expireVerificationDeadline(candidate.id);
+      const failure = await this.expireVerificationDeadline(candidate.id);
+      if (failure !== undefined) onFailure?.(failure);
     }
-    await this.expireReceiptDeadlines();
-    await this.expireReviewDeadlines();
+    for (const failure of await this.expireReceiptDeadlines()) onFailure?.(failure);
+    for (const failure of await this.expireReviewDeadlines()) onFailure?.(failure);
   }
 
-  private async expireVerificationDeadline(reportId: string): Promise<void> {
+  private async expireVerificationDeadline(reportId: string): Promise<LifecycleFailureSignal | undefined> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -670,16 +693,16 @@ export class ReportRepository {
       const accountId = owner.rows[0]?.account_id;
       if (accountId === undefined) {
         await client.query("COMMIT");
-        return;
+        return undefined;
       }
       // Lock the account row first, matching create()'s lock order, before
       // locking the report/chain and re-checking the expiry predicate.
       await client.query("SELECT 1 FROM api_accounts WHERE id = $1 FOR UPDATE", [accountId]);
       const locked = await client.query<{
-        account_id: string; credit_chain_id: string;
+        account_id: string; trace_id: string; credit_chain_id: string;
         credit_state: "available" | "reserved" | "consumed" | "released"; lifecycle_attempt: number;
       }>(
-        `SELECT report.account_id, report.credit_chain_id, chain.state AS credit_state, report.lifecycle_attempt
+        `SELECT report.account_id, report.trace_id, report.credit_chain_id, chain.state AS credit_state, report.lifecycle_attempt
          FROM account_reports AS report
          JOIN report_credit_chains AS chain ON chain.id = report.credit_chain_id
          WHERE report.id = $1
@@ -695,7 +718,7 @@ export class ReportRepository {
         // No longer eligible: already handled by another pass, or the report
         // advanced past the deadline concurrently.
         await client.query("COMMIT");
-        return;
+        return undefined;
       }
       if (report.credit_state === "reserved") {
         await releaseCredit(client, report.account_id, report.credit_chain_id, "Verification email timed out");
@@ -714,6 +737,15 @@ export class ReportRepository {
       );
       await insertEvent(client, report.account_id, reportId, "report_failed", report.lifecycle_attempt, { errorCode: "verification_timeout" });
       await client.query("COMMIT");
+      return {
+        reportId,
+        traceId: report.trace_id,
+        lifecycleAttempt: report.lifecycle_attempt,
+        stage: "verification",
+        eventType: "report_failed",
+        outcome: "failed",
+        errorCategory: "verification_timeout"
+      };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -722,22 +754,31 @@ export class ReportRepository {
     }
   }
 
-  private async expireReceiptDeadlines(): Promise<void> {
+  private async expireReceiptDeadlines(): Promise<LifecycleFailureSignal[]> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const receipts = await client.query<{ id: string; account_id: string; lifecycle_attempt: number }>(
+      const receipts = await client.query<{ id: string; trace_id: string; account_id: string; lifecycle_attempt: number }>(
         `UPDATE account_reports SET status = 'failed', failure_stage = 'submitted',
            error_code = 'discord_receipt_timeout',
            error_message = 'Discord did not send a report receipt before the deadline.',
            receipt_deadline = NULL, updated_at = now()
          WHERE status = 'submitted' AND discord_status IS NULL AND receipt_deadline <= now()
-         RETURNING id, account_id, lifecycle_attempt`
+         RETURNING id, trace_id, account_id, lifecycle_attempt`
       );
       for (const report of receipts.rows) {
         await insertEvent(client, report.account_id, report.id, "report_receipt_timeout", report.lifecycle_attempt, { errorCode: "discord_receipt_timeout" });
       }
       await client.query("COMMIT");
+      return receipts.rows.map((report) => ({
+        reportId: report.id,
+        traceId: report.trace_id,
+        lifecycleAttempt: report.lifecycle_attempt,
+        stage: "submitted",
+        eventType: "report_receipt_timeout",
+        outcome: "failed",
+        errorCategory: "discord_receipt_timeout"
+      }));
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -746,23 +787,32 @@ export class ReportRepository {
     }
   }
 
-  private async expireReviewDeadlines(): Promise<void> {
+  private async expireReviewDeadlines(): Promise<LifecycleFailureSignal[]> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const reviews = await client.query<{ id: string; account_id: string; lifecycle_attempt: number }>(
+      const reviews = await client.query<{ id: string; trace_id: string; account_id: string; lifecycle_attempt: number }>(
         `UPDATE account_reports SET review_status = 'confirmation_timeout',
            review_status_updated_at = now(), review_confirmation_deadline = NULL,
            review_error_code = 'review_confirmation_timeout',
            review_error_message = 'Discord did not confirm the automatic appeal before the deadline.',
            updated_at = now()
          WHERE review_status = 'requested' AND review_confirmation_deadline <= now()
-         RETURNING id, account_id, lifecycle_attempt`
+         RETURNING id, trace_id, account_id, lifecycle_attempt`
       );
       for (const report of reviews.rows) {
         await insertEvent(client, report.account_id, report.id, "review_confirmation_timeout", report.lifecycle_attempt, { errorCode: "review_confirmation_timeout" });
       }
       await client.query("COMMIT");
+      return reviews.rows.map((report) => ({
+        reportId: report.id,
+        traceId: report.trace_id,
+        lifecycleAttempt: report.lifecycle_attempt,
+        stage: "review_confirmation",
+        eventType: "review_confirmation_timeout",
+        outcome: "failed",
+        errorCategory: "review_confirmation_timeout"
+      }));
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -895,7 +945,7 @@ export class ReportRepository {
     if (after !== null) {
       try {
         const decoded = JSON.parse(Buffer.from(after, "base64url").toString("utf8")) as Record<string, unknown>;
-        if (typeof decoded.createdAt !== "string" || typeof decoded.id !== "string" || !Number.isFinite(Date.parse(decoded.createdAt))) {
+        if (!isReportCursor(decoded)) {
           throw new Error("Invalid cursor");
         }
         cursor = { createdAt: decoded.createdAt, id: decoded.id };
@@ -904,16 +954,18 @@ export class ReportRepository {
       }
     }
     const result = cursor === null
-      ? await this.pool.query<AccountReportRow>(
-          `SELECT report.*, chain.state AS credit_state
+      ? await this.pool.query<AccountReportRow & { cursor_created_at: string }>(
+          `SELECT report.*, chain.state AS credit_state,
+                  to_char(report.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_created_at
            FROM account_reports AS report
            JOIN report_credit_chains AS chain ON chain.id = report.credit_chain_id
            WHERE report.account_id = $1
            ORDER BY report.created_at DESC, report.id DESC LIMIT $2`,
           [accountId, pageSize + 1]
         )
-      : await this.pool.query<AccountReportRow>(
-          `SELECT report.*, chain.state AS credit_state
+      : await this.pool.query<AccountReportRow & { cursor_created_at: string }>(
+          `SELECT report.*, chain.state AS credit_state,
+                  to_char(report.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_created_at
            FROM account_reports AS report
            JOIN report_credit_chains AS chain ON chain.id = report.credit_chain_id
            WHERE report.account_id = $1 AND (report.created_at, report.id) < ($2::timestamptz, $3::uuid)
@@ -926,7 +978,7 @@ export class ReportRepository {
     return {
       rows,
       next: hasMore && last !== undefined
-        ? Buffer.from(JSON.stringify({ createdAt: last.created_at.toISOString(), id: last.id })).toString("base64url")
+        ? Buffer.from(JSON.stringify({ createdAt: last.cursor_created_at, id: last.id })).toString("base64url")
         : null
     };
   }
@@ -1188,6 +1240,7 @@ export class ReportRepository {
     after: string | null,
     limit: number
   ): Promise<CursorPage<ReportLifecycleEvent>> {
+    if (!isEventCursor(after)) throw new ReportMutationError("invalid_cursor", "Event cursor is invalid.");
     const pageSize = Math.max(1, Math.min(100, limit));
     const result = await this.pool.query<{
       id: string;

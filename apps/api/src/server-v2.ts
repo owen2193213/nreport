@@ -31,6 +31,7 @@ import { reportRetryableModes, type AccountReportRow, type ReportRepository } fr
 import { inspectDiscordEmail } from "./email.js";
 import { encryptJson, safeEqual, sha256Hex, verifyEmailDiagnosticSignature, verifyInboundSignature } from "./security.js";
 import { parseCreateReportInput, parseRetryReportInput } from "./validation.js";
+import { isEventCursor } from "./pagination.js";
 import { supportedCountries } from "./pseudonyms.js";
 import type { WebhookDestinationRepository } from "./webhook-destinations.js";
 import type { AnalyticsRepository } from "./analytics-repository.js";
@@ -45,6 +46,7 @@ interface AccountStore {
   createAccount(input: AdminCreateAccountInput): Promise<unknown>;
   adminAccount(accountId: string): Promise<unknown>;
   listAccounts(): Promise<unknown[]>;
+  listKeyInventory(page: number): Promise<unknown>;
   issueKey(accountId: string): Promise<{ keyId: string; prefix: string; plaintext: string }>;
   rotateKey(accountId: string, overlapSeconds?: number): Promise<{ keyId: string; prefix: string; plaintext: string }>;
   listKeys(accountId: string): Promise<unknown[]>;
@@ -188,6 +190,13 @@ const openApiDocument = {
     [`${DSA_ADMIN_BASE_PATH}/accounts`]: {
       get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Accounts" } } },
       post: { security: [{ administratorKey: [] }], requestBody: jsonRequest(adminCreateAccountBodySchema), responses: { "201": { description: "Created account" } } }
+    },
+    [`${DSA_ADMIN_BASE_PATH}/keys`]: {
+      get: {
+        security: [{ administratorKey: [] }],
+        parameters: [{ in: "query", name: "page", required: false, schema: { type: "integer", minimum: 1, maximum: 1_000_000 } }],
+        responses: { "200": { description: "Paginated API key metadata without plaintext secrets or hashes" }, "400": { description: "Invalid page" } }
+      }
     },
     [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}`]: { get: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], responses: { "200": { description: "Account" }, "404": { description: "Not found" } } } },
     [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/keys`]: {
@@ -426,7 +435,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       if (principal === undefined) return;
       const after = request.query.after ?? null;
       const limit = request.query.limit === undefined ? 50 : Number(request.query.limit);
-      if ((after !== null && !/^\d+$/.test(after)) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      if (!isEventCursor(after) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
         return apiError(reply, request, 400, "invalid_cursor", "Event cursor or limit is invalid.");
       }
       return reply.send(await dependencies.reports.listEvents(principal.accountId, after, limit));
@@ -499,6 +508,15 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
   app.get(`${DSA_ADMIN_BASE_PATH}/accounts`, { preHandler: adminAuth }, async (_request, reply) =>
     reply.send({ items: await dependencies.accounts.listAccounts() })
   );
+  app.get<{ Querystring: { page?: string } }>(`${DSA_ADMIN_BASE_PATH}/keys`, { preHandler: adminAuth }, async (request, reply) => {
+    const rawPage = request.query.page;
+    const page = rawPage === undefined ? 1 : Number(rawPage);
+    if (rawPage !== undefined && (typeof rawPage !== "string" || !/^\d+$/u.test(rawPage) ||
+      !Number.isSafeInteger(page) || page < 1 || page > 1_000_000)) {
+      return apiError(reply, request, 400, "invalid_key_page", "Page must be an integer between 1 and 1000000.");
+    }
+    return reply.send(await dependencies.accounts.listKeyInventory(page));
+  });
   app.get(`${DSA_ADMIN_BASE_PATH}/usage`, { preHandler: adminAuth }, async (_request, reply) =>
     reply.send(await dependencies.accounts.globalUsage())
   );
@@ -618,7 +636,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     const interval = analyticsInterval(request.query);
     const limit = request.query.limit === undefined ? 50 : Number(request.query.limit);
     const after = request.query.after ?? null;
-    if (interval === null || !Number.isSafeInteger(limit) || limit < 1 || limit > 100 || (after !== null && !/^\d+$/.test(after))) {
+    if (interval === null || !Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !isEventCursor(after)) {
       return apiError(reply, request, 400, "invalid_interval", "Action history query is invalid.");
     }
     return reply.send(await dependencies.analytics.actionHistory(principal.accountId, interval, after, limit));

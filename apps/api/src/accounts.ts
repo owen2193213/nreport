@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
-import type { AdminAccountView, AdminCreateAccountInput, ApiAccountView } from "@nreport/contracts";
+import { ADMIN_API_KEY_INVENTORY_PAGE_SIZE } from "@nreport/contracts";
+import type { AdminAccountView, AdminApiKeyInventoryPage, AdminCreateAccountInput, ApiAccountView } from "@nreport/contracts";
 
 const API_KEY_PATTERN = /^dsa_live_([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})_([A-Za-z0-9_-]{43})$/;
 const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/;
@@ -464,6 +465,50 @@ export class AccountRepository {
       overlapExpiresAt: row.overlap_expires_at?.toISOString() ?? null,
       revokedAt: row.revoked_at?.toISOString() ?? null
     }));
+  }
+
+  public async listKeyInventory(page: number): Promise<AdminApiKeyInventoryPage> {
+    if (!Number.isSafeInteger(page) || page < 1 || page > 1_000_000) {
+      throw new RangeError("Key inventory page must be between 1 and 1000000.");
+    }
+    const offset = (page - 1) * ADMIN_API_KEY_INVENTORY_PAGE_SIZE;
+    const count = await this.pool.query<{ total: string }>("SELECT count(*)::text AS total FROM api_keys");
+    const result = await this.pool.query<{
+      id: string;
+      account_id: string;
+      username: string;
+      account_status: "active" | "suspended";
+      prefix: string;
+      created_at: Date;
+      last_used_at: Date | null;
+      overlap_expires_at: Date | null;
+      revoked_at: Date | null;
+    }>(
+      `SELECT api_key.id, api_key.account_id, account.username, account.status AS account_status,
+              api_key.prefix, api_key.created_at, api_key.last_used_at,
+              api_key.overlap_expires_at, api_key.revoked_at
+       FROM api_keys AS api_key
+       JOIN api_accounts AS account ON account.id = api_key.account_id
+       ORDER BY api_key.created_at DESC, api_key.id
+       LIMIT $1 OFFSET $2`,
+      [ADMIN_API_KEY_INVENTORY_PAGE_SIZE, offset]
+    );
+    return {
+      items: result.rows.map((row) => ({
+        keyId: row.id,
+        accountId: row.account_id,
+        username: row.username,
+        accountStatus: row.account_status,
+        prefix: row.prefix,
+        createdAt: row.created_at.toISOString(),
+        lastUsedAt: row.last_used_at?.toISOString() ?? null,
+        overlapExpiresAt: row.overlap_expires_at?.toISOString() ?? null,
+        revokedAt: row.revoked_at?.toISOString() ?? null
+      })),
+      page,
+      pageSize: ADMIN_API_KEY_INVENTORY_PAGE_SIZE,
+      total: Number(count.rows[0]?.total ?? 0)
+    };
   }
 
   public async rotateKey(accountId: string, overlapSeconds = 600): Promise<IssuedApiKey> {

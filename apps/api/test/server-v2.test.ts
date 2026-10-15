@@ -32,6 +32,56 @@ const principal = {
 };
 
 describe("v2 account-owned server", () => {
+  it("restricts the paginated global key inventory to administrators", async () => {
+    const listKeyInventory = vi.fn(async (page: number) => ({
+      items: [{
+        keyId: "22222222-2222-4222-8222-222222222222",
+        accountId: principal.accountId,
+        username: "Alice",
+        accountStatus: "active",
+        prefix: "dsa_live_22222222-2222-4222-8222-222222222222",
+        createdAt: "2026-10-01T00:00:00.000Z",
+        lastUsedAt: "2026-10-02T00:00:00.000Z",
+        overlapExpiresAt: null,
+        revokedAt: null
+      }],
+      page,
+      pageSize: 5,
+      total: 6
+    }));
+    const server = await buildV2Server(config, {
+      healthcheck: vi.fn(), accounts: { authenticate: vi.fn(), listKeyInventory }, reports: {}
+    } as never);
+    try {
+      const unauthenticated = await server.inject({
+        method: "GET", url: "/v1/admin/discord/dsa/keys?page=2"
+      });
+      const rejectedPersonalKey = await server.inject({
+        method: "GET", url: "/v1/admin/discord/dsa/keys?page=2",
+        headers: { authorization: "Bearer personal-key" }
+      });
+      const accepted = await server.inject({
+        method: "GET", url: "/v1/admin/discord/dsa/keys?page=2",
+        headers: { authorization: "Bearer admin-key" }
+      });
+      const invalid = await server.inject({
+        method: "GET", url: "/v1/admin/discord/dsa/keys?page=0",
+        headers: { authorization: "Bearer admin-key" }
+      });
+
+      expect(unauthenticated.statusCode).toBe(401);
+      expect(rejectedPersonalKey.statusCode).toBe(401);
+      expect(accepted.statusCode).toBe(200);
+      expect(accepted.json()).toMatchObject({ page: 2, pageSize: 5, total: 6, items: [{ accountId: principal.accountId }] });
+      expect(invalid.statusCode).toBe(400);
+      expect(listKeyInventory).toHaveBeenCalledOnce();
+      expect(listKeyInventory).toHaveBeenCalledWith(2);
+
+      const openapi = await server.inject({ method: "GET", url: "/openapi.json" });
+      expect(openapi.json().paths["/v1/admin/discord/dsa/keys"].get.security).toEqual([{ administratorKey: [] }]);
+    } finally { await server.close(); }
+  });
+
   it("allows an administrator to inspect a validated report diagnostic projection", async () => {
     const reportId = "22222222-2222-4222-8222-222222222222";
     const operationalDiagnostics = vi.fn(async () => ({ reports: 1, report: { id: reportId } }));

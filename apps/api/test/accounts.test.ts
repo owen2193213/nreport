@@ -107,6 +107,46 @@ describe("API account security primitives", () => {
     expect(query).toHaveBeenCalledWith("COMMIT");
   });
 
+  it("lists bounded global key metadata without selecting stored key hashes", async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ total: "6" }], rowCount: 1 })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "33333333-3333-4333-8333-333333333333",
+          account_id: "11111111-1111-4111-8111-111111111111",
+          username: "Alice",
+          account_status: "active",
+          prefix: "dsa_live_33333333-3333-4333-8333-333333333333",
+          created_at: new Date("2026-10-01T00:00:00.000Z"),
+          last_used_at: new Date("2026-10-02T00:00:00.000Z"),
+          overlap_expires_at: null,
+          revoked_at: null
+        }],
+        rowCount: 1
+      });
+    const repository = new AccountRepository({ query } as never, "p".repeat(32));
+
+    await expect(repository.listKeyInventory(2)).resolves.toEqual({
+      items: [{
+        keyId: "33333333-3333-4333-8333-333333333333",
+        accountId: "11111111-1111-4111-8111-111111111111",
+        username: "Alice",
+        accountStatus: "active",
+        prefix: "dsa_live_33333333-3333-4333-8333-333333333333",
+        createdAt: "2026-10-01T00:00:00.000Z",
+        lastUsedAt: "2026-10-02T00:00:00.000Z",
+        overlapExpiresAt: null,
+        revokedAt: null
+      }],
+      page: 2,
+      pageSize: 5,
+      total: 6
+    });
+    expect(query.mock.calls[1]?.[0]).toContain("LIMIT $1 OFFSET $2");
+    expect(query.mock.calls[1]?.[1]).toEqual([5, 5]);
+    expect(query.mock.calls[1]?.[0]).not.toContain("key_hash");
+  });
+
   it("requires rotation when an account already has an active key", async () => {
     const client = {
       query: vi.fn(async (sql: string) => {

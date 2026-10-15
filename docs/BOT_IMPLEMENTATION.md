@@ -27,6 +27,13 @@ Connecting a rotated key for the same account updates the encrypted credential. 
 Discord user's ID to the API. A revoked key pauses detailed refreshes and prompts the user privately
 to reconnect.
 
+Administrators use `/admin keys` (optional `page`) to inspect five personal API keys at a time,
+including validity, account status/ID, last use, and the Discord user currently connected with
+that account and key prefix. All replies are ephemeral. This inventory lists safe identifiers;
+existing key secrets cannot be displayed again. There is no redeemable-key flow. Historical
+connections are not retained, so an absent current mapping does not establish that a key has
+never been connected or used.
+
 ## Reporting experience
 
 Commands support message, profile, and server flows plus the message context-menu actions. The
@@ -111,6 +118,13 @@ five-second recovery loop and connection reconciliation both inspect pending mut
 database claims serialize recovery and the short loop also repairs missing status cards. No
 additional bot feature was removed without evidence that it duplicated the same durable behavior.
 The separate API operations-warning webhook was retired in favor of Sentry diagnostics.
+
+The notifier samples its connected, nonsuperseded notification/card backlog once per minute.
+Work older than five minutes must appear in two consecutive samples before a Sentry warning is
+captured. The warning is emitted once per unhealthy episode; two healthy samples rearm it.
+Recovery does not send a separate Discord operations alert. Disconnected accounts and terminal
+card repairs are excluded. Expired-form cleanup runs once per recovery cycle rather than once
+for every connected account.
 
 Notification and reconciliation operational events retain their stable event names and emit a
 bounded `stage`, `outcome`, and `durationMs`. Where a lifecycle event supplies identifiers, logs include

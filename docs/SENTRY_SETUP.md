@@ -160,3 +160,21 @@ The deployment archive included only application source, workspace manifests/con
 the guarded JavaScript SDK patcher. It excluded real environment files, protected Python
 diagnostics, local tooling, and unrelated working-tree changes. No real Discord report was
 submitted as a deployment test. The two-minute external receipt deadline remains unchanged.
+
+## Report outcomes and bot delivery health
+
+Committed verification/receipt/appeal-confirmation timeouts and restart-detected ambiguous
+submissions are captured even when maintenance completes normally. Each capture includes safe
+report and trace correlation and a stable failure category. Expiry transitions emit only once;
+capturing a failure does not retry a final Discord submission. A later trusted confirmation can
+still recover the report through the normal lifecycle.
+
+Bot backlog warnings require work older than five minutes in two consecutive one-minute
+samples. Each episode produces one capture, rearmed after two healthy samples; there is no
+paired Discord failure/recovery alert. These checks supplement exception capture, not an uptime
+guarantee or evidence that every business outcome reached Sentry.
+
+Run `npm.cmd run test:coverage` for source coverage (text, HTML, and LCOV under `coverage/`).
+Set `TEST_DATABASE_URL` to include the isolated PostgreSQL concurrency and cross-service
+integration tests; CI supplies that database. Coverage percentages measure exercised code,
+not correctness of every race or Discord's downstream processing.

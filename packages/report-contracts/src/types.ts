@@ -233,6 +233,18 @@ export interface AdminApiKeyView {
   overlapExpiresAt: string | null;
   revokedAt: string | null;
 }
+export const ADMIN_API_KEY_INVENTORY_PAGE_SIZE = 5 as const;
+export interface AdminApiKeyInventoryItem extends AdminApiKeyView {
+  accountId: string;
+  username: string;
+  accountStatus: ApiAccountStatus;
+}
+export interface AdminApiKeyInventoryPage {
+  items: AdminApiKeyInventoryItem[];
+  page: number;
+  pageSize: typeof ADMIN_API_KEY_INVENTORY_PAGE_SIZE;
+  total: number;
+}
 export interface WebhookDestinationView {
   destinationId: string;
   name: string;

@@ -1,7 +1,10 @@
 import {
+  ADMIN_API_KEY_INVENTORY_PAGE_SIZE,
   DsaAdminApi,
   DsaApi,
   DsaApiError,
+  type AdminApiKeyInventoryItem,
+  type AdminApiKeyInventoryPage,
   type CreateReportInput,
   type ReportDetail,
   type MessageEvidence,
@@ -575,7 +578,14 @@ export class AccountInteractionHandler {
     if (!this.dependencies.config.adminUserIds.has(interaction.user.id)) throw new UserFacingError("Administrator access is required.");
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const action = interaction.options.getSubcommand();
-    if (action === "account-create") {
+    if (action === "keys") {
+      const page = await this.adminApi.keyInventory(interaction.options.getInteger("page") ?? 1);
+      const connections = await this.dependencies.database.connections();
+      await interaction.editReply({
+        content: formatAdminKeyInventory(page, connections),
+        allowedMentions: { parse: [] }
+      });
+    } else if (action === "account-create") {
       const account = await this.adminApi.createAccount({
         username: interaction.options.getString("username", true),
         initialCredits: interaction.options.getInteger("credits") ?? 0
@@ -623,6 +633,42 @@ export class AccountInteractionHandler {
     if (interaction.deferred || interaction.replied) await interaction.editReply({ content: message, embeds: [] }).catch(() => undefined);
     else await interaction.reply({ content: message, flags: MessageFlags.Ephemeral }).catch(() => undefined);
   }
+}
+
+function formatAdminKeyInventory(
+  page: AdminApiKeyInventoryPage,
+  connections: ReadonlyArray<Pick<ApiConnection, "account_id" | "discord_user_id" | "key_prefix">>
+): string {
+  if (page.total === 0) return "No API keys have been issued.";
+  const pageCount = Math.ceil(page.total / ADMIN_API_KEY_INVENTORY_PAGE_SIZE);
+  const ownerByKey = new Map(connections.map((connection) => [
+    `${connection.account_id}:${connection.key_prefix}`,
+    connection.discord_user_id
+  ]));
+  const rows = page.items.slice(0, ADMIN_API_KEY_INVENTORY_PAGE_SIZE)
+    .map((key, index) => formatAdminApiKey(key, index, page, ownerByKey));
+  const pageLabel = `Page ${page.page} of ${pageCount} · ${page.total} API keys`;
+  const note = "The Discord user shown is the current /access connect mapping. Historical Discord users are not recorded; last used is API activity time.";
+  return [pageLabel, ...(rows.length === 0 ? ["No keys on this page."] : rows), note].join("\n");
+}
+
+function formatAdminApiKey(
+  key: AdminApiKeyInventoryItem,
+  index: number,
+  page: AdminApiKeyInventoryPage,
+  ownerByKey: ReadonlyMap<string, string>
+): string {
+  const status = key.revokedAt !== null
+    ? "revoked"
+    : key.overlapExpiresAt === null
+      ? "active"
+      : Date.parse(key.overlapExpiresAt) > Date.now() ? "overlap" : "expired";
+  const owner = ownerByKey.get(`${key.accountId}:${key.prefix}`);
+  const currentConnection = owner === undefined ? "none" : `<@${owner}>`;
+  const rowNumber = (page.page - 1) * ADMIN_API_KEY_INVENTORY_PAGE_SIZE + index + 1;
+  return `${rowNumber}. **${key.username}** · account \`${key.accountId}\` · account status: ${key.accountStatus}\n` +
+    `   Key status: ${status} · \`${key.prefix}\` · last used: ${key.lastUsedAt ?? "never"} · key ID \`${key.keyId}\`\n` +
+    `   Current bot connection: ${currentConnection}`;
 }
 
 class UserFacingError extends Error {}

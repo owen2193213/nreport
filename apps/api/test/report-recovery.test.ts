@@ -13,7 +13,10 @@ describe("report worker recovery", () => {
     const client = {
       query: vi.fn(async (sql: string, _values?: unknown[]) => {
         if (sql.includes("RETURNING report.id") && sql.includes("ambiguous_submission_state")) {
-          return { rows: [{ id: "report-2", account_id: "account-1", lifecycle_attempt: 1 }], rowCount: 1 };
+          return { rows: [{ id: "report-2", trace_id: "trace-2", account_id: "account-1", lifecycle_attempt: 1 }], rowCount: 1 };
+        }
+        if (sql.includes("RETURNING report.id") && sql.includes("review_request_ambiguous")) {
+          return { rows: [{ id: "report-3", trace_id: "trace-3", account_id: "account-1", lifecycle_attempt: 2 }], rowCount: 1 };
         }
         return { rows: [], rowCount: 1 };
       }),
@@ -21,7 +24,18 @@ describe("report worker recovery", () => {
     };
     const repository = new ReportRepository({ connect: async () => client } as never);
 
-    await repository.recoverInterruptedJobs();
+    await expect(repository.recoverInterruptedJobs()).resolves.toEqual([
+      {
+        reportId: "report-2", traceId: "trace-2", lifecycleAttempt: 1,
+        stage: "submitting", eventType: "report_failed", outcome: "ambiguous",
+        errorCategory: "ambiguous_submission_state"
+      },
+      {
+        reportId: "report-3", traceId: "trace-3", lifecycleAttempt: 2,
+        stage: "review_submission", eventType: "review_request_ambiguous", outcome: "ambiguous",
+        errorCategory: "review_request_ambiguous"
+      }
+    ]);
 
     const runningQueries = client.query.mock.calls.filter(([sql]) => String(sql).includes("job.state = 'running'"));
     expect(runningQueries.every(([sql]) => String(sql).includes("locked_at < now() - interval"))).toBe(true);

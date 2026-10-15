@@ -41,6 +41,11 @@ function harness(hash: string | null = null, eventId = "event", dmMessageId: str
       dm_message_id: dmMessageId, visible_payload_hash: hash }),
     notificationPreferences: vi.fn().mockResolvedValue({ decisionEnabled: true, reportDeniedEnabled: false, problemEnabled: true }),
     completeCardUpdate: vi.fn(), completeNotification: vi.fn(), retryNotification: vi.fn(), ignoreNotification: vi.fn(),
+    cleanupExpiredForms: vi.fn().mockResolvedValue(undefined),
+    notificationHealthSnapshot: vi.fn().mockResolvedValue({
+      pendingNotificationCount: 0, oldestPendingNotificationAgeMs: null,
+      pendingCardUpdateCount: 0, oldestPendingCardUpdateAgeMs: null
+    }),
     claimDmCard: vi.fn().mockResolvedValue(false), releaseDmCard: vi.fn(), terminalCardRepair: vi.fn(), clearStaleDmMapping: vi.fn().mockResolvedValue(true)
   };
   const api = { report: vi.fn().mockResolvedValue(report) };
@@ -238,5 +243,51 @@ describe("notification delivery against an existing report card", () => {
     expect(await h.worker.processOne()).toBe(false);
     expect(h.api.report).not.toHaveBeenCalled();
     expect(h.dm.messages.fetch).not.toHaveBeenCalled();
+  });
+
+  it("alerts only after sustained backlog and re-arms after sustained recovery", async () => {
+    captureLifecycleFailureMock.mockClear();
+    const h = harness();
+    h.database.notificationHealthSnapshot
+      .mockResolvedValueOnce({ pendingNotificationCount: 1, oldestPendingNotificationAgeMs: 360_000, pendingCardUpdateCount: 0, oldestPendingCardUpdateAgeMs: null })
+      .mockResolvedValueOnce({ pendingNotificationCount: 1, oldestPendingNotificationAgeMs: 420_000, pendingCardUpdateCount: 1, oldestPendingCardUpdateAgeMs: 360_000 })
+      .mockResolvedValueOnce({ pendingNotificationCount: 1, oldestPendingNotificationAgeMs: 420_000, pendingCardUpdateCount: 1, oldestPendingCardUpdateAgeMs: 420_000 })
+      .mockResolvedValueOnce({ pendingNotificationCount: 0, oldestPendingNotificationAgeMs: null, pendingCardUpdateCount: 0, oldestPendingCardUpdateAgeMs: null })
+      .mockResolvedValueOnce({ pendingNotificationCount: 0, oldestPendingNotificationAgeMs: null, pendingCardUpdateCount: 0, oldestPendingCardUpdateAgeMs: null })
+      .mockResolvedValueOnce({ pendingNotificationCount: 1, oldestPendingNotificationAgeMs: 360_000, pendingCardUpdateCount: 0, oldestPendingCardUpdateAgeMs: null })
+      .mockResolvedValueOnce({ pendingNotificationCount: 1, oldestPendingNotificationAgeMs: 360_000, pendingCardUpdateCount: 0, oldestPendingCardUpdateAgeMs: null });
+
+    await h.worker.sampleNotificationHealthOnce();
+    expect(captureLifecycleFailureMock).not.toHaveBeenCalled();
+    await h.worker.sampleNotificationHealthOnce();
+    expect(captureLifecycleFailureMock).toHaveBeenCalledTimes(1);
+    await h.worker.sampleNotificationHealthOnce();
+    expect(captureLifecycleFailureMock).toHaveBeenCalledTimes(2);
+    expect(captureLifecycleFailureMock).toHaveBeenNthCalledWith(1, expect.any(Error), expect.objectContaining({
+      operation: "notification_backlog", queueCount: 1, oldestAgeMs: 420_000
+    }));
+    expect(captureLifecycleFailureMock).toHaveBeenNthCalledWith(2, expect.any(Error), expect.objectContaining({
+      operation: "stuck_card_updates", queueCount: 1, oldestAgeMs: 420_000
+    }));
+
+    await h.worker.sampleNotificationHealthOnce();
+    await h.worker.sampleNotificationHealthOnce();
+    await h.worker.sampleNotificationHealthOnce();
+    expect(captureLifecycleFailureMock).toHaveBeenCalledTimes(2);
+    await h.worker.sampleNotificationHealthOnce();
+    expect(captureLifecycleFailureMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not alert on one transient high sample", async () => {
+    captureLifecycleFailureMock.mockClear();
+    const h = harness();
+    h.database.notificationHealthSnapshot
+      .mockResolvedValueOnce({ pendingNotificationCount: 1, oldestPendingNotificationAgeMs: 360_000, pendingCardUpdateCount: 0, oldestPendingCardUpdateAgeMs: null })
+      .mockResolvedValueOnce({ pendingNotificationCount: 0, oldestPendingNotificationAgeMs: null, pendingCardUpdateCount: 0, oldestPendingCardUpdateAgeMs: null });
+
+    await h.worker.sampleNotificationHealthOnce();
+    await h.worker.sampleNotificationHealthOnce();
+
+    expect(captureLifecycleFailureMock).not.toHaveBeenCalled();
   });
 });

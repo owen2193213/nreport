@@ -58,6 +58,17 @@ diagnostics. The separate Discord operations-warning webhook is retired; it is n
 startup. The signed private API-to-bot lifecycle webhook remains the immediate delivery path for
 report status cards. See [`SENTRY_SETUP.md`](SENTRY_SETUP.md).
 
+Verification, report-receipt, and appeal-confirmation deadlines and worker-restart ambiguity
+also create Sentry failure signals after the corresponding database transaction commits.
+These signals include report/trace IDs and failure category; ordinary Discord decisions are
+not application failures. Signal capture does not resubmit a report or change the deadline.
+
+`GET /v1/admin/discord/dsa/keys?page=1` returns five keys per page with `items`, `page`,
+`pageSize`, and `total`. Each item contains safe key metadata (ID, prefix, creation/last-use,
+rotation expiry/revocation), API account ID, username, and account status. Page numbers must be
+integers between 1 and 1,000,000; invalid input returns `400 invalid_key_page`. The API never
+returns an existing key's secret or hash and does not know the submitting Discord user's ID.
+
 Administrators may pass `reportId=<UUID>` to `GET /v1/admin/discord/dsa/diagnostics` for a bounded
 report-health projection alongside the existing aggregates. An unknown ID returns `report: null`;
 an invalid ID returns `400 invalid_report_id`. The view includes lifecycle state/timestamps,
@@ -80,6 +91,11 @@ cookies, credentials, delivery destinations, or the detailed SQL diagnostic ledg
 Default account limits are sixty report mutations per minute and 300 reads per minute. AI report
 preparation has no separate per-account quota. Limits are enforced at the API and are not reset by
 running more bot workers.
+
+Report-list cursors are opaque and retain PostgreSQL timestamp precision. Event and
+action-history cursors are decimal strings within PostgreSQL's nonnegative signed-bigint range;
+clients must preserve them as strings without numeric conversion. Invalid cursors are rejected
+before querying the database.
 
 ## Creating a report
 

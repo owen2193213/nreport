@@ -48,9 +48,12 @@ describe("preparation pipeline reliability", () => {
   });
 
   it("keeps only a safe provider message in the writer cause chain", async () => {
-    const canary = "CANARY_UNSAFE_WRITER_CAUSE";
+    const providerMessage = "Provider account is out of credits";
+    const privateBodyCanary = "CANARY_PROVIDER_REASONING";
     const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      error: { message: canary, code: 500 }
+      error: { message: providerMessage, code: 500 },
+      reasoning: privateBodyCanary,
+      request: { prompt: privateBodyCanary }
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     const failure = await new ReportWriter("test-key", "test-model", "test-search", ["DE"], { request })
       .generate({ flow: "message_urf", messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }, {
@@ -61,17 +64,18 @@ describe("preparation pipeline reliability", () => {
       .catch((error: unknown) => error);
 
     expect(failure).toMatchObject({ kind: "provider" });
-    expect((failure as Error).cause).toMatchObject({
-      kind: "provider",
-      message: "Cerebras returned an upstream error."
-    });
-    expect(String((failure as Error).cause)).not.toContain(canary);
+    const cause = (failure as Error).cause;
+    expect(cause).toMatchObject({ kind: "provider" });
+    expect(cause).toBeInstanceOf(Error);
+    expect((cause as Error).message).toContain(providerMessage);
+    expect(String(cause)).not.toContain(privateBodyCanary);
   });
 
   it.each([
-    ["provider", () => Promise.resolve(new Response(JSON.stringify({ error: { message: "CANARY_PROVIDER_MESSAGE", code: 500 } }), { status: 200, headers: { "Content-Type": "application/json" } }))],
+    ["provider", () => Promise.resolve(new Response(JSON.stringify({ error: { message: "Provider account is out of credits; api_key=CANARY_SECRET_TOKEN", code: 500 }, reasoning: "CANARY_PROVIDER_REASONING" }), { status: 200, headers: { "Content-Type": "application/json" } }))],
+    ["payment_required", () => Promise.resolve(new Response(JSON.stringify({ error: { message: "Payment required; api_key=CANARY_SECRET_TOKEN", code: "insufficient_quota" }, reasoning: "CANARY_PROVIDER_REASONING" }), { status: 402, headers: { "Content-Type": "application/json" } }))],
     ["refusal", () => Promise.resolve(new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: null, refusal: "CANARY_REFUSAL" } }] }), { status: 200, headers: { "Content-Type": "application/json" } }))],
-    ["rate_limited", () => Promise.resolve(new Response("CANARY_RATE_LIMIT_BODY", { status: 429 }))],
+    ["rate_limited", () => Promise.resolve(new Response(JSON.stringify({ error: { message: "Monthly quota exhausted; password=CANARY_PROVIDER_SECRET; verification code 123456", code: 429 }, debug: "CANARY_RATE_LIMIT_BODY" }), { status: 429, headers: { "Content-Type": "application/json" } }))],
     ["incomplete", () => Promise.resolve(new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: null, reasoning_content: "CANARY_REASONING" } }] }), { status: 200, headers: { "Content-Type": "application/json" } }))],
     ["malformed", () => Promise.resolve(new Response("CANARY_MALFORMED_BODY", { status: 200 }))],
     ["timeout", () => Promise.reject(new DOMException("CANARY_TIMEOUT_DETAIL", "TimeoutError"))]
@@ -96,8 +100,15 @@ describe("preparation pipeline reliability", () => {
       kind,
       stage: "plan"
     }));
-    expect(write.mock.calls.map(([line]) => String(line)).join(""))
-      .not.toMatch(/CANARY_(?:PROVIDER_MESSAGE|REFUSAL|RATE_LIMIT_BODY|REASONING|MALFORMED_BODY|TIMEOUT_DETAIL)/);
+    const serialized = write.mock.calls.map(([line]) => String(line)).join("");
+    expect(serialized).not.toMatch(/CANARY_(?:SECRET_TOKEN|PROVIDER_SECRET|PROVIDER_REASONING|REFUSAL|RATE_LIMIT_BODY|REASONING|MALFORMED_BODY|TIMEOUT_DETAIL)/);
+    expect(serialized).not.toContain("123456");
+    if (kind === "provider") expect(serialized).toContain("Provider account is out of credits");
+    if (kind === "payment_required") {
+      expect(serialized).toContain("Payment required");
+      expect(serialized).toContain("insufficient_quota");
+    }
+    if (kind === "rate_limited") expect(serialized).toContain("Monthly quota exhausted");
     const operationalLogs = write.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
     expect(operationalLogs.length).toBeGreaterThan(0);
     expect(operationalLogs.every((event) => event.traceId === "33333333-3333-4333-8333-333333333333")).toBe(true);

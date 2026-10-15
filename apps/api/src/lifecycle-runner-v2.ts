@@ -90,7 +90,7 @@ export type LifecycleRunnerOutcome =
       reportId: string;
       traceId: string;
       errorCategory?: string;
-      errorMessage?: string;
+      error?: unknown;
       retryDelayMs?: number;
       submissionCertainty?: "not_started" | "confirmed" | "ambiguous";
     }
@@ -100,6 +100,7 @@ export type LifecycleRunnerOutcome =
       outcome: "completed" | "failed";
       durationMs: number;
       errorCategory?: string;
+      error?: unknown;
     }
   | {
       component: "job";
@@ -109,12 +110,13 @@ export type LifecycleRunnerOutcome =
       reportId: string;
       traceId: string;
       errorCategory?: string;
+      error?: unknown;
     };
 
 interface LifecycleJobResult {
   outcome: "completed" | "waiting_for_email" | "retry_scheduled" | "failed" | "ambiguous" | "ownership_lost";
   errorCategory?: string;
-  errorMessage?: string;
+  error?: unknown;
   retryDelayMs?: number;
   submissionCertainty?: "not_started" | "confirmed" | "ambiguous";
 }
@@ -124,8 +126,7 @@ export class LifecycleRunner {
   private stopping = false;
   private lastMaintenanceAt = 0;
   private lastDiagnosticsPurgeAt = 0;
-  private stopSignal: Promise<void> | undefined;
-  private resolveStop: (() => void) | undefined;
+  private stopController: AbortController | undefined;
   private readonly clientFactory: (report: LifecycleReport, session?: DiscordDsaSessionState) => LifecycleClient;
   private readonly codecs: RunnerCodecs;
   private readonly sleep: RunnerSleep;
@@ -151,9 +152,7 @@ export class LifecycleRunner {
   public start(): void {
     if (this.running !== undefined) return;
     this.stopping = false;
-    this.stopSignal = new Promise((resolve) => {
-      this.resolveStop = resolve;
-    });
+    this.stopController = new AbortController();
     this.running = [
       ...Array.from({ length: this.concurrency }, () => this.jobLoop()),
       this.maintenanceLoop()
@@ -162,11 +161,10 @@ export class LifecycleRunner {
 
   public async stop(): Promise<void> {
     this.stopping = true;
-    this.resolveStop?.();
+    this.stopController?.abort();
     await Promise.all(this.running ?? []);
     this.running = undefined;
-    this.stopSignal = undefined;
-    this.resolveStop = undefined;
+    this.stopController = undefined;
   }
 
   public async processOne(): Promise<boolean> {
@@ -183,11 +181,8 @@ export class LifecycleRunner {
   private async processJob(job: LifecycleJob): Promise<void> {
     const startedAt = Date.now();
     const ownership = new JobOwnership();
-    let settleHeartbeat!: () => void;
-    const settled = new Promise<void>((resolve) => {
-      settleHeartbeat = resolve;
-    });
-    const heartbeat = this.heartbeatJob(job, ownership, settled);
+    const settled = new AbortController();
+    const heartbeat = this.heartbeatJob(job, ownership, settled.signal);
     try {
       const result = await this.dispatchJob(job, ownership);
       this.notify({
@@ -210,11 +205,12 @@ export class LifecycleRunner {
         durationMs: elapsedSince(startedAt),
         reportId: job.report_id,
         traceId: job.trace_id,
+        error,
         ...(isOwnershipLost(error) ? {} : { errorCategory: safeJobErrorCategory(error) })
       });
       if (!isOwnershipLost(error)) throw error;
     } finally {
-      settleHeartbeat();
+      settled.abort();
       await heartbeat;
     }
   }
@@ -230,13 +226,13 @@ export class LifecycleRunner {
     const encryptedReviewUrl = job.payload.encryptedReviewUrl;
     if (typeof encryptedReviewUrl !== "string" || report.discord_report_id === null) {
       await this.store.failReview(job, "request_failed", "review_context_missing", "The automatic appeal could not be prepared.");
-      return failedResult("review_context_missing");
+      return failedResult("review_context_missing", new Error("Automatic appeal context is missing."));
     }
     const decoded = this.codecs.decrypt(encryptedReviewUrl);
     const reviewUrl = typeof decoded === "string" ? decoded : (decoded as { reviewUrl?: unknown }).reviewUrl;
     if (typeof reviewUrl !== "string") {
       await this.store.failReview(job, "request_failed", "review_url_invalid", "The automatic appeal link was invalid.");
-      return failedResult("review_url_invalid");
+      return failedResult("review_url_invalid", new Error("Automatic appeal URL is invalid."));
     }
     const client = this.clientFactory(report);
     let submissionStarted = false;
@@ -268,7 +264,7 @@ export class LifecycleRunner {
       }
       if (result.report_id !== report.discord_report_id) {
         await this.store.failReview(job, "request_failed", "review_report_id_mismatch", "Discord returned a different report ID for the appeal.");
-        return failedResult("review_report_id_mismatch");
+        return failedResult("review_report_id_mismatch", new Error("Discord returned a different report ID for the appeal."));
       }
       await this.store.markReviewRequested(job, result.report_id);
       return completedResult("confirmed");
@@ -280,18 +276,18 @@ export class LifecycleRunner {
         return completedResult("confirmed");
       } else if (responseCode === "521004") {
         await this.store.failReview(job, "ineligible", "discord_review_ineligible", "Discord says this report is ineligible for appeal.");
-        return failedResult("discord_review_ineligible");
+        return failedResult("discord_review_ineligible", error);
       } else if (submissionStarted && ambiguous(error)) {
         await this.store.failReview(job, "request_ambiguous", "review_request_ambiguous", "The automatic appeal outcome could not be confirmed.");
-        return ambiguousResult("review_request_ambiguous", errorMessageOf(error));
+        return ambiguousResult("review_request_ambiguous", error);
       } else if (!submissionStarted && job.attempts < job.max_attempts && retryable(error)) {
         const delaySeconds = retryDelaySeconds(job.attempts, error);
         await this.store.retryLifecycleJob(job, discordFailureCode(error), delaySeconds);
-        return retryResult(discordFailureCode(error), delaySeconds);
+        return retryResult(discordFailureCode(error), delaySeconds, error);
       } else {
         const code = discordFailureCode(error);
         await this.store.failReview(job, "request_failed", code, `Discord did not accept the automatic appeal (${code}).`);
-        return failedResult(code);
+        return failedResult(code, error);
       }
     } finally {
       await client.close();
@@ -327,19 +323,19 @@ export class LifecycleRunner {
           : ownershipLostResult();
       }
       await this.store.failBeforeSubmission(job, "session_not_ready", "Verification session was not ready.");
-      return failedResult("session_not_ready");
+      return failedResult("session_not_ready", new Error("Verification session was not ready after the final attempt."));
     }
     const session = this.codecs.decrypt(report.session_state) as DiscordDsaSessionState;
     const rawCode = job.payload.encryptedCode ?? job.payload.code;
     if (typeof rawCode !== "string") {
       await this.store.failBeforeSubmission(job, "verification_code_missing", "Verification code was unavailable.");
-      return failedResult("verification_code_missing");
+      return failedResult("verification_code_missing", new Error("Verification code was unavailable in stored job data."));
     }
     const decoded = this.codecs.decrypt(rawCode);
     const code = typeof decoded === "string" ? decoded : (decoded as { code?: unknown }).code;
     if (typeof code !== "string") {
       await this.store.failBeforeSubmission(job, "verification_code_invalid", "Verification code was invalid.");
-      return failedResult("verification_code_invalid");
+      return failedResult("verification_code_invalid", new Error("Verification code was invalid after decrypting stored job data."));
     }
     const client = this.clientFactory(report, session);
     let crossedBoundary = false;
@@ -371,7 +367,9 @@ export class LifecycleRunner {
           code,
           "Discord submission started, but its final outcome could not be safely retried."
         );
-        return ambiguous(error) ? ambiguousResult(code, errorMessageOf(error)) : failedResult(code, errorMessageOf(error));
+        return ambiguous(error)
+          ? ambiguousResult(code, error)
+          : failedResult(code, error);
       } else {
         return this.handleBeforeBoundaryFailure(job, error);
       }
@@ -385,11 +383,11 @@ export class LifecycleRunner {
     if (job.attempts < job.max_attempts && retryable(error)) {
       const delaySeconds = retryDelaySeconds(job.attempts, error);
       return (await this.store.retryLifecycleJob(job, code, delaySeconds))
-        ? retryResult(code, delaySeconds)
+        ? retryResult(code, delaySeconds, error)
         : ownershipLostResult();
     }
     await this.store.failBeforeSubmission(job, code, "Discord preparation failed safely.");
-    return failedResult(code);
+    return failedResult(code, error);
   }
 
   private async requiredReport(reportId: string): Promise<LifecycleReport> {
@@ -404,13 +402,14 @@ export class LifecycleRunner {
       let job: LifecycleJob | null;
       try {
         job = await this.store.claimLifecycleJob();
-      } catch {
+      } catch (error) {
         this.notify({
           component: "loop",
           stage: "lifecycle_claim",
           outcome: "failed",
           durationMs: elapsedSince(claimStartedAt),
-          errorCategory: "lifecycle_claim_failed"
+          errorCategory: "lifecycle_claim_failed",
+          error
         });
         await this.waitForStop(1_500);
         continue;
@@ -439,7 +438,7 @@ export class LifecycleRunner {
     }
   }
 
-  private async heartbeatJob(job: LifecycleJob, ownership: JobOwnership, settled: Promise<void>): Promise<void> {
+  private async heartbeatJob(job: LifecycleJob, ownership: JobOwnership, settled: AbortSignal): Promise<void> {
     if (this.store.heartbeatLifecycleJob === undefined) return;
     while (true) {
       const jobSettled = await this.waitForInterrupt(30_000, settled);
@@ -450,7 +449,7 @@ export class LifecycleRunner {
           ownership.lose();
           return;
         }
-      } catch {
+      } catch (error) {
         this.notify({
           component: "job",
           stage: "lifecycle_heartbeat",
@@ -458,7 +457,8 @@ export class LifecycleRunner {
           durationMs: elapsedSince(heartbeatStartedAt),
           reportId: job.report_id,
           traceId: job.trace_id,
-          errorCategory: "lifecycle_heartbeat_failed"
+          errorCategory: "lifecycle_heartbeat_failed",
+          error
         });
       }
     }
@@ -478,7 +478,7 @@ export class LifecycleRunner {
         } catch (error) {
           this.notify({
             component: "maintenance", stage: "lifecycle_maintenance", outcome: "failed",
-            durationMs: 0, errorCategory: error instanceof Error ? error.name : "UnknownError"
+            durationMs: 0, errorCategory: error instanceof Error ? error.name : "UnknownError", error
           });
         }
         this.lastDiagnosticsPurgeAt = Date.now();
@@ -500,7 +500,8 @@ export class LifecycleRunner {
         stage: "lifecycle_maintenance",
         outcome: "failed",
         durationMs: elapsedSince(startedAt),
-        errorCategory: "lifecycle_maintenance_failed"
+        errorCategory: "lifecycle_maintenance_failed",
+        error
       });
       throw error;
     }
@@ -508,7 +509,7 @@ export class LifecycleRunner {
 
   private async waitForStop(milliseconds: number): Promise<void> {
     if (this.stopping) return;
-    const stopSignal = this.stopSignal;
+    const stopSignal = this.stopController?.signal;
     if (stopSignal === undefined) {
       await this.sleep(milliseconds);
       return;
@@ -516,8 +517,17 @@ export class LifecycleRunner {
     await this.waitForInterrupt(milliseconds, stopSignal);
   }
 
-  private async waitForInterrupt(milliseconds: number, interrupt: Promise<void>): Promise<boolean> {
+  private async waitForInterrupt(milliseconds: number, interrupt: AbortSignal): Promise<boolean> {
     const controller = new AbortController();
+    let interruptListener: (() => void) | undefined;
+    const interrupted = new Promise<boolean>((resolve) => {
+      if (interrupt.aborted) {
+        resolve(true);
+        return;
+      }
+      interruptListener = () => resolve(true);
+      interrupt.addEventListener("abort", interruptListener, { once: true });
+    });
     const sleeping = this.sleep(milliseconds, controller.signal).then(
       () => false,
       (error: unknown) => {
@@ -526,9 +536,12 @@ export class LifecycleRunner {
       }
     );
     try {
-      return await Promise.race([sleeping, interrupt.then(() => true)]);
+      return await Promise.race([sleeping, interrupted]);
     } finally {
       controller.abort();
+      if (interruptListener !== undefined) {
+        interrupt.removeEventListener("abort", interruptListener);
+      }
     }
   }
 
@@ -654,25 +667,26 @@ function retryDelaySeconds(attempts: number, error?: unknown): number {
   return Math.min(60, 5 * 2 ** attempts);
 }
 
-function retryResult(errorCategory: string, delaySeconds: number): LifecycleJobResult {
+function retryResult(errorCategory: string, delaySeconds: number, error?: unknown): LifecycleJobResult {
   return {
     outcome: "retry_scheduled",
     errorCategory,
+    ...(error === undefined ? {} : { error }),
     retryDelayMs: delaySeconds * 1_000,
     submissionCertainty: "not_started"
   };
 }
 
-function failedResult(errorCategory: string, errorMessage?: string): LifecycleJobResult {
-  return { outcome: "failed", errorCategory, submissionCertainty: "not_started", ...(errorMessage === undefined ? {} : { errorMessage }) };
+function failedResult(errorCategory: string, error?: unknown): LifecycleJobResult {
+  return {
+    outcome: "failed", errorCategory, submissionCertainty: "not_started", ...(error === undefined ? {} : { error })
+  };
 }
 
-function ambiguousResult(errorCategory: string, errorMessage?: string): LifecycleJobResult {
-  return { outcome: "ambiguous", errorCategory, submissionCertainty: "ambiguous", ...(errorMessage === undefined ? {} : { errorMessage }) };
-}
-
-function errorMessageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function ambiguousResult(errorCategory: string, error?: unknown): LifecycleJobResult {
+  return {
+    outcome: "ambiguous", errorCategory, submissionCertainty: "ambiguous", ...(error === undefined ? {} : { error })
+  };
 }
 
 function completedResult(submissionCertainty: "confirmed"): LifecycleJobResult {

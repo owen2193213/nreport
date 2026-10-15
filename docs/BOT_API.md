@@ -43,15 +43,20 @@ All JSON failures use:
 Expected statuses are `401` for authentication, `402` for exhausted credits, `403` for a
 suspended-account write, deliberately indistinguishable `404` responses for missing or foreign
 reports, `409` for state/idempotency conflicts, and `429` with `Retry-After` for throttling.
+An upstream AI-provider `402` is separate from exhausted NReport report credits: after the
+asynchronous create was accepted, it produces a report failure with
+`failure.code=preparation_payment_required` and a safe support message. The provider rejection is
+not automatically retried; operators receive its bounded, redacted details in diagnostics.
 Unexpected `500` responses intentionally contain no internal cause. They include a stable opaque
 `supportReference` so an operator can correlate the failure with safe server diagnostics.
 
-## Production operations alerts
+## Operational diagnostics
 
-Production requires `OPERATIONS_ALERT_WEBHOOK_URL`, a private Discord webhook used only for
-aggregate service-health alerts. It never receives report, account, Discord-user, message, or
-target data. The API persists alert state and delivery retries separately from customer lifecycle
-webhooks; failed operations-alert delivery cannot affect reporting or customer notification.
+API and bot failures are captured in their separate Sentry projects with report and trace
+correlation. Worker samples and aggregate health remain available through administrator
+diagnostics. The separate Discord operations-warning webhook is retired; it is not required for
+startup. The signed private API-to-bot lifecycle webhook remains the immediate delivery path for
+report status cards. See [`SENTRY_SETUP.md`](SENTRY_SETUP.md).
 
 ## Discovery and account
 

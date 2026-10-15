@@ -5,6 +5,8 @@ import { boundedDiagnostic } from "@nreport/contracts";
 import { Pool, type QueryResultRow } from "pg";
 
 const IMMEDIATE_LIFECYCLE_EVENT_TYPES = [
+  "verification_received",
+  "report_submitted",
   "report_failed",
   "report_receipt_timeout",
   "review_confirmation_timeout",

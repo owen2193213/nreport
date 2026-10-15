@@ -210,12 +210,11 @@ describe("API account security primitives", () => {
     expect(() => loadConfig({ ...base, AI_API_KEY: "" })).toThrow(/AI_API_KEY/);
   });
 
-  it("requires an operations alert webhook in production", () => {
-    expect(() => loadConfig({ ...configEnv(), NODE_ENV: "production" })).toThrow(/OPERATIONS_ALERT_WEBHOOK_URL/);
+  it("does not require an operations warning webhook in production", () => {
+    expect(loadConfig({ ...configEnv(), NODE_ENV: "production" })).not.toHaveProperty("operationsAlertWebhookUrl");
     expect(loadConfig({
-      ...configEnv(), NODE_ENV: "production",
-      OPERATIONS_ALERT_WEBHOOK_URL: "https://discord.com/api/webhooks/123/token"
-    }).operationsAlertWebhookUrl).toBe("https://discord.com/api/webhooks/123/token");
+      ...configEnv(), NODE_ENV: "production", OPERATIONS_ALERT_WEBHOOK_URL: "not-used"
+    })).not.toHaveProperty("operationsAlertWebhookUrl");
   });
 
   it("loads a complete managed bot webhook configuration", () => {

@@ -43,6 +43,57 @@ function report() {
 }
 
 describe("LifecycleRunner irreversible boundary", () => {
+  it("removes interrupt listeners after repeated idle wait timeouts", async () => {
+    class CountingAbortSignal extends EventTarget {
+      public aborted = false;
+      public activeListeners = 0;
+      public maxActiveListeners = 0;
+      public addedListeners = 0;
+      public removedListeners = 0;
+
+      public override addEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject | null,
+        options?: boolean | AddEventListenerOptions
+      ): void {
+        super.addEventListener(type, listener, options);
+        if (type === "abort") {
+          this.activeListeners += 1;
+          this.addedListeners += 1;
+          this.maxActiveListeners = Math.max(this.maxActiveListeners, this.activeListeners);
+        }
+      }
+
+      public override removeEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject | null,
+        options?: boolean | EventListenerOptions
+      ): void {
+        super.removeEventListener(type, listener, options);
+        if (type === "abort") {
+          this.activeListeners -= 1;
+          this.removedListeners += 1;
+        }
+      }
+    }
+    const interrupt = new CountingAbortSignal() as unknown as AbortSignal;
+    const runner = new LifecycleRunner({ claimLifecycleJob: vi.fn(async () => null) } as never, {} as never,
+      undefined, undefined, async () => undefined);
+    const waitForInterrupt = (runner as unknown as {
+      waitForInterrupt(milliseconds: number, interrupt: AbortSignal): Promise<boolean>;
+    }).waitForInterrupt.bind(runner);
+
+    for (let iteration = 0; iteration < 100; iteration += 1) {
+      await waitForInterrupt(1, interrupt);
+    }
+
+    const trackedInterrupt = interrupt as unknown as CountingAbortSignal;
+    expect(trackedInterrupt.addedListeners).toBe(100);
+    expect(trackedInterrupt.removedListeners).toBe(100);
+    expect(trackedInterrupt.activeListeners).toBe(0);
+    expect(trackedInterrupt.maxActiveListeners).toBe(1);
+  });
+
   it("runs stale-job recovery and deadline expiry during regular maintenance", async () => {
     const store = {
       recoverInterruptedJobs: vi.fn(),
@@ -90,6 +141,8 @@ describe("LifecycleRunner irreversible boundary", () => {
   });
 
   it("retains consumed credit and marks an ambiguous outcome after the boundary", async () => {
+    const submissionError = new Error("connection lost");
+    const outcomes: unknown[] = [];
     const store = {
       claimLifecycleJob: vi.fn(async () => ({ id: "job-1", report_id: "report-1", kind: "verify_submit", payload: { code: "123456" }, attempts: 1, max_attempts: 1 })),
       getLifecycleReport: vi.fn(async () => report()),
@@ -105,12 +158,12 @@ describe("LifecycleRunner irreversible boundary", () => {
       verifyEmailCode: vi.fn(async () => "token"),
       getMenu: vi.fn(async () => ({})),
       prepareSubmission: vi.fn(() => ({})),
-      submitPrepared: vi.fn(async () => { throw new Error("connection lost"); }),
+      submitPrepared: vi.fn(async () => { throw submissionError; }),
       close: vi.fn()
     };
     const runner = new LifecycleRunner(store as never, {} as never, () => client as never, {
       decrypt: (value: string) => value
-    });
+    }, undefined, (outcome) => { outcomes.push(outcome); });
 
     await runner.processOne();
 
@@ -124,6 +177,7 @@ describe("LifecycleRunner irreversible boundary", () => {
     expect(store.retryLifecycleJob).toHaveBeenCalledTimes(0);
     expect(store.markSubmitted).toHaveBeenCalledTimes(0);
     expect(store.failBeforeSubmission).not.toHaveBeenCalled();
+    expect(outcomes.at(-1)).toMatchObject({ outcome: "ambiguous", error: submissionError });
   });
 
   it.each([

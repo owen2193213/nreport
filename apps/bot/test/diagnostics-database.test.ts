@@ -11,6 +11,18 @@ describe("bot diagnostics", () => {
     expect(events).toEqual([{ event: "interaction_failed", fields: { reportId: "report-1" } }]);
   });
 
+  it("keeps logging alive when fields contain cycles or bigint values", () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const fields: Record<string, unknown> = { count: 4n };
+    fields.self = fields;
+
+    expect(() => botLog("diagnostic_serialization_test", fields)).not.toThrow();
+
+    const record = JSON.parse(String(write.mock.calls[0]?.[0])) as Record<string, unknown>;
+    expect(record).toMatchObject({ count: "4", self: "[circular]" });
+    write.mockRestore();
+  });
+
   it("persists report-scoped diagnostics and purges expired rows", async () => {
     const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 });
     const database = new AccountBotDatabase({ query } as never);

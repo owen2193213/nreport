@@ -12,7 +12,6 @@ export interface AppConfig {
   databaseUrl: string;
   emailDomain: string;
   environment: string;
-  operationsAlertWebhookUrl?: string;
   port: number;
   proxyUrlTemplate?: string;
   sessionEncryptionKey: Buffer;
@@ -65,7 +64,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const aiModel = env.AI_MODEL?.trim() || "qwen-3.8-27b";
   const emailDomain = required(env, "REPORT_EMAIL_DOMAIN").toLowerCase();
   const environment = env.NODE_ENV?.trim() || "development";
-  const operationsAlertWebhookUrl = env.OPERATIONS_ALERT_WEBHOOK_URL?.trim();
   const botEventWebhookUrl = env.BOT_EVENT_WEBHOOK_URL?.trim();
   const botEventWebhookSecret = env.BOT_EVENT_WEBHOOK_SECRET?.trim();
   if ((botEventWebhookUrl === undefined) !== (botEventWebhookSecret === undefined)) {
@@ -73,12 +71,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
   if (botEventWebhookSecret !== undefined && botEventWebhookSecret.length < 32) {
     throw new Error("BOT_EVENT_WEBHOOK_SECRET must contain at least 32 characters.");
-  }
-  if (environment === "production" && !operationsAlertWebhookUrl) {
-    throw new Error("OPERATIONS_ALERT_WEBHOOK_URL is required in production.");
-  }
-  if (operationsAlertWebhookUrl !== undefined && !/^https:\/\/discord(?:app)?\.com\/api\/webhooks\//.test(operationsAlertWebhookUrl)) {
-    throw new Error("OPERATIONS_ALERT_WEBHOOK_URL must be an HTTPS Discord webhook URL.");
   }
   if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(emailDomain)) {
     throw new Error("REPORT_EMAIL_DOMAIN must be a valid domain name.");
@@ -108,7 +100,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     databaseUrl: required(env, "DATABASE_URL"),
     emailDomain,
     environment,
-    ...(operationsAlertWebhookUrl === undefined ? {} : { operationsAlertWebhookUrl }),
     port: parsePort(env.PORT),
     ...(proxyUrlTemplate === undefined ? {} : { proxyUrlTemplate }),
     sessionEncryptionKey: encryptionKey(env),

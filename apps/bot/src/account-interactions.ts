@@ -30,7 +30,7 @@ import { cardNonce } from "./account-notifier.js";
 import { cardPayloadDiagnostics } from "./card-diagnostics.js";
 import type { BotConfig } from "./config.js";
 import { decryptJson, encryptJson } from "./crypto.js";
-import { botLog, errorFields, isDiscordValidationFailure, safeErrorCategory } from "./observability.js";
+import { botLog, captureLifecycleFailure, errorFields, isDiscordValidationFailure, safeErrorCategory } from "./observability.js";
 import { capturedMessageEvidence, resolvedMessageEvidence, unavailableMessageEvidence, type MessageResolver } from "./message-resolver.js";
 import type { ProfileResolver } from "./profile-resolver.js";
 import type { ServerResolver } from "./server-resolver.js";
@@ -69,6 +69,67 @@ function uncertainSubmissionError(): UserFacingError {
   return new UserFacingError("Your report is being checked. Do not submit it again; its status will update automatically.");
 }
 
+function interactionOperation(interaction: Interaction): string {
+  if (interaction.isChatInputCommand()) {
+    const subcommand = interaction.options.getSubcommand(false);
+    return subcommand === null ? interaction.commandName : `${interaction.commandName}:${subcommand}`;
+  }
+  if (interaction.isMessageContextMenuCommand()) return `context:${interaction.commandName}`;
+  if (interaction.isModalSubmit() || interaction.isButton()) {
+    const prefix = interaction.customId.split(":", 1)[0];
+    return prefix ? `component:${prefix}` : "component";
+  }
+  return "interaction";
+}
+
+function captureInteractionFailure(
+  error: unknown,
+  operation: string,
+  stage: string,
+  outcome: string,
+  reportId?: string,
+  traceId?: string
+): void {
+  if (error instanceof DsaApiError && error.status !== 408 && error.status < 500) return;
+  const candidate = error as { code?: unknown; status?: unknown } | null;
+  if (candidate?.code === 50007 || candidate?.code === 10008) return;
+  const discordError = error instanceof Error && error.name === "DiscordAPIError";
+  const discordCode = typeof candidate?.code === "number" ||
+    (typeof candidate?.code === "string" && /^\d{4,6}$/u.test(candidate.code));
+  const discordErrorCode = error instanceof DsaApiError || !discordError || !discordCode
+    ? undefined
+    : candidate?.code as string | number;
+  const discordHttpStatus = error instanceof DsaApiError || !discordError || typeof candidate?.status !== "number"
+    ? undefined
+    : candidate.status;
+  captureLifecycleFailure(error, {
+    service: "bot", operation, stage, outcome,
+    ...(reportId === undefined ? {} : { reportId }), ...(traceId === undefined ? {} : { traceId }),
+    ...(error instanceof DsaApiError
+      ? { statusCode: error.status, ...(error.requestId === undefined ? {} : { requestId: error.requestId }) }
+      : {}),
+    ...(discordErrorCode === undefined ? {} : { discordErrorCode }),
+    ...(discordHttpStatus === undefined ? {} : { discordHttpStatus })
+  });
+}
+
+function recordUncertainMutationFailure(
+  error: unknown,
+  interaction: Interaction,
+  operation: "report_create" | "report_retry",
+  stage: string,
+  reportId?: string,
+  traceId?: string
+): void {
+  const fields = {
+    operation, stage, outcome: "recovery_pending", interaction: interactionOperation(interaction),
+    ...(reportId === undefined ? {} : { reportId }), ...(traceId === undefined ? {} : { traceId }),
+    ...errorFields(error), failureCategory: safeErrorCategory(error)
+  };
+  botLog("report_mutation_outcome_uncertain", fields, "warn");
+  captureInteractionFailure(error, operation, stage, "recovery_pending", reportId, traceId);
+}
+
 export class AccountInteractionHandler {
   private readonly adminApi: DsaAdminApi;
 
@@ -83,6 +144,14 @@ export class AccountInteractionHandler {
       else if (interaction.isMessageContextMenuCommand()) await this.contextMenu(interaction);
       else if (interaction.isChatInputCommand()) await this.command(interaction);
     } catch (error) {
+      if (!(error instanceof UserFacingError) && !(error instanceof ConnectionConflictError) &&
+        !(error instanceof DsaApiError && error.status >= 400 && error.status < 500 && error.status !== 408)) {
+        const operation = interactionOperation(interaction);
+        botLog("interaction_failed", {
+          operation, stage: "interaction", outcome: "failed", ...errorFields(error)
+        }, "warn");
+        captureInteractionFailure(error, operation, "interaction", "failed");
+      }
       await this.error(interaction, error);
     }
   }
@@ -295,7 +364,10 @@ export class AccountInteractionHandler {
       report = await this.api(connection).createReport(idempotencyKey, input);
     } catch (error) {
       if (shouldAbandonReportLink(error)) await this.dependencies.database.abandonReportLink(linkId);
-      else throw uncertainSubmissionError();
+      else {
+        recordUncertainMutationFailure(error, interaction, "report_create", "api_create");
+        throw uncertainSubmissionError();
+      }
       throw error;
     }
     await this.dependencies.database.completeReportLink(linkId, report.reportId);
@@ -323,6 +395,7 @@ export class AccountInteractionHandler {
           reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: validationFailure ? "ignored" : "retry",
           durationMs: 0, ...errorFields(error), ...(payload === undefined ? {} : { payload }), failureCategory: safeErrorCategory(error)
         }, "warn");
+        captureInteractionFailure(error, "status_card_delivery", "initial_card", validationFailure ? "ignored" : "retrying", report.reportId, report.traceId);
         const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
         dmWarning = code === 50007
           ? " I could not send the private status card; use `/reports status` to follow it."
@@ -354,7 +427,10 @@ export class AccountInteractionHandler {
     try { report = await this.api(connection).retryReport(predecessorReportId, idempotencyKey, input); }
     catch (error) {
       if (shouldAbandonReportLink(error)) await this.dependencies.database.abandonReportLink(linkId);
-      else throw uncertainSubmissionError();
+      else {
+        recordUncertainMutationFailure(error, interaction, "report_retry", "api_retry", predecessorReportId, predecessor.traceId);
+        throw uncertainSubmissionError();
+      }
       throw error;
     }
     await this.dependencies.database.completeReplacementLink(linkId, report.reportId, predecessorReportId);
@@ -431,7 +507,10 @@ export class AccountInteractionHandler {
         report = await api.retryReport(reportId, idempotencyKey, { mode });
       } catch (error) {
         if (shouldAbandonReportLink(error)) await this.dependencies.database.abandonReportLink(linkId);
-        else throw uncertainSubmissionError();
+        else {
+          recordUncertainMutationFailure(error, interaction, "report_retry", "api_retry", reportId);
+          throw uncertainSubmissionError();
+        }
         throw error;
       }
       await this.dependencies.database.completeReportLink(linkId, report.reportId);
@@ -458,6 +537,7 @@ export class AccountInteractionHandler {
             reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: validationFailure ? "ignored" : "retry",
             durationMs: 0, ...errorFields(error), ...(payload === undefined ? {} : { payload }), failureCategory: safeErrorCategory(error)
           }, "warn");
+          captureInteractionFailure(error, "status_card_delivery", "initial_card", validationFailure ? "ignored" : "retrying", report.reportId, report.traceId);
           warning = " I could not create the DM status card; use `/reports status`.";
         }
       } else {

@@ -82,7 +82,10 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(classifyReportView(report({ discordStatus: "review_not_approved", reviewStatus: "not_approved", retryableModes: ["rewrite_ai", "edit_manual"] })).key).toBe("appeal_denied");
     expect(classifyReportView(report({ discordStatus: "actioned", reviewStatus: null })).key).toBe("report_accepted");
     expect(classifyReportView(report({ discordStatus: "actioned", reviewStatus: "approved" })).key).toBe("appeal_accepted");
-    expect(classifyReportView(report({ status: "failed", discordStatus: null, failure: { stage: "receipt", code: "discord_receipt_timeout", message: "Timed out" } })).key).toBe("report_timeout");
+    const timeout = classifyReportView(report({ status: "failed", discordStatus: null, failure: { stage: "receipt", code: "discord_receipt_timeout", message: "Timed out" } }));
+    expect(timeout.key).toBe("report_timeout");
+    expect(timeout.description).toContain("final outcome is unknown");
+    expect(timeout.description).not.toContain("deleted");
     expect(classifyReportView(report({ reviewStatus: "confirmation_timeout" })).key).toBe("appeal_timeout");
     expect(classifyReportView(report({ reviewStatus: "ineligible" })).key).toBe("ineligible");
     expect(classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "request_failed" }))).toMatchObject({
@@ -108,7 +111,25 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(classifyReportView(report({ status: "queued", discordStatus: null })).title).toBe("Queued for Discord submission");
     expect(classifyReportView(report({ status: "requesting_verification", discordStatus: null })).title).toBe("Requesting verification from Discord");
     expect(classifyReportView(report({ status: "awaiting_verification", discordStatus: null })).title).toBe("Waiting for Discord verification email");
-    expect(classifyReportView(report({ status: "submitting", discordStatus: null })).title).toBe("Submitting report to Discord");
+    const emailReceived = classifyReportView(report({ status: "verification_received", discordStatus: null }));
+    expect(emailReceived.key).toBe("verification_received");
+    expect(emailReceived.title).toBe("Verification email received");
+    expect(emailReceived.description).toContain("not confirmed yet");
+    expect(emailReceived.terminal).toBe(false);
+    const verifying = classifyReportView(report({ status: "verifying", discordStatus: null }));
+    expect(verifying.key).toBe("verifying");
+    expect(verifying.title).toBe("Checking verification code");
+    expect(verifying.description).toContain("not been submitted");
+    expect(verifying.terminal).toBe(false);
+    const submitting = classifyReportView(report({ status: "submitting", discordStatus: null }));
+    expect(submitting.key).toBe("submitting");
+    expect(submitting.title).toBe("Verification confirmed; submitting report");
+    expect(submitting.description).toContain("not confirmed receipt yet");
+    expect(submitting.terminal).toBe(false);
+    expect(JSON.stringify(statusMessageOptions(report({ status: "verification_received", discordStatus: null }), context)))
+      .toContain("Verification email received");
+    expect(visibleStatusHash(report({ status: "verification_received", discordStatus: null }), context))
+      .not.toBe(visibleStatusHash(report({ status: "awaiting_verification", discordStatus: null }), context));
   });
 
   it("keeps the mention, username, plain link, and code-blocked message in one reported-item block", () => {
@@ -160,6 +181,47 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     const value = JSON.stringify(statusMessageOptions(report({ discordStatus: "actioned", reviewStatus: "approved", timeline }), context));
     expect(value).toContain("- <t:1788775200:R> Added to submission queue\\n- <t:1788775260:R> Report submitted\\n- <t:1788775380:R> Report denied; appeal submitted\\n- <t:1788775440:R> Appeal accepted");
     expect(value).not.toContain("<t:1788775320:R> Report denied");
+  });
+
+  it("keeps verification receipt in history when the report snapshot has already advanced", () => {
+    const timeline = [
+      { eventId: "1", type: "verification_received", occurredAt: "2026-09-07T10:00:30.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null }
+    ];
+    const current = report({ status: "submitting", discordStatus: null, timeline: [] });
+    const advanced = report({
+      status: "submitting", discordStatus: null, timeline
+    });
+    const value = JSON.stringify(statusMessageOptions(advanced, context));
+
+    expect(value).toContain("Verification confirmed; submitting report");
+    expect(value).toContain("<t:1788775230:R> Verification email received");
+    expect(value).not.toContain("Report submitted");
+    expect(visibleStatusHash(advanced, context)).not.toBe(visibleStatusHash(current, context));
+  });
+
+  it("uses the report_submitted timeline event as confirmation instead of inferring it from an intermediate state", () => {
+    const timeline = [
+      { eventId: "1", type: "report_submitted", occurredAt: "2026-09-07T10:01:15.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null }
+    ];
+    const value = JSON.stringify(statusMessageOptions(report({
+      status: "submitting", discordStatus: null, timeline
+    }), context));
+
+    expect(value).toContain("<t:1788775275:R> Report submitted");
+  });
+
+  it("labels the report text as prepared until a durable submission confirmation exists", () => {
+    const pending = JSON.stringify(statusMessageOptions(report({
+      status: "submitting", discordStatus: null, timeline: []
+    }), context));
+    const confirmedByEvent = JSON.stringify(statusMessageOptions(report({
+      status: "submitting", discordStatus: null,
+      timeline: [{ eventId: "1", type: "report_submitted", occurredAt: "2026-09-07T10:01:15.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null }]
+    }), context));
+
+    expect(pending).toContain("### Prepared report");
+    expect(pending).not.toContain("### Report sent to Discord");
+    expect(confirmedByEvent).toContain("### Report sent to Discord");
   });
 
   it("shows the safe specific failure on both the card and its reply", () => {

@@ -61,13 +61,17 @@ concatenated into that code block.
 
 The card deliberately groups fast internal events into stable visible states while keeping the
 meaningful boundaries explicit: **Queued for Discord submission**, **Preparing report**,
-**Requesting verification from Discord**, **Waiting for Discord verification email**, and
-**Submitting report to Discord**. Queued cards show the API's current queue length. History uses
+**Requesting verification from Discord**, **Waiting for Discord verification email**,
+**Verification email received**, **Verifying with Discord**, and **Submitting report to Discord**.
+Email receipt is an acknowledgement of mail delivery; only the successful submission boundary
+means Discord accepted the report. The receipt milestone remains in history after the current
+state advances, so a fast transition cannot hide it. Queued cards show the API's current queue length. History uses
 relative Discord timestamps and concise chronological actions. When applicable, report denial and
-appeal submission are collapsed into **Report denied; appeal submitted**. Nonterminal updates wait two seconds, retain only the latest pending state,
-are spaced at least five seconds apart, and skip identical visible-payload hashes. Terminal updates
-bypass the spacing. This prevents pairs such as “Submitting report” followed immediately by
-“Awaiting verification email” from producing rapid Discord edits. If Discord returns error `50007`,
+appeal submission are collapsed into **Report denied; appeal submitted**. Routine nonterminal updates wait two seconds, retain only the latest pending state,
+are spaced at least five seconds apart, and skip identical visible-payload hashes. Verification
+email receipt and successful submission are immediate milestones, retained through coalescing and
+exempt from edit spacing, as are terminal updates. Updates still serialize per report and render
+the latest authoritative report. If Discord returns error `50007`,
 the bot warns in the ephemeral interaction response that it could not DM the user; the API report
 continues.
 
@@ -98,6 +102,13 @@ full ingestion, and the cursor advances once per page to the last contiguously p
 Webhook and polling ingestion share the same event inbox so duplicate delivery cannot create
 duplicate DMs. Pending create/retry calls are replayed with their original idempotency key before
 normal feed reconciliation.
+
+The October 14 redundancy review retained webhook delivery plus periodic feed reconciliation:
+they share one idempotent inbox, and the feed repairs missed delivery and restart gaps. The
+five-second recovery loop and connection reconciliation both inspect pending mutations, but
+database claims serialize recovery and the short loop also repairs missing status cards. No
+additional bot feature was removed without evidence that it duplicated the same durable behavior.
+The separate API operations-warning webhook was retired in favor of Sentry diagnostics.
 
 Notification and reconciliation operational events retain their stable event names and emit a
 bounded `stage`, `outcome`, and `durationMs`. Where a lifecycle event supplies identifiers, logs include
@@ -224,6 +235,15 @@ through SQL. The Worker logs its generated alias for every forwarding outcome an
 failure, sends signed metadata-only diagnostics to the API ledger. The API correlates accepted mail
 by that alias; a total API outage leaves Cloudflare's structured Worker log as the fallback.
 Raw RFC822 mail, credentials, cookies, proxy credentials, and verification codes are never retained.
+
+API and bot exception monitoring uses separate Sentry projects through the dependency-only
+`@nreport/observability` workspace. Each service preloads the SDK before application modules and
+attaches bounded workflow context to actionable failures: report/trace references, stage, attempt,
+HTTP status, and provider or Discord error codes where available. Error diagnostics preserve
+redacted messages, stacks, and cause chains. Routine notification card-claim contention remains
+a retry log rather than a Sentry issue. Telemetry failures must not affect report or notification
+processing, and shutdown flushes pending events with a bounded timeout. Deployment variables,
+verification, and investigation guidance are in [`SENTRY_SETUP.md`](SENTRY_SETUP.md).
 
 The health endpoint becomes ready only when PostgreSQL and the Discord gateway are ready. The bot
 webhook is intended for Railway private networking and does not need a public domain.

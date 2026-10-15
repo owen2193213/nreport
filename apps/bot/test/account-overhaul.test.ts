@@ -1,14 +1,24 @@
 /* eslint-disable @typescript-eslint/require-await, @typescript-eslint/no-unused-vars */
+import { createHash, createHmac } from "node:crypto";
+import { PassThrough } from "node:stream";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { describe, expect, it, vi } from "vitest";
+import type * as ObservabilityPackage from "@nreport/observability";
 
 import { AccountBotDatabase } from "../src/account-database.js";
 import { AccountNotificationWorker, isDiscordUnknownMessage, NOTIFICATION_LOOP_COUNT } from "../src/account-notifier.js";
 import { loadBotConfig } from "../src/config.js";
-import { reportEventIngestionStatus } from "../src/health.js";
+import { HealthServer, reportEventIngestionStatus } from "../src/health.js";
 import * as healthModule from "../src/health.js";
 import { DsaApiError } from "@nreport/contracts";
 import { AccountInteractionHandler, shouldAbandonReportLink } from "../src/account-interactions.js";
 import { errorFields, setBotDiagnosticSink } from "../src/observability.js";
+
+const captureLifecycleFailureMock = vi.hoisted(() => vi.fn());
+vi.mock("@nreport/observability", async (importOriginal) => {
+  const actual = await importOriginal<typeof ObservabilityPackage>();
+  return { ...actual, captureLifecycleFailure: captureLifecycleFailureMock };
+});
 
 describe("thin account client configuration", () => {
   it("keeps pending links for ambiguous create and retry outcomes", () => {
@@ -35,8 +45,11 @@ describe("thin account client configuration", () => {
     expect(validate?.(base)).toBe(false);
     expect(validate?.({ ...base, traceId: "not-a-uuid" })).toBe(false);
   });
-  it("serializes only allowlisted bounded error diagnostics", () => {
+  it("retains useful error diagnostics while redacting secrets", () => {
     const secret = "canary-api-key-do-not-log";
+    const secretName = "NREPORT_TEST_API_KEY";
+    const previousSecret = process.env[secretName];
+    process.env[secretName] = secret;
     const error = Object.assign(new Error(`request failed with ${secret}`), {
       name: "DiscordAPIError",
       code: "50007",
@@ -44,10 +57,17 @@ describe("thin account client configuration", () => {
       rawError: { message: secret, errors: { body: secret } }
     });
 
-    const fields = errorFields(error);
+    try {
+      const fields = errorFields(error);
 
-    expect(fields).toEqual({ errorName: "DiscordAPIError", errorCode: "50007", httpStatus: 403 });
-    expect(JSON.stringify(fields)).not.toContain(secret);
+      expect(fields).toMatchObject({ errorName: "DiscordAPIError", errorCode: "50007", httpStatus: 403 });
+      expect(fields.errorMessage).toBe(`request failed with [REDACTED_CONFIGURED_SECRET]`);
+      expect(typeof fields.errorStack).toBe("string");
+      expect(JSON.stringify(fields)).not.toContain(secret);
+    } finally {
+      if (previousSecret === undefined) delete process.env[secretName];
+      else process.env[secretName] = previousSecret;
+    }
   });
 
   it("bounds error codes and normalizes arbitrary error names", () => {
@@ -56,7 +76,22 @@ describe("thin account client configuration", () => {
       code: "x".repeat(100)
     });
 
-    expect(errorFields(error)).toEqual({ errorName: "Error", errorCode: "x".repeat(64) });
+    expect(errorFields(error)).toMatchObject({
+      errorName: "Error", errorCode: "x".repeat(64), errorMessage: "not serialized"
+    });
+  });
+
+  it("retains bounded Error messages, stacks, and causes for diagnosis", () => {
+    const cause = Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+    const error = Object.assign(new Error("API request failed"), { cause, status: 503 });
+
+    const fields = errorFields(error);
+    expect(fields).toMatchObject({
+      errorName: "Error",
+      errorMessage: "API request failed",
+      errorCauses: [expect.objectContaining({ name: "Error", message: "socket closed" })]
+    });
+    expect(fields.errorStack).toContain("Error: API request failed");
   });
 
   it("requires only API administration, Discord, database, encryption, and webhook secrets", () => {
@@ -79,6 +114,69 @@ describe("thin account client configuration", () => {
     expect(reportEventIngestionStatus("not_tracked_yet")).toBe(202);
     expect(reportEventIngestionStatus("accepted")).toBe(202);
     expect(reportEventIngestionStatus("disconnected")).toBe(202);
+  });
+});
+
+describe("signed lifecycle webhook diagnostics", () => {
+  it("logs and captures database ingestion failures, then returns a retryable response", async () => {
+    captureLifecycleFailureMock.mockClear();
+    const secret = "webhook-secret-for-test";
+    const error = Object.assign(new Error("database failed at postgres://bot:secret@db.example.test/nreport"), {
+      code: "ECONNRESET"
+    });
+    const database = { ingestEvent: vi.fn().mockRejectedValue(error) };
+    const server = new HealthServer(database as never, () => true, secret);
+    const events: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    setBotDiagnosticSink((event, fields) => events.push({ event, fields }));
+    try {
+      const event = {
+        eventId: "9", accountId: "11111111-1111-4111-8111-111111111111",
+        reportId: "22222222-2222-4222-8222-222222222222", traceId: "33333333-3333-4333-8333-333333333333",
+        type: "report_failed", occurredAt: "2026-10-14T00:00:00.000Z", lifecycleAttempt: 2
+      };
+      const body = JSON.stringify(event);
+      const timestamp = String(Math.floor(Date.now() / 1_000));
+      const bodyHash = createHash("sha256").update(body).digest("hex");
+      const signature = createHmac("sha256", secret).update(`${timestamp}\n${event.eventId}\n${bodyHash}`).digest("hex");
+      const privateServer = server as unknown as {
+        event(request: IncomingMessage, response: ServerResponse): Promise<void>;
+      };
+      const invokeEvent = async (): Promise<void> => {
+        const request = new PassThrough() as unknown as IncomingMessage;
+        request.headers = {
+          "x-report-event-id": event.eventId,
+          "x-report-event-timestamp": timestamp,
+          "x-report-event-signature": signature
+        };
+        const writeHead = vi.fn();
+        const end = vi.fn();
+        const response = { writeHead, end } as unknown as ServerResponse;
+        const handling = privateServer.event(request, response);
+        (request as unknown as PassThrough).end(body);
+        await handling;
+        expect(writeHead).toHaveBeenCalledWith(503, { "content-type": "application/json" });
+        expect(end).toHaveBeenCalledWith(JSON.stringify({ error: "temporarily_unavailable" }));
+      };
+      await invokeEvent();
+      await invokeEvent();
+
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({
+        event: "report_event_ingestion_failed",
+        fields: { reportId: event.reportId, traceId: event.traceId, eventType: event.type,
+          stage: "webhook_ingestion", outcome: "retrying" }
+      });
+      expect(events[0]?.fields.errorMessage).toContain("[REDACTED_URL]");
+      expect(JSON.stringify(events)).not.toContain("postgres://bot:secret@db.example.test/nreport");
+      expect(captureLifecycleFailureMock).toHaveBeenCalledOnce();
+      expect(captureLifecycleFailureMock).toHaveBeenCalledWith(error, expect.objectContaining({
+        service: "bot", operation: "lifecycle_webhook_ingestion", reportId: event.reportId,
+        traceId: event.traceId, eventType: event.type, lifecycleAttempt: 2,
+        stage: "webhook_ingestion", outcome: "retrying", severity: "error"
+      }));
+    } finally {
+      setBotDiagnosticSink(undefined);
+    }
   });
 });
 
@@ -162,6 +260,59 @@ describe("initial card interaction diagnostics", () => {
 
     expect(send).toHaveBeenCalledOnce();
     expect(send.mock.calls[0]?.[0]).toMatchObject({ nonce: "card-bd7662a5eeb41614", enforceNonce: true });
+  });
+});
+
+describe("interaction Sentry diagnostics", () => {
+  it("captures the original uncertain retry failure with report, trace, stage, and API status", async () => {
+    captureLifecycleFailureMock.mockClear();
+    const predecessor = {
+      reportId: "11111111-1111-4111-8111-111111111111",
+      traceId: "33333333-3333-4333-8333-333333333333",
+      retryableModes: ["reuse"], successorReportId: null
+    };
+    const error = new DsaApiError(503, "upstream_unavailable", "API temporarily unavailable", "request-42");
+    const database = {
+      connection: vi.fn(async () => ({ account_id: "account-1", encrypted_api_key: "key" })),
+      reportTargetContext: vi.fn(async () => null), beginReportLink: vi.fn(async () => "link-1"),
+      abandonReportLink: vi.fn(), rescheduleReportLink: vi.fn()
+    };
+    const handler = new AccountInteractionHandler({
+      client: {} as never,
+      config: { apiBaseUrl: "https://api.example.test", adminApiKey: "admin", dataEncryptionKey: Buffer.alloc(32) } as never,
+      database: database as never, messageResolver: {} as never, profileResolver: {} as never, serverResolver: {} as never
+    });
+    const retryReport = vi.fn(async () => { throw error; });
+    const privateHandler = handler as unknown as {
+      api: () => { report: () => Promise<typeof predecessor>; retryReport: typeof retryReport };
+    };
+    vi.spyOn(privateHandler, "api").mockReturnValue({
+      report: vi.fn(async () => predecessor), retryReport
+    });
+    let deferred = false;
+    const interaction = {
+      isModalSubmit: () => false, isButton: () => true,
+      isMessageContextMenuCommand: () => false, isChatInputCommand: () => false,
+      customId: `report-retry-reuse:${predecessor.reportId}`, id: "interaction-42",
+      user: { id: "discord-user" },
+      deferReply: vi.fn(async () => { deferred = true; }),
+      editReply: vi.fn().mockResolvedValue(undefined), isRepliable: () => true,
+      get deferred() { return deferred; }, replied: false
+    };
+
+    await handler.handle(interaction as never);
+
+    expect(captureLifecycleFailureMock).toHaveBeenCalledOnce();
+    expect(captureLifecycleFailureMock).toHaveBeenCalledWith(error, expect.objectContaining({
+      service: "bot", operation: "report_retry", stage: "api_retry", outcome: "recovery_pending",
+      reportId: predecessor.reportId, traceId: predecessor.traceId,
+      statusCode: 503, requestId: "request-42"
+    }));
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "Your report is being checked. Do not submit it again; its status will update automatically.",
+      embeds: []
+    });
   });
 });
 
@@ -296,6 +447,40 @@ describe("local account mapping", () => {
     expect(insert?.[1]).toContain("33333333-3333-4333-8333-333333333333");
   });
 
+  it("makes verification receipt and confirmed submission immediately eligible for status-card updates", async () => {
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("FROM api_connections")) return { rows: [{ discord_user_id: "discord-1" }], rowCount: 1 };
+        if (sql.includes("FROM bot_report_links")) return { rows: [{ id: "link-1" }], rowCount: 1 };
+        if (sql.includes("INSERT INTO lifecycle_inbox")) return { rows: [{ event_id: "11" }], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+      }),
+      release: vi.fn()
+    };
+    const poolQuery = vi.fn(async (_sql: string) => ({ rows: [], rowCount: 0 }));
+    const database = new AccountBotDatabase({ query: poolQuery, connect: async () => client } as never);
+
+    for (const [eventId, type] of [["11", "verification_received"], ["12", "report_submitted"]] as const) {
+      await database.ingestEvent({
+        eventId, accountId: "account-1", reportId: "report-1",
+        traceId: "33333333-3333-4333-8333-333333333333",
+        type, occurredAt: "2026-09-04T00:00:00.000Z", lifecycleAttempt: 1
+      });
+    }
+    await database.claimNotification();
+
+    const inserts = client.query.mock.calls.filter(([sql]) => String(sql).includes("INSERT INTO lifecycle_inbox"));
+    const claim = String(poolQuery.mock.calls[2]?.[0]);
+    expect(inserts).toHaveLength(2);
+    for (const [sql] of inserts) {
+      expect(String(sql)).toContain("'verification_received'");
+      expect(String(sql)).toContain("'report_submitted'");
+      expect(String(sql)).toContain("THEN now() ELSE now() + interval '2 seconds'");
+    }
+    expect(claim).toContain("'verification_received'");
+    expect(claim).toContain("'report_submitted'");
+  });
+
   it("does not coalesce report-denied decisions behind later status events", async () => {
     const client = {
       query: vi.fn(async (sql: string) => {
@@ -393,7 +578,7 @@ describe("account reconciliation", () => {
       ]),
       pendingReportLinks: vi.fn(async () => []), cleanupExpiredForms: vi.fn(),
       existingEventIds: vi.fn(async () => new Set<string>()),
-      ingestEvent: vi.fn().mockRejectedValue(new Error("sensitive database URL")),
+      ingestEvent: vi.fn().mockRejectedValue(new Error("database failed at postgres://bot:secret@db.example.test/nreport")),
       advanceCursor: vi.fn()
     };
     const firstApi = { events: vi.fn(async () => ({ items: [event], next: null })) };
@@ -408,10 +593,14 @@ describe("account reconciliation", () => {
 
     await worker.reconcileOnce();
 
-    expect(logger).toHaveBeenCalledWith("account_reconciliation_event", {
-      reportId: event.reportId, traceId: event.traceId, eventType: event.type, stage: "event_ingestion", outcome: "failed",
-      durationMs: expect.any(Number) as number, failureCategory: "unexpected"
-    }, "error");
+    const failureLog = logger.mock.calls.find(([name]) => name === "account_reconciliation_event");
+    expect(failureLog?.[1]).toMatchObject({
+      reportId: event.reportId, traceId: event.traceId, eventType: event.type,
+      stage: "event_ingestion", outcome: "failed", failureCategory: "unexpected",
+      errorMessage: "database failed at [REDACTED_URL]"
+    });
+    expect(typeof failureLog?.[1]?.durationMs).toBe("number");
+    expect(failureLog?.[2]).toBe("error");
     expect(database.advanceCursor).not.toHaveBeenCalled();
     expect(secondApi.events).toHaveBeenCalledOnce();
     expect(logger).not.toHaveBeenCalledWith("account_reconciliation_failed", expect.anything(), "error");
@@ -428,7 +617,7 @@ describe("account reconciliation", () => {
       cleanupExpiredForms: vi.fn(), existingEventIds: vi.fn(async () => new Set<string>()),
       ingestEvent: vi.fn(), advanceCursor: vi.fn()
     };
-    const firstApi = { events: vi.fn().mockRejectedValue(Object.assign(new Error("network failure secret"), { code: "ECONNRESET" })) };
+    const firstApi = { events: vi.fn().mockRejectedValue(Object.assign(new Error("network failure details"), { code: "ECONNRESET" })) };
     const secondApi = { events: vi.fn(async () => ({ items: [], next: null })) };
     const logger = vi.fn<(event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error") => void>();
     const worker = new AccountNotificationWorker(
@@ -445,20 +634,19 @@ describe("account reconciliation", () => {
     expect(logger).toHaveBeenCalledWith(
       "account_reconciliation_failed",
       expect.objectContaining({ stage: "reconciliation", outcome: "failed",
-        durationMs: expect.any(Number) as number, failureCategory: "network" }),
+        failureCategory: "network" }),
       "error"
     );
     expect(logger).toHaveBeenCalledWith(
       "account_reconciliation_completed",
-      expect.objectContaining({ stage: "reconciliation", outcome: "completed",
-        durationMs: expect.any(Number) as number })
+      expect.objectContaining({ stage: "reconciliation", outcome: "completed" })
     );
     const serializedLogs = JSON.stringify(logger.mock.calls);
     expect(serializedLogs).not.toContain("secret-user");
     expect(serializedLogs).not.toContain("secret-account");
     expect(serializedLogs).not.toContain("first-key");
     expect(serializedLogs).not.toContain("secret.example.test");
-    expect(serializedLogs).not.toContain("network failure secret");
+    expect(serializedLogs).toContain("network failure details");
   });
 
   it("drops a permanently rejected pending request and continues with later links and events", async () => {
@@ -579,7 +767,7 @@ describe("account reconciliation", () => {
         rawError: { message: "Invalid Form Body", errors: { nonce: { _errors: [{ code: "BASE_TYPE_MAX_LENGTH" }] } } }
       }); })
     };
-    const logger = vi.fn();
+    const logger = vi.fn<(event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error") => void>();
     const worker = new AccountNotificationWorker(
       database as never, {} as never,
       { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
@@ -590,8 +778,10 @@ describe("account reconciliation", () => {
 
     expect(logger).toHaveBeenCalledWith("account_recovery_failed", expect.objectContaining({
       accountId: "account-1",
-      durationMs: expect.any(Number) as number
+      errorName: "Error"
     }), "warn");
+    const failureLog = logger.mock.calls.find(([event]) => event === "account_recovery_failed");
+    expect(typeof failureLog?.[1]?.durationMs).toBe("number");
   });
 
   it("retains safe Discord error and payload metadata when retrying a card repair", async () => {

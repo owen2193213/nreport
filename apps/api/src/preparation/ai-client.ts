@@ -6,12 +6,15 @@ import {
   responseSize,
   type ProviderFinishReasonCategory
 } from "./observability.js";
+import { safeErrorSummary } from "@nreport/observability";
 import type { AiUsage } from "./types.js";
 
 export const CEREBRAS_CHAT_COMPLETIONS_URL =
   "https://api.cerebras.ai/v1/chat/completions";
 export const MAX_COMPLETION_TOKENS = 3_000;
 const REQUEST_TIMEOUT_MS = 150_000;
+const MAX_PROVIDER_ERROR_BYTES = 4_096;
+const MAX_PROVIDER_ERROR_FIELD_CHARACTERS = 512;
 
 export interface AiRequestContext {
   userId: string;
@@ -44,6 +47,7 @@ interface ChatCompletionResponse {
 export type AiClientErrorKind =
   | "network"
   | "rate_limited"
+  | "payment_required"
   | "refusal"
   | "provider"
   | "malformed"
@@ -53,11 +57,27 @@ export type AiClientErrorKind =
 export class AiClientError extends Error {
   public constructor(
     public readonly kind: AiClientErrorKind,
-    message: string
+    message: string,
+    options: {
+      cause?: unknown;
+      stage?: AiStage;
+      httpStatus?: number;
+      providerMessage?: string;
+      providerCode?: string;
+    } = {}
   ) {
-    super(message);
+    super(message, options);
     this.name = "AiClientError";
+    this.stage = options.stage;
+    this.httpStatus = options.httpStatus;
+    this.providerMessage = options.providerMessage;
+    this.providerCode = options.providerCode;
   }
+
+  public readonly stage: AiStage | undefined;
+  public readonly httpStatus: number | undefined;
+  public readonly providerMessage: string | undefined;
+  public readonly providerCode: string | undefined;
 }
 
 function numeric(value: unknown): number {
@@ -116,6 +136,71 @@ function retryAfterSecondsFromHeader(response: Response): number | undefined {
   if (!/^\d+(\.\d+)?$/.test(trimmed)) return undefined;
   const value = Number(trimmed);
   return Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+async function boundedResponseText(response: Response): Promise<{ text: string; truncated: boolean }> {
+  const reader = response.body?.getReader();
+  if (reader === undefined) return { text: "", truncated: false };
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytesRead = 0;
+  let done = false;
+  let truncated = false;
+  try {
+    while (bytesRead < MAX_PROVIDER_ERROR_BYTES) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        done = true;
+        break;
+      }
+      const remaining = MAX_PROVIDER_ERROR_BYTES - bytesRead;
+      const bytes = chunk.value.subarray(0, remaining);
+      bytesRead += bytes.byteLength;
+      text += decoder.decode(bytes, { stream: true });
+      if (bytes.byteLength < chunk.value.byteLength) {
+        truncated = true;
+        break;
+      }
+    }
+    if (bytesRead >= MAX_PROVIDER_ERROR_BYTES) truncated = true;
+    text += decoder.decode();
+  } catch {
+    truncated = true;
+  } finally {
+    if (!done) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+  return { text, truncated };
+}
+
+function safeProviderField(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  const summary = safeErrorSummary(new Error(value));
+  return summary.message.slice(0, MAX_PROVIDER_ERROR_FIELD_CHARACTERS) || undefined;
+}
+
+function providerFailureDetails(text: string): { providerMessage?: string; providerCode?: string } {
+  if (text === "") return {};
+  try {
+    const payload: unknown = JSON.parse(text);
+    if (typeof payload === "object" && payload !== null && "error" in payload) {
+      const upstreamError = payload.error;
+      if (typeof upstreamError === "object" && upstreamError !== null) {
+        const record = upstreamError as { message?: unknown; code?: unknown };
+        const providerMessage = safeProviderField(record.message);
+        const providerCode = safeProviderField(typeof record.code === "string" ? record.code : undefined);
+        if (providerMessage !== undefined || providerCode !== undefined) {
+          return {
+            ...(providerMessage === undefined ? {} : { providerMessage }),
+            ...(providerCode === undefined ? {} : { providerCode })
+          };
+        }
+      }
+    }
+  } catch {
+    // Unstructured bodies may contain echoed request content; preserve only allowlisted error fields.
+  }
+  return {};
 }
 
 export class AiClient {
@@ -223,20 +308,29 @@ export class AiClient {
           failureCategory,
           isTimeout
             ? `${this.providerName} request timed out after ${Math.round((Date.now() - startedAt) / 1000)}s.`
-            : `${this.providerName} could not be reached.`
+            : `${this.providerName} could not be reached.`,
+          { cause: fetchError, stage }
         );
       }
 
       if (!response.ok) {
-        const kind = response.status === 429 ? "rate_limited" : "provider";
+        const kind = response.status === 402
+          ? "payment_required"
+          : response.status === 429 ? "rate_limited" : "provider";
         const size = responseSize(response);
+        const body = await boundedResponseText(response);
+        const failureDetails = providerFailureDetails(body.text);
         this.logFailure(
           actor,
           stage,
           Date.now() - startedAt,
           kind,
           response.status,
-          size === undefined ? undefined : { responseSize: size },
+          {
+            ...(size === undefined ? {} : { responseSize: size }),
+            ...(body.truncated ? { providerErrorTruncated: true } : {}),
+            ...failureDetails
+          },
           attempts
         );
         const retryable = response.status === 429 || response.status >= 500;
@@ -248,18 +342,30 @@ export class AiClient {
         ) {
           continue;
         }
-        throw new AiClientError(
-          kind,
-          response.status === 429
+        const upstreamMessage = failureDetails.providerMessage;
+        const safeMessage = upstreamMessage === undefined
+          ? response.status === 402
+            ? `${this.providerName} requires payment for this request.`
+            : response.status === 429
             ? `${this.providerName} is rate limited.`
             : `${this.providerName} is unavailable.`
+          : `${this.providerName} returned HTTP ${response.status}: ${upstreamMessage}`;
+        throw new AiClientError(
+          kind,
+          safeMessage,
+          {
+            cause: new Error(`${this.providerName} returned HTTP ${response.status}.`),
+            stage,
+            httpStatus: response.status,
+            ...failureDetails
+          }
         );
       }
 
       let payload: ChatCompletionResponse;
       try {
         payload = (await response.json()) as ChatCompletionResponse;
-      } catch {
+      } catch (error) {
         const size = responseSize(response);
         this.logFailure(
           actor,
@@ -270,20 +376,34 @@ export class AiClient {
           size === undefined ? undefined : { responseSize: size },
           attempts
         );
-        throw new AiClientError("malformed", `${this.providerName} returned malformed JSON.`);
+        throw new AiClientError("malformed", `${this.providerName} returned malformed JSON.`, {
+          cause: error, stage, httpStatus: response.status
+        });
       }
 
       if (payload.error) {
+        const providerMessage = safeProviderField(payload.error.message);
+        const providerCode = safeProviderField(typeof payload.error.code === "string" ? payload.error.code : undefined);
+        const failureDetails = {
+          ...(providerMessage === undefined ? {} : { providerMessage }),
+          ...(providerCode === undefined ? {} : { providerCode })
+        };
         this.logFailure(
           actor,
           stage,
           Date.now() - startedAt,
           "provider",
           response.status,
-          { providerCodeCategory: providerCodeCategory(payload.error.code) },
+          { providerCodeCategory: providerCodeCategory(payload.error.code), ...failureDetails },
           attempts
         );
-        throw new AiClientError("provider", `${this.providerName} returned an upstream error.`);
+        throw new AiClientError(
+          "provider",
+          providerMessage === undefined
+            ? `${this.providerName} returned an upstream error.`
+            : `${this.providerName} returned an upstream error: ${providerMessage}`,
+          { cause: new Error(`${this.providerName} returned an upstream error.`), stage, httpStatus: response.status, ...failureDetails }
+        );
       }
 
       const choice = payload.choices?.[0];
@@ -366,6 +486,9 @@ export class AiClient {
       finishReasonCategory?: ProviderFinishReasonCategory;
       providerCodeCategory?: "missing" | "number" | "string" | "other";
       responseSize?: number;
+      providerErrorTruncated?: boolean;
+      providerMessage?: string;
+      providerCode?: string;
     },
     attempts?: number
   ): void {

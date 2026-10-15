@@ -8,13 +8,14 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @nreport/contracts && npm run build -w @discord-dsa/client && npm run build -w @nreport/api && npm run build -w @nreport/discord-dsa-bot --if-present",
+    "postinstall": "node scripts/patch-discordjs-poll.mjs",
+    "build": "npm run build -w @nreport/observability && npm run build -w @nreport/contracts && npm run build -w @discord-dsa/client && npm run build -w @nreport/api && npm run build -w @nreport/discord-dsa-bot --if-present",
     "start": "npm run start -w @nreport/api",
     "dev:api": "npm run dev -w @nreport/api",
     "dev:bot": "npm run dev -w @nreport/discord-dsa-bot",
     "lint": "eslint --no-error-on-unmatched-pattern \"apps/**/*.ts\" \"packages/**/*.ts\" \"scripts/**/*.ts\"",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "pretest": "npm run build -w @nreport/contracts && npm run build -w @discord-dsa/client",
+    "pretest": "npm run build -w @nreport/observability && npm run build -w @nreport/contracts && npm run build -w @discord-dsa/client",
     "test": "vitest run",
     "audit:high": "npm audit --audit-level=high",
     "test:client-readonly": "tsx scripts/test-client-readonly.ts",

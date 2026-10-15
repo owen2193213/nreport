@@ -101,24 +101,26 @@ describe("AiClient", () => {
     });
 
     it("handles upstream error objects in response payloads", async () => {
-      const canary = "CANARY_UNSAFE_PROVIDER_CAUSE";
       const request = vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            error: { message: canary, code: 504 }
+            error: { message: "Plan access disabled", code: 504 }
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         )
       );
 
-      await expect(
-        new AiClient("key", CEREBRAS_MODEL, {
+      let failure: unknown;
+      try {
+        await new AiClient("key", CEREBRAS_MODEL, {
           request: request as unknown as typeof fetch
-        }).complete({}, Date.now() + 5_000, ACTOR, "plan")
-      ).rejects.toMatchObject({
-        kind: "provider",
-        message: "Cerebras returned an upstream error."
-      });
+        }).complete({}, Date.now() + 5_000, ACTOR, "plan");
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ kind: "provider" });
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe("Cerebras returned an upstream error: Plan access disabled");
     });
   });
 
@@ -182,6 +184,26 @@ describe("AiClient", () => {
     ).rejects.toMatchObject({ kind });
   });
 
+  it("classifies HTTP 402 as payment required without retrying", async () => {
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { message: "Payment required for this model", code: "insufficient_quota" }
+    }), { status: 402, headers: { "Content-Type": "application/json" } }));
+    const sleep = vi.fn<Sleep>(() => Promise.resolve());
+
+    await expect(new AiClient("key", CEREBRAS_MODEL, {
+      request: request as unknown as typeof fetch,
+      sleep
+    }).complete({}, Date.now() + 5_000, ACTOR, "plan")).rejects.toMatchObject({
+      kind: "payment_required",
+      httpStatus: 402,
+      providerCode: "insufficient_quota",
+      providerMessage: "Payment required for this model"
+    });
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it.each([429, 500])("retries transient HTTP %s failures up to three attempts", async (status) => {
     const request = vi
       .fn()
@@ -200,6 +222,38 @@ describe("AiClient", () => {
     expect(sleep).toHaveBeenCalledTimes(2);
   });
 
+  it("preserves the allowlisted provider error from a final HTTP response", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: {
+        message: "Payment required; Authorization: Bearer provider-secret-token",
+        code: "insufficient_quota"
+      },
+      request: { prompt: "must not be logged" }
+    }), { status: 402, headers: { "Content-Type": "application/json" } }));
+
+    let failure: unknown;
+    try {
+      await new AiClient("key", CEREBRAS_MODEL, {
+        request: request as unknown as typeof fetch
+      }).complete({}, Date.now() + 5_000, ACTOR, "plan");
+    } catch (error) {
+      failure = error;
+    }
+
+    const serialized = write.mock.calls.map(([line]) => String(line)).join("");
+    expect(failure).toMatchObject({
+      kind: "payment_required",
+      httpStatus: 402,
+      providerCode: "insufficient_quota",
+      providerMessage: expect.stringContaining("Payment required") as string
+    });
+    expect(serialized).toContain("Payment required");
+    expect(serialized).toContain("insufficient_quota");
+    expect(serialized).not.toContain("provider-secret-token");
+    expect(serialized).not.toContain("must not be logged");
+  });
+
   it("retries transient network failures up to three attempts", async () => {
     const request = vi
       .fn()
@@ -216,6 +270,25 @@ describe("AiClient", () => {
     expect(request).toHaveBeenCalledTimes(3);
     expect(result.content).toBe('{"ok":true}');
     expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the final network error as the AI failure cause", async () => {
+    const networkFailure = new Error("socket closed");
+    const request = vi.fn().mockRejectedValue(networkFailure);
+    const sleep = vi.fn<Sleep>(() => Promise.resolve());
+
+    let failure: unknown;
+    try {
+      await new AiClient("key", CEREBRAS_MODEL, {
+        request: request as unknown as typeof fetch,
+        sleep
+      }).complete({}, Date.now() + 5_000, ACTOR, "plan");
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({ kind: "network", cause: networkFailure });
+    expect(request).toHaveBeenCalledTimes(3);
   });
 
   it("backs off before each retry, roughly 1s then 2s absent a Retry-After header", async () => {
@@ -297,11 +370,16 @@ describe("AiClient", () => {
       })
     );
 
-    await expect(
-      new AiClient("key", CEREBRAS_MODEL, {
+    let failure: unknown;
+    try {
+      await new AiClient("key", CEREBRAS_MODEL, {
         request: request as unknown as typeof fetch
-      }).complete({}, Date.now() + 5_000, ACTOR, "plan")
-    ).rejects.toMatchObject({ kind: "malformed" });
+      }).complete({}, Date.now() + 5_000, ACTOR, "plan");
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ kind: "malformed" });
+    expect((failure as Error).cause).toBeInstanceOf(SyntaxError);
     expect(request).toHaveBeenCalledTimes(1);
   });
 
@@ -319,11 +397,12 @@ describe("AiClient", () => {
 
   it("serializes only bounded provider failure metadata", async () => {
     const canary = "CANARY_PROVIDER_BODY_AND_REASONING";
+    const providerMessage = "Model temporarily unavailable";
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const request = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          error: { message: canary, code: `secret-${canary}` },
+          error: { message: providerMessage, code: `secret-${canary}` },
           reasoning: canary
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
@@ -338,7 +417,12 @@ describe("AiClient", () => {
 
     const serialized = write.mock.calls.map(([line]) => String(line)).join("");
     expect(serialized).not.toContain(canary);
-    expect(JSON.parse(serialized)).toMatchObject({
+    expect(serialized).toContain(providerMessage);
+    const logLine = serialized.split(/\r?\n/u)
+      .filter((line) => line.includes('"event":"ai_request_failed"'))
+      .at(-1);
+    expect(logLine).toBeDefined();
+    expect(JSON.parse(logLine ?? "{}")).toMatchObject({
       event: "ai_request_failed",
       traceId: ACTOR.traceId,
       outcome: "failed",
@@ -347,7 +431,7 @@ describe("AiClient", () => {
       providerCodeCategory: "string",
       stage: "plan"
     });
-    expect(JSON.parse(serialized)).not.toHaveProperty("actorKey");
+    expect(JSON.parse(logLine ?? "{}")).not.toHaveProperty("actorKey");
   });
 
   it("honors an already-aborted caller signal without making a request", async () => {

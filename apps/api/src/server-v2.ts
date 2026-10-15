@@ -36,6 +36,7 @@ import type { WebhookDestinationRepository } from "./webhook-destinations.js";
 import type { AnalyticsRepository } from "./analytics-repository.js";
 import { resolveAnalyticsInterval } from "./analytics.js";
 import type { AnalyticsInterval, AnalyticsPeriod } from "@nreport/contracts";
+import { captureLifecycleFailure, safeErrorSummary } from "@nreport/observability";
 
 interface AccountStore {
   authenticate(key: string): Promise<AccountPrincipal | null>;
@@ -712,16 +713,34 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     if (statusCode === 429) request.log.warn({
       event: "api_request_rate_limited", operation: request.routeOptions.url ?? "unknown", httpStatus: statusCode
     }, "Request rate limited");
-    if (statusCode >= 500) request.log.error({
-      event: "api_request_failed", operation: request.routeOptions.url ?? "unknown", errorCategory: error instanceof Error ? error.name : "unknown",
-      supportReference, httpStatus: statusCode
+      if (statusCode >= 500) request.log.error({
+        event: "api_request_failed", operation: request.routeOptions.url ?? "unknown", errorCategory: error instanceof Error ? error.name : "unknown",
+        supportReference, httpStatus: statusCode, requestId: request.id, method: request.method,
+        ...safeErrorLogFields(error)
     }, "Request failed");
+      if (statusCode >= 500) {
+        captureLifecycleFailure(error, {
+          service: "api", operation: "http_request", requestId: request.id,
+          method: request.method, route: request.routeOptions.url ?? "unknown", statusCode,
+          errorCategory: error instanceof Error ? error.name : "unknown", outcome: "failed"
+        });
+      }
     const safeCode = statusCode >= 500 ? "internal_error" : statusCode === 429 ? "rate_limited" : code;
     const message = statusCode >= 500 ? "An internal error occurred." : statusCode === 429 ? "Request rate limit exceeded." : error instanceof Error ? error.message : "Request failed.";
     return apiError(reply, request, statusCode, safeCode, message, supportReference);
   });
 
   return app;
+}
+
+function safeErrorLogFields(error: unknown): Record<string, unknown> {
+  const summary = safeErrorSummary(error);
+  return {
+    errorName: summary.name,
+    errorMessage: summary.message,
+    ...(summary.stack === undefined ? {} : { errorStack: summary.stack }),
+    ...(summary.causes.length === 0 ? {} : { errorCauses: summary.causes })
+  };
 }
 
 function singleHeader(request: FastifyRequest, name: string): string | undefined {

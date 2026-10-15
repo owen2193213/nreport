@@ -440,6 +440,17 @@ export class ReportRepository {
   }
 
   public async transitionOperationalAlerts(alerts: Array<{ key: string; severity: "warning" | "critical" }>): Promise<void> {
+    await this.persistOperationalAlertState(alerts, true);
+  }
+
+  public async observeOperationalAlerts(alerts: Array<{ key: string; severity: "warning" | "critical" }>): Promise<void> {
+    await this.persistOperationalAlertState(alerts, false);
+  }
+
+  private async persistOperationalAlertState(
+    alerts: Array<{ key: string; severity: "warning" | "critical" }>,
+    enqueueNotifications: boolean
+  ): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -455,8 +466,10 @@ export class ReportRepository {
         );
         const row = prior.rows[0];
         const episode = row === undefined ? 1 : row.state === "closed" ? Number(row.episode) + 1 : Number(row.episode);
-        const shouldSend = row === undefined || row.state === "closed" || row.last_sent_at === null || row.last_sent_at < new Date(Date.now() - 30 * 60_000);
-        const notificationSequence = shouldSend ? (row === undefined || row.state === "closed" ? 1 : Number(row.notification_sequence) + 1) : Number(row.notification_sequence);
+        const shouldSend = enqueueNotifications && (row === undefined || row.state === "closed" || row.last_sent_at === null || row.last_sent_at < new Date(Date.now() - 30 * 60_000));
+        const notificationSequence = shouldSend
+          ? (row === undefined || row.state === "closed" ? 1 : Number(row.notification_sequence) + 1)
+          : Number(row?.notification_sequence ?? 0);
         await client.query(
           `INSERT INTO operational_alert_state (alert_key, severity, state, last_sent_at, episode, notification_sequence)
            VALUES ($1, $2, 'open', CASE WHEN $3 THEN now() ELSE NULL END, $4, $5)
@@ -474,16 +487,23 @@ export class ReportRepository {
       }
       const open = await client.query<{ alert_key: string; episode: string; notification_sequence: string }>("SELECT alert_key, episode::text, notification_sequence::text FROM operational_alert_state WHERE state = 'open' FOR UPDATE");
       for (const row of open.rows) if (!seen.has(row.alert_key)) {
-        const notificationSequence = Number(row.notification_sequence) + 1;
-        await client.query(
-          "UPDATE operational_alert_state SET state = 'closed', recovery_sent_at = now(), notification_sequence = $2, updated_at = now() WHERE alert_key = $1",
-          [row.alert_key, notificationSequence]
-        );
-        await client.query(
-          `INSERT INTO operations_alert_outbox (alert_key, episode, notification_sequence, kind, payload)
-           VALUES ($1, $2, $3, 'recovery', jsonb_build_object('alertKey', $1::text, 'status', 'recovered'))
-           ON CONFLICT (alert_key, episode, notification_sequence) DO NOTHING`, [row.alert_key, Number(row.episode), notificationSequence]
-        );
+        if (enqueueNotifications) {
+          const notificationSequence = Number(row.notification_sequence) + 1;
+          await client.query(
+            "UPDATE operational_alert_state SET state = 'closed', recovery_sent_at = now(), notification_sequence = $2, updated_at = now() WHERE alert_key = $1",
+            [row.alert_key, notificationSequence]
+          );
+          await client.query(
+            `INSERT INTO operations_alert_outbox (alert_key, episode, notification_sequence, kind, payload)
+             VALUES ($1, $2, $3, 'recovery', jsonb_build_object('alertKey', $1::text, 'status', 'recovered'))
+             ON CONFLICT (alert_key, episode, notification_sequence) DO NOTHING`, [row.alert_key, Number(row.episode), notificationSequence]
+          );
+        } else {
+          await client.query(
+            "UPDATE operational_alert_state SET state = 'closed', updated_at = now() WHERE alert_key = $1",
+            [row.alert_key]
+          );
+        }
       }
       await client.query("COMMIT");
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }

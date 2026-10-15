@@ -1,5 +1,12 @@
 import type { ReportDetail } from "@nreport/contracts";
+import type * as ObservabilityPackage from "@nreport/observability";
 import { describe, expect, it, vi } from "vitest";
+
+const captureLifecycleFailureMock = vi.hoisted(() => vi.fn());
+vi.mock("@nreport/observability", async (importOriginal) => {
+  const actual = await importOriginal<typeof ObservabilityPackage>();
+  return { ...actual, captureLifecycleFailure: captureLifecycleFailureMock };
+});
 
 import { AccountNotificationWorker, reportRecoveryDelaySeconds } from "../src/account-notifier.js";
 import { targetContextFromReport, visibleStatusHash } from "../src/report-ui.js";
@@ -28,6 +35,7 @@ function harness(hash: string | null = null, eventId = "event", dmMessageId: str
   const database = {
     claimNotification: vi.fn().mockResolvedValue({ event_id: eventId, event_type: "report_failed", report_id: report.reportId,
       trace_id: "33333333-3333-4333-8333-333333333333",
+      lifecycle_attempt: report.lifecycleAttempt,
       attempts: 1,
       discord_user_id: "user", encrypted_api_key: "unused", encrypted_target_context: null,
       dm_message_id: dmMessageId, visible_payload_hash: hash }),
@@ -106,11 +114,13 @@ describe("notification delivery against an existing report card", () => {
       traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1,
       stage: "notification", outcome: "claimed", durationMs: 0
     });
-    expect(h.logger).toHaveBeenCalledWith("account_notification_completed", {
+    const completedLog = h.logger.mock.calls.find(([event]) => event === "account_notification_completed");
+    expect(completedLog?.[1]).toMatchObject({
       reportId: report.reportId,
       traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1,
-      stage: "notification", outcome: "completed", durationMs: expect.any(Number) as number
+      stage: "notification", outcome: "completed"
     });
+    expect(typeof completedLog?.[1]?.durationMs).toBe("number");
     const serializedLogs = JSON.stringify(h.logger.mock.calls);
     expect(serializedLogs).not.toContain("original-card");
     expect(serializedLogs).not.toContain("user");
@@ -126,19 +136,65 @@ describe("notification delivery against an existing report card", () => {
 
   it.each(["edit", "reply"] as const)("keeps a rejected Discord %s retryable", async (operation) => {
     const h = harness();
-    h.message[operation].mockRejectedValue(new Error("Discord unavailable canary-secret"));
+    h.message[operation].mockRejectedValue(new Error("Discord unavailable: https://user:password@discord.example.test/api"));
     await h.worker.processOne();
     expect(h.database.retryNotification).toHaveBeenCalledWith("event", "unexpected");
-    expect(h.logger).toHaveBeenCalledWith("account_notification_retry", {
+    const retryLog = h.logger.mock.calls.find(([event]) => event === "account_notification_retry");
+    expect(retryLog?.[1]).toMatchObject({
       reportId: report.reportId,
       traceId: "33333333-3333-4333-8333-333333333333", eventType: "report_failed", attempts: 1,
-      stage: "notification", outcome: "retry", durationMs: expect.any(Number) as number,
+      stage: "notification", outcome: "retry",
       deliveryStage: operation === "edit" ? "edit_card" : "reply",
       errorName: "Error", failureCategory: "unexpected"
-    }, "warn");
-    expect(JSON.stringify(h.logger.mock.calls)).not.toContain("canary-secret");
+    });
+    expect(typeof retryLog?.[1]?.durationMs).toBe("number");
+    expect(retryLog?.[2]).toBe("warn");
+    expect(JSON.stringify(h.logger.mock.calls)).not.toContain("user:password@discord.example.test");
+    expect(JSON.stringify(h.logger.mock.calls)).toContain("[REDACTED_URL]");
     expect(h.database.completeNotification).not.toHaveBeenCalled();
     if (operation === "edit") expect(h.message.reply).not.toHaveBeenCalled();
+  });
+
+  it("captures the original actionable failure once with report, trace, attempt, stage, and status context", async () => {
+    captureLifecycleFailureMock.mockClear();
+    const h = harness();
+    const error = Object.assign(new Error("Discord REST request failed"), {
+      name: "DiscordAPIError", code: 50001, status: 503,
+      cause: Object.assign(new Error("gateway unavailable"), { code: "ECONNRESET" })
+    });
+    h.message.edit.mockRejectedValue(error);
+
+    await h.worker.processOne();
+    await h.worker.processOne();
+
+    expect(captureLifecycleFailureMock).toHaveBeenCalledOnce();
+    expect(captureLifecycleFailureMock).toHaveBeenCalledWith(error, expect.objectContaining({
+      service: "bot",
+      operation: "lifecycle_notification_delivery",
+      reportId: report.reportId,
+      traceId: report.traceId,
+      eventType: "report_failed",
+      lifecycleAttempt: 1,
+      deliveryStage: "edit_card",
+      attempt: 1,
+      outcome: "retrying",
+      discordErrorCode: 50001,
+      discordHttpStatus: 503
+    }));
+  });
+
+  it("does not send expected card-claim contention to Sentry", async () => {
+    captureLifecycleFailureMock.mockClear();
+    const h = harness(null, "event", null);
+    h.dm.messages.fetch.mockRejectedValue({ code: 10008 });
+    h.database.claimDmCard.mockResolvedValue(false);
+
+    await h.worker.processOne();
+
+    expect(captureLifecycleFailureMock).not.toHaveBeenCalled();
+    expect(h.logger).toHaveBeenCalledWith("account_notification_retry", expect.objectContaining({
+      failureCategory: "card_claim_busy", outcome: "retry"
+    }), "warn");
   });
 
   it("stops a Discord validation failure and records safe send-card diagnostics", async () => {

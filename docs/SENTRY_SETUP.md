@@ -119,6 +119,13 @@ source snapshot as release `nreport-20261014-da35334c6b87`:
   reached `SUCCESS`; readiness requires its database and Discord gateway. Startup logs confirm
   Discord readiness and completed account reconciliation.
 
+A read-only production `GET /openapi.json` was read back from Sentry with its HTTP server and
+Fastify handler spans in
+[trace dcdfa4e9d9e84853a8c50f8dd9100fd2](https://civility.sentry.io/explore/traces/trace/dcdfa4e9d9e84853a8c50f8dd9100fd2).
+Health-check spans were observed as server-filtered traffic. This verifies deployed API telemetry;
+bot error capture was verified through its real startup path in the separate verification
+environment rather than causing a production crash.
+
 The deployment archive included only application source, workspace manifests/configuration, and
 the guarded JavaScript SDK patcher. It excluded real environment files, protected Python
 diagnostics, local tooling, and unrelated working-tree changes. No real Discord report was

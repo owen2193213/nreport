@@ -79,6 +79,21 @@ The redundant Discord operations-warning webhook is retired. The API continues c
 health and current alert state for administrator diagnostics, without enqueueing warning-webhook
 deliveries. The signed private report lifecycle webhook is retained for prompt status-card updates.
 
+The later submission review distinguishes verification mail from report confirmation. A
+`report_submitted` response waits for confirmation; `discord:received` acknowledges the later
+report-confirmation email. The review removed the inconsistent 30-second manual-retry cooldown,
+fixed pending-email batches that could regress a decision when a delayed receipt arrived, and
+made worker outcomes respect lost database job ownership. Session snapshots now export cookies
+after fingerprint setup. Offline guild payload and single-attempt final-submission tests cover
+the server-report contract; these checks alone do not establish why an individual receipt is missing.
+
+For a missing confirmation, use the authenticated administrator health projection at
+`/v1/admin/discord/dsa/diagnostics?reportId=<UUID>`. Check the stored external report ID and job
+history, then compare inbound confirmation groups and their external IDs. The projection excludes
+mail, report contents, credentials, and detailed diagnostic ledger data. A timeout cannot by itself
+prove whether Discord received the report, whether mail was delayed, or whether an unsupported
+mail template was ignored. Do not resend an uncertain final submission to diagnose it.
+
 ## Verification and rollout
 
 Run the repository's required lint, workspace typecheck, tests, build, and high-severity audit.
@@ -125,6 +140,21 @@ Fastify handler spans in
 Health-check spans were observed as server-filtered traffic. This verifies deployed API telemetry;
 bot error capture was verified through its real startup path in the separate verification
 environment rather than causing a production crash.
+
+The confirmation/retry review was subsequently deployed as
+`nreport-confirmation-20261014-16acbb1afb0d`. API deployment
+`7c55ae4d-018c-424a-b8e7-b0ce4e4d6aa7` and bot deployment
+`b2c06b4f-4621-4b0d-bfcd-474b036aa686` both reached `SUCCESS`; the API health endpoint returned
+`status=ok`. See
+[`audits/2026-10-14-submission-review.md`](audits/2026-10-14-submission-review.md) for the findings
+and the limits of offline submission checks.
+
+A final API-only diagnostics correction preserves `submitted` as a failure stage. Release
+`nreport-confirmation-20261014-78525a306af3`, deployment
+`dffcc3ba-f551-4706-9338-d9edc7dd5a2a`, reached `SUCCESS`; API health returned `status=ok` and the
+read-only diagnostic projection returned the corrected stage. The bot remains on the confirmation
+release above. Revalidation passed root lint, workspace typecheck, build, 466 tests (four database
+integration tests skipped), and the high-severity audit with zero vulnerabilities.
 
 The deployment archive included only application source, workspace manifests/configuration, and
 the guarded JavaScript SDK patcher. It excluded real environment files, protected Python

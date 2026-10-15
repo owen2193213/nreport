@@ -256,8 +256,9 @@ export class LifecycleRunner {
         } catch (retryError) {
           if (isOwnershipLost(retryError)) throw retryError;
           if (discordResponseCode(retryError) === "521002") {
-            await this.store.markReviewRequested(job, report.discord_report_id);
-            return completedResult("confirmed");
+            return (await this.store.markReviewRequested(job, report.discord_report_id))
+              ? completedResult("confirmed")
+              : ownershipLostResult();
           }
           throw retryError;
         }
@@ -266,14 +267,16 @@ export class LifecycleRunner {
         await this.store.failReview(job, "request_failed", "review_report_id_mismatch", "Discord returned a different report ID for the appeal.");
         return failedResult("review_report_id_mismatch", new Error("Discord returned a different report ID for the appeal."));
       }
-      await this.store.markReviewRequested(job, result.report_id);
-      return completedResult("confirmed");
+      return (await this.store.markReviewRequested(job, result.report_id))
+        ? completedResult("confirmed")
+        : ownershipLostResult();
     } catch (error) {
       if (isOwnershipLost(error)) throw error;
       const responseCode = discordResponseCode(error);
       if (responseCode === "521002") {
-        await this.store.markReviewRequested(job, report.discord_report_id);
-        return completedResult("confirmed");
+        return (await this.store.markReviewRequested(job, report.discord_report_id))
+          ? completedResult("confirmed")
+          : ownershipLostResult();
       } else if (responseCode === "521004") {
         await this.store.failReview(job, "ineligible", "discord_review_ineligible", "Discord says this report is ineligible for appeal.");
         return failedResult("discord_review_ineligible", error);
@@ -301,8 +304,9 @@ export class LifecycleRunner {
       if (!(await this.store.setStatus(job, "requesting_verification"))) return ownershipLostResult();
       await ownership.wait(client.sendEmailCode(transportFlow(report.flow), report.reporter_email));
       const session = await ownership.wait(client.snapshotSession());
-      await this.store.saveAwaitingVerification(job, this.codecs.encrypt(session));
-      return { outcome: "waiting_for_email", submissionCertainty: "not_started" };
+      return (await this.store.saveAwaitingVerification(job, this.codecs.encrypt(session)))
+        ? { outcome: "waiting_for_email", submissionCertainty: "not_started" }
+        : ownershipLostResult();
     } catch (error) {
       if (isOwnershipLost(error)) throw error;
       return this.handleBeforeBoundaryFailure(job, error);
@@ -356,8 +360,9 @@ export class LifecycleRunner {
         return ownershipLostResult();
       }
       const result = await ownership.wait(client.submitPrepared(payload as never));
-      await this.store.markSubmitted(job, result.report_id);
-      return completedResult("confirmed");
+      return (await this.store.markSubmitted(job, result.report_id))
+        ? completedResult("confirmed")
+        : ownershipLostResult();
     } catch (error) {
       if (isOwnershipLost(error)) throw error;
       if (crossedBoundary) {

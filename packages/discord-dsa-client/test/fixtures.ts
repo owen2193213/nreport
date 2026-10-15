@@ -103,6 +103,72 @@ export function createMessageMenu(): ReportMenu {
   };
 }
 
+export function createGuildMenu(): ReportMenu {
+  const nodes: Record<string, MenuNode> = {
+    "67": node(67, {
+      key: "URF_GUILD_WELCOME",
+      button: { type: "next", target: 66 },
+      elements: [
+        element("reporter_legal_name", "free_text", { character_limit: 1020 }),
+        element("reporter_country", "dropdown", countryData),
+        element("reported_guild_id_or_invite_code", "free_text", {
+          character_limit: 100
+        })
+      ]
+    }),
+    "66": node(66, {
+      key: "URF_GUILD_SELECT_ELEMENTS",
+      button: { type: "next", target: 65 },
+      elements: [
+        element("guild_select", "checkbox", [
+          ["name", "Server Name"],
+          ["icon", "Icon"],
+          ["banner", "Banner"],
+          ["invite_splash", "Invite Splash"],
+          ["discovery_splash", "Discovery Splash"],
+          ["welcome_screen_description", "Welcome Screen Description"],
+          ["channel_names", "Channel Names"],
+          ["other", "Other"]
+        ])
+      ]
+    }),
+    "65": node(65, {
+      key: "URF_GUILD_SELECT_REPORT_TYPE",
+      children: [["Cybercrime", 155]]
+    }),
+    "155": node(155, {
+      key: "URF_GUILD_CYBERCRIME",
+      report_type: "sub_other_cybercrime",
+      button: { type: "next", target: 78 },
+      elements: [element("dsa_free_text", "free_text", { character_limit: 512 }, false)]
+    }),
+    "78": node(78, {
+      key: "URF_CONFIRMATION_SELECT",
+      button: { type: "next", target: 77 },
+      elements: [
+        element("confirmation_select", "checkbox", [["validation", "I confirm"]])
+      ]
+    }),
+    "77": node(77, {
+      key: "URF_SUBMIT",
+      button: { type: "submit", target: null }
+    }),
+    "70": node(70, { key: "URF_SUCCESS" }),
+    "74": node(74, { key: "FAIL" })
+  };
+
+  return {
+    name: "guild_urf",
+    variant: "1",
+    version: "1.0",
+    postback_url: "/api/reporting/guild_urf",
+    root_node_id: 67,
+    success_node_id: 70,
+    fail_node_id: 74,
+    nodes
+  };
+}
+
 export function createMinimalMenu(flow: ReportFlow): ReportMenu {
   const rootId = flow === "user_urf" ? 63 : flow === "message_urf" ? 64 : 67;
   const categoryId = flow === "guild_urf" ? 155 : 150;

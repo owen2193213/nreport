@@ -62,14 +62,16 @@ concatenated into that code block.
 The card deliberately groups fast internal events into stable visible states while keeping the
 meaningful boundaries explicit: **Queued for Discord submission**, **Preparing report**,
 **Requesting verification from Discord**, **Waiting for Discord verification email**,
-**Verification email received**, **Verifying with Discord**, and **Submitting report to Discord**.
-Email receipt is an acknowledgement of mail delivery; only the successful submission boundary
-means Discord accepted the report. The receipt milestone remains in history after the current
-state advances, so a fast transition cannot hide it. Queued cards show the API's current queue length. History uses
+**Verification email received**, **Checking verification code**, **Submitting report to Discord**,
+**Awaiting confirmation**, and **Confirmation received**. The verification email supplies the code
+needed to submit; the later report-confirmation email is the acknowledgement that updates
+`discordStatus=received`. A successful submission response starts the confirmation wait. Both mail
+milestones remain in history after the current state advances, so a fast transition cannot hide
+them. Queued cards show the API's current queue length. History uses
 relative Discord timestamps and concise chronological actions. When applicable, report denial and
 appeal submission are collapsed into **Report denied; appeal submitted**. Routine nonterminal updates wait two seconds, retain only the latest pending state,
 are spaced at least five seconds apart, and skip identical visible-payload hashes. Verification
-email receipt and successful submission are immediate milestones, retained through coalescing and
+email receipt, submission, and Discord report confirmation are immediate milestones, retained through coalescing and
 exempt from edit spacing, as are terminal updates. Updates still serialize per report and render
 the latest authoritative report. If Discord returns error `50007`,
 the bot warns in the ephemeral interaction response that it could not DM the user; the API report

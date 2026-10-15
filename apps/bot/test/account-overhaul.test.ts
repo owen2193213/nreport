@@ -447,7 +447,7 @@ describe("local account mapping", () => {
     expect(insert?.[1]).toContain("33333333-3333-4333-8333-333333333333");
   });
 
-  it("makes verification receipt and confirmed submission immediately eligible for status-card updates", async () => {
+  it("makes submission and Discord receipt events immediately eligible for status-card updates", async () => {
     const client = {
       query: vi.fn(async (sql: string) => {
         if (sql.includes("FROM api_connections")) return { rows: [{ discord_user_id: "discord-1" }], rowCount: 1 };
@@ -460,7 +460,9 @@ describe("local account mapping", () => {
     const poolQuery = vi.fn(async (_sql: string) => ({ rows: [], rowCount: 0 }));
     const database = new AccountBotDatabase({ query: poolQuery, connect: async () => client } as never);
 
-    for (const [eventId, type] of [["11", "verification_received"], ["12", "report_submitted"]] as const) {
+    for (const [eventId, type] of [
+      ["11", "verification_received"], ["12", "report_submitted"], ["13", "discord:received"]
+    ] as const) {
       await database.ingestEvent({
         eventId, accountId: "account-1", reportId: "report-1",
         traceId: "33333333-3333-4333-8333-333333333333",
@@ -470,15 +472,17 @@ describe("local account mapping", () => {
     await database.claimNotification();
 
     const inserts = client.query.mock.calls.filter(([sql]) => String(sql).includes("INSERT INTO lifecycle_inbox"));
-    const claim = String(poolQuery.mock.calls[2]?.[0]);
-    expect(inserts).toHaveLength(2);
+    const claim = String(poolQuery.mock.calls[3]?.[0]);
+    expect(inserts).toHaveLength(3);
     for (const [sql] of inserts) {
       expect(String(sql)).toContain("'verification_received'");
       expect(String(sql)).toContain("'report_submitted'");
+      expect(String(sql)).toContain("'discord:received'");
       expect(String(sql)).toContain("THEN now() ELSE now() + interval '2 seconds'");
     }
     expect(claim).toContain("'verification_received'");
     expect(claim).toContain("'report_submitted'");
+    expect(claim).toContain("'discord:received'");
   });
 
   it("does not coalesce report-denied decisions behind later status events", async () => {

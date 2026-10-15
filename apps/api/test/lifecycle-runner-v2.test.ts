@@ -116,7 +116,7 @@ describe("LifecycleRunner irreversible boundary", () => {
       getLifecycleReport: vi.fn(async () => report()),
       setStatus: vi.fn(async () => { calls.push("verifying"); return true; }),
       beginSubmission: vi.fn(async () => { calls.push("boundary"); return true; }),
-      markSubmitted: vi.fn(async () => { calls.push("persisted"); }),
+      markSubmitted: vi.fn(() => { calls.push("persisted"); return Promise.resolve(true); }),
       completeLifecycleJob: vi.fn(),
       failBeforeSubmission: vi.fn(),
       failAfterSubmission: vi.fn(),
@@ -138,6 +138,49 @@ describe("LifecycleRunner irreversible boundary", () => {
     expect(calls).toEqual(["verifying", "boundary", "discord-submit", "persisted"]);
     expect(store.markSubmitted).toHaveBeenCalledWith(expect.objectContaining({ id: "job-1", report_id: "report-1" }), "discord-1");
     expect(store.completeLifecycleJob).not.toHaveBeenCalled();
+  });
+
+  it("does not report a confirmed submission when persistence lost job ownership", async () => {
+    const outcomes: unknown[] = [];
+    const store = {
+      claimLifecycleJob: vi.fn(async () => ({ id: "job-1", report_id: "report-1", kind: "verify_submit", payload: { code: "123456" }, attempts: 1, max_attempts: 1 })),
+      getLifecycleReport: vi.fn(async () => report()), setStatus: vi.fn(async () => true),
+      beginSubmission: vi.fn(async () => true), markSubmitted: vi.fn(async () => false),
+      failAfterSubmission: vi.fn(), retryLifecycleJob: vi.fn()
+    };
+    const client = {
+      verifyEmailCode: vi.fn(async () => "token"), getMenu: vi.fn(async () => ({})),
+      prepareSubmission: vi.fn(() => ({})), submitPrepared: vi.fn(async () => ({ report_id: "discord-1" })),
+      close: vi.fn()
+    };
+    const runner = new LifecycleRunner(store as never, {} as never, () => client as never,
+      { decrypt: (value: string) => value }, undefined, (outcome) => { outcomes.push(outcome); });
+
+    await runner.processOne();
+
+    expect(outcomes.at(-1)).toMatchObject({ component: "job", outcome: "ownership_lost" });
+    expect(store.failAfterSubmission).not.toHaveBeenCalled();
+    expect(store.retryLifecycleJob).not.toHaveBeenCalled();
+    expect(client.submitPrepared).toHaveBeenCalledOnce();
+  });
+
+  it("does not report waiting for email when session persistence lost job ownership", async () => {
+    const outcomes: unknown[] = [];
+    const store = {
+      claimLifecycleJob: vi.fn(async () => ({ id: "job-code", report_id: "report-1", kind: "request_code", payload: {}, attempts: 1, max_attempts: 3 })),
+      getLifecycleReport: vi.fn(async () => report()), setStatus: vi.fn(async () => true),
+      saveAwaitingVerification: vi.fn(async () => false)
+    };
+    const client = {
+      sendEmailCode: vi.fn(async () => undefined), snapshotSession: vi.fn(async () => ({})), close: vi.fn()
+    };
+    const runner = new LifecycleRunner(store as never, {} as never, () => client as never,
+      { encrypt: () => "encrypted-session" }, undefined, (outcome) => { outcomes.push(outcome); });
+
+    await runner.processOne();
+
+    expect(outcomes.at(-1)).toMatchObject({ component: "job", outcome: "ownership_lost" });
+    expect(client.sendEmailCode).toHaveBeenCalledOnce();
   });
 
   it("retains consumed credit and marks an ambiguous outcome after the boundary", async () => {
@@ -277,7 +320,7 @@ describe("LifecycleRunner automatic appeal", () => {
       })),
       getLifecycleReport: vi.fn(async () => report()),
       beginReviewSubmission: vi.fn(async () => true),
-      markReviewRequested: vi.fn(),
+      markReviewRequested: vi.fn().mockResolvedValue(true),
       completeLifecycleJob: vi.fn(),
       retryLifecycleJob: vi.fn(),
       failReview: vi.fn()
@@ -306,6 +349,27 @@ describe("LifecycleRunner automatic appeal", () => {
     expect(client.submitReportReviewToken).toHaveBeenCalledTimes(2);
     expect(store.markReviewRequested).toHaveBeenCalledWith(expect.objectContaining({ id: "job-review", report_id: "report-1" }), "discord-1");
     expect(store.failReview).not.toHaveBeenCalled();
+  });
+
+  it("does not report a confirmed appeal when persistence lost job ownership", async () => {
+    const outcomes: unknown[] = [];
+    const store = reviewStore();
+    store.markReviewRequested.mockResolvedValue(false);
+    const client = {
+      bootstrapFingerprint: vi.fn(),
+      resolveReportReviewToken: vi.fn(async () => "review-token"),
+      submitReportReviewToken: vi.fn(async () => ({ report_id: "discord-1" })),
+      close: vi.fn()
+    };
+    const runner = new LifecycleRunner(store as never, {} as never, () => client as never,
+      { decrypt: () => "https://discord.com/report-review#token=private" }, undefined,
+      (outcome) => { outcomes.push(outcome); });
+
+    await runner.processOne();
+
+    expect(outcomes.at(-1)).toMatchObject({ component: "job", outcome: "ownership_lost" });
+    expect(store.failReview).not.toHaveBeenCalled();
+    expect(client.submitReportReviewToken).toHaveBeenCalledOnce();
   });
 
   it("records ineligibility after Discord repeats the explicit response", async () => {
@@ -387,12 +451,12 @@ describe("LifecycleRunner background scheduling", () => {
       claimLifecycleJob: vi.fn(async () => jobs.shift() ?? null),
       getLifecycleReport: vi.fn(async (reportId: string) => ({ ...report(), id: reportId })),
       beginReviewSubmission: vi.fn(async () => true),
-      markReviewRequested: vi.fn(),
+      markReviewRequested: vi.fn().mockResolvedValue(true),
       completeLifecycleJob: vi.fn(),
       retryLifecycleJob: vi.fn(),
       failReview: vi.fn(),
       setStatus: vi.fn(async () => true),
-      saveAwaitingVerification: vi.fn()
+      saveAwaitingVerification: vi.fn().mockResolvedValue(true)
     };
     const ineligible = new DiscordDsaHttpError("ineligible", 400, { responseSummary: "code 521004; rejected" });
     const runner = new LifecycleRunner(

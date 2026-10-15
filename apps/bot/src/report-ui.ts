@@ -43,7 +43,7 @@ export interface TargetDisplayContext {
 }
 
 export type ReportViewKey =
-  | "preparing" | "verification_received" | "verifying" | "submitting" | "submitted" | "failed"
+  | "preparing" | "verification_received" | "verifying" | "submitting" | "awaiting_confirmation" | "confirmation_received" | "failed"
   | "report_denied" | "appeal_denied" | "report_accepted" | "appeal_accepted"
   | "report_timeout" | "appeal_timeout" | "appeal_failed" | "ineligible";
 
@@ -136,8 +136,22 @@ export function classifyReportView(report: ReportDetail): ReportViewState {
     }
     return state("report_denied", "Report denied", "Discord closed the original report without action. The appeal has not been submitted.", "Appeal not submitted", false);
   }
+  if (hasDiscordReceipt(report)) return state(
+    "confirmation_received",
+    "Confirmation received",
+    "Discord's report confirmation email was received. The report is awaiting review.",
+    "Received",
+    false
+  );
   if (report.failure?.code === "discord_receipt_timeout") return state("report_timeout", "Report unconfirmed", "Discord did not confirm the report within 2 minutes. The final outcome is unknown, so the report will not be submitted again automatically.", "No retry", true);
   if (report.status === "failed") return state("failed", "Report failed", report.failure?.message ?? "The report stopped before Discord confirmed submission.", "Needs attention", true);
+  if (hasReportSubmitted(report)) return state(
+    "awaiting_confirmation",
+    "Awaiting confirmation",
+    "The report submission was sent to Discord. Waiting for Discord's confirmation email before marking receipt confirmed.",
+    "Awaiting confirmation",
+    false
+  );
   if (report.status === "queued") return state("preparing", "Queued for Discord submission", "The report is waiting for processing.", "Queued", false);
   if (PREPARING.has(report.status)) return state("preparing", "Preparing report", "Reviewing the evidence and writing the report.", "In progress", false);
   if (report.status === "requesting_verification") return state("submitting", "Requesting verification from Discord", "Starting Discord's verification step.", "In progress", false);
@@ -156,14 +170,20 @@ export function classifyReportView(report: ReportDetail): ReportViewState {
     "In progress",
     false
   );
-  if (report.status === "submitting") return state(
+  if (report.status === "submitting" && !hasReportSubmitted(report)) return state(
     "submitting",
     "Verification confirmed; submitting report",
     "Discord accepted the verification code and submission has started. Discord has not confirmed receipt yet.",
     "In progress",
     false
   );
-  return state("submitted", "Report submitted", "Discord received the report. Waiting for its decision.", "Submitted", false);
+  return state(
+    "awaiting_confirmation",
+    "Awaiting confirmation",
+    "The report submission was sent to Discord. Waiting for Discord's confirmation email before marking receipt confirmed.",
+    "Awaiting confirmation",
+    false
+  );
 }
 
 function state(key: ReportViewKey, title: string, description: string, mark: string, terminal: boolean): ReportViewState {
@@ -227,7 +247,7 @@ export function buildStatusCard(report: ReportDetail, context: TargetDisplayCont
     ].filter(Boolean).join("\n")));
   }
   if (report.finalText !== null) {
-    const heading = reportSubmissionConfirmed(report) ? "### Report sent to Discord" : "### Prepared report";
+    const heading = hasTransportSubmission(report) ? "### Report sent to Discord" : "### Prepared report";
     container.addSeparatorComponents(separator()).addTextDisplayComponents(new TextDisplayBuilder().setContent(`${heading}\n${reportCodeBlock(report.finalText)}`));
   }
   const history = milestoneHistory(report);
@@ -373,19 +393,17 @@ function milestoneHistory(report: ReportDetail): string[] {
   const milestones: Array<{ occurredAt: string; label: string }> = [
     { occurredAt: report.createdAt, label: "Added to submission queue" }
   ];
-  const currentAttempt = (event: ReportDetail["timeline"][number]): boolean =>
-    event.lifecycleAttempt === null || event.lifecycleAttempt === report.lifecycleAttempt;
-  const verificationReceived = lastTimelineEvent(
-    report.timeline,
-    (event) => event.type === "verification_received" && currentAttempt(event)
-  );
+  const verificationReceived = currentAttemptEvent(report, "verification_received");
   if (verificationReceived) {
     milestones.push({ occurredAt: verificationReceived.occurredAt, label: "Verification email received" });
   }
 
-  const submitted = lastTimelineEvent(report.timeline, (event) => event.type === "report_submitted" && currentAttempt(event));
+  const submitted = currentAttemptEvent(report, "report_submitted");
   if (submitted) milestones.push({ occurredAt: submitted.occurredAt, label: "Report submitted" });
   else if (report.status === "submitted" || report.discordStatus !== null) milestones.push({ occurredAt: report.updatedAt, label: "Report submitted" });
+
+  const confirmationReceived = currentAttemptEvent(report, "discord:received");
+  if (confirmationReceived) milestones.push({ occurredAt: confirmationReceived.occurredAt, label: "Confirmation received" });
 
   const denied = report.timeline.find((event) => event.type === "discord:closed_no_action");
   const appealSubmitted = report.timeline.find((event) => event.type === "review_requested");
@@ -415,9 +433,22 @@ function milestoneHistory(report: ReportDetail): string[] {
   return milestones.map(({ occurredAt, label }) => `- ${discordHistoryTime(occurredAt)} ${label}`);
 }
 
-function reportSubmissionConfirmed(report: ReportDetail): boolean {
-  return report.status === "submitted" || report.discordStatus !== null || report.timeline.some(
-    (event) => event.type === "report_submitted" &&
+function hasTransportSubmission(report: ReportDetail): boolean {
+  return report.status === "submitted" || report.discordStatus !== null || hasReportSubmitted(report);
+}
+
+function hasReportSubmitted(report: ReportDetail): boolean {
+  return currentAttemptEvent(report, "report_submitted") !== undefined;
+}
+
+function hasDiscordReceipt(report: ReportDetail): boolean {
+  return report.discordStatus === "received" || currentAttemptEvent(report, "discord:received") !== undefined;
+}
+
+function currentAttemptEvent(report: ReportDetail, type: string): ReportDetail["timeline"][number] | undefined {
+  return lastTimelineEvent(
+    report.timeline,
+    (event) => event.type === type &&
       (event.lifecycleAttempt === null || event.lifecycleAttempt === report.lifecycleAttempt)
   );
 }

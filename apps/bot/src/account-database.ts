@@ -7,6 +7,7 @@ import { Pool, type QueryResultRow } from "pg";
 const IMMEDIATE_LIFECYCLE_EVENT_TYPES = [
   "verification_received",
   "report_submitted",
+  "discord:received",
   "report_failed",
   "report_receipt_timeout",
   "review_confirmation_timeout",

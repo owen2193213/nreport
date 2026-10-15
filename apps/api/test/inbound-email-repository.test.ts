@@ -71,6 +71,41 @@ describe("account report email correlation", () => {
     );
   });
 
+  it("turns a Report Received email into an immediate Discord receipt event, separate from verification mail", async () => {
+    const client = {
+      query: vi.fn(async (sql: string, values?: unknown[]) => {
+        if (sql.includes("WHERE reporter_email = $1") && sql.includes("FOR UPDATE")) {
+          return { rows: [{
+            id: "report-1", account_id: "account-1", trace_id: "33333333-3333-4333-8333-333333333333",
+            lifecycle_attempt: 1, status: "submitted", reporter_email: "alias@example.test",
+            discord_report_id: "1548921252872462416", discord_status: null,
+            review_status: null, error_code: null, review_submission_started_at: null
+          }], rowCount: 1 };
+        }
+        if (sql.includes("INSERT INTO account_inbound_messages")) return { rows: [{ message_id: "mail-received" }], rowCount: 1 };
+        if (sql.includes("SET discord_status = $2")) {
+          expect(values).toEqual(["report-1", "received"]);
+          return { rows: [], rowCount: 1 };
+        }
+        if (sql.includes("INSERT INTO account_report_events")) return { rows: [{ id: "1" }], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+      }),
+      release: vi.fn()
+    };
+    const repository = new ReportRepository({ connect: async () => client } as never);
+
+    await expect(repository.registerReportUpdateEmail({
+      messageId: "mail-received", recipient: "alias@example.test",
+      discordReportId: "1548921252872462416", discordStatus: "received"
+    })).resolves.toMatchObject({ status: "accepted", reportId: "report-1" });
+
+    const events = client.query.mock.calls
+      .filter(([sql]) => String(sql).includes("INSERT INTO account_report_events"))
+      .flatMap(([, values]) => values ?? []);
+    expect(events).toContain("discord:received");
+    expect(events).not.toContain("verification_received");
+  });
+
   it("adopts a report stuck as ambiguous_submission_state when a report-update email proves the submission reached Discord", async () => {
     const client = {
       query: vi.fn(async (sql: string, values?: unknown[]) => {

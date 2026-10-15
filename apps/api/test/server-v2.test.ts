@@ -32,6 +32,51 @@ const principal = {
 };
 
 describe("v2 account-owned server", () => {
+  it("allows an administrator to inspect a validated report diagnostic projection", async () => {
+    const reportId = "22222222-2222-4222-8222-222222222222";
+    const operationalDiagnostics = vi.fn(async () => ({ reports: 1, report: { id: reportId } }));
+    const server = await buildV2Server(config, {
+      healthcheck: vi.fn(), accounts: { authenticate: vi.fn() },
+      reports: { operationalDiagnostics }
+    } as never);
+    try {
+      const response = await server.inject({
+        method: "GET", url: `/v1/admin/discord/dsa/diagnostics?reportId=${reportId}`,
+        headers: { authorization: "Bearer admin-key" }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(operationalDiagnostics).toHaveBeenCalledWith(reportId);
+      expect(response.json().report.id).toBe(reportId);
+    } finally { await server.close(); }
+  });
+
+  it("requires administrator authentication and a valid UUID before a report diagnostic read", async () => {
+    const operationalDiagnostics = vi.fn(async () => ({ reports: 0 }));
+    const server = await buildV2Server(config, {
+      healthcheck: vi.fn(), accounts: { authenticate: vi.fn() },
+      reports: { operationalDiagnostics }
+    } as never);
+    try {
+      const unauthenticated = await server.inject({
+        method: "GET", url: "/v1/admin/discord/dsa/diagnostics?reportId=22222222-2222-4222-8222-222222222222"
+      });
+      const invalid = await server.inject({
+        method: "GET", url: "/v1/admin/discord/dsa/diagnostics?reportId=not-a-report-id",
+        headers: { authorization: "Bearer admin-key" }
+      });
+      expect(unauthenticated.statusCode).toBe(401);
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.json().error.code).toBe("invalid_report_id");
+      expect(operationalDiagnostics).not.toHaveBeenCalled();
+      const aggregate = await server.inject({
+        method: "GET", url: "/v1/admin/discord/dsa/diagnostics",
+        headers: { authorization: "Bearer admin-key" }
+      });
+      expect(aggregate.statusCode).toBe(200);
+      expect(operationalDiagnostics).toHaveBeenCalledWith();
+    } finally { await server.close(); }
+  });
+
   it("accepts a signed metadata-only Worker forwarding failure", async () => {
     const recipient = "reporter.alias.23456789abcdefgh@reports.example.test";
     const messageId = "<worker-diagnostic@example.test>";

@@ -116,6 +116,7 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(emailReceived.title).toBe("Verification email received");
     expect(emailReceived.description).toContain("not confirmed yet");
     expect(emailReceived.terminal).toBe(false);
+    expect(emailReceived.title).not.toBe("Confirmation received");
     const verifying = classifyReportView(report({ status: "verifying", discordStatus: null }));
     expect(verifying.key).toBe("verifying");
     expect(verifying.title).toBe("Checking verification code");
@@ -199,15 +200,43 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(visibleStatusHash(advanced, context)).not.toBe(visibleStatusHash(current, context));
   });
 
-  it("uses the report_submitted timeline event as confirmation instead of inferring it from an intermediate state", () => {
+  it("uses report_submitted as an awaiting-confirmation milestone even if the status snapshot lags", () => {
     const timeline = [
       { eventId: "1", type: "report_submitted", occurredAt: "2026-09-07T10:01:15.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null }
     ];
-    const value = JSON.stringify(statusMessageOptions(report({
+    const submitted = report({
       status: "submitting", discordStatus: null, timeline
-    }), context));
+    });
+    const view = classifyReportView(submitted);
+    const value = JSON.stringify(statusMessageOptions(submitted, context));
 
     expect(value).toContain("<t:1788775275:R> Report submitted");
+    expect(view.title).toBe("Awaiting confirmation");
+    expect(view.description).toContain("confirmation email");
+  });
+
+  it("shows and records Discord receipt confirmation separately from report submission", () => {
+    const submitted = report({
+      status: "submitted", discordStatus: null,
+      timeline: [{ eventId: "1", type: "report_submitted", occurredAt: "2026-09-07T10:01:00.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null }]
+    });
+    const received = report({
+      status: "submitted", discordStatus: null,
+      timeline: [
+        { eventId: "1", type: "report_submitted", occurredAt: "2026-09-07T10:01:00.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null },
+        { eventId: "2", type: "discord:received", occurredAt: "2026-09-07T10:02:00.000Z", lifecycleAttempt: 1, discordStatus: "received", errorCode: null }
+      ]
+    });
+    const submittedView = classifyReportView(submitted);
+    const receivedView = classifyReportView(received);
+    const value = JSON.stringify(statusMessageOptions(received, context));
+
+    expect(submittedView.title).toBe("Awaiting confirmation");
+    expect(receivedView.title).toBe("Confirmation received");
+    expect(receivedView.description).toContain("confirmation email");
+    expect(value).toContain("<t:1788775260:R> Report submitted");
+    expect(value).toContain("<t:1788775320:R> Confirmation received");
+    expect(visibleStatusHash(received, context)).not.toBe(visibleStatusHash(submitted, context));
   });
 
   it("labels the report text as prepared until a durable submission confirmation exists", () => {

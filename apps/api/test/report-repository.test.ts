@@ -518,6 +518,47 @@ describe("atomic lifecycle persistence", () => {
     )).toBe(true);
     expect(client.query).toHaveBeenCalledWith("COMMIT");
   });
+
+  it("applies pending Discord emails against the latest report state after submission", async () => {
+    const report = {
+      id: "report-1", account_id: "account-1", trace_id: "33333333-3333-4333-8333-333333333333",
+      lifecycle_attempt: 1, status: "submitted", reporter_email: "alias@example.test",
+      discord_report_id: "discord-report-1", discord_status: null, review_status: null, error_code: null
+    };
+    const currentReport: Omit<typeof report, "discord_status"> & { discord_status: string | null } = { ...report };
+    const client = {
+      query: vi.fn(async (sql: string, values?: unknown[]) => {
+        if (sql.includes("SET status = 'submitted'")) return { rows: [report], rowCount: 1 };
+        if (sql.includes("FROM account_inbound_messages") && sql.includes("status = 'pending_report'")) {
+          return {
+            rows: [
+              { message_id: "actioned-email", recipient: "alias@example.test", status: "pending_report", external_report_id: "discord-report-1", external_status: "actioned", encrypted_payload: null, received_at: new Date("2026-10-14T00:00:00Z") },
+              { message_id: "late-received-email", recipient: "alias@example.test", status: "pending_report", external_report_id: "discord-report-1", external_status: "received", encrypted_payload: null, received_at: new Date("2026-10-14T00:00:01Z") }
+            ],
+            rowCount: 2
+          };
+        }
+        if (sql.includes("SELECT * FROM account_reports WHERE id = $1 FOR UPDATE")) {
+          return { rows: [{ ...currentReport }], rowCount: 1 };
+        }
+        if (sql.includes("SET discord_status = $2")) {
+          currentReport.discord_status = String(values?.[1]);
+          return { rows: [], rowCount: 1 };
+        }
+        if (sql.includes("INSERT INTO account_report_events")) return { rows: [{ id: "10" }], rowCount: 1 };
+        return { rows: [], rowCount: 1 };
+      }),
+      release: vi.fn()
+    };
+    const repository = new ReportRepository({ connect: async () => client } as never);
+
+    await repository.markSubmitted({ id: "job-1", report_id: "report-1", execution_token: 1 } as never, "discord-report-1");
+
+    expect(currentReport.discord_status).toBe("actioned");
+    const statusUpdates = client.query.mock.calls.filter(([sql]) => String(sql).includes("SET discord_status = $2"));
+    expect(statusUpdates).toHaveLength(1);
+    expect(statusUpdates[0]?.[1]).toEqual(["report-1", "actioned"]);
+  });
 });
 
 describe("account-owned reads and recovery feeds", () => {
@@ -550,6 +591,95 @@ describe("account-owned reads and recovery feeds", () => {
     expect(page.next).toBe("12");
     expect(page.items[0]?.traceId).toBe("11111111-1111-4111-8111-111111111111");
     expect(query.mock.calls[0]?.[1]).toEqual(["account-1", "0", 3]);
+  });
+});
+
+describe("administrator report diagnostics", () => {
+  const reportId = "30a3d6c4-f82b-4b37-8095-b9f9c80a8ce2";
+
+  it("adds a bounded, payload-free projection only when a report ID is requested", async () => {
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (sql.includes("WHERE report.id = $1") && sql.includes("credit_state")) {
+        expect(values).toEqual([reportId]);
+        return { rows: [{
+          id: reportId, trace_id: "33333333-3333-4333-8333-333333333333", flow: "server", status: "failed",
+          error_code: "discord_receipt_timeout", error_message: "Discord did not send a report receipt before the deadline.", failure_stage: "submitted",
+          discord_report_id: "1548921252872462416", discord_status: null, review_status: null,
+          created_at: new Date("2026-10-14T00:00:00Z"), updated_at: new Date("2026-10-14T00:02:00Z"),
+          verification_deadline: null, receipt_deadline: null, submission_started_at: new Date("2026-10-14T00:01:00Z"),
+          credit_state: "consumed"
+        }], rowCount: 1 };
+      }
+      if (sql.includes("FROM account_report_events AS event") && sql.includes("count(*) OVER")) {
+        return { rows: [{ id: "108", event_type: "report_failed", lifecycle_attempt: 2, created_at: new Date("2026-10-14T00:02:00Z"), total_count: "108" }], rowCount: 1 };
+      }
+      if (sql.includes("FROM account_report_jobs") && sql.includes("count(*) OVER")) {
+        return { rows: [{ kind: "verify_submit", state: "failed", attempts: 3, max_attempts: 3,
+          run_at: new Date("2026-10-14T00:00:00Z"), locked_at: null, last_error_category: "discord_http_failure",
+          total_count: "51" }], rowCount: 1 };
+      }
+      if (sql.includes("GROUP BY message.external_report_id")) {
+        return { rows: [
+          { external_report_id: "1548921252872462416", registration_status: "accepted", external_status: "received",
+            message_count: "1", group_count: "2", matches_report: true, first_received_at: new Date("2026-10-14T00:01:30Z"),
+            latest_received_at: new Date("2026-10-14T00:01:30Z") },
+          { external_report_id: "1548921252872462499", registration_status: "pending_report", external_status: "received",
+            message_count: "1", group_count: "2", matches_report: false, first_received_at: new Date("2026-10-14T00:02:00Z"),
+            latest_received_at: new Date("2026-10-14T00:02:00Z") }
+        ], rowCount: 2 };
+      }
+      if (sql.includes("FROM account_inbound_messages AS message") && sql.includes("report.id = $1")) {
+        return { rows: [{ total: "2", pending: "1", accepted: "1", unknown_recipient: "0", received: "1", actioned: "1",
+          pending_report: "1", other_status: "0", closed_no_action: "0", review_not_approved: "0", review_received: "0",
+          no_external_status: "0", other_external_status: "0", latest_received_at: new Date("2026-10-14T00:02:00Z") }], rowCount: 1 };
+      }
+      if (sql.includes("FROM event_destination_deliveries AS delivery") && sql.includes("event.report_id = $1")) {
+        return { rows: [{ state: "sent", count: "4" }, { state: "pending", count: "1" }], rowCount: 2 };
+      }
+      if (sql.includes("AS reports")) return { rows: [{ reports: "12", pending_jobs: "1", running_jobs: "0", pending_deliveries: "1", expired_deliveries: "0", pending_inbound_messages: "0", pending_inbound_older_than_two_minutes: "0", oldest_pending_inbound_age_ms: null }], rowCount: 1 };
+      if (sql.includes("preparation_ready")) return { rows: [{}], rowCount: 1 };
+      if (sql.includes("FROM operational_worker_health")) return { rows: [], rowCount: 0 };
+      if (sql.includes("FROM operational_alert_state")) return { rows: [], rowCount: 0 };
+      return { rows: [], rowCount: 0 };
+    });
+    const repository = new ReportRepository({ connect: vi.fn(), query } as never);
+
+    const diagnostics = await repository.operationalDiagnostics(reportId);
+    const projection = diagnostics.report as Record<string, unknown>;
+
+    expect(projection).toMatchObject({
+      id: reportId, flow: "server", status: "failed", errorCode: "discord_receipt_timeout",
+      errorMessage: "Discord did not send a report receipt before the deadline.", failureStage: "submitted", creditState: "consumed",
+      events: { total: 108 }, jobs: { total: 51 },
+      inbound: {
+        total: 2, byRegistrationStatus: { pendingReport: 1, accepted: 1 },
+        byExternalStatus: { received: 1, actioned: 1 }, groupCount: 2
+      },
+      deliveries: { total: 5, sent: 4, pending: 1 }
+    });
+    expect((projection.events as { items: unknown[] }).items).toHaveLength(1);
+    expect((projection.jobs as { items: unknown[] }).items).toHaveLength(1);
+    expect((projection.inbound as { groups: Array<{ externalReportId: string; matchesSubmittedReportId: boolean }> }).groups[0])
+      .toMatchObject({ externalReportId: "1548921252872462416", matchesSubmittedReportId: true });
+    expect((projection.inbound as { groups: Array<{ externalReportId: string; matchesSubmittedReportId: boolean }> }).groups[1])
+      .toMatchObject({ externalReportId: "1548921252872462499", matchesSubmittedReportId: false });
+    const diagnosticSql = query.mock.calls.map(([sql]) => String(sql)).filter((sql) => sql.includes("WHERE report.id = $1"));
+    expect(diagnosticSql.some((sql) => /SELECT\s+(?:report\.\*|\*)/i.test(sql))).toBe(false);
+    expect(JSON.stringify(projection)).not.toMatch(/encrypted|payload|alias@example\.test/i);
+
+    const globalOnly = await repository.operationalDiagnostics();
+    expect(globalOnly).not.toHaveProperty("report");
+  });
+
+  it("returns a null report projection when the requested ID is absent", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("WHERE report.id = $1") && sql.includes("credit_state")) return { rows: [], rowCount: 0 };
+      if (sql.includes("AS reports")) return { rows: [{ reports: "0" }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+    const repository = new ReportRepository({ connect: vi.fn(), query } as never);
+
+    await expect(repository.operationalDiagnostics(reportId)).resolves.toHaveProperty("report", null);
   });
 });
 
@@ -594,6 +724,36 @@ describe("trace migration and queue observability", () => {
 });
 
 describe("serial report retries", () => {
+  it("allows an eligible retry immediately after the report becomes terminal", async () => {
+    const terminalAt = new Date();
+    const { repository } = repositoryWithQueries((sql) => {
+      if (sql.includes("FROM api_accounts") && sql.includes("FOR UPDATE")) {
+        return { rows: [{ status: "active", available_credits: 0 }], rowCount: 1 };
+      }
+      if (sql.includes("idempotency_key") && !sql.includes("INSERT")) return { rows: [], rowCount: 0 };
+      if (sql.includes("JOIN report_credit_chains") && sql.includes("predecessor")) {
+        return { rows: [{
+          id: "report-1", account_id: "account-1", flow: "message", use_ai: true,
+          request_input: input, request_hash: ReportRepository.requestHash(input),
+          prepared_input: { country: "DE", category: "x", description: "d", finalText: "f" },
+          legal_reference: null, research_summary: null, research_sources: [],
+          credit_chain_id: "chain-1", credit_state: "consumed", status: "failed",
+          discord_status: null, review_status: null, error_code: "discord_network_error",
+          submission_started_at: null, successor_report_id: null, updated_at: terminalAt,
+          lifecycle_attempt: 1, retry_sequence: 0
+        }], rowCount: 1 };
+      }
+      if (sql.includes("INSERT INTO account_reports")) {
+        return { rows: [{ id: "report-2", account_id: "account-1", status: "queued" }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+
+    await expect(repository.retry(
+      "account-1", "report-1", "retry:immediate", { mode: "reuse" }
+    )).resolves.toMatchObject({ created: true, report: { status: "queued" } });
+  });
+
   it("reuses a consumed credit entitlement without requiring available balance", async () => {
     const { repository, client } = repositoryWithQueries((sql) => {
       if (sql.includes("FROM api_accounts") && sql.includes("FOR UPDATE")) {
@@ -615,7 +775,7 @@ describe("serial report retries", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    const result = await repository.retry("account-1", "report-1", "retry:key-1", { mode: "rewrite_ai" }, new Date("2026-09-04T00:01:00Z"));
+    const result = await repository.retry("account-1", "report-1", "retry:key-1", { mode: "rewrite_ai" });
 
     expect(result.created).toBe(true);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("available_credits = available_credits - 1"))).toBe(false);
@@ -639,7 +799,7 @@ describe("serial report retries", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    await expect(repository.retry("account-1", "report-1", "retry:key-1", { mode: "regenerate" }, new Date("2026-09-04T00:01:00Z")))
+    await expect(repository.retry("account-1", "report-1", "retry:key-1", { mode: "regenerate" }))
       .rejects.toMatchObject({ code: "credits_exhausted" });
   });
 
@@ -661,7 +821,7 @@ describe("serial report retries", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    await expect(repository.retry("account-1", "report-1", "retry:key-2", { mode: "reuse" }, new Date("2026-09-04T00:01:00Z")))
+    await expect(repository.retry("account-1", "report-1", "retry:key-2", { mode: "reuse" }))
       .rejects.toMatchObject({ code: "invalid_retry" });
   });
 
@@ -686,7 +846,7 @@ describe("serial report retries", () => {
 
     await repository.retry("account-1", "report-1", "retry:manual", {
       mode: "edit_manual", country: "DE", category: "new", finalText: "A complete replacement.", profileElements: ["photos"]
-    }, new Date("2026-09-04T00:01:00Z"));
+    });
 
     const insert = client.query.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO account_reports"));
     expect(insert?.[1]?.[7]).toMatchObject({

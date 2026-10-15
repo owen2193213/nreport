@@ -201,7 +201,11 @@ const openApiDocument = {
     [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/reinstate`]: { post: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(auditReasonBodySchema), responses: { "200": { description: "Reinstated account" } } } },
     [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/webhook-destination`]: { put: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(assignWebhookDestinationBodySchema), responses: { "204": { description: "Assignment updated" } } } },
     [`${DSA_ADMIN_BASE_PATH}/usage`]: { get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Global account usage" } } } },
-    [`${DSA_ADMIN_BASE_PATH}/diagnostics`]: { get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Operational diagnostics" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/diagnostics`]: { get: {
+      security: [{ administratorKey: [] }],
+      parameters: [{ name: "reportId", in: "query", required: false, schema: { type: "string", format: "uuid" }, description: "Add bounded report lifecycle diagnostics without mail, payloads, or credentials" }],
+      responses: { "200": { description: "Operational diagnostics with optional report health" }, "400": { description: "Invalid report ID" } }
+    } },
     [`${DSA_ADMIN_BASE_PATH}/webhook-destinations`]: {
       get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Webhook destinations" } } },
       post: { security: [{ administratorKey: [] }], requestBody: jsonRequest(createWebhookDestinationBodySchema), responses: { "201": { description: "Created destination" } } }
@@ -473,7 +477,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
           reply.header("Retry-After", "60");
           return apiError(reply, request, 429, code, message);
         }
-        if (code === "idempotency_conflict" || code === "invalid_retry" || code === "retry_cooldown") {
+        if (code === "idempotency_conflict" || code === "invalid_retry") {
           return apiError(reply, request, 409, String(code), message);
         }
         throw error;
@@ -498,9 +502,15 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
   app.get(`${DSA_ADMIN_BASE_PATH}/usage`, { preHandler: adminAuth }, async (_request, reply) =>
     reply.send(await dependencies.accounts.globalUsage())
   );
-  app.get(`${DSA_ADMIN_BASE_PATH}/diagnostics`, { preHandler: adminAuth }, async (_request, reply) =>
-    reply.send(await dependencies.reports.operationalDiagnostics())
-  );
+  app.get<{ Querystring: { reportId?: string } }>(`${DSA_ADMIN_BASE_PATH}/diagnostics`, { preHandler: adminAuth }, async (request, reply) => {
+    const reportId = request.query.reportId;
+    if (reportId !== undefined && (typeof reportId !== "string" || !UUID_PATTERN.test(reportId))) {
+      return apiError(reply, request, 400, "invalid_report_id", "Report ID must be a UUID.");
+    }
+    return reply.send(await (reportId === undefined
+      ? dependencies.reports.operationalDiagnostics()
+      : dependencies.reports.operationalDiagnostics(reportId)));
+  });
   app.get<{ Params: { accountId: string } }>(`${DSA_ADMIN_BASE_PATH}/accounts/:accountId`, { preHandler: adminAuth }, async (request, reply) => {
     if (!UUID_PATTERN.test(request.params.accountId)) return apiError(reply, request, 404, "account_not_found", "Account was not found.");
     const account = await dependencies.accounts.adminAccount(request.params.accountId);

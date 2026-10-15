@@ -58,6 +58,16 @@ diagnostics. The separate Discord operations-warning webhook is retired; it is n
 startup. The signed private API-to-bot lifecycle webhook remains the immediate delivery path for
 report status cards. See [`SENTRY_SETUP.md`](SENTRY_SETUP.md).
 
+Administrators may pass `reportId=<UUID>` to `GET /v1/admin/discord/dsa/diagnostics` for a bounded
+report-health projection alongside the existing aggregates. An unknown ID returns `report: null`;
+an invalid ID returns `400 invalid_report_id`. The view includes lifecycle state/timestamps,
+external report ID, safe failure details, the latest 100 events and 50 jobs, inbound-mail counts
+and up to 50 correlation groups, and delivery-state counts. Counts indicate when lists are
+truncated. Inbound groups expose whether their external report ID matches the stored submission,
+so unmatched confirmation mail is distinguishable from no recorded confirmation. It does not
+return reporter aliases, report evidence/text, job payloads, mail contents, verification codes,
+cookies, credentials, delivery destinations, or the detailed SQL diagnostic ledger.
+
 ## Discovery and account
 
 - `GET /openapi.json` is unauthenticated and publishes OpenAPI 3.1 from the exported route schemas.
@@ -190,9 +200,10 @@ Idempotency-Key: retry:<stable-client-operation-id>
 Only a terminal report may use a mode listed in `retryableModes`. `reuse` copies the immutable
 prepared payload but creates a new identity and session; it is unavailable if preparation never
 completed. `regenerate` reruns preparation from original evidence and supplied hints and is
-unavailable for manual reports. Each report has at most one successor, retries are serial, and a
-30-second cooldown applies. A consumed chain reuses its entitlement; a released chain must reserve
-one currently available credit. Actioned and ambiguous-final-submission reports are not retryable.
+unavailable for manual reports. Each report has at most one successor, retries are serial, and
+there is no additional per-report retry cooldown. The normal account mutation-rate limit still
+applies. A consumed chain reuses its entitlement; a released chain must reserve one currently
+available credit. Actioned and ambiguous-final-submission reports are not retryable.
 
 After an appeal denial, the API may instead expose `rewrite_ai` and `edit_manual`. `rewrite_ai`
 creates a new AI preparation from the same immutable target/evidence and directs the writer to
@@ -204,10 +215,17 @@ resend-as-is operation.
 
 An ineligible appeal, ambiguous final submission, or report/appeal confirmation timeout exposes no
 retry mode. The confirmation deadline is two minutes. Clients must not automatically resubmit after
-that deadline because the target message may have been deleted or become inaccessible. The API
+that deadline because the final outcome remains uncertain. The API
 reports original-report and appeal outcomes separately through `discordStatus`, `reviewStatus`, and
 timeline events; clients must not collapse report denied with appeal denied, or report accepted with
 appeal accepted.
+
+`status=submitted` with no `discordStatus` means **Awaiting confirmation**: the submission request
+returned an ID, but Discord's acknowledgement email has not been correlated. Only the authenticated
+report-receipt email sets `discordStatus=received` and emits `discord:received`; clients show
+**Confirmation received** and retain its timestamp in history. This email is separate from the
+earlier verification-code email and `verification_received` event. Neither receipt nor the returned
+submission ID means Discord took enforcement action.
 
 ## Events, webhooks, and recovery
 

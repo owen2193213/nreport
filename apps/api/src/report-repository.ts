@@ -213,6 +213,11 @@ CREATE INDEX IF NOT EXISTS event_destination_deliveries_ordering_idx
 CREATE INDEX IF NOT EXISTS account_inbound_messages_pending_correlation_idx
   ON account_inbound_messages (external_report_id, recipient, received_at, message_id)
   WHERE status = 'pending_report';
+CREATE INDEX IF NOT EXISTS account_inbound_messages_report_idx
+  ON account_inbound_messages (report_id, received_at, message_id)
+  WHERE report_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS account_inbound_messages_recipient_idx
+  ON account_inbound_messages (recipient, received_at, message_id);
 
 -- Aggregate-only operations telemetry. These tables deliberately contain no report,
 -- account, Discord, or webhook destination identifiers.
@@ -295,7 +300,6 @@ export class ReportMutationError extends Error {
       | "idempotency_conflict"
       | "report_not_found"
       | "invalid_retry"
-      | "retry_cooldown"
       | "invalid_cursor"
       | "rate_limited",
     message: string
@@ -927,7 +931,7 @@ export class ReportRepository {
     };
   }
 
-  public async operationalDiagnostics(): Promise<Record<string, unknown>> {
+  public async operationalDiagnostics(reportId?: string): Promise<Record<string, unknown>> {
     const result = await this.pool.query<{
       reports: string; pending_jobs: string; running_jobs: string;
       pending_deliveries: string; expired_deliveries: string; pending_inbound_messages: string;
@@ -949,7 +953,7 @@ export class ReportRepository {
         "SELECT alert_key, severity FROM operational_alert_state WHERE state = 'open' ORDER BY alert_key"
       )
     ]);
-    return {
+    const diagnostics: Record<string, unknown> = {
       reports: Number(row?.reports ?? 0),
       pendingJobs: Number(row?.pending_jobs ?? 0),
       runningJobs: Number(row?.running_jobs ?? 0),
@@ -961,6 +965,192 @@ export class ReportRepository {
       queues: snapshot,
       workers,
       openAlerts: alerts.rows.map((alert) => ({ key: alert.alert_key, severity: alert.severity }))
+    };
+    if (reportId === undefined) return diagnostics;
+    return { ...diagnostics, report: await this.reportDiagnostics(reportId) };
+  }
+
+  private async reportDiagnostics(reportId: string): Promise<Record<string, unknown> | null> {
+    const reportResult = await this.pool.query<{
+      id: string; trace_id: string; flow: string; status: string; error_code: string | null;
+      error_message: string | null; failure_stage: string | null; discord_report_id: string | null;
+      discord_status: string | null; review_status: string | null; created_at: Date | string;
+      updated_at: Date | string; verification_deadline: Date | string | null; receipt_deadline: Date | string | null;
+      submission_started_at: Date | string | null; credit_state: string;
+    }>(
+      `SELECT report.id, report.trace_id, report.flow, report.status, report.error_code,
+              report.error_message, report.failure_stage, report.discord_report_id,
+              report.discord_status, report.review_status, report.created_at, report.updated_at,
+              report.verification_deadline, report.receipt_deadline, report.submission_started_at,
+              chain.state AS credit_state
+       FROM account_reports AS report
+       JOIN report_credit_chains AS chain ON chain.id = report.credit_chain_id
+       WHERE report.id = $1`,
+      [reportId]
+    );
+    const report = reportResult.rows[0];
+    if (report === undefined) return null;
+
+    const [events, jobs, inboundSummary, inboundGroups, deliveries] = await Promise.all([
+      this.pool.query<{
+        id: string; event_type: string; lifecycle_attempt: number; created_at: Date | string; total_count: string;
+      }>(
+        `SELECT event.id::text, event.event_type, event.lifecycle_attempt, event.created_at,
+                count(*) OVER()::text AS total_count
+         FROM account_report_events AS event
+         WHERE event.report_id = $1
+         ORDER BY event.id DESC LIMIT 100`,
+        [reportId]
+      ),
+      this.pool.query<{
+        id: string; kind: string; state: string; attempts: number; max_attempts: number;
+        run_at: Date | string; locked_at: Date | string | null; last_error_category: string | null;
+        total_count: string;
+      }>(
+        `SELECT job.id::text, job.kind, job.state, job.attempts, job.max_attempts,
+                job.run_at, job.locked_at,
+                CASE
+                  WHEN job.last_error IS NULL THEN NULL
+                  WHEN job.last_error = 'account_suspended' THEN 'account_suspended'
+                  WHEN job.last_error = 'ambiguous_submission_state' THEN 'ambiguous_submission'
+                  WHEN job.last_error LIKE 'preparation_%' THEN 'preparation_failure'
+                  WHEN job.last_error LIKE 'review_%' THEN 'review_failure'
+                  WHEN job.last_error LIKE 'discord_http_%' THEN 'discord_http_failure'
+                  WHEN job.last_error = 'discord_network_error' THEN 'discord_network_failure'
+                  WHEN job.last_error LIKE 'discord_%' THEN 'discord_lifecycle_failure'
+                  ELSE 'worker_failure'
+                END AS last_error_category,
+                count(*) OVER()::text AS total_count
+         FROM account_report_jobs AS job
+         WHERE job.report_id = $1
+         ORDER BY job.updated_at DESC, job.id DESC LIMIT 50`,
+        [reportId]
+      ),
+      this.pool.query<{
+        total: string; pending_report: string; accepted: string; unknown_recipient: string; other_status: string;
+        received: string; actioned: string; closed_no_action: string; review_not_approved: string;
+        review_received: string; no_external_status: string; other_external_status: string;
+        latest_received_at: Date | string | null;
+      }>(
+        `SELECT count(*)::text AS total,
+                count(*) FILTER (WHERE message.status = 'pending_report')::text AS pending_report,
+                count(*) FILTER (WHERE message.status = 'accepted')::text AS accepted,
+                count(*) FILTER (WHERE message.status = 'unknown_recipient')::text AS unknown_recipient,
+                count(*) FILTER (WHERE message.status NOT IN ('pending_report', 'accepted', 'unknown_recipient'))::text AS other_status,
+                count(*) FILTER (WHERE message.external_status = 'received')::text AS received,
+                count(*) FILTER (WHERE message.external_status = 'actioned')::text AS actioned,
+                count(*) FILTER (WHERE message.external_status = 'closed_no_action')::text AS closed_no_action,
+                count(*) FILTER (WHERE message.external_status = 'review_not_approved')::text AS review_not_approved,
+                count(*) FILTER (WHERE message.external_status = 'review_received')::text AS review_received,
+                count(*) FILTER (WHERE message.external_status IS NULL)::text AS no_external_status,
+                count(*) FILTER (WHERE message.external_status IS NOT NULL AND message.external_status NOT IN
+                  ('received', 'actioned', 'closed_no_action', 'review_not_approved', 'review_received'))::text AS other_external_status,
+                max(message.received_at) AS latest_received_at
+         FROM account_inbound_messages AS message
+         JOIN account_reports AS report ON report.id = $1
+         WHERE message.report_id = report.id OR message.recipient = report.reporter_email`,
+        [reportId]
+      ),
+      this.pool.query<{
+        external_report_id: string | null; registration_status: string; external_status: string | null;
+        message_count: string; group_count: string; matches_report: boolean;
+        first_received_at: Date | string; latest_received_at: Date | string;
+      }>(
+        `SELECT message.external_report_id, message.status AS registration_status, message.external_status,
+                count(*)::text AS message_count, count(*) OVER()::text AS group_count,
+                bool_or(message.external_report_id = report.discord_report_id) AS matches_report,
+                min(message.received_at) AS first_received_at, max(message.received_at) AS latest_received_at
+         FROM account_inbound_messages AS message
+         JOIN account_reports AS report ON report.id = $1
+         WHERE message.report_id = report.id OR message.recipient = report.reporter_email
+         GROUP BY message.external_report_id, message.status, message.external_status
+         ORDER BY max(message.received_at) DESC, message.external_report_id NULLS LAST LIMIT 50`,
+        [reportId]
+      ),
+      this.pool.query<{ state: string; count: string }>(
+        `SELECT delivery.state, count(*)::text AS count
+         FROM event_destination_deliveries AS delivery
+         JOIN account_report_events AS event ON event.id = delivery.event_id
+         WHERE event.report_id = $1
+         GROUP BY delivery.state`,
+        [reportId]
+      )
+    ]);
+    const summary = inboundSummary.rows[0];
+    const deliveryCounts = { pending: 0, sending: 0, sent: 0, expired: 0, other: 0 };
+    for (const delivery of deliveries.rows) {
+      const state = delivery.state in deliveryCounts ? delivery.state as keyof typeof deliveryCounts : "other";
+      deliveryCounts[state] = count(delivery.count);
+    }
+    const recentEvents = [...events.rows].reverse();
+    const recentJobs = jobs.rows.map((job) => ({
+      id: job.id,
+      kind: safeDiagnosticJobKind(job.kind),
+      state: safeDiagnosticJobState(job.state),
+      attempts: count(String(job.attempts)),
+      maxAttempts: count(String(job.max_attempts)),
+      runAt: diagnosticTimestamp(job.run_at),
+      lockedAt: diagnosticTimestamp(job.locked_at),
+      lastErrorCategory: safeDiagnosticErrorCategory(job.last_error_category)
+    }));
+    const inboundGroupsList = inboundGroups.rows.map((group) => ({
+      externalReportId: safeDiagnosticExternalReportId(group.external_report_id),
+      matchesSubmittedReportId: group.matches_report === true,
+      registrationStatus: safeDiagnosticInboundStatus(group.registration_status),
+      externalStatus: safeDiagnosticExternalStatus(group.external_status),
+      count: count(group.message_count),
+      firstReceivedAt: diagnosticTimestamp(group.first_received_at),
+      latestReceivedAt: diagnosticTimestamp(group.latest_received_at)
+    }));
+
+    return {
+      id: report.id,
+      traceId: report.trace_id,
+      flow: safeDiagnosticLabel(report.flow, ["message", "profile", "server"]),
+      status: safeDiagnosticStatus(report.status),
+      errorCode: safeDiagnosticErrorCode(report.error_code),
+      errorMessage: report.error_message === null ? null : report.error_message.slice(0, 1000),
+      failureStage: report.failure_stage === null ? null : safeDiagnosticLabel(report.failure_stage, [
+        "queued", "planning", "researching", "writing", "preparing", "requesting_verification",
+        "awaiting_verification", "verification_received", "verifying", "submitting", "submitted"
+      ]),
+      discordReportId: safeDiagnosticExternalReportId(report.discord_report_id),
+      discordStatus: safeDiagnosticExternalStatus(report.discord_status),
+      reviewStatus: safeDiagnosticReviewStatus(report.review_status),
+      createdAt: diagnosticTimestamp(report.created_at),
+      updatedAt: diagnosticTimestamp(report.updated_at),
+      verificationDeadline: diagnosticTimestamp(report.verification_deadline),
+      receiptDeadline: diagnosticTimestamp(report.receipt_deadline),
+      submissionStartedAt: diagnosticTimestamp(report.submission_started_at),
+      creditState: safeDiagnosticCreditState(report.credit_state),
+      events: {
+        total: count(events.rows[0]?.total_count),
+        items: recentEvents.map((event) => ({
+          id: String(event.id), type: event.event_type, lifecycleAttempt: event.lifecycle_attempt,
+          occurredAt: diagnosticTimestamp(event.created_at)
+        }))
+      },
+      jobs: { total: count(jobs.rows[0]?.total_count), items: recentJobs },
+      inbound: {
+        total: count(summary?.total),
+        byRegistrationStatus: {
+          pendingReport: count(summary?.pending_report), accepted: count(summary?.accepted),
+          unknownRecipient: count(summary?.unknown_recipient), other: count(summary?.other_status)
+        },
+        byExternalStatus: {
+          received: count(summary?.received), actioned: count(summary?.actioned),
+          closedNoAction: count(summary?.closed_no_action), reviewNotApproved: count(summary?.review_not_approved),
+          reviewReceived: count(summary?.review_received), none: count(summary?.no_external_status),
+          other: count(summary?.other_external_status)
+        },
+        latestReceivedAt: diagnosticTimestamp(summary?.latest_received_at),
+        groupCount: count(inboundGroups.rows[0]?.group_count),
+        groups: inboundGroupsList
+      },
+      deliveries: {
+        total: deliveryCounts.pending + deliveryCounts.sending + deliveryCounts.sent + deliveryCounts.expired + deliveryCounts.other,
+        ...deliveryCounts
+      }
     };
   }
 
@@ -1036,8 +1226,7 @@ export class ReportRepository {
     accountId: string,
     predecessorReportId: string,
     idempotencyKey: string,
-    input: RetryReportInput,
-    now = new Date()
+    input: RetryReportInput
   ): Promise<{ created: boolean; report: AccountReportRow }> {
     const mode = input.mode;
     const requestHash = createHash("sha256")
@@ -1092,9 +1281,6 @@ export class ReportRepository {
       if (predecessor === undefined) throw new ReportMutationError("report_not_found", "Report was not found.");
       if (predecessor.successor_report_id !== null) {
         throw new ReportMutationError("invalid_retry", "This report already has a successor.");
-      }
-      if (now.getTime() - predecessor.updated_at.getTime() < 30_000) {
-        throw new ReportMutationError("retry_cooldown", "Wait 30 seconds before retrying this report.");
       }
       if (!reportRetryableModes(predecessor).includes(mode)) {
         throw new ReportMutationError("invalid_retry", "The requested retry mode is not available.");
@@ -1749,7 +1935,15 @@ export class ReportRepository {
         [discordReportId, row.reporter_email]
       );
       for (const inbound of pending.rows) {
-        await this.applyInboundMessage(client, row, inbound);
+        // Multiple messages can be pending when the submission result arrives.
+        // Apply each against the state produced by earlier messages so an
+        // older `received` email cannot downgrade a later `actioned` outcome.
+        const current = await client.query<AccountReportRow>(
+          "SELECT * FROM account_reports WHERE id = $1 FOR UPDATE",
+          [job.report_id]
+        );
+        const currentReport = current.rows[0];
+        if (currentReport !== undefined) await this.applyInboundMessage(client, currentReport, inbound);
       }
       await client.query("COMMIT");
       return true;
@@ -2534,6 +2728,67 @@ async function enqueueDestinationDelivery(
 function count(value: string | undefined): number {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+}
+
+function diagnosticTimestamp(value: Date | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const timestamp = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
+}
+
+function safeDiagnosticLabel(value: string, allowed: readonly string[]): string {
+  return allowed.includes(value) ? value : "other";
+}
+
+function safeDiagnosticJobKind(value: string): string {
+  return safeDiagnosticLabel(value, ["prepare_report", "request_code", "verify_submit", "submit_review"]);
+}
+
+function safeDiagnosticJobState(value: string): string {
+  return safeDiagnosticLabel(value, ["pending", "running", "completed", "failed"]);
+}
+
+function safeDiagnosticErrorCategory(value: string | null): string | null {
+  return value === null ? null : safeDiagnosticLabel(value, [
+    "account_suspended", "ambiguous_submission", "preparation_failure", "review_failure",
+    "discord_http_failure", "discord_network_failure", "discord_lifecycle_failure", "worker_failure"
+  ]);
+}
+
+function safeDiagnosticInboundStatus(value: string): string {
+  return safeDiagnosticLabel(value, ["pending_report", "accepted", "unknown_recipient"]);
+}
+
+function safeDiagnosticExternalStatus(value: string | null): string | null {
+  return value === null ? null : safeDiagnosticLabel(value, [
+    "received", "actioned", "closed_no_action", "review_not_approved", "review_received"
+  ]);
+}
+
+function safeDiagnosticReviewStatus(value: string | null): string | null {
+  return value === null ? null : safeDiagnosticLabel(value, [
+    "queued", "requested", "received", "confirmation_timeout", "request_failed", "ineligible",
+    "request_ambiguous", "approved", "not_approved"
+  ]);
+}
+
+function safeDiagnosticCreditState(value: string): string {
+  return safeDiagnosticLabel(value, ["available", "reserved", "consumed", "released"]);
+}
+
+function safeDiagnosticStatus(value: string): string {
+  return safeDiagnosticLabel(value, [
+    "queued", "planning", "researching", "writing", "preparing", "requesting_verification",
+    "awaiting_verification", "verification_received", "verifying", "submitting", "submitted", "failed"
+  ]);
+}
+
+function safeDiagnosticErrorCode(value: string | null): string | null {
+  return value === null ? null : /^[a-z0-9_.-]{1,80}$/.test(value) ? value : "other";
+}
+
+function safeDiagnosticExternalReportId(value: string | null): string | null {
+  return value !== null && /^\d{1,32}$/.test(value) ? value : null;
 }
 
 function age(value: string | null | undefined): number | null {

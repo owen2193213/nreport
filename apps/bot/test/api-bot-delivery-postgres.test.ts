@@ -122,6 +122,10 @@ suite("API to bot lifecycle delivery PostgreSQL integration", () => {
       );
       expect(inboxBeforeDelivery.rows).toHaveLength(1);
       expect(inboxBeforeDelivery.rows[0]?.state).toBe("pending");
+      const pendingHealth = await bot.notificationHealthSnapshot();
+      expect(pendingHealth).toMatchObject({ pendingNotificationCount: 1, pendingCardUpdateCount: 1 });
+      expect(pendingHealth.oldestPendingNotificationAgeMs).toBeTypeOf("number");
+      expect(pendingHealth.oldestPendingCardUpdateAgeMs).toBeTypeOf("number");
       await botPool!.query("UPDATE lifecycle_inbox SET run_at = now() WHERE event_id = $1", [inboxBeforeDelivery.rows[0]!.event_id]);
 
       const cardMessage = {
@@ -172,6 +176,10 @@ suite("API to bot lifecycle delivery PostgreSQL integration", () => {
       expect(typeof finalState[1].rows[0]?.visible_payload_hash).toBe("string");
       expect(finalState[1].rows[0]?.visible_payload_hash?.length).toBeGreaterThan(0);
       expect(finalState[2].rows[0]).toMatchObject({ state: "sent" });
+      expect(await bot.notificationHealthSnapshot()).toEqual({
+        pendingNotificationCount: 0, pendingCardUpdateCount: 0,
+        oldestPendingNotificationAgeMs: null, oldestPendingCardUpdateAgeMs: null
+      });
     } finally {
       await apiServer?.close();
       await botServer.close();

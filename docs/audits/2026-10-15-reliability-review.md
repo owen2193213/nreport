@@ -41,3 +41,8 @@ the parent process coverage collector, so an uncovered bootstrap line is not pro
 startup test did not run. CI additionally exercises the PostgreSQL cases and reports its own
 coverage summary. Root lint, all workspace typechecks, build, and the high-severity audit passed;
 the audit reported zero vulnerabilities.
+
+The first CI run with PostgreSQL passed all 496 tests across 51 files, including the ten database
+cases. It measured 69.53% lines, 55.90% branches, 66.43% statements, and 70.31% functions.
+Both the coverage summary and the required checks are recorded in
+[CI run 38803024465](https://github.com/owen2193213/nreport/actions/runs/38803024465).

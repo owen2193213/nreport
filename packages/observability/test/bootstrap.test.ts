@@ -34,12 +34,16 @@ function runNode(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number
 }
 
 function eventFromOutput(stdout: string): CapturedEvent {
-  const line = stdout.split(/\r?\n/u).find((item) => item.startsWith("SENTRY_ENVELOPE="));
-  if (line === undefined) throw new Error("The SDK transport did not receive an event envelope");
-  const envelope = JSON.parse(line.slice("SENTRY_ENVELOPE=".length)) as Envelope;
-  const item = envelope[1].find(([headers]) => headers.type === "event");
-  if (item === undefined) throw new Error("Expected an event envelope item");
-  return item[1];
+  let receivedEnvelope = false;
+  for (const line of stdout.split(/\r?\n/u)) {
+    if (!line.startsWith("SENTRY_ENVELOPE=")) continue;
+    receivedEnvelope = true;
+    const envelope = JSON.parse(line.slice("SENTRY_ENVELOPE=".length)) as Envelope;
+    const item = envelope[1].find(([headers]) => headers.type === "event");
+    if (item !== undefined) return item[1];
+  }
+  if (!receivedEnvelope) throw new Error("The SDK transport did not receive an event envelope");
+  throw new Error("Expected an event envelope item");
 }
 
 describe("Sentry Node bootstrap", () => {

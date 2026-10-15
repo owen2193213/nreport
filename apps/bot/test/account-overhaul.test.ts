@@ -662,6 +662,7 @@ describe("account reconciliation", () => {
       abandonReportLink: vi.fn(),
       completeReportLink: vi.fn(),
       completeReplacementLink: vi.fn(),
+      claimDmCard: vi.fn(async () => false),
       existingEventIds: vi.fn(async () => new Set<string>()),
       ingestEvent: vi.fn(async () => "accepted"),
       advanceCursor: vi.fn(),

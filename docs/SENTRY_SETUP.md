@@ -17,6 +17,9 @@ and database operations. An unset DSN disables external telemetry while local di
 Use distinct project DSNs for the two services, `production` for the deployed environment, and the
 deployment commit for release identification. For a CLI source upload, set `SENTRY_RELEASE` to a
 version derived from the uploaded source instead of attributing local changes to an older commit.
+Fatal exception and unhandled-rejection handlers always write scrubbed local diagnostics and exit
+nonzero, including when the DSN is absent or SDK initialization fails. External capture is optional;
+credential redaction on these process-failure paths is not.
 
 The Railway build definitions build the shared observability workspace before each application.
 Its source files are watch paths for both services. Use the npm start scripts so the telemetry

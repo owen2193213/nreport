@@ -26,6 +26,11 @@ and a design accounting for foreign-key/account/report lock order are needed bef
 this mechanism. Moving the lock to a statement's start alone can introduce lock inversions.
 The webhook remains a second delivery path, but does not establish correctness of the feed.
 
+The subsequent [event-ordering and recovery review](2026-10-15-event-ordering-and-recovery.md)
+reproduced this gap in PostgreSQL and implemented allocation under the publication lock, alongside
+the required parent-lock ordering and per-report maintenance transactions. The paragraph above
+records the concern before that follow-up; historical IDs and client cursors are preserved.
+
 ## Verification scope
 
 Use the root lint, workspace typecheck, tests, build, and high-severity dependency audit. Database

@@ -164,7 +164,7 @@ export class AccountNotificationWorker {
       if (message === null) {
         deliveryStage = "claim_card";
         if (!(await this.database.claimDmCard(report.reportId))) {
-          await this.database.retryNotification(item.event_id, "status_card_creation_in_progress");
+          await this.database.retryNotification(item.event_id, "status_card_creation_in_progress", attempts);
           this.safeLog("account_notification_retry", {
             ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
             failureCategory: "card_claim_busy", stage: "notification", outcome: "retry"
@@ -201,7 +201,7 @@ export class AccountNotificationWorker {
         });
       }
       deliveryStage = "complete_notification";
-      await this.database.completeNotification(item.event_id);
+      await this.database.completeNotification(item.event_id, attempts);
       this.safeLog("account_notification_completed", {
         ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
         stage: "notification", outcome: "completed"
@@ -211,7 +211,7 @@ export class AccountNotificationWorker {
       if (error instanceof DsaApiError && error.status === 401) {
         const user = await this.client.users.fetch(item.discord_user_id).catch(() => null);
         await user?.send("Your reporting API key was revoked or expired. Use `/access connect` to reconnect; detailed status refreshes are paused.").catch(() => undefined);
-        await this.database.completeNotification(item.event_id);
+        await this.database.completeNotification(item.event_id, attempts);
         this.safeLog("account_notification_completed", {
           ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
           stage: "notification", outcome: "completed"
@@ -222,10 +222,10 @@ export class AccountNotificationWorker {
         const validationFailure = isDiscordValidationFailure(error);
         const errorCode = validationFailure ? "discord_validation_50035" : failureCategory;
         if (validationFailure) {
-          await this.database.ignoreNotification(item.event_id, errorCode);
+          await this.database.ignoreNotification(item.event_id, errorCode, attempts);
           if (attemptedCardSend) await this.database.terminalCardRepair(item.report_id, errorCode);
         } else {
-          await this.database.retryNotification(item.event_id, errorCode);
+          await this.database.retryNotification(item.event_id, errorCode, attempts);
         }
         this.safeLog(validationFailure ? "account_notification_ignored" : "account_notification_retry", {
           ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,

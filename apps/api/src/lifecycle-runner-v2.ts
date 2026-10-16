@@ -64,7 +64,7 @@ interface LifecycleStore {
   beginReviewSubmission(job: LifecycleJob): Promise<boolean>;
   failReview(job: LifecycleJob, status: "ineligible" | "request_failed" | "request_ambiguous", code: string, message: string): Promise<boolean>;
   expireDeadlines?(onFailure?: (failure: LifecycleFailureSignal) => void): Promise<void>;
-  recoverInterruptedJobs?(): Promise<LifecycleFailureSignal[] | void>;
+  recoverInterruptedJobs?(onFailure?: (failure: LifecycleFailureSignal) => void): Promise<LifecycleFailureSignal[] | void>;
   purgeDiagnostics?(): Promise<void>;
   reconcilePendingInboundMessages?(): Promise<{ processed: number; remaining: number; oldestPendingAgeMs: number | null }>;
 }
@@ -494,13 +494,22 @@ export class LifecycleRunner {
     const startedAt = Date.now();
     try {
       const reconciliation = await this.store.reconcilePendingInboundMessages?.();
-      const recoveredFailures = await this.store.recoverInterruptedJobs?.();
-      for (const failure of recoveredFailures ?? []) {
+      let reportedDuringRecovery = false;
+      const recoveredFailures = await this.store.recoverInterruptedJobs?.((failure) => {
+        reportedDuringRecovery = true;
         this.notify({
           component: "report_failure",
           durationMs: 0,
           ...failure
         });
+      });
+      // Keep support for simple stores that return failures without invoking
+      // the callback. The repository callback fires only after each commit so
+      // earlier durable failures are still reported if a later batch fails.
+      if (!reportedDuringRecovery) {
+        for (const failure of recoveredFailures ?? []) {
+          this.notify({ component: "report_failure", durationMs: 0, ...failure });
+        }
       }
       await this.store.expireDeadlines?.((failure) => this.notify({
         component: "report_failure",

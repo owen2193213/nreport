@@ -3,11 +3,33 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ReportRepository } from "../src/report-repository.js";
 
+function parentLockResponse(sql: string): { rows: unknown[]; rowCount: number } | undefined {
+  const normalized = sql.replace(/\s+/g, " ").trim();
+  if (normalized === "SELECT account_id, credit_chain_id FROM account_reports WHERE id = $1") {
+    return { rows: [{ account_id: "account-1", credit_chain_id: "chain-1" }], rowCount: 1 };
+  }
+  if (
+    normalized === "SELECT 1 FROM api_accounts WHERE id = $1 FOR NO KEY UPDATE" ||
+    normalized.startsWith("SELECT 1 FROM account_reports ") && normalized.endsWith("FOR NO KEY UPDATE") ||
+    normalized === "SELECT 1 FROM report_credit_chains WHERE id = $1 AND account_id = $2 FOR NO KEY UPDATE"
+  ) {
+    return { rows: [{ locked: 1 }], rowCount: 1 };
+  }
+  return undefined;
+}
+
+function parentLockedQuery(respond: (sql: string, values?: unknown[]) => { rows: unknown[]; rowCount: number } | Promise<{ rows: unknown[]; rowCount: number }>) {
+  return vi.fn(async (sql: string, values?: unknown[]) => parentLockResponse(sql) ?? await respond(sql, values));
+}
+
 describe("account report email correlation", () => {
   it("correlates a verification email without exposing its code in an event", async () => {
     const client = {
-      query: vi.fn(async (sql: string, _values?: unknown[]) => {
-        if (sql.includes("reporter_email") && sql.includes("FOR UPDATE")) {
+      query: parentLockedQuery(async (sql: string) => {
+        if (sql.startsWith("SELECT id FROM account_reports") && sql.includes("reporter_email = $1")) {
+          return { rows: [{ id: "report-1" }], rowCount: 1 };
+        }
+        if (sql.startsWith("SELECT id, trace_id, account_id, lifecycle_attempt FROM account_reports")) {
           return { rows: [{ id: "report-1", trace_id: "33333333-3333-4333-8333-333333333333", account_id: "account-1", lifecycle_attempt: 1 }], rowCount: 1 };
         }
         if (sql.includes("INSERT INTO account_inbound_messages")) return { rows: [{ message_id: "mail-1" }], rowCount: 1 };
@@ -29,8 +51,7 @@ describe("account report email correlation", () => {
 
   it("keeps the stored report correlation for a duplicate verification message after lifecycle advancement", async () => {
     const client = {
-      query: vi.fn(async (sql: string, _values?: unknown[]) => {
-        if (sql.includes("reporter_email") && sql.includes("FOR UPDATE")) return { rows: [], rowCount: 0 };
+      query: parentLockedQuery(async (sql: string, _values?: unknown[]) => {
         if (sql.includes("INSERT INTO account_inbound_messages")) return { rows: [], rowCount: 0 };
         if (sql.includes("FROM account_inbound_messages") && sql.includes("trace_id")) {
           return { rows: [{ id: "report-advanced", trace_id: "44444444-4444-4444-8444-444444444444" }], rowCount: 1 };
@@ -48,11 +69,17 @@ describe("account report email correlation", () => {
     });
   });
 
-  it("locks the stable recipient before comparing a report receipt ID", async () => {
+  it("locks report parents for the normalized recipient before comparing a report receipt ID", async () => {
     const client = {
-      query: vi.fn(async (sql: string, _values?: unknown[]) => {
-        if (sql.includes("WHERE reporter_email = $1") && sql.includes("FOR UPDATE")) {
-          return { rows: [], rowCount: 0 };
+      query: parentLockedQuery(async (sql: string, values?: unknown[]) => {
+        if (sql.startsWith("SELECT id FROM account_reports") && sql.includes("reporter_email = $1")) {
+          return { rows: [{ id: "report-1" }], rowCount: 1 };
+        }
+        if (sql.startsWith("SELECT * FROM account_reports WHERE id = $1 AND reporter_email = $2")) {
+          return { rows: [{
+            id: values?.[0], account_id: "account-1", reporter_email: values?.[1],
+            discord_report_id: "different-report", trace_id: "33333333-3333-4333-8333-333333333333"
+          }], rowCount: 1 };
         }
         if (sql.includes("INSERT INTO account_inbound_messages")) return { rows: [{ message_id: "mail-race" }], rowCount: 1 };
         return { rows: [], rowCount: 1 };
@@ -65,18 +92,28 @@ describe("account report email correlation", () => {
       messageId: "mail-race", recipient: "Alias@Example.test", discordReportId: "1548921252872462416", discordStatus: "received"
     })).resolves.toMatchObject({ status: "pending_report" });
 
-    expect(client.query).toHaveBeenCalledWith(
-      expect.stringContaining("WHERE reporter_email = $1\n         FOR UPDATE"),
-      ["alias@example.test"]
-    );
+    const calls = client.query.mock.calls.map(([sql]) => String(sql));
+    const candidateIndex = calls.findIndex((sql) => sql.startsWith("SELECT id FROM account_reports"));
+    const accountLockIndex = calls.findIndex((sql) => sql.startsWith("SELECT 1 FROM api_accounts"));
+    const reportLockIndex = calls.findIndex((sql) => sql.startsWith("SELECT 1 FROM account_reports") && sql.includes("FOR NO KEY UPDATE"));
+    const chainLockIndex = calls.findIndex((sql) => sql.startsWith("SELECT 1 FROM report_credit_chains"));
+    const comparisonIndex = calls.findIndex((sql) => sql.startsWith("SELECT * FROM account_reports WHERE id = $1 AND reporter_email = $2"));
+    expect(client.query.mock.calls[candidateIndex]?.[1]).toEqual(["alias@example.test"]);
+    expect(accountLockIndex).toBeGreaterThan(candidateIndex);
+    expect(reportLockIndex).toBeGreaterThan(accountLockIndex);
+    expect(chainLockIndex).toBeGreaterThan(reportLockIndex);
+    expect(comparisonIndex).toBeGreaterThan(chainLockIndex);
   });
 
   it("turns a Report Received email into an immediate Discord receipt event, separate from verification mail", async () => {
     const client = {
-      query: vi.fn(async (sql: string, values?: unknown[]) => {
-        if (sql.includes("WHERE reporter_email = $1") && sql.includes("FOR UPDATE")) {
+      query: parentLockedQuery(async (sql: string, values?: unknown[]) => {
+        if (sql.startsWith("SELECT id FROM account_reports") && sql.includes("reporter_email = $1")) {
+          return { rows: [{ id: "report-1" }], rowCount: 1 };
+        }
+        if (sql.startsWith("SELECT * FROM account_reports WHERE id = $1 AND reporter_email = $2")) {
           return { rows: [{
-            id: "report-1", account_id: "account-1", trace_id: "33333333-3333-4333-8333-333333333333",
+            id: values?.[0], account_id: "account-1", trace_id: "33333333-3333-4333-8333-333333333333",
             lifecycle_attempt: 1, status: "submitted", reporter_email: "alias@example.test",
             discord_report_id: "1548921252872462416", discord_status: null,
             review_status: null, error_code: null, review_submission_started_at: null
@@ -108,11 +145,14 @@ describe("account report email correlation", () => {
 
   it("adopts a report stuck as ambiguous_submission_state when a report-update email proves the submission reached Discord", async () => {
     const client = {
-      query: vi.fn(async (sql: string, values?: unknown[]) => {
-        if (sql.includes("WHERE reporter_email = $1") && sql.includes("FOR UPDATE") && !sql.includes("discord_report_id")) {
+      query: parentLockedQuery(async (sql: string, values?: unknown[]) => {
+        if (sql.startsWith("SELECT id FROM account_reports") && sql.includes("reporter_email = $1")) {
+          return { rows: [{ id: "report-1" }], rowCount: 1 };
+        }
+        if (sql.startsWith("SELECT * FROM account_reports WHERE id = $1 AND reporter_email = $2")) {
           return {
             rows: [{
-              id: "report-1", account_id: "account-1", trace_id: "33333333-3333-4333-8333-333333333333",
+              id: values?.[0], account_id: "account-1", trace_id: "33333333-3333-4333-8333-333333333333",
               discord_report_id: null, error_code: "ambiguous_submission_state",
               submission_started_at: new Date("2026-09-01T00:00:00Z"), lifecycle_attempt: 1,
               reporter_email: "alias@example.test"
@@ -152,11 +192,14 @@ describe("account report email correlation", () => {
 
   it("does not adopt an ambiguous report from a review_received email", async () => {
     const client = {
-      query: vi.fn(async (sql: string, _values?: unknown[]) => {
-        if (sql.includes("WHERE reporter_email = $1") && sql.includes("FOR UPDATE") && !sql.includes("discord_report_id")) {
+      query: parentLockedQuery(async (sql: string, values?: unknown[]) => {
+        if (sql.startsWith("SELECT id FROM account_reports") && sql.includes("reporter_email = $1")) {
+          return { rows: [{ id: "report-1" }], rowCount: 1 };
+        }
+        if (sql.startsWith("SELECT * FROM account_reports WHERE id = $1 AND reporter_email = $2")) {
           return {
             rows: [{
-              id: "report-1", account_id: "account-1", discord_report_id: null,
+              id: values?.[0], account_id: "account-1", discord_report_id: null,
               error_code: "ambiguous_submission_state", submission_started_at: new Date("2026-09-01T00:00:00Z"),
               lifecycle_attempt: 1, reporter_email: "alias@example.test"
             }],

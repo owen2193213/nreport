@@ -121,9 +121,11 @@ CREATE TABLE IF NOT EXISTS digest_deliveries (
   period_start timestamptz NOT NULL,
   period_end timestamptz NOT NULL,
   state text NOT NULL DEFAULT 'sending' CHECK (state IN ('sending', 'sent', 'skipped', 'failed')),
+  attempts integer NOT NULL DEFAULT 1,
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (discord_user_id, kind, period_start)
 );
+ALTER TABLE digest_deliveries ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 1;
 
 CREATE TABLE IF NOT EXISTS bot_report_diagnostics (
   id bigserial PRIMARY KEY,
@@ -458,7 +460,8 @@ export class AccountBotDatabase {
   public async setDmMapping(reportId: string, channelId: string, messageId: string): Promise<void> {
     await this.pool.query(
       `UPDATE bot_report_links SET dm_channel_id = $2, dm_message_id = $3,
-         dm_claimed_at = NULL, card_repair_claimed_at = NULL, updated_at = now() WHERE report_id = $1`,
+         dm_claimed_at = NULL, card_repair_claimed_at = NULL, updated_at = now()
+       WHERE report_id = $1 AND superseded_by_report_id IS NULL`,
       [reportId, channelId, messageId]
     );
   }
@@ -715,22 +718,25 @@ export class AccountBotDatabase {
     };
   }
 
-  public async completeNotification(eventId: string): Promise<void> {
-    await this.pool.query("UPDATE lifecycle_inbox SET state = 'sent', locked_at = NULL WHERE event_id = $1", [eventId]);
-  }
-
-  public async retryNotification(eventId: string, error: string): Promise<void> {
+  public async completeNotification(eventId: string, attempt: number): Promise<void> {
     await this.pool.query(
-      `UPDATE lifecycle_inbox SET state = 'pending', locked_at = NULL, last_error = $2,
-         run_at = now() + interval '30 seconds' WHERE event_id = $1`,
-      [eventId, error.slice(0, 300)]
+      "UPDATE lifecycle_inbox SET state = 'sent', locked_at = NULL WHERE event_id = $1 AND state = 'sending' AND attempts = $2",
+      [eventId, attempt]
     );
   }
 
-  public async ignoreNotification(eventId: string, error: string): Promise<void> {
+  public async retryNotification(eventId: string, error: string, attempt: number): Promise<void> {
     await this.pool.query(
-      "UPDATE lifecycle_inbox SET state = 'ignored', locked_at = NULL, last_error = $2 WHERE event_id = $1",
-      [eventId, error.slice(0, 300)]
+      `UPDATE lifecycle_inbox SET state = 'pending', locked_at = NULL, last_error = $2,
+         run_at = now() + interval '30 seconds' WHERE event_id = $1 AND state = 'sending' AND attempts = $3`,
+      [eventId, error.slice(0, 300), attempt]
+    );
+  }
+
+  public async ignoreNotification(eventId: string, error: string, attempt: number): Promise<void> {
+    await this.pool.query(
+      "UPDATE lifecycle_inbox SET state = 'ignored', locked_at = NULL, last_error = $2 WHERE event_id = $1 AND state = 'sending' AND attempts = $3",
+      [eventId, error.slice(0, 300), attempt]
     );
   }
 
@@ -774,25 +780,26 @@ export class AccountBotDatabase {
     return this.notificationPreferences(discordUserId);
   }
 
-  public async claimDigest(discordUserId: string, kind: "daily" | "weekly", startAt: string, endAt: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `INSERT INTO digest_deliveries (discord_user_id, kind, period_start, period_end)
-       VALUES ($1, $2, $3, $4)
+  public async claimDigest(discordUserId: string, kind: "daily" | "weekly", startAt: string, endAt: string): Promise<number | null> {
+    const result = await this.pool.query<{ attempts: number }>(
+      `INSERT INTO digest_deliveries (discord_user_id, kind, period_start, period_end, attempts)
+       VALUES ($1, $2, $3, $4, 1)
        ON CONFLICT (discord_user_id, kind, period_start) DO UPDATE
-       SET state = 'sending', updated_at = now()
+       SET state = 'sending', attempts = digest_deliveries.attempts + 1, updated_at = now()
        WHERE digest_deliveries.updated_at < now() - interval '1 hour'
          AND digest_deliveries.state IN ('failed', 'sending')
-       RETURNING discord_user_id`,
+       RETURNING attempts`,
       [discordUserId, kind, startAt, endAt]
     );
-    return result.rowCount === 1;
+    return result.rows[0]?.attempts ?? null;
   }
 
-  public async completeDigest(discordUserId: string, kind: "daily" | "weekly", startAt: string, state: "sent" | "skipped" | "failed"): Promise<void> {
+  public async completeDigest(discordUserId: string, kind: "daily" | "weekly", startAt: string, attempt: number, state: "sent" | "skipped" | "failed"): Promise<void> {
     await this.pool.query(
-      `UPDATE digest_deliveries SET state = $4, updated_at = now()
-       WHERE discord_user_id = $1 AND kind = $2 AND period_start = $3`,
-      [discordUserId, kind, startAt, state]
+      `UPDATE digest_deliveries SET state = $5, updated_at = now()
+       WHERE discord_user_id = $1 AND kind = $2 AND period_start = $3
+         AND state = 'sending' AND attempts = $4`,
+      [discordUserId, kind, startAt, attempt, state]
     );
   }
 }

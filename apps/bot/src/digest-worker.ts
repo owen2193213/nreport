@@ -53,13 +53,14 @@ export class DigestWorker {
     for (const period of periods) {
       const startAt = period.start.toISOString();
       const endAt = period.end.toISOString();
-      if (!(await this.database.claimDigest(connection.discord_user_id, period.kind, startAt, endAt))) continue;
+      const attempt = await this.database.claimDigest(connection.discord_user_id, period.kind, startAt, endAt);
+      if (attempt === null) continue;
       const sentryFailureKey = `digest:${connection.account_id}:${period.kind}:${startAt}`;
       let stage = "fetch_activity";
       try {
         const activity = await api.digestActivity(startAt, endAt);
         if (!activity.eligible) {
-          await this.database.completeDigest(connection.discord_user_id, period.kind, startAt, "skipped");
+          await this.database.completeDigest(connection.discord_user_id, period.kind, startAt, attempt, "skipped");
           this.reportedSentryFailures.delete(sentryFailureKey);
           continue;
         }
@@ -70,11 +71,11 @@ export class DigestWorker {
           `${period.kind === "daily" ? "Daily" : "Weekly"} DSA activity: ${activity.newReports} new reports and ${activity.outcomeChanges.total} outcome changes.`
         );
         stage = "record_delivery";
-        await this.database.completeDigest(connection.discord_user_id, period.kind, startAt, "sent");
+        await this.database.completeDigest(connection.discord_user_id, period.kind, startAt, attempt, "sent");
         this.reportedSentryFailures.delete(sentryFailureKey);
       } catch (error) {
         try {
-          await this.database.completeDigest(connection.discord_user_id, period.kind, startAt, "failed");
+          await this.database.completeDigest(connection.discord_user_id, period.kind, startAt, attempt, "failed");
         } catch (stateError) {
           this.recordFailure(`digest_state:${connection.account_id}:${period.kind}:${startAt}`, stateError, {
             operation: "activity_digest_delivery", stage: "record_failure", outcome: "failed",
@@ -85,9 +86,9 @@ export class DigestWorker {
           });
         }
         this.recordFailure(sentryFailureKey, error, {
-          operation: "activity_digest_delivery", stage, outcome: "retrying", attempt: 1
+          operation: "activity_digest_delivery", stage, outcome: "retrying", attempt
         }, {
-          accountId: connection.account_id, digestKind: period.kind, periodStart: startAt,
+          accountId: connection.account_id, digestKind: period.kind, periodStart: startAt, attempt,
           stage, outcome: "failed"
         });
       }

@@ -71,7 +71,7 @@ async function startApi(config: ReturnType<typeof loadConfig>, database: Postgre
     managedBotWebhook?.destinationId
   );
   const analytics = new AnalyticsRepository(database.pool);
-  for (const failure of await reports.recoverInterruptedJobs()) captureReportFailure(failure);
+  await reports.recoverInterruptedJobs(captureReportFailure);
   const app = await buildV2Server(config, {
     healthcheck: () => database.healthcheck(),
     accounts,

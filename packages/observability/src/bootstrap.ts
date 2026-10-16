@@ -43,6 +43,18 @@ function finishFatal(error: unknown): void {
 export function initializeSentry(service: SentryService, overrides: Pick<NodeOptions, "transport"> = {}): void {
   if (initialized) return;
   initialized = true;
+  // Fatal diagnostics must be scrubbed even when telemetry is disabled or
+  // initialization fails. Own both paths so Node never prints the raw Error.
+  process.on("uncaughtException", (error) => {
+    if (fatalShutdownStarted) return;
+    captureLifecycleFailure(error, { service, operation: "process.uncaught_exception", severity: "error" });
+    finishFatal(error);
+  });
+  process.on("unhandledRejection", (reason) => {
+    if (fatalShutdownStarted) return;
+    captureLifecycleFailure(reason, { service, operation: "process.unhandled_rejection", severity: "error" });
+    finishFatal(reason);
+  });
   const dsn = process.env.SENTRY_DSN?.trim();
   if (dsn === undefined || dsn.length === 0) return;
 
@@ -70,20 +82,13 @@ export function initializeSentry(service: SentryService, overrides: Pick<NodeOpt
       maxValueLength: 1_000,
       normalizeDepth: 3,
       tracePropagationTargets: [],
-      integrations: (integrations) => integrations.filter((integration) => integration.name !== "OnUnhandledRejection"),
-      onFatalError: (error) => finishFatal(error),
+      integrations: (integrations) => integrations.filter((integration) =>
+        integration.name !== "OnUnhandledRejection" && integration.name !== "OnUncaughtException"),
       initialScope: { tags: { service } },
       beforeBreadcrumb: sanitizeSentryBreadcrumb,
       beforeSend: sanitizeSentryEvent,
       beforeSendTransaction: sanitizeSentryTransaction,
       beforeSendLog: sanitizeSentryLog
-    });
-    // Sentry's default rejection integration prints the original rejection to stderr,
-    // and its strict mode delegates to Node's unsanitized fatal logger. Keep the
-    // original exception in Sentry while logging a bounded, scrubbed summary locally.
-    process.on("unhandledRejection", (reason) => {
-      captureLifecycleFailure(reason, { service, operation: "process.unhandled_rejection", severity: "error" });
-      finishFatal(reason);
     });
   } catch {
     // Sentry configuration must never prevent the API or bot from starting.

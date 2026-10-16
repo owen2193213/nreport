@@ -542,16 +542,17 @@ describe("local account mapping", () => {
     const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [], rowCount: 1 }));
     const database = new AccountBotDatabase({ query } as never);
 
-    await database.retryNotification("event-1", "network");
-    await database.retryNotification("event-2", "x".repeat(400));
+    await database.retryNotification("event-1", "network", 3);
+    await database.retryNotification("event-2", "x".repeat(400), 4);
 
     const [sql, values] = query.mock.calls[0]!;
     expect(sql).toContain("state = 'pending'");
     expect(sql).toContain("locked_at = NULL");
     expect(sql).toContain("last_error = $2");
     expect(sql).toContain("run_at = now() + interval '30 seconds'");
-    expect(values).toEqual(["event-1", "network"]);
-    expect(query.mock.calls[1]?.[1]).toEqual(["event-2", "x".repeat(300)]);
+    expect(sql).toContain("state = 'sending' AND attempts = $3");
+    expect(values).toEqual(["event-1", "network", 3]);
+    expect(query.mock.calls[1]?.[1]).toEqual(["event-2", "x".repeat(300), 4]);
   });
 
   it("defaults report-denied DMs off while keeping other decisions and problems on", async () => {
@@ -857,13 +858,14 @@ describe("account reconciliation", () => {
     const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [], rowCount: 1 }));
     const database = new AccountBotDatabase({ query } as never);
 
-    await database.ignoreNotification("event-1", "discord_validation_50035");
+    await database.ignoreNotification("event-1", "discord_validation_50035", 2);
 
     const [sql, values] = query.mock.calls[0]!;
     expect(sql).toContain("state = 'ignored'");
     expect(sql).toContain("locked_at = NULL");
     expect(sql).not.toContain("run_at =");
-    expect(values).toEqual(["event-1", "discord_validation_50035"]);
+    expect(sql).toContain("state = 'sending' AND attempts = $3");
+    expect(values).toEqual(["event-1", "discord_validation_50035", 2]);
   });
 
   it("returns duplicate from a single lookup without opening a transaction for an already-known event", async () => {

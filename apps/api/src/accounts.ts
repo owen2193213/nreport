@@ -623,7 +623,7 @@ async function releaseSuspendedReservations(client: PoolClient, accountId: strin
      JOIN report_credit_chains AS chain ON chain.id = report.credit_chain_id
      WHERE report.account_id = $1 AND chain.state IN ('reserved', 'consumed')
        AND report.submission_started_at IS NULL AND report.status <> 'failed'
-     FOR UPDATE OF report, chain`,
+      FOR NO KEY UPDATE OF report, chain`,
     [accountId]
   );
   for (const report of reports.rows) {

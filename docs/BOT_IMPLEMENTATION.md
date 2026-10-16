@@ -137,7 +137,14 @@ The status card is always maintained while the account is connected. Decision/pr
 to that card so the affected report remains clear. Terminal replies use an enforced, deterministic
 Discord nonce derived only from the durable lifecycle event ID, allowing Discord to deduplicate a
 retry when the original message-create response was lost. The inbox item is completed only after
-Discord accepts the reply. These replies are sent
+Discord accepts the reply. Inbox completion, retry, and ignore writes require both
+the sending state and the attempt number. A failed acknowledgment after a committed completion
+cannot reset that sent event to pending. Digest completion likewise cannot downgrade a row
+already committed as sent or skipped, and requires the generation returned by its current claim.
+A stale digest claimant cannot finish or fail a replacement claim. A superseded report's stale
+card sender cannot restore its old card mapping after that mapping transfers to a retry.
+These guards protect durable state; they do not extend
+Discord's finite nonce deduplication window. These replies are sent
 only for decisions or actionable problems: original-report accepted, appeal accepted, appeal
 denied, report/appeal confirmation timeout, ineligible appeal, and failure. The original
 report-denied DM is off by default because the automatic appeal continues; its preference is
@@ -230,6 +237,12 @@ submission, and review transitions require the same running job and token, so a 
 worker cannot mutate its replacement claim. A worker that loses heartbeat ownership abandons further
 progress and closes its Discord client where possible. Shutdown stops new claims, cancels idle
 cadence timers, and waits for in-flight lifecycle work.
+
+Report mutations lock the account, report, credit chain, then job before rechecking ownership
+and eligibility. Account suspension follows the same order. Deadline, ambiguous-outcome recovery,
+and inbound reconciliation commit one report at a time so event publication never retains its
+global lock while acquiring another report's parent locks. Failure signals are emitted after each
+committed recovery/deadline change; a later transaction failure does not suppress earlier signals.
 
 Inbound Discord lifecycle mail is durably staged by Message-ID and is correlated only when both its
 generated recipient alias and Discord report ID match the API report. Each maintenance pass first

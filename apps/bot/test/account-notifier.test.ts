@@ -69,7 +69,7 @@ describe("notification delivery against an existing report card", () => {
     }));
     expect(JSON.stringify(h.message.reply.mock.calls)).toContain("Report preparation timed out.");
     expect(h.dm.send).not.toHaveBeenCalled();
-    expect(h.database.completeNotification).toHaveBeenCalledWith("event");
+    expect(h.database.completeNotification).toHaveBeenCalledWith("event", 1);
     expect(h.message.reply.mock.invocationCallOrder[0]).toBeLessThan(h.database.completeNotification.mock.invocationCallOrder[0]!);
   });
 
@@ -85,6 +85,46 @@ describe("notification delivery against an existing report card", () => {
     expect(first.message.reply.mock.calls[0]?.[0]).toMatchObject({ nonce: "nreport-b8e1f80bd70ae078", enforceNonce: true });
     expect(retry.message.reply.mock.calls[0]?.[0]).toMatchObject({ nonce: "nreport-b8e1f80bd70ae078", enforceNonce: true });
     expect(different.message.reply.mock.calls[0]?.[0]).toMatchObject({ nonce: "nreport-b4e3d14e7519279e", enforceNonce: true });
+  });
+
+  it("replays a terminal DM after completion persistence fails without creating a duplicate", async () => {
+    const h = harness();
+    const item = {
+      event_id: "event", event_type: "report_failed", report_id: report.reportId,
+      trace_id: report.traceId, lifecycle_attempt: 1, discord_user_id: "user",
+      encrypted_api_key: "unused", encrypted_target_context: null,
+      dm_message_id: "original-card", visible_payload_hash: null
+    };
+    h.database.claimNotification
+      .mockResolvedValueOnce({ ...item, attempts: 1 })
+      .mockResolvedValueOnce({ ...item, attempts: 2 });
+    h.database.completeNotification.mockRejectedValueOnce(new Error("Database write failed after Discord accepted the reply."));
+
+    const acceptedNonces = new Set<string>();
+    let createdMessages = 0;
+    h.message.reply.mockImplementation((payload: Record<string, unknown>) => {
+      const nonce = String(payload.nonce);
+      if (!acceptedNonces.has(nonce)) {
+        acceptedNonces.add(nonce);
+        createdMessages += 1;
+      }
+    });
+
+    await h.worker.processOne();
+    expect(h.database.retryNotification).toHaveBeenCalledWith("event", "unexpected", 1);
+    expect(h.logger.mock.calls.some(([event]) => event === "account_notification_completed")).toBe(false);
+
+    await h.worker.processOne();
+
+    expect(createdMessages).toBe(1);
+    expect(h.message.reply).toHaveBeenCalledTimes(2);
+    expect(h.message.reply.mock.calls[0]?.[0]).toMatchObject({
+      nonce: "nreport-b8e1f80bd70ae078", enforceNonce: true
+    });
+    expect(h.message.reply.mock.calls[1]?.[0]).toMatchObject({
+      nonce: "nreport-b8e1f80bd70ae078", enforceNonce: true
+    });
+    expect(h.database.completeNotification).toHaveBeenLastCalledWith("event", 2);
   });
 
   it("uses a deterministic Discord-valid nonce when it must create a status card", async () => {
@@ -143,7 +183,7 @@ describe("notification delivery against an existing report card", () => {
     const h = harness();
     h.message[operation].mockRejectedValue(new Error("Discord unavailable: https://user:password@discord.example.test/api"));
     await h.worker.processOne();
-    expect(h.database.retryNotification).toHaveBeenCalledWith("event", "unexpected");
+    expect(h.database.retryNotification).toHaveBeenCalledWith("event", "unexpected", 1);
     const retryLog = h.logger.mock.calls.find(([event]) => event === "account_notification_retry");
     expect(retryLog?.[1]).toMatchObject({
       reportId: report.reportId,
@@ -216,7 +256,7 @@ describe("notification delivery against an existing report card", () => {
 
     await h.worker.processOne();
 
-    expect(h.database.ignoreNotification).toHaveBeenCalledWith("event", "discord_validation_50035");
+    expect(h.database.ignoreNotification).toHaveBeenCalledWith("event", "discord_validation_50035", 1);
     expect(h.database.retryNotification).not.toHaveBeenCalled();
     expect(h.logger).toHaveBeenCalledWith("account_notification_ignored", expect.objectContaining({
       reportId: report.reportId,
@@ -233,7 +273,7 @@ describe("notification delivery against an existing report card", () => {
     h.dm.messages.fetch.mockRejectedValue({ code: 10008 });
     await h.worker.processOne();
     expect(h.dm.send).not.toHaveBeenCalled();
-    expect(h.database.retryNotification).toHaveBeenCalledWith("event", "status_card_creation_in_progress");
+    expect(h.database.retryNotification).toHaveBeenCalledWith("event", "status_card_creation_in_progress", 1);
     expect(h.database.completeNotification).not.toHaveBeenCalled();
   });
 

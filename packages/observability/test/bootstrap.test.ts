@@ -89,6 +89,26 @@ describe("Sentry Node bootstrap", () => {
     expect(JSON.stringify(event)).not.toContain("https://provider.example");
   }, 40_000);
 
+  it.each([
+    ["fatal", ""],
+    ["unhandled", ""],
+    ["fatal", "not-a-dsn"],
+    ["unhandled", "not-a-dsn"]
+  ] as const)("redacts %s failures when Sentry is unavailable (DSN: %s)", async (mode, dsn) => {
+    const result = await runNode(["--import", disabledPreloadUrl, fixturePath, mode], {
+      ...process.env,
+      NODE_ENV: "production",
+      SENTRY_DSN: dsn
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('"level":"fatal"');
+    expect(result.stderr).not.toContain("canary-api-key-do-not-log");
+    expect(result.stderr).not.toContain("https://provider.example");
+    expect(result.stderr).not.toContain("Node.js v");
+    expect(result.stderr.match(/"level":"fatal"/gu)).toHaveLength(1);
+  }, 40_000);
+
   it("keeps the production CLI preload safe when the DSN is absent", async () => {
     const result = await runNode(["--enable-source-maps", "--import", disabledPreloadUrl, "-e", "process.stdout.write('app-loaded\\n')"], {
       ...process.env,

@@ -69,7 +69,7 @@ function worker(db:any, client:any, api:any){return new AccountNotificationWorke
 {
  const key=Buffer.alloc(32,1);const conn={...connection,encrypted_api_key:encryptJson('synthetic',key)};
  const claims:any[]=[];let failed=0;
- const db:any={notificationPreferences:async()=>({weeklyDigest:true,dailyDigest:false}),claimDigest:async(...args:any[])=>{claims.push(args);return true},completeDigest:async(...args:any[])=>{if(args[3]==='failed')failed++}};
+ const db:any={notificationPreferences:async()=>({weeklyDigest:true,dailyDigest:false}),claimDigest:async(...args:any[])=>{claims.push(args);return 1},completeDigest:async(...args:any[])=>{if(args[4]==='failed')failed++}};
  const original=DsaApi.prototype.digestActivity;
  DsaApi.prototype.digestActivity=async()=>{throw new Error('synthetic unavailable')};
  try{const w=new DigestWorker(db,{} as any,{dataEncryptionKey:key,apiBaseUrl:'https://example.test'} as any);await w.processConnection(conn,new Date('2026-09-07T23:30:00Z'));await w.processConnection(conn,new Date('2026-09-08T01:30:00Z'));assert.equal(failed,1);assert.equal(claims.length,1);console.log('PASS: failed late-Monday weekly digest is never reclaimed on Tuesday');}finally{DsaApi.prototype.digestActivity=original}

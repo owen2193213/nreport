@@ -97,6 +97,13 @@ action-history cursors are decimal strings within PostgreSQL's nonnegative signe
 clients must preserve them as strings without numeric conversion. Invalid cursors are rejected
 before querying the database.
 
+Lifecycle event IDs are allocated under a transaction-scoped publication lock after the parent
+account/report locks are acquired. An event visible above a feed cursor cannot be followed by a
+newly committed event below that cursor. IDs may have gaps after rollback and are not timestamps.
+The migration preserves existing event IDs and starts a fresh uncached sequence above existing
+IDs and the legacy sequence's reserved range. Existing cursors remain valid; historical events
+are not renumbered or automatically replayed.
+
 ## Creating a report
 
 ```http

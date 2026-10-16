@@ -53,6 +53,33 @@ class FlakyFingerprintTransport extends FakeTransport {
   }
 }
 
+class AmbiguousSubmissionTransport extends FakeTransport {
+  public override requestJson<T>(request: JsonRequest): Promise<T> {
+    this.requests.push(request);
+    if (request.method === "POST" && request.path === "guild_urf") {
+      return Promise.reject(new DiscordDsaNetworkError("connection closed after request"));
+    }
+    return Promise.resolve(undefined as T);
+  }
+}
+
+class FingerprintCookieTransport extends FakeTransport {
+  private cookieState = "before-fingerprint";
+
+  public override requestJson<T>(request: JsonRequest): Promise<T> {
+    if (request.path.includes("/experiments?")) {
+      this.requests.push(request);
+      this.cookieState = "after-fingerprint";
+      return Promise.resolve({ fingerprint: "generated-fp" } as T);
+    }
+    return super.requestJson<T>(request);
+  }
+
+  public override exportCookies(): string {
+    return this.cookieState;
+  }
+}
+
 describe("DiscordDsaClient", () => {
   it("constructs the code and verification requests", async () => {
     const transport = new FakeTransport();
@@ -113,6 +140,26 @@ describe("DiscordDsaClient", () => {
 
     expect(result).toEqual({ report_id: "123" });
     expect(transport.requests.at(-1)?.path).toBe("message_urf");
+  });
+
+  it("does not retry an ambiguous final guild submission", async () => {
+    const transport = new AmbiguousSubmissionTransport();
+    const client = new DiscordDsaClient({ fingerprint: "test-fp", transport });
+
+    await expect(
+      client.submitPrepared({
+        version: "1.0",
+        variant: "1",
+        language: "en",
+        breadcrumbs: [67, 66, 65, 155, 78, 77],
+        elements: {},
+        email_token: "token",
+        name: "guild_urf"
+      })
+    ).rejects.toThrow("connection closed after request");
+
+    expect(transport.requests).toHaveLength(1);
+    expect(transport.requests[0]?.path).toBe("guild_urf");
   });
 
   it("bootstraps and reuses a Discord fingerprint", async () => {
@@ -179,6 +226,16 @@ describe("DiscordDsaClient", () => {
     await expect(client.snapshotSession()).resolves.toEqual({
       fingerprint: "persisted-fp",
       cookies: '{"cookies":[]}'
+    });
+  });
+
+  it("snapshots cookies after fingerprint bootstrap can update the jar", async () => {
+    const transport = new FingerprintCookieTransport();
+    const client = new DiscordDsaClient({ transport });
+
+    await expect(client.snapshotSession()).resolves.toEqual({
+      fingerprint: "generated-fp",
+      cookies: "after-fingerprint"
     });
   });
 

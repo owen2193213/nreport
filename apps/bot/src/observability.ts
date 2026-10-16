@@ -1,4 +1,7 @@
 import { createHmac } from "node:crypto";
+import { safeErrorSummary } from "@nreport/observability";
+
+export { captureLifecycleFailure } from "@nreport/observability";
 
 interface LogFields {
   [key: string]: unknown;
@@ -22,16 +25,22 @@ export function errorFields(error: unknown): LogFields {
     "AbortError", "AggregateError", "DiscordAPIError", "DsaApiError", "Error",
     "FetchError", "RangeError", "ReferenceError", "SyntaxError", "TypeError"
   ]);
-  const code = candidate.code === undefined ? undefined : String(candidate.code).slice(0, 64);
+  const code = candidate.code === undefined
+    ? undefined
+    : safeErrorSummary(new Error(String(candidate.code))).message.slice(0, 64);
   const status = Number.isInteger(candidate.status) && candidate.status! >= 100 && candidate.status! <= 599
     ? candidate.status
     : undefined;
   const rawError = (error as Error & { rawError?: unknown }).rawError;
+  const summary = safeErrorSummary(error);
   return {
     errorName: allowedNames.has(error.name) ? error.name : "Error",
+    errorMessage: summary.message,
+    ...(summary.stack === undefined ? {} : { errorStack: summary.stack }),
+    ...(summary.causes.length === 0 ? {} : { errorCauses: summary.causes }),
     ...(code === undefined ? {} : { errorCode: code }),
     ...(status === undefined ? {} : { httpStatus: status }),
-    ...(isDiscordValidationFailure(error) ? { discordValidation: discordValidationSummary(rawError) } : {})
+    ...(isDiscordValidationFailure(error) ? { discordValidation: discordValidationSummary(rawError, summary.message) } : {})
   };
 }
 
@@ -40,12 +49,12 @@ export function isDiscordValidationFailure(error: unknown): boolean {
   return candidate?.status === 400 && String(candidate.code) === "50035";
 }
 
-function discordValidationSummary(rawError: unknown): { message?: string; paths: string[] } {
+function discordValidationSummary(rawError: unknown, message: string): { message: string; paths: string[] } {
   const candidate = rawError as { message?: unknown; errors?: unknown } | null;
   const paths: string[] = [];
   collectValidationPaths(candidate?.errors, [], paths);
   return {
-    ...(typeof candidate?.message === "string" ? { message: candidate.message.slice(0, 1_000) } : {}),
+    message,
     paths: paths.slice(0, 50)
   };
 }
@@ -80,16 +89,34 @@ export function safeErrorCategory(error: unknown): string {
 }
 
 export function botLog(event: string, fields: LogFields = {}, level: LogLevel = "info"): void {
+  const safeFields = jsonSafeFields(fields);
   const record = JSON.stringify({
     timestamp: new Date().toISOString(),
     level,
     service: "nreport-discord-dsa-bot",
     event,
-    ...fields
+    ...safeFields
   });
   const stream = level === "error" ? process.stderr : process.stdout;
-  stream.write(`${record}\n`);
-  try { diagnosticSink?.(event, fields, level); } catch { /* diagnostics never stop bot work */ }
+  try { stream.write(`${record}\n`); } catch { /* broken log streams never stop bot work */ }
+  try { diagnosticSink?.(event, safeFields, level); } catch { /* diagnostics never stop bot work */ }
+}
+
+function jsonSafeFields(fields: LogFields): LogFields {
+  try {
+    const seen = new WeakSet<object>();
+    const serialized = JSON.stringify(fields, (_key, value: unknown) => {
+      if (typeof value === "bigint") return value.toString();
+      if (typeof value === "object" && value !== null) {
+        if (seen.has(value)) return "[circular]";
+        seen.add(value);
+      }
+      return value;
+    });
+    return serialized === undefined ? {} : JSON.parse(serialized) as LogFields;
+  } catch {
+    return { loggingFieldsUnavailable: true };
+  }
 }
 
 export function pseudonymousActorKey(userId: string, secret: string): string {

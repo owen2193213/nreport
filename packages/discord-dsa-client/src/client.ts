@@ -143,14 +143,11 @@ export class DiscordDsaClient {
   }
 
   public async snapshotSession(): Promise<DiscordDsaSessionState> {
-    const cookies = this.transport.exportCookies?.();
-    if (cookies === undefined) {
+    if (this.transport.exportCookies === undefined) {
       throw new DiscordDsaError("The configured transport cannot export session cookies.");
     }
-    return {
-      fingerprint: await this.bootstrapFingerprint(),
-      cookies
-    };
+    const fingerprint = await this.bootstrapFingerprint();
+    return { fingerprint, cookies: this.transport.exportCookies() };
   }
 
   public async bootstrapFingerprint(): Promise<string> {

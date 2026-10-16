@@ -31,11 +31,13 @@ import { reportRetryableModes, type AccountReportRow, type ReportRepository } fr
 import { inspectDiscordEmail } from "./email.js";
 import { encryptJson, safeEqual, sha256Hex, verifyEmailDiagnosticSignature, verifyInboundSignature } from "./security.js";
 import { parseCreateReportInput, parseRetryReportInput } from "./validation.js";
+import { isEventCursor } from "./pagination.js";
 import { supportedCountries } from "./pseudonyms.js";
 import type { WebhookDestinationRepository } from "./webhook-destinations.js";
 import type { AnalyticsRepository } from "./analytics-repository.js";
 import { resolveAnalyticsInterval } from "./analytics.js";
 import type { AnalyticsInterval, AnalyticsPeriod } from "@nreport/contracts";
+import { captureLifecycleFailure, safeErrorSummary } from "@nreport/observability";
 
 interface AccountStore {
   authenticate(key: string): Promise<AccountPrincipal | null>;
@@ -44,6 +46,7 @@ interface AccountStore {
   createAccount(input: AdminCreateAccountInput): Promise<unknown>;
   adminAccount(accountId: string): Promise<unknown>;
   listAccounts(): Promise<unknown[]>;
+  listKeyInventory(page: number): Promise<unknown>;
   issueKey(accountId: string): Promise<{ keyId: string; prefix: string; plaintext: string }>;
   rotateKey(accountId: string, overlapSeconds?: number): Promise<{ keyId: string; prefix: string; plaintext: string }>;
   listKeys(accountId: string): Promise<unknown[]>;
@@ -188,6 +191,13 @@ const openApiDocument = {
       get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Accounts" } } },
       post: { security: [{ administratorKey: [] }], requestBody: jsonRequest(adminCreateAccountBodySchema), responses: { "201": { description: "Created account" } } }
     },
+    [`${DSA_ADMIN_BASE_PATH}/keys`]: {
+      get: {
+        security: [{ administratorKey: [] }],
+        parameters: [{ in: "query", name: "page", required: false, schema: { type: "integer", minimum: 1, maximum: 1_000_000 } }],
+        responses: { "200": { description: "Paginated API key metadata without plaintext secrets or hashes" }, "400": { description: "Invalid page" } }
+      }
+    },
     [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}`]: { get: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], responses: { "200": { description: "Account" }, "404": { description: "Not found" } } } },
     [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/keys`]: {
       get: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], responses: { "200": { description: "Keys without plaintext secrets" } } },
@@ -200,7 +210,11 @@ const openApiDocument = {
     [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/reinstate`]: { post: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(auditReasonBodySchema), responses: { "200": { description: "Reinstated account" } } } },
     [`${DSA_ADMIN_BASE_PATH}/accounts/{accountId}/webhook-destination`]: { put: { security: [{ administratorKey: [] }], parameters: [accountIdParameter], requestBody: jsonRequest(assignWebhookDestinationBodySchema), responses: { "204": { description: "Assignment updated" } } } },
     [`${DSA_ADMIN_BASE_PATH}/usage`]: { get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Global account usage" } } } },
-    [`${DSA_ADMIN_BASE_PATH}/diagnostics`]: { get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Operational diagnostics" } } } },
+    [`${DSA_ADMIN_BASE_PATH}/diagnostics`]: { get: {
+      security: [{ administratorKey: [] }],
+      parameters: [{ name: "reportId", in: "query", required: false, schema: { type: "string", format: "uuid" }, description: "Add bounded report lifecycle diagnostics without mail, payloads, or credentials" }],
+      responses: { "200": { description: "Operational diagnostics with optional report health" }, "400": { description: "Invalid report ID" } }
+    } },
     [`${DSA_ADMIN_BASE_PATH}/webhook-destinations`]: {
       get: { security: [{ administratorKey: [] }], responses: { "200": { description: "Webhook destinations" } } },
       post: { security: [{ administratorKey: [] }], requestBody: jsonRequest(createWebhookDestinationBodySchema), responses: { "201": { description: "Created destination" } } }
@@ -421,7 +435,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
       if (principal === undefined) return;
       const after = request.query.after ?? null;
       const limit = request.query.limit === undefined ? 50 : Number(request.query.limit);
-      if ((after !== null && !/^\d+$/.test(after)) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      if (!isEventCursor(after) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
         return apiError(reply, request, 400, "invalid_cursor", "Event cursor or limit is invalid.");
       }
       return reply.send(await dependencies.reports.listEvents(principal.accountId, after, limit));
@@ -472,7 +486,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
           reply.header("Retry-After", "60");
           return apiError(reply, request, 429, code, message);
         }
-        if (code === "idempotency_conflict" || code === "invalid_retry" || code === "retry_cooldown") {
+        if (code === "idempotency_conflict" || code === "invalid_retry") {
           return apiError(reply, request, 409, String(code), message);
         }
         throw error;
@@ -494,12 +508,27 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
   app.get(`${DSA_ADMIN_BASE_PATH}/accounts`, { preHandler: adminAuth }, async (_request, reply) =>
     reply.send({ items: await dependencies.accounts.listAccounts() })
   );
+  app.get<{ Querystring: { page?: string } }>(`${DSA_ADMIN_BASE_PATH}/keys`, { preHandler: adminAuth }, async (request, reply) => {
+    const rawPage = request.query.page;
+    const page = rawPage === undefined ? 1 : Number(rawPage);
+    if (rawPage !== undefined && (typeof rawPage !== "string" || !/^\d+$/u.test(rawPage) ||
+      !Number.isSafeInteger(page) || page < 1 || page > 1_000_000)) {
+      return apiError(reply, request, 400, "invalid_key_page", "Page must be an integer between 1 and 1000000.");
+    }
+    return reply.send(await dependencies.accounts.listKeyInventory(page));
+  });
   app.get(`${DSA_ADMIN_BASE_PATH}/usage`, { preHandler: adminAuth }, async (_request, reply) =>
     reply.send(await dependencies.accounts.globalUsage())
   );
-  app.get(`${DSA_ADMIN_BASE_PATH}/diagnostics`, { preHandler: adminAuth }, async (_request, reply) =>
-    reply.send(await dependencies.reports.operationalDiagnostics())
-  );
+  app.get<{ Querystring: { reportId?: string } }>(`${DSA_ADMIN_BASE_PATH}/diagnostics`, { preHandler: adminAuth }, async (request, reply) => {
+    const reportId = request.query.reportId;
+    if (reportId !== undefined && (typeof reportId !== "string" || !UUID_PATTERN.test(reportId))) {
+      return apiError(reply, request, 400, "invalid_report_id", "Report ID must be a UUID.");
+    }
+    return reply.send(await (reportId === undefined
+      ? dependencies.reports.operationalDiagnostics()
+      : dependencies.reports.operationalDiagnostics(reportId)));
+  });
   app.get<{ Params: { accountId: string } }>(`${DSA_ADMIN_BASE_PATH}/accounts/:accountId`, { preHandler: adminAuth }, async (request, reply) => {
     if (!UUID_PATTERN.test(request.params.accountId)) return apiError(reply, request, 404, "account_not_found", "Account was not found.");
     const account = await dependencies.accounts.adminAccount(request.params.accountId);
@@ -607,7 +636,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     const interval = analyticsInterval(request.query);
     const limit = request.query.limit === undefined ? 50 : Number(request.query.limit);
     const after = request.query.after ?? null;
-    if (interval === null || !Number.isSafeInteger(limit) || limit < 1 || limit > 100 || (after !== null && !/^\d+$/.test(after))) {
+    if (interval === null || !Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !isEventCursor(after)) {
       return apiError(reply, request, 400, "invalid_interval", "Action history query is invalid.");
     }
     return reply.send(await dependencies.analytics.actionHistory(principal.accountId, interval, after, limit));
@@ -712,16 +741,34 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
     if (statusCode === 429) request.log.warn({
       event: "api_request_rate_limited", operation: request.routeOptions.url ?? "unknown", httpStatus: statusCode
     }, "Request rate limited");
-    if (statusCode >= 500) request.log.error({
-      event: "api_request_failed", operation: request.routeOptions.url ?? "unknown", errorCategory: error instanceof Error ? error.name : "unknown",
-      supportReference, httpStatus: statusCode
+      if (statusCode >= 500) request.log.error({
+        event: "api_request_failed", operation: request.routeOptions.url ?? "unknown", errorCategory: error instanceof Error ? error.name : "unknown",
+        supportReference, httpStatus: statusCode, requestId: request.id, method: request.method,
+        ...safeErrorLogFields(error)
     }, "Request failed");
+      if (statusCode >= 500) {
+        captureLifecycleFailure(error, {
+          service: "api", operation: "http_request", requestId: request.id,
+          method: request.method, route: request.routeOptions.url ?? "unknown", statusCode,
+          errorCategory: error instanceof Error ? error.name : "unknown", outcome: "failed"
+        });
+      }
     const safeCode = statusCode >= 500 ? "internal_error" : statusCode === 429 ? "rate_limited" : code;
     const message = statusCode >= 500 ? "An internal error occurred." : statusCode === 429 ? "Request rate limit exceeded." : error instanceof Error ? error.message : "Request failed.";
     return apiError(reply, request, statusCode, safeCode, message, supportReference);
   });
 
   return app;
+}
+
+function safeErrorLogFields(error: unknown): Record<string, unknown> {
+  const summary = safeErrorSummary(error);
+  return {
+    errorName: summary.name,
+    errorMessage: summary.message,
+    ...(summary.stack === undefined ? {} : { errorStack: summary.stack }),
+    ...(summary.causes.length === 0 ? {} : { errorCauses: summary.causes })
+  };
 }
 
 function singleHeader(request: FastifyRequest, name: string): string | undefined {

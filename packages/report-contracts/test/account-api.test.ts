@@ -107,6 +107,25 @@ describe("account-owned API client", () => {
     expect(JSON.parse(init?.body as string)).toEqual({ destinationId: null });
   });
 
+  it("reads one page of global key inventory with administrator credentials", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], page: 3, pageSize: 5, total: 11 }), {
+        headers: { "content-type": "application/json" }
+      })
+    );
+    const admin = new DsaAdminApi({
+      baseUrl: "https://api.example.test",
+      adminKey: "admin-secret",
+      fetch: fetchMock
+    });
+
+    await expect(admin.keyInventory(3)).resolves.toMatchObject({ page: 3, pageSize: 5, total: 11 });
+
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url instanceof URL ? url.href : undefined).toBe("https://api.example.test/v1/admin/discord/dsa/keys?page=3");
+    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer admin-secret");
+  });
+
   it("retains the request correlation id from the common error envelope", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

@@ -163,7 +163,11 @@ export class UndiciJsonTransport implements JsonTransport {
       });
     }
 
-    await response.body.text();
+    try {
+      await response.body.text();
+    } catch (error) {
+      throw new DiscordDsaNetworkError(`Network response failed for GET ${url.pathname}.`, { cause: error });
+    }
     if (response.statusCode < 300 || response.statusCode >= 400) {
       throw new DiscordDsaHttpError(
         `Discord returned HTTP ${response.statusCode} for GET ${url.pathname}.`,
@@ -213,7 +217,15 @@ export class UndiciJsonTransport implements JsonTransport {
       await this.cookieJar.setCookie(setCookie, url.toString(), { ignoreError: true });
     }
 
-    const responseText = await response.body.text();
+    let responseText: string;
+    try {
+      responseText = await response.body.text();
+    } catch (error) {
+      throw new DiscordDsaNetworkError(
+        `Network response failed for ${requestOptions.method} ${url.pathname}.`,
+        { cause: error }
+      );
+    }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       const retryAfterSeconds = parseRetryAfter(response.headers["retry-after"]);
       const responseSummary = summarizeDiscordErrorBody(responseText);

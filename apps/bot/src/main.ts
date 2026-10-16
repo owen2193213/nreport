@@ -1,3 +1,5 @@
+import "@nreport/observability/instrument-bot";
+
 import { Client, Events, GatewayIntentBits } from "discord.js";
 
 import { AccountBotDatabase } from "./account-database.js";
@@ -11,7 +13,16 @@ import { BOT_PRESENCE } from "./presence.js";
 import { ProfileResolver } from "./profile-resolver.js";
 import { ServerResolver } from "./server-resolver.js";
 import { DigestWorker } from "./digest-worker.js";
-import { setBotDiagnosticSink } from "./observability.js";
+import { botLog, captureLifecycleFailure, errorFields, setBotDiagnosticSink } from "./observability.js";
+import { flushSentry } from "@nreport/observability";
+
+async function flushSentrySafely(): Promise<void> {
+  try {
+    await flushSentry();
+  } catch {
+    // Telemetry flushing must never keep startup failure or process shutdown alive.
+  }
+}
 
 async function main(): Promise<void> {
   const config = loadBotConfig();
@@ -69,19 +80,36 @@ async function main(): Promise<void> {
     if (stopping) return;
     stopping = true;
     process.stdout.write(`Shutting down after ${signal}.\n`);
-    await notifier.stop();
-    await digests.stop();
+    const finish = async (stage: string, action: () => Promise<unknown>): Promise<void> => {
+      try {
+        await action();
+      } catch (error) {
+        botLog("bot_shutdown_failed", { ...errorFields(error), stage, outcome: "failed" }, "error");
+        captureLifecycleFailure(error, {
+          service: "bot", operation: "shutdown", stage, outcome: "failed", severity: "error"
+        });
+      }
+    };
+    await finish("notification_workers", () => notifier.stop());
+    await finish("digest_worker", () => digests.stop());
     clearInterval(diagnosticsPurge);
+    await finish("discord_client", async () => client.destroy());
+    await finish("health_server", () => health.close());
+    await finish("database", () => database.close());
     setBotDiagnosticSink(undefined);
-    await client.destroy();
-    await health.close();
-    await database.close();
+    await flushSentrySafely();
   };
   process.once("SIGINT", () => void stop("SIGINT"));
   process.once("SIGTERM", () => void stop("SIGTERM"));
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`Bot startup failed: ${error instanceof Error ? error.message : "Unknown startup error"}\n`);
+main().catch(async (error: unknown) => {
+  botLog("bot_startup_failed", {
+    ...errorFields(error), stage: "startup", outcome: "failed"
+  }, "error");
+  captureLifecycleFailure(error, {
+    service: "bot", operation: "startup", stage: "bootstrap", outcome: "failed", severity: "error"
+  });
+  await flushSentrySafely();
   process.exitCode = 1;
 });

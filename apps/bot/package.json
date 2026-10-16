@@ -5,16 +5,18 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "dev": "tsx watch src/main.ts",
+    "predev": "npm run build -w @nreport/observability",
+    "dev": "node --import @nreport/observability/instrument-bot --import tsx/esm --watch src/main.ts",
     "register": "tsx src/register-commands.ts",
     "repair:report-flow": "tsx src/repair-report-flow.ts",
-    "start": "node dist/main.js",
+    "start": "node --enable-source-maps --import @nreport/observability/instrument-bot dist/main.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run test"
   },
   "dependencies": {
     "@nreport/contracts": "0.1.0",
-    "discord.js": "^14.27.0",
+    "@nreport/observability": "0.1.0",
+    "discord.js": "14.27.0",
     "pg": "^8.22.0",
     "tslib": "^2.8.1"
   },

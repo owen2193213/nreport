@@ -259,6 +259,35 @@ describe("PreparationWorker", () => {
     );
   });
 
+  it("persists a specific payment-required reason without suggesting a retry", async () => {
+    const paymentError = Object.assign(new Error("Payment required; api_key=private-token"), { kind: "payment_required" });
+    const store = {
+      claimPreparation: vi.fn(async () => ({
+        jobId: "job-5",
+        report: {
+          ...baseReport,
+          flow: "message" as const,
+          use_ai: true,
+          request_input: { flow: "message" as const, useAi: true as const, target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" } }
+        }
+      })),
+      transition: vi.fn(async () => true),
+      completePreparation: vi.fn(),
+      failPreparation: vi.fn()
+    };
+    const worker = new PreparationWorker(store as never, { prepare: vi.fn(async () => { throw paymentError; }) }, vi.fn() as never);
+
+    await worker.processOne();
+
+    expect(store.failPreparation).toHaveBeenCalledWith(
+      "job-5",
+      "report-1",
+      "preparation_payment_required",
+      "Report preparation is unavailable because the writing provider requires payment or credit. Contact support.",
+      undefined
+    );
+  });
+
   it("emits a correlated diagnostic for an otherwise unexpected preparation failure", async () => {
     const unexpected = new Error("provider returned secret-token-123 for https://example.test/private/report");
     const store = {
@@ -279,8 +308,9 @@ describe("PreparationWorker", () => {
     await worker.processOne();
 
     expect(iterationErrors).toHaveLength(1);
-    const diagnostic = iterationErrors[0] as { originalName?: unknown; stackFingerprint?: unknown };
+    const diagnostic = iterationErrors[0] as Error & { originalName?: unknown; stackFingerprint?: unknown };
     expect(diagnostic).toMatchObject({ originalName: "Error" });
+    expect(diagnostic.cause).toBe(unexpected);
     expect(typeof diagnostic.stackFingerprint).toBe("string");
   });
 });

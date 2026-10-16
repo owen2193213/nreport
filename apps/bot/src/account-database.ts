@@ -5,6 +5,9 @@ import { boundedDiagnostic } from "@nreport/contracts";
 import { Pool, type QueryResultRow } from "pg";
 
 const IMMEDIATE_LIFECYCLE_EVENT_TYPES = [
+  "verification_received",
+  "report_submitted",
+  "discord:received",
   "report_failed",
   "report_receipt_timeout",
   "review_confirmation_timeout",
@@ -118,9 +121,11 @@ CREATE TABLE IF NOT EXISTS digest_deliveries (
   period_start timestamptz NOT NULL,
   period_end timestamptz NOT NULL,
   state text NOT NULL DEFAULT 'sending' CHECK (state IN ('sending', 'sent', 'skipped', 'failed')),
+  attempts integer NOT NULL DEFAULT 1,
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (discord_user_id, kind, period_start)
 );
+ALTER TABLE digest_deliveries ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 1;
 
 CREATE TABLE IF NOT EXISTS bot_report_diagnostics (
   id bigserial PRIMARY KEY,
@@ -192,6 +197,13 @@ export interface PendingCardRepair extends QueryResultRow {
   encrypted_target_context: string | null;
   encrypted_api_key: string;
   card_repair_attempts: number;
+}
+
+export interface NotificationHealthSnapshot {
+  pendingNotificationCount: number;
+  oldestPendingNotificationAgeMs: number | null;
+  pendingCardUpdateCount: number;
+  oldestPendingCardUpdateAgeMs: number | null;
 }
 
 export type EventIngestionResult = "accepted" | "duplicate" | "not_tracked_yet" | "disconnected";
@@ -448,7 +460,8 @@ export class AccountBotDatabase {
   public async setDmMapping(reportId: string, channelId: string, messageId: string): Promise<void> {
     await this.pool.query(
       `UPDATE bot_report_links SET dm_channel_id = $2, dm_message_id = $3,
-         dm_claimed_at = NULL, card_repair_claimed_at = NULL, updated_at = now() WHERE report_id = $1`,
+         dm_claimed_at = NULL, card_repair_claimed_at = NULL, updated_at = now()
+       WHERE report_id = $1 AND superseded_by_report_id IS NULL`,
       [reportId, channelId, messageId]
     );
   }
@@ -629,6 +642,7 @@ export class AccountBotDatabase {
          WHERE ((inbox.state = 'pending' AND inbox.run_at <= now())
             OR (inbox.state = 'sending' AND inbox.locked_at < now() - interval '2 minutes'))
            AND card_link.superseded_by_report_id IS NULL
+           AND EXISTS (SELECT 1 FROM api_connections AS active_connection WHERE active_connection.account_id = inbox.account_id)
            AND (inbox.event_type IN (${immediateLifecycleEventSql})
              OR card_link.last_card_edit_at IS NULL OR card_link.last_card_edit_at <= now() - interval '5 seconds')
            AND NOT EXISTS (
@@ -652,22 +666,77 @@ export class AccountBotDatabase {
     return result.rows[0] ?? null;
   }
 
-  public async completeNotification(eventId: string): Promise<void> {
-    await this.pool.query("UPDATE lifecycle_inbox SET state = 'sent', locked_at = NULL WHERE event_id = $1", [eventId]);
+  public async notificationHealthSnapshot(): Promise<NotificationHealthSnapshot> {
+    const result = await this.pool.query<{
+      pending_notification_count: string | number;
+      oldest_pending_notification_age_ms: string | number | null;
+      pending_card_update_count: string | number;
+      oldest_pending_card_update_age_ms: string | number | null;
+    }>(
+      `WITH notification_backlog AS (
+         SELECT inbox.created_at, inbox.report_id
+         FROM lifecycle_inbox AS inbox
+         JOIN bot_report_links AS link ON link.report_id = inbox.report_id
+         JOIN api_connections AS connection ON connection.account_id = inbox.account_id
+         WHERE inbox.state IN ('pending', 'sending') AND link.superseded_by_report_id IS NULL
+       ), card_updates AS (
+         SELECT inbox.created_at AS queued_at
+         FROM lifecycle_inbox AS inbox
+         JOIN bot_report_links AS link ON link.report_id = inbox.report_id
+         JOIN api_connections AS connection ON connection.account_id = inbox.account_id
+         WHERE inbox.state IN ('pending', 'sending') AND link.superseded_by_report_id IS NULL
+           AND link.dm_message_id IS NOT NULL
+           AND (link.last_card_edit_at IS NULL OR inbox.created_at > link.last_card_edit_at)
+         UNION ALL
+         SELECT link.created_at AS queued_at
+         FROM bot_report_links AS link
+         JOIN api_connections AS connection ON connection.account_id = link.account_id
+         WHERE link.report_id IS NOT NULL AND link.superseded_by_report_id IS NULL
+           AND link.dm_message_id IS NULL AND link.card_repair_terminal_at IS NULL
+       )
+       SELECT
+         (SELECT count(*) FROM notification_backlog)::text AS pending_notification_count,
+         (SELECT floor(extract(epoch FROM (now() - min(created_at))) * 1000) FROM notification_backlog)::text AS oldest_pending_notification_age_ms,
+         (SELECT count(*) FROM card_updates)::text AS pending_card_update_count,
+         (SELECT floor(extract(epoch FROM (now() - min(queued_at))) * 1000) FROM card_updates)::text AS oldest_pending_card_update_age_ms`
+    );
+    const row = result.rows[0];
+    const count = (value: string | number | null | undefined): number => {
+      const parsed = Number(value ?? 0);
+      return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+    };
+    const age = (value: string | number | null | undefined): number | null => {
+      if (value === null || value === undefined) return null;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : null;
+    };
+    return {
+      pendingNotificationCount: count(row?.pending_notification_count),
+      oldestPendingNotificationAgeMs: age(row?.oldest_pending_notification_age_ms),
+      pendingCardUpdateCount: count(row?.pending_card_update_count),
+      oldestPendingCardUpdateAgeMs: age(row?.oldest_pending_card_update_age_ms)
+    };
   }
 
-  public async retryNotification(eventId: string, error: string): Promise<void> {
+  public async completeNotification(eventId: string, attempt: number): Promise<void> {
     await this.pool.query(
-      `UPDATE lifecycle_inbox SET state = 'pending', locked_at = NULL, last_error = $2,
-         run_at = now() + interval '30 seconds' WHERE event_id = $1`,
-      [eventId, error.slice(0, 300)]
+      "UPDATE lifecycle_inbox SET state = 'sent', locked_at = NULL WHERE event_id = $1 AND state = 'sending' AND attempts = $2",
+      [eventId, attempt]
     );
   }
 
-  public async ignoreNotification(eventId: string, error: string): Promise<void> {
+  public async retryNotification(eventId: string, error: string, attempt: number): Promise<void> {
     await this.pool.query(
-      "UPDATE lifecycle_inbox SET state = 'ignored', locked_at = NULL, last_error = $2 WHERE event_id = $1",
-      [eventId, error.slice(0, 300)]
+      `UPDATE lifecycle_inbox SET state = 'pending', locked_at = NULL, last_error = $2,
+         run_at = now() + interval '30 seconds' WHERE event_id = $1 AND state = 'sending' AND attempts = $3`,
+      [eventId, error.slice(0, 300), attempt]
+    );
+  }
+
+  public async ignoreNotification(eventId: string, error: string, attempt: number): Promise<void> {
+    await this.pool.query(
+      "UPDATE lifecycle_inbox SET state = 'ignored', locked_at = NULL, last_error = $2 WHERE event_id = $1 AND state = 'sending' AND attempts = $3",
+      [eventId, error.slice(0, 300), attempt]
     );
   }
 
@@ -711,25 +780,26 @@ export class AccountBotDatabase {
     return this.notificationPreferences(discordUserId);
   }
 
-  public async claimDigest(discordUserId: string, kind: "daily" | "weekly", startAt: string, endAt: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `INSERT INTO digest_deliveries (discord_user_id, kind, period_start, period_end)
-       VALUES ($1, $2, $3, $4)
+  public async claimDigest(discordUserId: string, kind: "daily" | "weekly", startAt: string, endAt: string): Promise<number | null> {
+    const result = await this.pool.query<{ attempts: number }>(
+      `INSERT INTO digest_deliveries (discord_user_id, kind, period_start, period_end, attempts)
+       VALUES ($1, $2, $3, $4, 1)
        ON CONFLICT (discord_user_id, kind, period_start) DO UPDATE
-       SET state = 'sending', updated_at = now()
+       SET state = 'sending', attempts = digest_deliveries.attempts + 1, updated_at = now()
        WHERE digest_deliveries.updated_at < now() - interval '1 hour'
          AND digest_deliveries.state IN ('failed', 'sending')
-       RETURNING discord_user_id`,
+       RETURNING attempts`,
       [discordUserId, kind, startAt, endAt]
     );
-    return result.rowCount === 1;
+    return result.rows[0]?.attempts ?? null;
   }
 
-  public async completeDigest(discordUserId: string, kind: "daily" | "weekly", startAt: string, state: "sent" | "skipped" | "failed"): Promise<void> {
+  public async completeDigest(discordUserId: string, kind: "daily" | "weekly", startAt: string, attempt: number, state: "sent" | "skipped" | "failed"): Promise<void> {
     await this.pool.query(
-      `UPDATE digest_deliveries SET state = $4, updated_at = now()
-       WHERE discord_user_id = $1 AND kind = $2 AND period_start = $3`,
-      [discordUserId, kind, startAt, state]
+      `UPDATE digest_deliveries SET state = $5, updated_at = now()
+       WHERE discord_user_id = $1 AND kind = $2 AND period_start = $3
+         AND state = 'sending' AND attempts = $4`,
+      [discordUserId, kind, startAt, attempt, state]
     );
   }
 }

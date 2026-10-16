@@ -2,10 +2,12 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "RAILPACK",
-    "buildCommand": "npm run build -w @nreport/contracts && npm run build -w @nreport/discord-dsa-bot",
+    "buildCommand": "npm run build -w @nreport/observability && npm run build -w @nreport/contracts && npm run build -w @nreport/discord-dsa-bot",
     "watchPatterns": [
       "apps/bot/**",
+      "packages/observability/**",
       "packages/report-contracts/**",
+      "scripts/patch-discordjs-poll.mjs",
       "package.json",
       "package-lock.json",
       "tsconfig.base.json"

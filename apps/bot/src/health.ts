@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import type { ReportLifecycleEvent } from "@nreport/contracts";
+import { botLog, captureLifecycleFailure, errorFields, safeErrorCategory } from "./observability.js";
 
 import type { AccountBotDatabase, EventIngestionResult } from "./account-database.js";
 import { verifyReportEventSignature } from "./crypto.js";
@@ -12,6 +13,7 @@ export function reportEventIngestionStatus(result: EventIngestionResult): 202 {
 
 export class HealthServer {
   private server: Server | undefined;
+  private readonly reportedSentryFailures = new Set<string>();
 
   public constructor(
     private readonly database: AccountBotDatabase,
@@ -48,6 +50,7 @@ export class HealthServer {
   }
 
   private async event(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    let event: ReportLifecycleEvent;
     try {
       const body = await readBody(request);
       const eventId = request.headers["x-report-event-id"];
@@ -58,15 +61,40 @@ export class HealthServer {
         json(response, 401, { error: "invalid_signature" });
         return;
       }
-      const event = JSON.parse(body) as Partial<ReportLifecycleEvent>;
-      if (event.eventId !== eventId || !isReportLifecycleEvent(event)) {
+      const candidate = JSON.parse(body) as Partial<ReportLifecycleEvent>;
+      if (candidate.eventId !== eventId || !isReportLifecycleEvent(candidate)) {
         json(response, 400, { error: "invalid_event" });
         return;
       }
-      const result = await this.database.ingestEvent(event);
-      json(response, reportEventIngestionStatus(result), { status: result });
+      event = candidate;
     } catch {
       json(response, 400, { error: "invalid_event" });
+      return;
+    }
+
+    try {
+      const result = await this.database.ingestEvent(event);
+      this.reportedSentryFailures.delete(event.eventId);
+      json(response, reportEventIngestionStatus(result), { status: result });
+    } catch (error) {
+      botLog("report_event_ingestion_failed", {
+        reportId: event.reportId, traceId: event.traceId, eventType: event.type,
+        stage: "webhook_ingestion", outcome: "retrying", ...errorFields(error),
+        failureCategory: safeErrorCategory(error)
+      }, "error");
+      if (!this.reportedSentryFailures.has(event.eventId)) {
+        if (this.reportedSentryFailures.size >= 2_048) {
+          const oldest = this.reportedSentryFailures.values().next().value;
+          if (oldest !== undefined) this.reportedSentryFailures.delete(oldest);
+        }
+        this.reportedSentryFailures.add(event.eventId);
+        captureLifecycleFailure(error, {
+          service: "bot", operation: "lifecycle_webhook_ingestion",
+          reportId: event.reportId, traceId: event.traceId, eventType: event.type,
+          lifecycleAttempt: event.lifecycleAttempt, stage: "webhook_ingestion", outcome: "retrying", severity: "error"
+        });
+      }
+      json(response, 503, { error: "temporarily_unavailable" });
     }
   }
 }

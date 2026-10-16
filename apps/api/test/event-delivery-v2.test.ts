@@ -73,6 +73,161 @@ describe("account event delivery", () => {
     expect(delay).toBeLessThanOrEqual(1_000);
   });
 
+  it("keeps correlated transport details and captures a persistently failing delivery", async () => {
+    const delivery = {
+      event_id: "42", destination_id: "dest-1", destination_url: "https://bot.example.test/events",
+      encrypted_signing_secret: "encrypted", attempts: 5, created_at: new Date(), account_id: "account-1",
+      report_id: "report-1", trace_id: "33333333-3333-4333-8333-333333333333",
+      event_type: "report_failed", lifecycle_attempt: 2, occurred_at: new Date()
+    };
+    const transportError = new Error("fetch failed; password=webhook-secret");
+    const logger = vi.fn();
+    const captureFailure = vi.fn();
+    const store = {
+      claimEventDelivery: vi.fn(async () => delivery),
+      completeEventDelivery: vi.fn(),
+      retryEventDelivery: vi.fn()
+    };
+    const worker = new AccountEventDeliveryWorker(store, {
+      decrypt: () => "secret",
+      fetcher: vi.fn(async () => { throw transportError; }),
+      now: () => new Date(),
+      log: logger,
+      onFailure: captureFailure
+    });
+
+    await worker.processOne();
+
+    expect(logger).toHaveBeenCalledWith("event_delivery_retry", expect.objectContaining({
+      reportId: delivery.report_id,
+      traceId: delivery.trace_id,
+      eventType: delivery.event_type,
+      lifecycleAttempt: 2,
+      attempts: 5,
+      errorMessage: "fetch failed; password=[REDACTED]"
+    }), "warn");
+    expect(JSON.stringify(logger.mock.calls)).not.toContain("webhook-secret");
+    expect(captureFailure).toHaveBeenCalledWith(transportError, delivery);
+  });
+
+  it("captures retry-state persistence failures with delivery context and preserves the persistence cause", async () => {
+    const delivery = {
+      event_id: "42", destination_id: "dest-1", destination_url: "https://bot.example.test/events",
+      encrypted_signing_secret: "encrypted", attempts: 2, created_at: new Date(), account_id: "account-1",
+      report_id: "report-1", trace_id: "33333333-3333-4333-8333-333333333333",
+      event_type: "report_failed", lifecycle_attempt: 3, occurred_at: new Date()
+    };
+    const transportError = new Error("fetch failed");
+    const persistenceError = new Error("database unavailable; password=unsafe-secret");
+    const logger = vi.fn();
+    const capturePersistenceFailure = vi.fn();
+    const store = {
+      claimEventDelivery: vi.fn(async () => delivery),
+      completeEventDelivery: vi.fn(),
+      retryEventDelivery: vi.fn(async () => { throw persistenceError; })
+    };
+    const worker = new AccountEventDeliveryWorker(store, {
+      decrypt: () => "secret",
+      fetcher: vi.fn(async () => { throw transportError; }),
+      now: () => new Date(),
+      log: logger,
+      onPersistenceFailure: capturePersistenceFailure
+    });
+
+    const iterationError = await worker.processOne().catch((error: unknown) => error);
+
+    expect(iterationError).toBeInstanceOf(Error);
+    if (!(iterationError instanceof Error)) throw new Error("Retry persistence failure was not an Error.");
+    expect(iterationError.cause).toBe(persistenceError);
+    expect(store.retryEventDelivery).toHaveBeenCalledTimes(1);
+    expect(logger).toHaveBeenCalledWith("event_delivery_retry_persist_failed", expect.objectContaining({
+      reportId: delivery.report_id,
+      traceId: delivery.trace_id,
+      eventType: delivery.event_type,
+      lifecycleAttempt: 3,
+      attempts: 2,
+      stage: "retry_persist",
+      errorMessage: "database unavailable; password=[REDACTED]",
+      deliveryErrorMessage: "fetch failed"
+    }), "error");
+    expect(JSON.stringify(logger.mock.calls)).not.toContain("unsafe-secret");
+    expect(capturePersistenceFailure).toHaveBeenCalledWith(persistenceError, delivery);
+  });
+
+  it("does not relabel retry-state persistence failures as webhook claim failures", async () => {
+    const delivery = {
+      event_id: "42", destination_id: "dest-1", destination_url: "https://bot.example.test/events",
+      encrypted_signing_secret: "encrypted", attempts: 2, created_at: new Date(), account_id: "account-1",
+      report_id: "report-1", trace_id: "33333333-3333-4333-8333-333333333333",
+      event_type: "report_failed", lifecycle_attempt: 3, occurred_at: new Date()
+    };
+    const persistenceError = new Error("database unavailable");
+    let worker!: AccountEventDeliveryWorker;
+    const logger = vi.fn();
+    const captureWorkerFailure = vi.fn();
+    const capturePersistenceFailure = vi.fn();
+    const stopped = new Promise<void>((resolve) => {
+      const store = {
+        claimEventDelivery: vi.fn(async () => delivery),
+        completeEventDelivery: vi.fn(),
+        retryEventDelivery: vi.fn(async () => { throw persistenceError; })
+      };
+      worker = new AccountEventDeliveryWorker(store, {
+        decrypt: () => "secret",
+        fetcher: vi.fn(async () => { throw new Error("fetch failed"); }),
+        log: logger,
+        onPersistenceFailure: capturePersistenceFailure,
+        onWorkerFailure: captureWorkerFailure,
+        concurrency: 1,
+        sleep: async () => { void worker.stop().then(resolve); }
+      });
+      worker.start();
+    });
+
+    await stopped;
+
+    expect(capturePersistenceFailure).toHaveBeenCalledWith(persistenceError, delivery);
+    expect(captureWorkerFailure).not.toHaveBeenCalled();
+    expect(logger).toHaveBeenCalledWith("event_delivery_retry_persist_failed", expect.any(Object), "error");
+    expect(logger).not.toHaveBeenCalledWith("event_delivery_worker_iteration_failed", expect.any(Object), "error");
+  });
+
+  it("captures a delivery worker claim failure once until a successful claim recovers it", async () => {
+    const firstFailure = new Error("database unavailable");
+    const recoveredFailure = new Error("database unavailable again");
+    let claims = 0;
+    let worker!: AccountEventDeliveryWorker;
+    const captureWorkerFailure = vi.fn();
+    const stopped = new Promise<void>((resolve) => {
+      const store = {
+        claimEventDelivery: vi.fn(async () => {
+          claims += 1;
+          if (claims === 1) throw firstFailure;
+          if (claims === 2) throw firstFailure;
+          if (claims === 4) throw recoveredFailure;
+          return null;
+        }),
+        completeEventDelivery: vi.fn(),
+        retryEventDelivery: vi.fn()
+      };
+      worker = new AccountEventDeliveryWorker(store, {
+        decrypt: () => "secret",
+        onWorkerFailure: captureWorkerFailure,
+        concurrency: 1,
+        sleep: async () => {
+          if (claims >= 4) void worker.stop().then(resolve);
+        }
+      });
+      worker.start();
+    });
+
+    await stopped;
+
+    expect(captureWorkerFailure).toHaveBeenNthCalledWith(1, firstFailure);
+    expect(captureWorkerFailure).toHaveBeenNthCalledWith(2, recoveredFailure);
+    expect(captureWorkerFailure).toHaveBeenCalledTimes(2);
+  });
+
   it("runs multiple claim loops concurrently, and stop() waits for all of them to finish", async () => {
     let inFlight = 0;
     let peakInFlight = 0;

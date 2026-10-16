@@ -2,6 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createHash } from "node:crypto";
 
 import { DsaApi, DsaApiError, type CreateReportInput, type RetryReportInput } from "@nreport/contracts";
+import type { LifecycleFailureContext } from "@nreport/observability";
 import type { Client, Message } from "discord.js";
 
 import type { AccountBotDatabase, ApiConnection, ClaimedNotification } from "./account-database.js";
@@ -9,7 +10,7 @@ import type { BotConfig } from "./config.js";
 import { cardPayloadDiagnostics } from "./card-diagnostics.js";
 import { decryptJson } from "./crypto.js";
 import { shouldAbandonReportLink } from "./report-link-recovery.js";
-import { botLog, errorFields, isDiscordValidationFailure, safeErrorCategory } from "./observability.js";
+import { botLog, captureLifecycleFailure, errorFields, isDiscordValidationFailure, safeErrorCategory } from "./observability.js";
 import { classifyReportView, decisionMessageOptions, shouldSendDecisionDm, statusMessageOptions, targetContextFromReport, visibleStatusHash, type TargetDisplayContext } from "./report-ui.js";
 import type { ReportDetail } from "@nreport/contracts";
 
@@ -29,6 +30,39 @@ const RECOVERY_DELAYS_SECONDS = [5, 15, 30, 60, 120, 300] as const;
 
 /** Number of concurrent notification-delivery loops; per-report ordering is enforced in claimNotification. */
 export const NOTIFICATION_LOOP_COUNT = 3;
+const NOTIFICATION_HEALTH_SAMPLE_SECONDS = 60;
+const NOTIFICATION_HEALTH_THRESHOLD_MS = 5 * 60_000;
+const NOTIFICATION_HEALTH_BAD_SAMPLES = 2;
+const NOTIFICATION_HEALTH_RECOVERY_SAMPLES = 2;
+
+type NotificationHealthSignalKey = "notification_backlog" | "stuck_card_updates";
+interface NotificationHealthSignalState {
+  unhealthySamples: number;
+  healthySamples: number;
+  reported: boolean;
+}
+
+type BotFailureContext = Omit<LifecycleFailureContext, "service">;
+
+function isActionableFailure(error: unknown): boolean {
+  if (error instanceof DsaApiError && error.status !== 408 && error.status < 500) return false;
+  const code = (error as { code?: unknown } | null)?.code;
+  return code !== 50007 && code !== 10008;
+}
+
+function failureContext(error: unknown): Pick<LifecycleFailureContext, "statusCode" | "requestId" | "discordErrorCode" | "discordHttpStatus"> {
+  if (error instanceof DsaApiError) {
+    return { statusCode: error.status, ...(error.requestId === undefined ? {} : { requestId: error.requestId }) };
+  }
+  const candidate = error as { code?: unknown; status?: unknown } | null;
+  const discordError = error instanceof Error && error.name === "DiscordAPIError";
+  const discordCode = typeof candidate?.code === "number" ||
+    (typeof candidate?.code === "string" && /^\d{4,6}$/u.test(candidate.code));
+  return {
+    ...(discordError && discordCode ? { discordErrorCode: candidate.code as string | number } : {}),
+    ...(discordError && typeof candidate?.status === "number" ? { discordHttpStatus: candidate.status } : {})
+  };
+}
 
 export function reportRecoveryDelaySeconds(attempt: number, rateLimited: boolean): number {
   if (rateLimited) return 120;
@@ -50,9 +84,12 @@ export function isDiscordUnknownMessage(error: unknown): boolean {
 
 export class AccountNotificationWorker {
   private stopping = false;
+  private readonly reportedSentryFailures = new Set<string>();
   private notificationLoops: Promise<void>[] = [];
   private reconciliationLoop: Promise<void> | undefined;
   private recoveryLoop: Promise<void> | undefined;
+  private healthLoop: Promise<void> | undefined;
+  private readonly notificationHealthSignals = new Map<NotificationHealthSignalKey, NotificationHealthSignalState>();
 
   public constructor(
     private readonly database: AccountBotDatabase,
@@ -69,14 +106,16 @@ export class AccountNotificationWorker {
     this.notificationLoops = Array.from({ length: NOTIFICATION_LOOP_COUNT }, () => this.notifications());
     this.reconciliationLoop = this.reconcile();
     this.recoveryLoop = this.recover();
+    this.healthLoop = this.monitorNotificationHealth();
   }
 
   public async stop(): Promise<void> {
     this.stopping = true;
-    await Promise.all([...this.notificationLoops, this.reconciliationLoop, this.recoveryLoop]);
+    await Promise.all([...this.notificationLoops, this.reconciliationLoop, this.recoveryLoop, this.healthLoop]);
     this.notificationLoops = [];
     this.reconciliationLoop = undefined;
     this.recoveryLoop = undefined;
+    this.healthLoop = undefined;
   }
 
   public async processOne(): Promise<boolean> {
@@ -91,6 +130,7 @@ export class AccountNotificationWorker {
       reportId: item.report_id,
       ...(item.trace_id === null ? {} : { traceId: item.trace_id })
     };
+    const sentryFailureKey = `notification:${item.event_id}`;
     this.safeLog("account_notification_claimed", {
       ...traceFields, eventType: item.event_type, attempts,
       stage: "notification", outcome: "claimed", durationMs: 0
@@ -124,7 +164,7 @@ export class AccountNotificationWorker {
       if (message === null) {
         deliveryStage = "claim_card";
         if (!(await this.database.claimDmCard(report.reportId))) {
-          await this.database.retryNotification(item.event_id, "status_card_creation_in_progress");
+          await this.database.retryNotification(item.event_id, "status_card_creation_in_progress", attempts);
           this.safeLog("account_notification_retry", {
             ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
             failureCategory: "card_claim_busy", stage: "notification", outcome: "retry"
@@ -161,35 +201,47 @@ export class AccountNotificationWorker {
         });
       }
       deliveryStage = "complete_notification";
-      await this.database.completeNotification(item.event_id);
+      await this.database.completeNotification(item.event_id, attempts);
       this.safeLog("account_notification_completed", {
         ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
         stage: "notification", outcome: "completed"
       });
+      this.clearCapturedFailure(sentryFailureKey);
     } catch (error) {
       if (error instanceof DsaApiError && error.status === 401) {
         const user = await this.client.users.fetch(item.discord_user_id).catch(() => null);
         await user?.send("Your reporting API key was revoked or expired. Use `/access connect` to reconnect; detailed status refreshes are paused.").catch(() => undefined);
-        await this.database.completeNotification(item.event_id);
+        await this.database.completeNotification(item.event_id, attempts);
         this.safeLog("account_notification_completed", {
           ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
           stage: "notification", outcome: "completed"
         });
+        this.clearCapturedFailure(sentryFailureKey);
       } else {
         const failureCategory = safeErrorCategory(error);
         const validationFailure = isDiscordValidationFailure(error);
         const errorCode = validationFailure ? "discord_validation_50035" : failureCategory;
         if (validationFailure) {
-          await this.database.ignoreNotification(item.event_id, errorCode);
+          await this.database.ignoreNotification(item.event_id, errorCode, attempts);
           if (attemptedCardSend) await this.database.terminalCardRepair(item.report_id, errorCode);
         } else {
-          await this.database.retryNotification(item.event_id, errorCode);
+          await this.database.retryNotification(item.event_id, errorCode, attempts);
         }
         this.safeLog(validationFailure ? "account_notification_ignored" : "account_notification_retry", {
           ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
           deliveryStage, ...errorFields(error), ...(payload === undefined ? {} : { payload }), failureCategory,
           stage: "notification", outcome: validationFailure ? "ignored" : "retry"
         }, "warn");
+        this.captureFailureOnce(sentryFailureKey, error, {
+          operation: "lifecycle_notification_delivery",
+          reportId: item.report_id,
+          ...(item.trace_id === null ? {} : { traceId: item.trace_id }),
+          eventType: item.event_type,
+          lifecycleAttempt: item.lifecycle_attempt,
+          deliveryStage,
+          outcome: validationFailure ? "ignored" : "retrying",
+          attempt: attempts
+        });
       }
     }
     return true;
@@ -211,6 +263,7 @@ export class AccountNotificationWorker {
           const startedAt = Date.now();
           let result: Awaited<ReturnType<AccountBotDatabase["ingestEvent"]>>;
           if (known.has(event.eventId)) {
+            this.clearCapturedFailure(`event_ingestion:${event.eventId}`);
             lastProcessedEventId = event.eventId;
             continue;
           } else {
@@ -223,11 +276,18 @@ export class AccountNotificationWorker {
                 stage: "event_ingestion",
                 outcome: "failed",
                 durationMs: Date.now() - startedAt,
+                ...errorFields(error),
                 failureCategory: safeErrorCategory(error)
               }, "error");
+              this.captureFailureOnce(`event_ingestion:${event.eventId}`, error, {
+                operation: "lifecycle_event_ingestion", reportId: event.reportId, traceId: event.traceId,
+                eventType: event.type, lifecycleAttempt: event.lifecycleAttempt,
+                stage: "event_ingestion", outcome: "retrying", attempt: 1, severity: "error"
+              });
               throw new ReconciliationEventIngestError();
             }
           }
+          this.clearCapturedFailure(`event_ingestion:${event.eventId}`);
           this.safeLog("account_reconciliation_event", {
             reportId: event.reportId, traceId: event.traceId,
             eventType: event.type,
@@ -251,30 +311,52 @@ export class AccountNotificationWorker {
   }
 
   public async recoverOnce(): Promise<void> {
+    try {
+      await this.database.cleanupExpiredForms();
+      this.clearCapturedFailure("report_recovery:expired_forms");
+    } catch (error) {
+      this.safeLog("expired_report_forms_cleanup_failed", {
+        stage: "form_cleanup", outcome: "retrying", ...errorFields(error), failureCategory: safeErrorCategory(error)
+      }, "warn");
+      this.captureFailureOnce("report_recovery:expired_forms", error, {
+        operation: "report_form_cleanup", stage: "form_cleanup", outcome: "retrying", severity: "warning"
+      });
+    }
     const connections = await this.database.connections();
     for (const connection of connections) {
       if (this.stopping) break;
       const startedAt = Date.now();
       try {
         await this.recoverConnection(connection, this.api(connection));
+        this.clearCapturedFailure(`account_recovery:${connection.account_id}`);
       } catch (error) {
         this.safeLog("account_recovery_failed", {
           accountId: connection.account_id, stage: "creation_recovery", outcome: "failed", durationMs: Date.now() - startedAt,
           ...errorFields(error), failureCategory: safeErrorCategory(error)
         }, "warn");
+        this.captureFailureOnce(`account_recovery:${connection.account_id}`, error, {
+          operation: "report_recovery", stage: "creation_recovery", outcome: "retrying", attempt: 1
+        });
       }
     }
   }
 
   private async recoverConnection(connection: ApiConnection, api: AccountApi): Promise<void> {
-    await this.database.cleanupExpiredForms();
     const pendingLinks = await this.database.pendingReportLinks(connection.discord_user_id);
     for (const link of pendingLinks) {
       let pending: CreateReportInput | { reportId: string; input?: RetryReportInput; mode?: "reuse" | "regenerate" };
       try {
         pending = this.decrypt(link.encrypted_request, this.config.dataEncryptionKey);
-      } catch {
+      } catch (error) {
         await this.database.abandonReportLink(link.id);
+        this.safeLog("report_recovery_request_invalid", {
+          accountId: connection.account_id, stage: "request_decryption", outcome: "abandoned",
+          ...errorFields(error), failureCategory: safeErrorCategory(error)
+        }, "error");
+        this.captureFailureOnce(`report_recovery_link:${link.id}`, error, {
+          operation: "report_recovery", stage: "request_decryption", outcome: "abandoned",
+          attempt: link.recovery_attempts, severity: "error"
+        });
         continue;
       }
       try {
@@ -301,9 +383,11 @@ export class AccountNotificationWorker {
             stage: "creation_recovery", outcome: "completed", durationMs: Date.now() - startedAt
           });
         }
+        this.clearCapturedFailure(`report_recovery_link:${link.id}`);
       } catch (error) {
         if (error instanceof DsaApiError && error.status === 401) throw error;
-        if (shouldAbandonReportLink(error)) {
+        const abandoned = shouldAbandonReportLink(error);
+        if (abandoned) {
           await this.database.abandonReportLink(link.id);
         } else {
           const rateLimited = error instanceof DsaApiError && error.status === 429;
@@ -313,6 +397,21 @@ export class AccountNotificationWorker {
             safeErrorCategory(error)
           );
         }
+        const retryReportId = "reportId" in pending ? pending.reportId : undefined;
+        const operation = "flow" in pending ? "report_create_recovery" : "report_retry_recovery";
+        this.safeLog("report_mutation_recovery_failed", {
+          accountId: connection.account_id,
+          ...(retryReportId === undefined ? {} : { reportId: retryReportId }),
+          operation, recoveryAttempt: link.recovery_attempts,
+          stage: "api_replay", outcome: abandoned ? "abandoned" : "retrying",
+          ...errorFields(error), failureCategory: safeErrorCategory(error)
+        }, abandoned ? "info" : "warn");
+        this.captureFailureOnce(`report_recovery_link:${link.id}`, error, {
+          operation,
+          ...(retryReportId === undefined ? {} : { reportId: retryReportId }),
+          stage: "api_replay", outcome: abandoned ? "abandoned" : "retrying",
+          attempt: link.recovery_attempts
+        });
       }
     }
     const cardRepairs = await this.database.dueCardRepairs?.(connection.discord_user_id) ?? [];
@@ -344,6 +443,11 @@ export class AccountNotificationWorker {
           stage: "initial_card", outcome: "retry", durationMs: 0,
           ...errorFields(error), failureCategory: safeErrorCategory(error)
         }, "warn");
+        this.captureFailureOnce(`card_repair:${repair.report_id}`, error, {
+          operation: "status_card_delivery", reportId: repair.report_id,
+          ...(repair.trace_id === null ? {} : { traceId: repair.trace_id }),
+          stage: "initial_card", outcome: "retrying", attempt: repair.card_repair_attempts
+        });
       }
     }
   }
@@ -368,6 +472,8 @@ export class AccountNotificationWorker {
         reportId: report.reportId, traceId: report.traceId,
         stage: "initial_card", outcome: "completed", durationMs: Date.now() - startedAt
       });
+      this.clearCapturedFailure(`card_repair:${report.reportId}`);
+      this.clearCapturedFailure(`card_repair_cleanup:${report.reportId}`);
       return { outcome: "created" };
     } catch (error) {
       const validationFailure = isDiscordValidationFailure(error);
@@ -375,8 +481,16 @@ export class AccountNotificationWorker {
       try {
         if (errorCode === undefined) await this.database.releaseDmCard(report.reportId);
         else await this.database.terminalCardRepair(report.reportId, errorCode);
-      } catch {
-        // A card-delivery cleanup failure must not cause the already-created report to be recovered again.
+      } catch (cleanupError) {
+        this.safeLog("initial_card_cleanup_failed", {
+          reportId: report.reportId, traceId: report.traceId,
+          stage: "card_claim_cleanup", outcome: "failed",
+          ...errorFields(cleanupError), failureCategory: safeErrorCategory(cleanupError)
+        }, "error");
+        this.captureFailureOnce(`card_repair_cleanup:${report.reportId}`, cleanupError, {
+          operation: "status_card_claim_cleanup", reportId: report.reportId, traceId: report.traceId,
+          stage: "card_claim_cleanup", outcome: "failed", severity: "error"
+        });
       }
       const diagnostics = {
         ...errorFields(error), ...(payload === undefined ? {} : { payload }), failureCategory: safeErrorCategory(error)
@@ -386,6 +500,10 @@ export class AccountNotificationWorker {
         stage: "initial_card", outcome: validationFailure ? "ignored" : "retry", durationMs: Date.now() - startedAt,
         ...diagnostics
       }, "warn");
+      this.captureFailureOnce(`card_repair:${report.reportId}`, error, {
+        operation: "status_card_delivery", reportId: report.reportId, traceId: report.traceId,
+        stage: "initial_card", outcome: validationFailure ? "ignored" : "retrying", attempt: 1
+      });
       return validationFailure ? { outcome: "terminal" } : { outcome: "failed", diagnostics };
     }
   }
@@ -398,17 +516,23 @@ export class AccountNotificationWorker {
     } catch (error) {
       this.safeLog("account_reconciliation_failed", {
         durationMs: Date.now() - batchStartedAt,
+        ...errorFields(error),
         failureCategory: safeErrorCategory(error),
         stage: "reconciliation",
         outcome: "failed"
       }, "error");
+      this.captureFailureOnce("reconciliation:connections", error, {
+        operation: "account_event_reconciliation", stage: "reconciliation", outcome: "retrying", severity: "error"
+      });
       return;
     }
+    this.clearCapturedFailure("reconciliation:connections");
     for (const connection of connections) {
       if (this.stopping) break;
       const startedAt = Date.now();
       try {
         await this.reconcileConnection(connection);
+        this.clearCapturedFailure(`reconciliation:${connection.account_id}`);
         this.safeLog("account_reconciliation_completed", {
           durationMs: Date.now() - startedAt, stage: "reconciliation", outcome: "completed"
         });
@@ -416,10 +540,14 @@ export class AccountNotificationWorker {
         if (!(error instanceof ReconciliationEventIngestError)) {
           this.safeLog("account_reconciliation_failed", {
             durationMs: Date.now() - startedAt,
+            ...errorFields(error),
             failureCategory: safeErrorCategory(error),
             stage: "reconciliation",
             outcome: "failed"
           }, "error");
+          this.captureFailureOnce(`reconciliation:${connection.account_id}`, error, {
+            operation: "account_event_reconciliation", stage: "reconciliation", outcome: "retrying", severity: "error"
+          });
         }
         if (error instanceof DsaApiError && error.status === 401) {
           const user = await this.client.users.fetch(connection.discord_user_id).catch(() => null);
@@ -440,15 +568,90 @@ export class AccountNotificationWorker {
   private async notifications(): Promise<void> {
     while (!this.stopping) {
       try {
-        if (!(await this.processOne())) await delay(1_000);
+        const processed = await this.processOne();
+        this.clearCapturedFailure("notification:claim_loop");
+        if (!processed) await delay(1_000);
       } catch (error) {
         this.safeLog("account_notification_retry", {
-          eventType: "unknown", attempts: 0, durationMs: 0, failureCategory: safeErrorCategory(error),
+          eventType: "unknown", attempts: 0, durationMs: 0, ...errorFields(error), failureCategory: safeErrorCategory(error),
           stage: "notification", outcome: "retry"
         }, "error");
+        this.captureFailureOnce("notification:claim_loop", error, {
+          operation: "lifecycle_notification_worker", stage: "notification", outcome: "retrying", severity: "error"
+        });
         await delay(2_000);
       }
     }
+  }
+
+  public async sampleNotificationHealthOnce(): Promise<void> {
+    const snapshot = await this.database.notificationHealthSnapshot();
+    this.clearCapturedFailure("notification_health:sample");
+    this.observeNotificationHealthSignal(
+      "notification_backlog",
+      snapshot.pendingNotificationCount,
+      snapshot.oldestPendingNotificationAgeMs,
+      "Bot lifecycle notifications remain pending beyond the delivery threshold."
+    );
+    this.observeNotificationHealthSignal(
+      "stuck_card_updates",
+      snapshot.pendingCardUpdateCount,
+      snapshot.oldestPendingCardUpdateAgeMs,
+      "Bot report status card delivery work remains pending beyond the threshold."
+    );
+  }
+
+  private async monitorNotificationHealth(): Promise<void> {
+    while (!this.stopping) {
+      try {
+        await this.sampleNotificationHealthOnce();
+      } catch (error) {
+        this.captureFailureOnce("notification_health:sample", error, {
+          operation: "notification_health_sampling", stage: "notification_health", outcome: "retrying", severity: "warning"
+        });
+      }
+      for (let second = 0; second < NOTIFICATION_HEALTH_SAMPLE_SECONDS && !this.stopping; second += 1) {
+        await delay(1_000);
+      }
+    }
+  }
+
+  private observeNotificationHealthSignal(
+    key: NotificationHealthSignalKey,
+    queueCount: number,
+    oldestAgeMs: number | null,
+    message: string
+  ): void {
+    const current = this.notificationHealthSignals.get(key) ?? {
+      unhealthySamples: 0, healthySamples: 0, reported: false
+    };
+    const unhealthy = queueCount > 0 && oldestAgeMs !== null && oldestAgeMs >= NOTIFICATION_HEALTH_THRESHOLD_MS;
+    if (unhealthy) {
+      current.unhealthySamples += 1;
+      current.healthySamples = 0;
+      if (!current.reported && current.unhealthySamples >= NOTIFICATION_HEALTH_BAD_SAMPLES) {
+        current.reported = true;
+        captureLifecycleFailure(new Error(message), {
+          service: "bot",
+          operation: key,
+          stage: "notification_health",
+          outcome: "stuck",
+          severity: "warning",
+          queueCount,
+          ...(oldestAgeMs === null ? {} : { oldestAgeMs })
+        });
+      }
+    } else {
+      current.unhealthySamples = 0;
+      if (current.reported) {
+        current.healthySamples += 1;
+        if (current.healthySamples >= NOTIFICATION_HEALTH_RECOVERY_SAMPLES) {
+          current.reported = false;
+          current.healthySamples = 0;
+        }
+      }
+    }
+    this.notificationHealthSignals.set(key, current);
   }
 
   private async reconcile(): Promise<void> {
@@ -462,11 +665,15 @@ export class AccountNotificationWorker {
     while (!this.stopping) {
       try {
         await this.recoverOnce();
+        this.clearCapturedFailure("report_recovery:cycle");
       } catch (error) {
         this.safeLog("report_create_recovery_failed", {
           stage: "creation_recovery", outcome: "retry", durationMs: 0,
-          failureCategory: safeErrorCategory(error)
+          ...errorFields(error), failureCategory: safeErrorCategory(error)
         }, "warn");
+        this.captureFailureOnce("report_recovery:cycle", error, {
+          operation: "report_recovery", stage: "creation_recovery", outcome: "retrying", severity: "error"
+        });
       }
       await delay(5_000);
     }
@@ -479,5 +686,19 @@ export class AccountNotificationWorker {
     } catch {
       // Logging failures must not interrupt notification or reconciliation work.
     }
+  }
+
+  private captureFailureOnce(key: string, error: unknown, context: BotFailureContext): void {
+    if (!isActionableFailure(error) || this.reportedSentryFailures.has(key)) return;
+    if (this.reportedSentryFailures.size >= 2_048) {
+      const oldest = this.reportedSentryFailures.values().next().value;
+      if (oldest !== undefined) this.reportedSentryFailures.delete(oldest);
+    }
+    this.reportedSentryFailures.add(key);
+    captureLifecycleFailure(error, { service: "bot", ...failureContext(error), ...context });
+  }
+
+  private clearCapturedFailure(key: string): void {
+    this.reportedSentryFailures.delete(key);
   }
 }

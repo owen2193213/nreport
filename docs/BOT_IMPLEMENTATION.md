@@ -27,6 +27,13 @@ Connecting a rotated key for the same account updates the encrypted credential. 
 Discord user's ID to the API. A revoked key pauses detailed refreshes and prompts the user privately
 to reconnect.
 
+Administrators use `/admin keys` (optional `page`) to inspect five personal API keys at a time,
+including validity, account status/ID, last use, and the Discord user currently connected with
+that account and key prefix. All replies are ephemeral. This inventory lists safe identifiers;
+existing key secrets cannot be displayed again. There is no redeemable-key flow. Historical
+connections are not retained, so an absent current mapping does not establish that a key has
+never been connected or used.
+
 ## Reporting experience
 
 Commands support message, profile, and server flows plus the message context-menu actions. The
@@ -61,13 +68,19 @@ concatenated into that code block.
 
 The card deliberately groups fast internal events into stable visible states while keeping the
 meaningful boundaries explicit: **Queued for Discord submission**, **Preparing report**,
-**Requesting verification from Discord**, **Waiting for Discord verification email**, and
-**Submitting report to Discord**. Queued cards show the API's current queue length. History uses
+**Requesting verification from Discord**, **Waiting for Discord verification email**,
+**Verification email received**, **Checking verification code**, **Submitting report to Discord**,
+**Awaiting confirmation**, and **Confirmation received**. The verification email supplies the code
+needed to submit; the later report-confirmation email is the acknowledgement that updates
+`discordStatus=received`. A successful submission response starts the confirmation wait. Both mail
+milestones remain in history after the current state advances, so a fast transition cannot hide
+them. Queued cards show the API's current queue length. History uses
 relative Discord timestamps and concise chronological actions. When applicable, report denial and
-appeal submission are collapsed into **Report denied; appeal submitted**. Nonterminal updates wait two seconds, retain only the latest pending state,
-are spaced at least five seconds apart, and skip identical visible-payload hashes. Terminal updates
-bypass the spacing. This prevents pairs such as “Submitting report” followed immediately by
-“Awaiting verification email” from producing rapid Discord edits. If Discord returns error `50007`,
+appeal submission are collapsed into **Report denied; appeal submitted**. Routine nonterminal updates wait two seconds, retain only the latest pending state,
+are spaced at least five seconds apart, and skip identical visible-payload hashes. Verification
+email receipt, submission, and Discord report confirmation are immediate milestones, retained through coalescing and
+exempt from edit spacing, as are terminal updates. Updates still serialize per report and render
+the latest authoritative report. If Discord returns error `50007`,
 the bot warns in the ephemeral interaction response that it could not DM the user; the API report
 continues.
 
@@ -99,6 +112,20 @@ Webhook and polling ingestion share the same event inbox so duplicate delivery c
 duplicate DMs. Pending create/retry calls are replayed with their original idempotency key before
 normal feed reconciliation.
 
+The October 14 redundancy review retained webhook delivery plus periodic feed reconciliation:
+they share one idempotent inbox, and the feed repairs missed delivery and restart gaps. The
+five-second recovery loop and connection reconciliation both inspect pending mutations, but
+database claims serialize recovery and the short loop also repairs missing status cards. No
+additional bot feature was removed without evidence that it duplicated the same durable behavior.
+The separate API operations-warning webhook was retired in favor of Sentry diagnostics.
+
+The notifier samples its connected, nonsuperseded notification/card backlog once per minute.
+Work older than five minutes must appear in two consecutive samples before a Sentry warning is
+captured. The warning is emitted once per unhealthy episode; two healthy samples rearm it.
+Recovery does not send a separate Discord operations alert. Disconnected accounts and terminal
+card repairs are excluded. Expired-form cleanup runs once per recovery cycle rather than once
+for every connected account.
+
 Notification and reconciliation operational events retain their stable event names and emit a
 bounded `stage`, `outcome`, and `durationMs`. Where a lifecycle event supplies identifiers, logs include
 the internal `reportId` and `traceId`. Operational and error logs are also permitted to include Discord
@@ -110,7 +137,14 @@ The status card is always maintained while the account is connected. Decision/pr
 to that card so the affected report remains clear. Terminal replies use an enforced, deterministic
 Discord nonce derived only from the durable lifecycle event ID, allowing Discord to deduplicate a
 retry when the original message-create response was lost. The inbox item is completed only after
-Discord accepts the reply. These replies are sent
+Discord accepts the reply. Inbox completion, retry, and ignore writes require both
+the sending state and the attempt number. A failed acknowledgment after a committed completion
+cannot reset that sent event to pending. Digest completion likewise cannot downgrade a row
+already committed as sent or skipped, and requires the generation returned by its current claim.
+A stale digest claimant cannot finish or fail a replacement claim. A superseded report's stale
+card sender cannot restore its old card mapping after that mapping transfers to a retry.
+These guards protect durable state; they do not extend
+Discord's finite nonce deduplication window. These replies are sent
 only for decisions or actionable problems: original-report accepted, appeal accepted, appeal
 denied, report/appeal confirmation timeout, ineligible appeal, and failure. The original
 report-denied DM is off by default because the automatic appeal continues; its preference is
@@ -204,6 +238,12 @@ worker cannot mutate its replacement claim. A worker that loses heartbeat owners
 progress and closes its Discord client where possible. Shutdown stops new claims, cancels idle
 cadence timers, and waits for in-flight lifecycle work.
 
+Report mutations lock the account, report, credit chain, then job before rechecking ownership
+and eligibility. Account suspension follows the same order. Deadline, ambiguous-outcome recovery,
+and inbound reconciliation commit one report at a time so event publication never retains its
+global lock while acquiring another report's parent locks. Failure signals are emitted after each
+committed recovery/deadline change; a later transaction failure does not suppress earlier signals.
+
 Inbound Discord lifecycle mail is durably staged by Message-ID and is correlated only when both its
 generated recipient alias and Discord report ID match the API report. Each maintenance pass first
 replays exact pending matches, then recovers interrupted jobs, then expires deadlines. A late valid
@@ -224,6 +264,15 @@ through SQL. The Worker logs its generated alias for every forwarding outcome an
 failure, sends signed metadata-only diagnostics to the API ledger. The API correlates accepted mail
 by that alias; a total API outage leaves Cloudflare's structured Worker log as the fallback.
 Raw RFC822 mail, credentials, cookies, proxy credentials, and verification codes are never retained.
+
+API and bot exception monitoring uses separate Sentry projects through the dependency-only
+`@nreport/observability` workspace. Each service preloads the SDK before application modules and
+attaches bounded workflow context to actionable failures: report/trace references, stage, attempt,
+HTTP status, and provider or Discord error codes where available. Error diagnostics preserve
+redacted messages, stacks, and cause chains. Routine notification card-claim contention remains
+a retry log rather than a Sentry issue. Telemetry failures must not affect report or notification
+processing, and shutdown flushes pending events with a bounded timeout. Deployment variables,
+verification, and investigation guidance are in [`SENTRY_SETUP.md`](SENTRY_SETUP.md).
 
 The health endpoint becomes ready only when PostgreSQL and the Discord gateway are ready. The bot
 webhook is intended for Railway private networking and does not need a public domain.

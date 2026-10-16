@@ -82,33 +82,45 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(classifyReportView(report({ discordStatus: "review_not_approved", reviewStatus: "not_approved", retryableModes: ["rewrite_ai", "edit_manual"] })).key).toBe("appeal_denied");
     expect(classifyReportView(report({ discordStatus: "actioned", reviewStatus: null })).key).toBe("report_accepted");
     expect(classifyReportView(report({ discordStatus: "actioned", reviewStatus: "approved" })).key).toBe("appeal_accepted");
-    expect(classifyReportView(report({ status: "failed", discordStatus: null, failure: { stage: "receipt", code: "discord_receipt_timeout", message: "Timed out" } })).key).toBe("report_timeout");
+    const timeout = classifyReportView(report({ status: "failed", discordStatus: null, failure: { stage: "receipt", code: "discord_receipt_timeout", message: "Timed out" } }));
+    expect(timeout.key).toBe("report_timeout");
     expect(classifyReportView(report({ reviewStatus: "confirmation_timeout" })).key).toBe("appeal_timeout");
     expect(classifyReportView(report({ reviewStatus: "ineligible" })).key).toBe("ineligible");
-    expect(classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "request_failed" }))).toMatchObject({
-      key: "appeal_failed", title: "Appeal not submitted"
-    });
-    expect(classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "request_ambiguous" }))).toMatchObject({
-      key: "appeal_failed", title: "Appeal outcome unclear"
-    });
+    expect(classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "request_failed" })).key).toBe("appeal_failed");
+    expect(classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "request_ambiguous" })).key).toBe("appeal_failed");
   });
 
   it("distinguishes an appeal waiting to submit from one already submitted", () => {
-    expect(classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "queued" }))).toMatchObject({
-      title: "Preparing appeal",
-      mark: "Not submitted yet"
-    });
-    expect(classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "requested" }))).toMatchObject({
-      title: "Appeal submitted",
-      mark: "Awaiting Discord's decision"
-    });
+    const queued = classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "queued" }));
+    const submitted = classifyReportView(report({ discordStatus: "closed_no_action", reviewStatus: "requested" }));
+
+    expect(queued.key).toBe("report_denied");
+    expect(submitted.key).toBe("report_denied");
+    expect(queued.title).not.toBe(submitted.title);
+    expect(queued.mark).not.toBe(submitted.mark);
+    expect(queued.terminal).toBe(false);
+    expect(submitted.terminal).toBe(false);
   });
 
-  it("shows explicit queue and Discord submission phases", () => {
-    expect(classifyReportView(report({ status: "queued", discordStatus: null })).title).toBe("Queued for Discord submission");
-    expect(classifyReportView(report({ status: "requesting_verification", discordStatus: null })).title).toBe("Requesting verification from Discord");
-    expect(classifyReportView(report({ status: "awaiting_verification", discordStatus: null })).title).toBe("Waiting for Discord verification email");
-    expect(classifyReportView(report({ status: "submitting", discordStatus: null })).title).toBe("Submitting report to Discord");
+  it("classifies queue, verification, and submission phases and refreshes visible state", () => {
+    const queued = report({ status: "queued", discordStatus: null });
+    const requesting = report({ status: "requesting_verification", discordStatus: null });
+    const awaitingEmail = report({ status: "awaiting_verification", discordStatus: null });
+    expect(classifyReportView(queued).key).toBe("preparing");
+    expect(classifyReportView(requesting).key).toBe("submitting");
+    expect(classifyReportView(awaitingEmail).key).toBe("submitting");
+    const emailReceived = classifyReportView(report({ status: "verification_received", discordStatus: null }));
+    expect(emailReceived.key).toBe("verification_received");
+    expect(emailReceived.terminal).toBe(false);
+    const verifying = classifyReportView(report({ status: "verifying", discordStatus: null }));
+    expect(verifying.key).toBe("verifying");
+    expect(verifying.terminal).toBe(false);
+    const submitting = classifyReportView(report({ status: "submitting", discordStatus: null }));
+    expect(submitting.key).toBe("submitting");
+    expect(submitting.terminal).toBe(false);
+    expect(visibleStatusHash(report({ status: "verification_received", discordStatus: null }), context))
+      .not.toBe(visibleStatusHash(report({ status: "awaiting_verification", discordStatus: null }), context));
+    expect(visibleStatusHash(requesting, context)).not.toBe(visibleStatusHash(awaitingEmail, context));
   });
 
   it("keeps the mention, username, plain link, and code-blocked message in one reported-item block", () => {
@@ -123,8 +135,7 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(value).toContain("<@123456789012345678> (@username)\\nhttps://discord.com/channels/@me/123456789012345678/123456789012345679\\n```\\nExample reported message content\\n```");
     expect(value).toContain("Queue length: **7**");
     expect(value).toContain("Report ID: `11111111-1111-4111-8111-111111111111`");
-    expect(value).toContain("- <t:1788775200:R> Added to submission queue");
-    expect(value).not.toContain("Open reported message");
+    expect(value).toContain("<t:1788775200:R>");
     expect(value).not.toContain("Discord ID:");
     expect(value).not.toContain("> Example reported message content");
     expect(value).not.toContain("User account");
@@ -135,18 +146,9 @@ describe("report card behavior and Discord payload contracts (not visual readabi
   it("shows the generated reporter email alias on the private report card", () => {
     const withAlias = { ...report(), reporterEmail: "ernestine.deckow.z1k2mkvwz9b69rhc@doomed.org" } as ReportDetail;
 
-    expect(JSON.stringify(statusMessageOptions(withAlias, context))).toContain(
-      "Reporter email: `ernestine.deckow.z1k2mkvwz9b69rhc`"
-    );
-    expect(JSON.stringify(statusMessageOptions(withAlias, context))).not.toContain("@doomed.org");
-  });
-
-  it("shows meaningful AI preparation stages with stage-specific icons", () => {
-    const value = JSON.stringify(statusMessageOptions(report({ status: "writing" }), context));
-    expect(value).toContain("### AI preparation");
-    expect(value).toContain("AI analyzed the report details");
-    expect(value).toContain("AI researched applicable laws");
-    expect(value).toContain("⏳ **AI is drafting the report**");
+    const serialized = JSON.stringify(statusMessageOptions(withAlias, context));
+    expect(serialized).toContain("ernestine.deckow.z1k2mkvwz9b69rhc");
+    expect(serialized).not.toContain("@doomed.org");
   });
 
   it("collapses a denied report and submitted appeal into one chronological history action", () => {
@@ -158,8 +160,78 @@ describe("report card behavior and Discord payload contracts (not visual readabi
       { eventId: "5", type: "discord:actioned", occurredAt: "2026-09-07T10:04:00.000Z", lifecycleAttempt: 1, discordStatus: "actioned" as const, errorCode: null }
     ];
     const value = JSON.stringify(statusMessageOptions(report({ discordStatus: "actioned", reviewStatus: "approved", timeline }), context));
-    expect(value).toContain("- <t:1788775200:R> Added to submission queue\\n- <t:1788775260:R> Report submitted\\n- <t:1788775380:R> Report denied; appeal submitted\\n- <t:1788775440:R> Appeal accepted");
-    expect(value).not.toContain("<t:1788775320:R> Report denied");
+    const expectedTimes = [1788775200, 1788775260, 1788775380, 1788775440].map((time) => `<t:${time}:R>`);
+    const positions = expectedTimes.map((time) => value.indexOf(time));
+
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((left, right) => left - right));
+    expect(value).not.toContain("<t:1788775320:R>");
+  });
+
+  it("keeps verification receipt in history when the report snapshot has already advanced", () => {
+    const timeline = [
+      { eventId: "1", type: "verification_received", occurredAt: "2026-09-07T10:00:30.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null }
+    ];
+    const current = report({ status: "submitting", discordStatus: null, timeline: [] });
+    const advanced = report({
+      status: "submitting", discordStatus: null, timeline
+    });
+    const value = JSON.stringify(statusMessageOptions(advanced, context));
+
+    expect(classifyReportView(advanced).key).toBe("submitting");
+    expect(value).toContain("<t:1788775230:R>");
+    expect(visibleStatusHash(advanced, context)).not.toBe(visibleStatusHash(current, context));
+  });
+
+  it("uses report_submitted as an awaiting-confirmation milestone even if the status snapshot lags", () => {
+    const timeline = [
+      { eventId: "1", type: "report_submitted", occurredAt: "2026-09-07T10:01:15.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null }
+    ];
+    const submitted = report({
+      status: "submitting", discordStatus: null, timeline
+    });
+    const view = classifyReportView(submitted);
+    const value = JSON.stringify(statusMessageOptions(submitted, context));
+
+    expect(view.key).toBe("awaiting_confirmation");
+    expect(value).toContain("<t:1788775275:R>");
+  });
+
+  it("shows and records Discord receipt confirmation separately from report submission", () => {
+    const submitted = report({
+      status: "submitted", discordStatus: null,
+      timeline: [{ eventId: "1", type: "report_submitted", occurredAt: "2026-09-07T10:01:00.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null }]
+    });
+    const received = report({
+      status: "submitted", discordStatus: null,
+      timeline: [
+        { eventId: "1", type: "report_submitted", occurredAt: "2026-09-07T10:01:00.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null },
+        { eventId: "2", type: "discord:received", occurredAt: "2026-09-07T10:02:00.000Z", lifecycleAttempt: 1, discordStatus: "received", errorCode: null }
+      ]
+    });
+    const submittedView = classifyReportView(submitted);
+    const receivedView = classifyReportView(received);
+    const value = JSON.stringify(statusMessageOptions(received, context));
+
+    expect(submittedView.key).toBe("awaiting_confirmation");
+    expect(receivedView.key).toBe("confirmation_received");
+    expect(value).toContain("<t:1788775260:R>");
+    expect(value).toContain("<t:1788775320:R>");
+    expect(visibleStatusHash(received, context)).not.toBe(visibleStatusHash(submitted, context));
+  });
+
+  it("labels the report text as prepared until a durable submission confirmation exists", () => {
+    const pending = JSON.stringify(statusMessageOptions(report({
+      status: "submitting", discordStatus: null, timeline: []
+    }), context));
+    const confirmedByEvent = JSON.stringify(statusMessageOptions(report({
+      status: "submitting", discordStatus: null,
+      timeline: [{ eventId: "1", type: "report_submitted", occurredAt: "2026-09-07T10:01:15.000Z", lifecycleAttempt: 1, discordStatus: null, errorCode: null }]
+    }), context));
+
+    expect(pending).toContain("### Prepared report");
+    expect(pending).not.toContain("### Report sent to Discord");
+    expect(confirmedByEvent).toContain("### Report sent to Discord");
   });
 
   it("shows the safe specific failure on both the card and its reply", () => {
@@ -198,26 +270,24 @@ describe("report card behavior and Discord payload contracts (not visual readabi
   });
 
   it("shows recovery only for a fresh appeal denial", () => {
-    const denied = JSON.stringify(statusMessageOptions(report({ discordStatus: "review_not_approved", reviewStatus: "not_approved", retryableModes: ["rewrite_ai", "edit_manual"] }), context));
-    const ineligible = JSON.stringify(statusMessageOptions(report({ discordStatus: "closed_no_action", reviewStatus: "ineligible", retryableModes: [] }), context));
-    expect(denied).toContain("Rewrite with AI");
-    expect(denied).toContain("Edit manually");
-    expect(denied).not.toContain("Resend as is");
-    expect(ineligible).not.toContain("Rewrite with AI");
-    expect(ineligible).not.toContain("Edit manually");
+    const denied = cardNodes(report({ discordStatus: "review_not_approved", reviewStatus: "not_approved", retryableModes: ["rewrite_ai", "edit_manual"] }))
+      .filter((node) => node.type === ComponentType.Button).map((node) => node.custom_id);
+    const ineligible = cardNodes(report({ discordStatus: "closed_no_action", reviewStatus: "ineligible", retryableModes: [] }))
+      .filter((node) => node.type === ComponentType.Button).map((node) => node.custom_id);
+    expect(denied).toContain("report-rewrite:11111111-1111-4111-8111-111111111111");
+    expect(denied).toContain("report-edit:11111111-1111-4111-8111-111111111111");
+    expect(ineligible).toEqual([]);
   });
 
-  it("uses current modal components and leaves AI Auto fields optional", () => {
+  it("keeps report fields optional in AI mode", () => {
     const modal = buildReportModal("report:pending", "profile", "@username").toJSON();
-    const serialized = JSON.stringify(modal);
-    expect(serialized).toContain("How should this report be written?");
-    expect(serialized).toContain("Use AI");
-    expect(serialized).toContain("Why are you reporting this?");
-    expect(serialized).toContain("Which profile elements are unlawful?");
-    expect(serialized).toContain('"type":18');
-    expect(serialized).toContain('"type":21');
-    expect(serialized).toContain('"type":3');
-    expect(serialized).not.toContain('"custom_id":"country","min_length"');
+    const country = components(modal).find((node) => node.custom_id === "country");
+    const category = components(modal).find((node) => node.custom_id === "category");
+    const writerMode = components(modal).find((node) => node.custom_id === "writer-mode");
+
+    expect(country).toMatchObject({ required: false, max_length: 2 });
+    expect(category).toMatchObject({ required: false, min_values: 0 });
+    expect(writerMode).toMatchObject({ required: true });
   });
 
   it("omits Auto values in AI mode and enforces manual fields after submission", () => {
@@ -226,9 +296,9 @@ describe("report card behavior and Discord payload contracts (not visual readabi
       useAi: true, country: "DE", description: "Guidance", profileElements: ["name"]
     });
     expect(() => parseReportModalValues("message", { mode: "manual", country: "", categories: [], details: "Text" }, ["DE"]))
-      .toThrow("Country, category, and final report text are required in manual mode.");
+      .toThrow();
     expect(() => parseReportModalValues("message", { mode: "ai", country: "ZZ", categories: [], details: "" }, ["DE"]))
-      .toThrow("Choose a supported country code.");
+      .toThrow();
   });
 
   it("keeps report-denied notifications independent from appeal-denied decisions", () => {

@@ -145,11 +145,11 @@ export class PreparationWorker {
         );
       } catch (persistenceError) {
         this.safeIterationError(new PreparationFailureDiagnostic(
-          preparationErrorDetails(persistenceError), report.id, report.trace_id, persistenceError
+          preparationErrorDetails(persistenceError), report.id, report.trace_id, persistenceError, executionToken
         ));
         throw persistenceError;
       }
-      this.safeIterationError(new PreparationFailureDiagnostic(details, report.id, report.trace_id, error));
+      this.safeIterationError(new PreparationFailureDiagnostic(details, report.id, report.trace_id, error, executionToken));
       this.safeOutcome({
         reportId: report.id,
         traceId: report.trace_id,
@@ -267,6 +267,7 @@ const PREPARATION_ERROR_KINDS = new Set([
   "invalid_query",
   "malformed",
   "network",
+  "payment_required",
   "provider",
   "rate_limited",
   "refusal",
@@ -307,14 +308,15 @@ function preparationErrorDetails(error: unknown): PreparationErrorDetails {
 }
 
 class PreparationFailureDiagnostic extends Error {
-  public constructor(details: PreparationErrorDetails, reportId: string, traceId: string, original: unknown) {
-    super("Report preparation failed.");
+  public constructor(details: PreparationErrorDetails, reportId: string, traceId: string, original: unknown, attempt: number) {
+    super("Report preparation failed.", { cause: original });
     this.name = "PreparationFailureDiagnostic";
     this.errorCode = details.errorCode;
     this.kind = details.kind;
     this.stage = details.stage;
     this.reportId = reportId;
     this.traceId = traceId;
+    this.attempt = attempt;
     this.originalName = original instanceof Error ? original.name : "NonError";
     this.stackFingerprint = diagnosticFingerprint(original);
   }
@@ -324,6 +326,7 @@ class PreparationFailureDiagnostic extends Error {
   public readonly stage: string;
   public readonly reportId: string;
   public readonly traceId: string;
+  public readonly attempt: number;
   public readonly originalName: string;
   public readonly stackFingerprint: string;
 }
@@ -356,6 +359,7 @@ function preparationErrorMessage(code: string, error: unknown): string {
   if (code === "preparation_timeout") return "Report preparation timed out.";
   if (code === "preparation_refusal") return "The writing provider could not prepare this report.";
   if (code === "preparation_rate_limited") return "A preparation provider is rate limited. Retry the report shortly.";
+  if (code === "preparation_payment_required") return "Report preparation is unavailable because the writing provider requires payment or credit. Contact support.";
   if (code === "preparation_network") return "A preparation provider could not be reached.";
   if (code === "preparation_provider") return "A preparation provider remained unavailable.";
   if (code === "preparation_malformed") return "A preparation provider returned an invalid response.";

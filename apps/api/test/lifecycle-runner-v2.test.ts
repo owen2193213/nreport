@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/require-await */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DiscordDsaHttpError } from "@discord-dsa/client";
+import { DiscordDsaHttpError, DiscordDsaNetworkError } from "@discord-dsa/client";
 
 import { LifecycleRunner, type LifecycleFailureSignal } from "../src/lifecycle-runner-v2.js";
 
@@ -23,7 +23,8 @@ function report() {
     locale: "de-DE",
     language: "de",
     proxy_session_id: "proxy-session",
-    session_state: "encrypted-session",
+    session_state: '{"fingerprint":"fixture-fingerprint","cookies":"fixture-cookies"}',
+    status: "requesting_verification",
     request_input: {
       flow: "message" as const,
       useAi: false as const,
@@ -226,7 +227,8 @@ describe("LifecycleRunner irreversible boundary", () => {
   it.each([
     ["request_code" as const, "requesting_verification" as const, "sendEmailCode" as const],
     ["verify_submit" as const, "verifying" as const, "verifyEmailCode" as const]
-  ])("passes claim ownership into %s status transition and stops when it is stale", async (kind, status, blockedMethod) => {
+  ])("completes %s when its status transition is rejected but the claim remains owned", async (kind, status, blockedMethod) => {
+    const outcomes: unknown[] = [];
     const job = {
       id: "job-1",
       report_id: "report-1",
@@ -240,6 +242,7 @@ describe("LifecycleRunner irreversible boundary", () => {
       claimLifecycleJob: vi.fn().mockResolvedValueOnce(job).mockResolvedValue(null),
       getLifecycleReport: vi.fn(async () => report()),
       setStatus: vi.fn(async () => false),
+      completeLifecycleJob: vi.fn(async () => true),
       failBeforeSubmission: vi.fn(),
       retryLifecycleJob: vi.fn()
     };
@@ -253,13 +256,37 @@ describe("LifecycleRunner irreversible boundary", () => {
     };
     const runner = new LifecycleRunner(store as never, {} as never, () => client as never, {
       decrypt: (value: string) => value
-    });
+    }, undefined, (outcome) => { outcomes.push(outcome); });
 
     await runner.processOne();
 
     expect(store.setStatus).toHaveBeenCalledWith(job, status);
+    expect(store.completeLifecycleJob).toHaveBeenCalledWith(job);
     expect(client[blockedMethod]).not.toHaveBeenCalled();
     expect(client.close).toHaveBeenCalledOnce();
+    expect(outcomes.at(-1)).toMatchObject({ component: "job", outcome: "completed" });
+  });
+
+  it("completes an obsolete request-code job when verification is already running", async () => {
+    const outcomes: unknown[] = [];
+    const job = {
+      id: "job-code", report_id: "report-1", kind: "request_code" as const,
+      payload: {}, attempts: 1, max_attempts: 3, execution_token: 1
+    };
+    const store = {
+      claimLifecycleJob: vi.fn().mockResolvedValueOnce(job).mockResolvedValue(null),
+      getLifecycleReport: vi.fn(async () => ({ ...report(), status: "verifying" })),
+      completeLifecycleJob: vi.fn(async () => true)
+    };
+    const client = { sendEmailCode: vi.fn(), close: vi.fn() };
+    const runner = new LifecycleRunner(store as never, {} as never, () => client as never,
+      undefined, undefined, (outcome) => { outcomes.push(outcome); });
+
+    await runner.processOne();
+
+    expect(store.completeLifecycleJob).toHaveBeenCalledWith(job);
+    expect(client.sendEmailCode).not.toHaveBeenCalled();
+    expect(outcomes.at(-1)).toMatchObject({ component: "job", outcome: "completed" });
   });
 });
 
@@ -705,6 +732,319 @@ describe("LifecycleRunner background scheduling", () => {
 });
 
 describe("LifecycleRunner safe outcomes", () => {
+  it("persists initialized client state without bootstrapping in retry cleanup", async () => {
+    const job = {
+      id: "job-1", report_id: "report-1", kind: "request_code" as const,
+      payload: {}, attempts: 1, max_attempts: 3, execution_token: 1
+    };
+    const initializedSession = { fingerprint: "sticky-fingerprint", cookies: "sticky-cookies" };
+    const retryLifecycleJob = vi.fn(async () => true);
+    const store = {
+      claimLifecycleJob: vi.fn(async () => job),
+      getLifecycleReport: vi.fn(async () => ({ ...report(), session_state: null })),
+      setStatus: vi.fn(async () => true),
+      retryLifecycleJob
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      {} as never,
+      () => ({
+        sendEmailCode: vi.fn(async () => {
+          throw new DiscordDsaNetworkError("Network request failed.", {
+            cause: Object.assign(new Error("socket reset"), { code: "ECONNRESET" })
+          });
+        }),
+        snapshotSession: vi.fn(),
+        snapshotInitializedSession: vi.fn(() => initializedSession),
+        close: vi.fn()
+      }) as never,
+      { encrypt: (value: unknown) => JSON.stringify(value) }
+    );
+
+    await runner.processOne();
+
+    expect(retryLifecycleJob).toHaveBeenCalledWith(
+      job, "discord_network_error", expect.any(Number), {
+        recordConnectionProgress: true,
+        encryptedSession: JSON.stringify(initializedSession)
+      }
+    );
+  });
+
+  it("reuses an encrypted verification token and session after a safe menu retry", async () => {
+    const session = { fingerprint: "sticky-fingerprint", cookies: "cookie-state" };
+    let persistedSession = JSON.stringify(session);
+    const firstJob = {
+      id: "job-1", report_id: "report-1", kind: "verify_submit" as const,
+      payload: { code: JSON.stringify("123456") }, attempts: 1, max_attempts: 3, execution_token: 1
+    };
+    const secondJob = {
+      ...firstJob, attempts: 2, execution_token: 2,
+      payload: { encryptedVerifiedToken: JSON.stringify({ token: "verified-token" }) }
+    };
+    const verifyEmailCode = vi.fn(async () => "verified-token");
+    const prepareSubmission = vi.fn(() => ({}));
+    const retryLifecycleJob = vi.fn(async (_job: unknown, _code: string, _delay: number, options?: { encryptedSession?: string }) => {
+      if (options?.encryptedSession !== undefined) persistedSession = options.encryptedSession;
+      return true;
+    });
+    let clientIndex = 0;
+    const store = {
+      claimLifecycleJob: vi.fn().mockResolvedValueOnce(firstJob).mockResolvedValueOnce(secondJob).mockResolvedValue(null),
+      getLifecycleReport: vi.fn(async () => ({ ...report(), session_state: persistedSession })),
+      setStatus: vi.fn(async () => true),
+      retryLifecycleJob,
+      beginSubmission: vi.fn(async () => true),
+      markSubmitted: vi.fn(async () => true)
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      {} as never,
+      () => {
+        const current = clientIndex++;
+        return {
+          verifyEmailCode,
+          getMenu: vi.fn(async () => {
+            if (current === 0) {
+              throw new DiscordDsaNetworkError("Network request failed.", {
+                cause: Object.assign(new Error("socket reset"), { code: "ECONNRESET" })
+              });
+            }
+            return {};
+          }),
+          prepareSubmission,
+          submitPrepared: vi.fn(async () => ({ report_id: "discord-report" })),
+          snapshotInitializedSession: vi.fn(() => ({ ...session, cookies: "updated-cookies" })),
+          close: vi.fn()
+        } as never;
+      },
+      {
+        decrypt: (value: string) => {
+          try { return JSON.parse(value) as unknown; } catch { return value; }
+        },
+        encrypt: (value: unknown) => JSON.stringify(value)
+      }
+    );
+
+    await runner.processOne();
+    expect(retryLifecycleJob).toHaveBeenCalledWith(
+      firstJob, "discord_network_error", expect.any(Number), {
+        recordConnectionProgress: true,
+        encryptedSession: JSON.stringify({ ...session, cookies: "updated-cookies" }),
+        encryptedVerifiedToken: JSON.stringify({ token: "verified-token" })
+      }
+    );
+    await runner.processOne();
+
+    expect(verifyEmailCode).toHaveBeenCalledOnce();
+    expect(prepareSubmission).toHaveBeenCalledWith(expect.anything(), expect.anything(), "verified-token", expect.any(String));
+    expect(store.beginSubmission).toHaveBeenCalledOnce();
+  });
+
+  it("restarts once after the final safe attempt for a transient connection failure", async () => {
+    const outcomes: unknown[] = [];
+    const job = {
+      id: "job-1", report_id: "report-1", trace_id: "33333333-3333-4333-8333-333333333333",
+      kind: "request_code" as const, payload: {}, attempts: 3, max_attempts: 3, execution_token: 3
+    };
+    const store = {
+      claimLifecycleJob: vi.fn(async () => job),
+      getLifecycleReport: vi.fn(async () => ({ ...report(), session_state: null })),
+      setStatus: vi.fn(async () => true),
+      failBeforeSubmission: vi.fn(async () => "restarted" as const),
+      retryLifecycleJob: vi.fn(async () => true)
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      {} as never,
+      () => ({
+        sendEmailCode: vi.fn(async () => {
+          throw new DiscordDsaNetworkError("Network request failed.", { cause: Object.assign(new Error("socket reset"), { code: "ECONNRESET" }) });
+        }),
+        snapshotSession: vi.fn(), close: vi.fn()
+      }) as never,
+      undefined,
+      undefined,
+      (outcome) => { outcomes.push(outcome); },
+      () => 0.5
+    );
+
+    await runner.processOne();
+
+    expect(store.failBeforeSubmission).toHaveBeenCalledWith(
+      job, "discord_network_error", "Discord preparation failed safely.", true
+    );
+    expect(store.retryLifecycleJob).not.toHaveBeenCalled();
+    expect(outcomes.at(-1)).toMatchObject({ component: "job", outcome: "restarting", errorCategory: "discord_network_error" });
+  });
+
+  it.each([
+    {
+      name: "a nested ECONNREFUSED inside AggregateError",
+      cause: new AggregateError([Object.assign(new Error("proxy refused the connection"), { code: "ECONNREFUSED" })]),
+      eligible: true
+    },
+    {
+      name: "a TLS certificate failure alongside a reset connection",
+      cause: new AggregateError([
+        Object.assign(new Error("connection reset"), { code: "ECONNRESET" }),
+        Object.assign(new Error("certificate hostname mismatch"), { code: "ERR_TLS_CERT_ALTNAME_INVALID" })
+      ]),
+      eligible: false
+    }
+  ])("classifies $name without overriding permanent TLS causes", async ({ cause, eligible }) => {
+    const job = {
+      id: "job-1", report_id: "report-1", kind: "request_code" as const,
+      payload: {}, attempts: 3, max_attempts: 3, execution_token: 3
+    };
+    const store = {
+      claimLifecycleJob: vi.fn(async () => job),
+      getLifecycleReport: vi.fn(async () => ({ ...report(), session_state: null })),
+      setStatus: vi.fn(async () => true),
+      failBeforeSubmission: vi.fn(async () => true),
+      retryLifecycleJob: vi.fn(async () => true)
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      {} as never,
+      () => ({
+        sendEmailCode: vi.fn(async () => { throw new DiscordDsaNetworkError("Network request failed.", { cause }); }),
+        snapshotSession: vi.fn(), close: vi.fn()
+      }) as never
+    );
+
+    await runner.processOne();
+
+    expect(store.failBeforeSubmission).toHaveBeenCalledWith(
+      job, "discord_network_error", "Discord preparation failed safely.", eligible
+    );
+  });
+
+  it("does not retry permanent DNS failures or spend the automatic restart budget", async () => {
+    const job = {
+      id: "job-1", report_id: "report-1", kind: "request_code" as const,
+      payload: {}, attempts: 1, max_attempts: 3, execution_token: 1
+    };
+    const store = {
+      claimLifecycleJob: vi.fn(async () => job),
+      getLifecycleReport: vi.fn(async () => report()),
+      setStatus: vi.fn(async () => true),
+      failBeforeSubmission: vi.fn(async () => true),
+      retryLifecycleJob: vi.fn(async () => true)
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      {} as never,
+      () => ({
+        sendEmailCode: vi.fn(async () => {
+          throw new DiscordDsaNetworkError("Network request failed.", { cause: Object.assign(new Error("DNS name not found"), { code: "ENOTFOUND" }) });
+        }),
+        snapshotSession: vi.fn(), close: vi.fn()
+      }) as never
+    );
+
+    await runner.processOne();
+
+    expect(store.failBeforeSubmission).toHaveBeenCalledWith(
+      job, "discord_network_error", "Discord preparation failed safely.", false
+    );
+    expect(store.retryLifecycleJob).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a Discord rate limit into a fresh lifecycle restart", async () => {
+    const job = {
+      id: "job-1", report_id: "report-1", kind: "request_code" as const,
+      payload: {}, attempts: 3, max_attempts: 3, execution_token: 3
+    };
+    const store = {
+      claimLifecycleJob: vi.fn(async () => job),
+      getLifecycleReport: vi.fn(async () => ({ ...report(), session_state: null })),
+      setStatus: vi.fn(async () => true),
+      failBeforeSubmission: vi.fn(async () => true),
+      retryLifecycleJob: vi.fn(async () => true)
+    };
+    const runner = new LifecycleRunner(
+      store as never,
+      {} as never,
+      () => ({
+        sendEmailCode: vi.fn(async () => { throw new DiscordDsaHttpError("rate limited", 429, { retryAfterSeconds: 47 }); }),
+        snapshotSession: vi.fn(), close: vi.fn()
+      }) as never,
+      undefined,
+      undefined,
+      undefined,
+      () => 0
+    );
+
+    await runner.processOne();
+
+    expect(store.failBeforeSubmission).toHaveBeenCalledWith(
+      job, "discord_http_429", "Discord preparation failed safely.", false
+    );
+    expect(store.retryLifecycleJob).not.toHaveBeenCalled();
+  });
+
+  it("bounds jitter to twenty percent around the existing safe retry delay", async () => {
+    const delays: number[] = [];
+    for (const randomValue of [0, 1]) {
+      const job = {
+        id: "job-1", report_id: "report-1", kind: "request_code" as const,
+        payload: {}, attempts: 1, max_attempts: 3, execution_token: 1
+      };
+      const store = {
+        claimLifecycleJob: vi.fn(async () => job),
+        getLifecycleReport: vi.fn(async () => report()),
+        setStatus: vi.fn(async () => true),
+        retryLifecycleJob: vi.fn(async (_job: unknown, _code: string, delaySeconds: number) => {
+          delays.push(delaySeconds);
+          return true;
+        })
+      };
+      const runner = new LifecycleRunner(
+        store as never,
+        {} as never,
+        () => ({
+          sendEmailCode: vi.fn(async () => {
+            throw new DiscordDsaNetworkError("Network request failed.", { cause: Object.assign(new Error("socket reset"), { code: "ECONNRESET" }) });
+          }),
+          snapshotSession: vi.fn(), close: vi.fn()
+        }) as never,
+        undefined,
+        undefined,
+        undefined,
+        () => randomValue
+      );
+
+      await runner.processOne();
+    }
+
+    expect(delays).toEqual([8, 12]);
+  });
+
+  it("persists client construction failures as terminal lifecycle failures", async () => {
+    const job = {
+      id: "job-1", report_id: "report-1", kind: "request_code" as const,
+      payload: {}, attempts: 1, max_attempts: 3, execution_token: 1
+    };
+    const store = {
+      claimLifecycleJob: vi.fn(async () => job),
+      getLifecycleReport: vi.fn(async () => report()),
+      setStatus: vi.fn(async () => true),
+      failBeforeSubmission: vi.fn(async () => true),
+      retryLifecycleJob: vi.fn(async () => true)
+    };
+    const runner = new LifecycleRunner(store as never, {} as never, () => {
+      throw new TypeError("Invalid proxy configuration.");
+    });
+
+    await expect(runner.processOne()).resolves.toBe(true);
+
+    expect(store.failBeforeSubmission).toHaveBeenCalledWith(
+      job, "discord_lifecycle_failed", "Discord preparation failed safely.", false
+    );
+    expect(store.retryLifecycleJob).not.toHaveBeenCalled();
+  });
+
   it("reports a scheduled retry instead of a completed lifecycle job", async () => {
     const outcomes: unknown[] = [];
     const retryable = new DiscordDsaHttpError("temporarily unavailable", 503);
@@ -723,7 +1063,8 @@ describe("LifecycleRunner safe outcomes", () => {
       () => ({ sendEmailCode: vi.fn(async () => { throw retryable; }), close: vi.fn() }) as never,
       undefined,
       undefined,
-      (outcome) => { outcomes.push(outcome); }
+      (outcome) => { outcomes.push(outcome); },
+      () => 0.5
     );
 
     await runner.processOne();
@@ -747,12 +1088,44 @@ describe("LifecycleRunner safe outcomes", () => {
     };
     const runner = new LifecycleRunner(
       store as never, {} as never,
-      () => ({ sendEmailCode: vi.fn(async () => { throw rateLimited; }), close: vi.fn() }) as never
+      () => ({ sendEmailCode: vi.fn(async () => { throw rateLimited; }), close: vi.fn() }) as never,
+      undefined, undefined, undefined, () => 0.5
     );
 
     await runner.processOne();
 
     expect(store.retryLifecycleJob).toHaveBeenCalledWith(expect.anything(), "discord_http_429", 47);
+  });
+
+  it("stops cleanly when Retry-After exceeds the bounded wait, without an automatic restart", async () => {
+    const outcomes: unknown[] = [];
+    const job = {
+      id: "job-1", report_id: "report-1", kind: "request_code" as const,
+      payload: {}, attempts: 3, max_attempts: 3, execution_token: 3
+    };
+    const store = {
+      claimLifecycleJob: vi.fn(async () => job),
+      getLifecycleReport: vi.fn(async () => report()),
+      setStatus: vi.fn(async () => true),
+      retryLifecycleJob: vi.fn(async () => true),
+      failBeforeSubmission: vi.fn(async () => true)
+    };
+    const serverWait = new DiscordDsaHttpError("temporarily unavailable", 503, { retryAfterSeconds: 301 });
+    const runner = new LifecycleRunner(
+      store as never,
+      {} as never,
+      () => ({ sendEmailCode: vi.fn(async () => { throw serverWait; }), close: vi.fn() }) as never,
+      { decrypt: (value: string) => value, encrypt: () => "encrypted-session" },
+      undefined, (outcome) => { outcomes.push(outcome); }
+    );
+
+    await runner.processOne();
+
+    expect(store.retryLifecycleJob).not.toHaveBeenCalled();
+    expect(outcomes.at(-1)).toMatchObject({ error: serverWait });
+    expect(store.failBeforeSubmission).toHaveBeenCalledWith(
+      job, "discord_http_503", "Discord preparation failed safely.", false
+    );
   });
 
   it("does not claim a retry when its durable transition loses ownership", async () => {

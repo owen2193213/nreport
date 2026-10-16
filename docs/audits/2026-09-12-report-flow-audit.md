@@ -278,7 +278,12 @@ node docs/audits/2026-09-12-api-email.simulation.mjs
 npm.cmd test -- docs/audits/2026-09-12-bot-notification.test.ts docs/audits/2026-09-12-bot-notification-supplement.test.ts
 ```
 
-The audit simulations assert **current buggy behavior**, so a pass confirms reproduction, not correctness. When fixes are authorized, convert the relevant assertions into desired-behavior regression tests rather than preserving these expectations unchanged.
+The commands above record the original audit revision. The first bot fixture is now retained as
+`2026-09-12-bot-notification.repro.ts` because it asserts **pre-fix buggy behavior**; it is historical
+evidence and is not discovered by the current test suite. A pass of that original reproduction
+confirms the old defect, not correctness. Current desired behavior is covered by the bot's
+notification, interaction, and PostgreSQL regression tests. The supplement remains a regression
+test because its assertions describe desired behavior.
 
 ## Suggested repair order, for a later authorized change
 

@@ -32,6 +32,46 @@ const principal = {
 };
 
 describe("v2 account-owned server", () => {
+  it("exposes recovery progress without leaking internal restart or transport data", async () => {
+    const recovery = {
+      state: "retrying", attempt: 2, maxAttempts: 3,
+      retryAt: "2026-10-15T12:00:10.000Z", successorReportId: null
+    };
+    const report = {
+      id: "22222222-2222-4222-8222-222222222222",
+      trace_id: "33333333-3333-4333-8333-333333333333",
+      account_id: principal.accountId, flow: "message", use_ai: true,
+      request_input: { flow: "message", useAi: true, target: {
+        messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679"
+      } },
+      prepared_input: null, status: "requesting_verification", lifecycle_attempt: 2,
+      connection_recovery: { ...recovery, internalTransport: "fixture-private-transport-state" },
+      automatic_network_restarts: 1,
+      created_at: new Date("2026-10-15T12:00:00.000Z"),
+      updated_at: new Date("2026-10-15T12:00:00.000Z")
+    };
+    const server = await buildV2Server(config, {
+      healthcheck: vi.fn(), accounts: { authenticate: vi.fn(async () => principal) },
+      reports: {
+        findOwned: vi.fn(async () => report), timeline: vi.fn(async () => []),
+        listOwned: vi.fn(async () => ({ rows: [report], next: null }))
+      }
+    } as never);
+    try {
+      for (const path of [`/v1/discord/dsa/reports/${report.id}`, "/v1/discord/dsa/reports"]) {
+        const response = await server.inject({ method: "GET", url: path,
+          headers: { authorization: "Bearer personal-key" } });
+        expect(response.statusCode).toBe(200);
+        const expected = { connectionRecovery: recovery, automaticNetworkRetry: true };
+        expect(response.json<unknown>()).toMatchObject(
+          path.endsWith(report.id) ? expected : { items: [expected] }
+        );
+        expect(response.body).not.toContain("fixture-private-transport-state");
+        expect(response.body).not.toContain("automatic_network_restarts");
+      }
+    } finally { await server.close(); }
+  });
+
   it("restricts the paginated global key inventory to administrators", async () => {
     const listKeyInventory = vi.fn(async (page: number) => ({
       items: [{

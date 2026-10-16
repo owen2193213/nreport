@@ -84,6 +84,24 @@ the latest authoritative report. If Discord returns error `50007`,
 the bot warns in the ephemeral interaction response that it could not DM the user; the API report
 continues.
 
+Connection recovery updates the existing card immediately. Scheduled safe retries show the
+current attempt and retry time; an automatic lifecycle restart shows that a fresh connection is
+being started. These are progress updates and do not send failure DMs. For an explicitly marked
+automatic successor, the bot validates account ownership and the exact predecessor relationship,
+then atomically adopts the predecessor's card and encrypted target context. Notification and
+card-repair paths perform that adoption before creating a card, including when the successor's
+event arrives first. Before manually replacing an automatic child, the interaction adopts its
+card first so the manual replacement can inherit it. Late events cannot revive a child that
+already has a newer successor. Manual successors retain their interaction-controlled behavior.
+Direct views of an old predecessor show that it was replaced, while the adopted card displays
+the successor's current status; historical recovery metadata does not imply ongoing work.
+An uncertain card send retains its original delivery identity and claim time across replacement.
+Recovery checks up to 300 recent DM messages for that bot-authored card before sending again,
+using its nonce or a card footer from up to 20 reports sharing that delivery identity.
+If the scan cannot cover the original send window or the report lineage is incomplete, recovery
+defers the send and records the uncertainty; it does not assume Discord will retain nonce
+deduplication indefinitely.
+
 AI-backed cards also include a compact **AI preparation** log. Completed stages use plain text; only
 the active stage is bold and prefixed with ⏳. Stages are analyzing report details, researching
 applicable laws, and drafting the report. Manual reports omit this section. The log uses

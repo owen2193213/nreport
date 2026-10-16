@@ -1,3 +1,5 @@
+// Historical audit fixture: asserts pre-fix bugs, not current desired behavior.
+// Retained as evidence; intentionally excluded from automatic *.test.ts discovery.
 import assert from 'node:assert/strict';
 import { AccountNotificationWorker } from '../../apps/bot/src/account-notifier.ts';
 import { AccountBotDatabase } from '../../apps/bot/src/account-database.ts';

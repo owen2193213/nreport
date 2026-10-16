@@ -150,6 +150,15 @@ export class DiscordDsaClient {
     return { fingerprint, cookies: this.transport.exportCookies() };
   }
 
+  /**
+   * Export state that is already initialized without performing network I/O.
+   * Safe to call in error handling before a retry; it never bootstraps a fingerprint.
+   */
+  public snapshotInitializedSession(): DiscordDsaSessionState | null {
+    if (this.fingerprint === undefined || this.transport.exportCookies === undefined) return null;
+    return { fingerprint: this.fingerprint, cookies: this.transport.exportCookies() };
+  }
+
   public async bootstrapFingerprint(): Promise<string> {
     if (this.fingerprint !== undefined) return this.fingerprint;
     this.fingerprintPromise ??= (async () => {

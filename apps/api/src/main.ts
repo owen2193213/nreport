@@ -23,7 +23,8 @@ function captureReportFailure(failure: LifecycleFailureSignal): void {
     discord_receipt_timeout: "Discord report receipt was not recorded before the deadline.",
     review_confirmation_timeout: "Discord appeal confirmation was not recorded before the deadline.",
     ambiguous_submission_state: "Discord report submission ended with an ambiguous outcome.",
-    review_request_ambiguous: "Discord appeal submission ended with an ambiguous outcome."
+    review_request_ambiguous: "Discord appeal submission ended with an ambiguous outcome.",
+    lifecycle_attempts_exhausted: "The lifecycle worker stopped during its last permitted verification attempt."
   };
   captureLifecycleFailure(new Error(messages[failure.errorCategory]), {
     service: "api",

@@ -240,6 +240,138 @@ describe("report card behavior and Discord payload contracts (not visual readabi
     expect(JSON.stringify(decisionMessageOptions(failed, context))).toContain("The AI writing provider is rate limited after 3 attempts.");
   });
 
+  it("renders an automatic connection retry as progress instead of a terminal failure", () => {
+    const retrying = report({
+      status: "verifying",
+      discordStatus: null,
+      reviewStatus: null,
+      failure: null,
+      retryableModes: [],
+      connectionRecovery: {
+        state: "retrying", attempt: 2, maxAttempts: 3,
+        retryAt: "2026-10-15T12:00:00.000Z", successorReportId: null
+      }
+    });
+
+    const view = classifyReportView(retrying);
+    const rendered = JSON.stringify(statusMessageOptions(retrying, context));
+
+    expect(view.terminal).toBe(false);
+    expect(rendered).toContain("Connection interrupted");
+    expect(rendered).toContain("2 of 3");
+    expect(rendered).toContain(`<t:${Math.floor(Date.parse(retrying.connectionRecovery!.retryAt!) / 1_000)}:R>`);
+    expect(rendered).not.toContain("Report failed");
+    expect(shouldSendDecisionDm("report_failed", view.key, {
+      decisionEnabled: true, reportDeniedEnabled: false, problemEnabled: true
+    })).toBe(false);
+    expect(visibleStatusHash(retrying, context)).not.toBe(visibleStatusHash({
+      ...retrying,
+      connectionRecovery: { ...retrying.connectionRecovery!, attempt: 3 }
+    }, context));
+    expect(visibleStatusHash(retrying, context)).not.toBe(visibleStatusHash({
+      ...retrying,
+      connectionRecovery: { ...retrying.connectionRecovery!, retryAt: "2026-10-15T12:01:00.000Z" }
+    }, context));
+    expect(visibleStatusHash({
+      ...retrying,
+      connectionRecovery: { ...retrying.connectionRecovery!, retryAt: "invalid" }
+    }, context)).toBe(visibleStatusHash({
+      ...retrying,
+      connectionRecovery: { ...retrying.connectionRecovery!, retryAt: null }
+    }, context));
+  });
+
+  it.each(["failed", "submitting", "submitted"] as const)(
+    "does not let stale retry metadata hide a %s report state",
+    (status) => {
+      const stale = report({
+        status,
+        discordStatus: null,
+        reviewStatus: null,
+        connectionRecovery: {
+          state: "retrying", attempt: 2, maxAttempts: 3,
+          retryAt: "2026-10-15T12:00:00.000Z", successorReportId: null
+        }
+      });
+
+      const view = classifyReportView(stale);
+      if (status === "failed") {
+        expect(view.key).toBe("failed");
+        expect(shouldSendDecisionDm("report_failed", view.key, {
+          decisionEnabled: true, reportDeniedEnabled: false, problemEnabled: true
+        })).toBe(true);
+      } else {
+        expect(view.key).not.toBe("connection_retry");
+      }
+    }
+  );
+
+  it("does not treat stale restarting metadata on a submitted report as active progress", () => {
+    const submitted = report({
+      status: "submitted",
+      discordStatus: null,
+      reviewStatus: null,
+      connectionRecovery: {
+        state: "restarting", attempt: 3, maxAttempts: 3,
+        retryAt: null, successorReportId: "44444444-4444-4444-8444-444444444444"
+      }
+    });
+
+    expect(classifyReportView(submitted).key).not.toBe("connection_restarting");
+    expect(JSON.stringify(statusMessageOptions(submitted, context))).toContain("Awaiting confirmation");
+  });
+
+  it("treats a replaced predecessor as historical while its successor owns current progress", () => {
+    const predecessor = report({
+      status: "failed", discordStatus: null, reviewStatus: null,
+      connectionRecovery: {
+        state: "restarting", attempt: 3, maxAttempts: 3,
+        retryAt: null, successorReportId: "44444444-4444-4444-8444-444444444444"
+      }
+    });
+    const view = classifyReportView(predecessor);
+    expect(view.key).toBe("connection_replaced");
+    expect(view.terminal).toBe(true);
+    expect(shouldSendDecisionDm("report_failed", view.key, {
+      decisionEnabled: true, reportDeniedEnabled: true, problemEnabled: true
+    })).toBe(false);
+  });
+
+  it("shows a fresh automatic successor as progress but leaves a later final failure actionable", () => {
+    const successorId = "44444444-4444-4444-8444-444444444444";
+    const starting = report({
+      reportId: successorId,
+      status: "queued",
+      discordStatus: null,
+      reviewStatus: null,
+      predecessorReportId: "11111111-1111-4111-8111-111111111111",
+      automaticNetworkRetry: true
+    });
+    const startingView = classifyReportView(starting);
+
+    expect(JSON.stringify(statusMessageOptions(starting, context))).toContain("Starting fresh connection");
+    expect(startingView.terminal).toBe(false);
+    expect(shouldSendDecisionDm("report_failed", startingView.key, {
+      decisionEnabled: true, reportDeniedEnabled: false, problemEnabled: true
+    })).toBe(false);
+
+    const failed = report({
+      reportId: successorId,
+      status: "failed",
+      discordStatus: null,
+      reviewStatus: null,
+      predecessorReportId: "11111111-1111-4111-8111-111111111111",
+      automaticNetworkRetry: true,
+      failure: { stage: "requesting_verification", code: "network_unavailable", message: "The connection could not be restored." }
+    });
+    const failedView = classifyReportView(failed);
+
+    expect(failedView.key).toBe("failed");
+    expect(shouldSendDecisionDm("report_failed", failedView.key, {
+      decisionEnabled: true, reportDeniedEnabled: false, problemEnabled: true
+    })).toBe(true);
+  });
+
   it.each([[], ["reuse"], ["regenerate"], ["reuse", "regenerate"]] as const)("binds only API-authorized retry modes %j to this report", (...modes) => {
     const failed = report({ status: "failed", discordStatus: null, retryableModes: [...modes], failure: { stage: "researching", code: "preparation_rate_limited", message: "Rate limited." } });
     const ids = cardNodes(failed).filter((node) => node.type === ComponentType.Button).map((node) => node.custom_id);

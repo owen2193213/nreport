@@ -29,7 +29,7 @@ import {
 import { ConnectionConflictError, type AccountBotDatabase, type ApiConnection } from "./account-database.js";
 export { shouldAbandonReportLink } from "./report-link-recovery.js";
 import { shouldAbandonReportLink } from "./report-link-recovery.js";
-import { cardNonce } from "./account-notifier.js";
+import { reconcileUncertainCardMessage, UncertainCardDeliveryError } from "./account-notifier.js";
 import { cardPayloadDiagnostics } from "./card-diagnostics.js";
 import type { BotConfig } from "./config.js";
 import { decryptJson, encryptJson } from "./crypto.js";
@@ -376,33 +376,57 @@ export class AccountInteractionHandler {
     await this.dependencies.database.completeReportLink(linkId, report.reportId);
     if (pendingId !== undefined) await this.dependencies.database.deletePendingForm(pendingId, interaction.user.id);
     let dmWarning = "";
-    if (await this.dependencies.database.claimDmCard(report.reportId)) {
+    const cardIdentity = await this.dependencies.database.claimDmCard(report.reportId);
+    if (cardIdentity !== null) {
       let payload: Record<string, unknown> | undefined;
+      let attemptedCardSend = false;
       try {
         const context = display ?? targetContextFromReport(report);
         const options = statusMessageOptions(report, context);
-        const nonce = cardNonce(report.reportId);
-        payload = cardPayloadDiagnostics(options, nonce);
-        const message = await interaction.user.send({ ...options, nonce, enforceNonce: true });
-        await this.dependencies.database.setDmMapping(report.reportId, message.channelId, message.id);
+        const dm = await interaction.user.createDM();
+        let message = await reconcileUncertainCardMessage(
+          dm, this.dependencies.client.user?.id ?? null, report.reportId, cardIdentity
+        );
+        if (message !== null) {
+          await this.dependencies.database.setDmMapping(report.reportId, message.channelId, message.id);
+          await message.edit({ ...options, content: null, embeds: [] });
+        } else {
+          payload = cardPayloadDiagnostics(options, cardIdentity.nonce);
+          attemptedCardSend = true;
+          message = await dm.send({ ...options, nonce: cardIdentity.nonce, enforceNonce: true });
+          await this.dependencies.database.setDmMapping(report.reportId, message.channelId, message.id);
+        }
         await this.dependencies.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
         botLog("initial_card_created", { reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: "completed", durationMs: 0 });
       } catch (error) {
-        const validationFailure = isDiscordValidationFailure(error);
-        if (validationFailure) await this.dependencies.database.terminalCardRepair(report.reportId, "discord_validation_50035");
-        else {
+        if (error instanceof UncertainCardDeliveryError) {
           await this.dependencies.database.releaseDmCard(report.reportId);
-          await this.dependencies.database.rescheduleCardRepair(report.reportId, 5);
+          await this.dependencies.database.rescheduleCardRepair(
+            report.reportId, 300, `uncertain_card_delivery_${error.reason}`
+          );
+          botLog("account_card_delivery_uncertain", {
+            reportId: report.reportId, traceId: report.traceId,
+            stage: "initial_card", outcome: "rescheduled", failureCategory: error.reason
+          }, "warn");
+          dmWarning = " The private status card's delivery is uncertain; NReport will check again before creating another card.";
+        } else {
+          const validationFailure = isDiscordValidationFailure(error);
+          if (validationFailure) await this.dependencies.database.terminalCardRepair(report.reportId, "discord_validation_50035");
+          else {
+            if (!attemptedCardSend) await this.dependencies.database.releaseDmCard(report.reportId);
+            await this.dependencies.database.rescheduleCardRepair(report.reportId, attemptedCardSend ? 120 : 5,
+              attemptedCardSend ? "uncertain_card_send" : undefined);
+          }
+          botLog(validationFailure ? "initial_card_ignored" : "initial_card_failed", {
+            reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: validationFailure ? "ignored" : "retry",
+            durationMs: 0, ...errorFields(error), ...(payload === undefined ? {} : { payload }), failureCategory: safeErrorCategory(error)
+          }, "warn");
+          captureInteractionFailure(error, "status_card_delivery", "initial_card", validationFailure ? "ignored" : "retrying", report.reportId, report.traceId);
+          const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+          dmWarning = code === 50007
+            ? " I could not send the private status card; use `/reports status` to follow it."
+            : " The report continues, but its private status card could not be created; use `/reports status`.";
         }
-        botLog(validationFailure ? "initial_card_ignored" : "initial_card_failed", {
-          reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: validationFailure ? "ignored" : "retry",
-          durationMs: 0, ...errorFields(error), ...(payload === undefined ? {} : { payload }), failureCategory: safeErrorCategory(error)
-        }, "warn");
-        captureInteractionFailure(error, "status_card_delivery", "initial_card", validationFailure ? "ignored" : "retrying", report.reportId, report.traceId);
-        const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
-        dmWarning = code === 50007
-          ? " I could not send the private status card; use `/reports status` to follow it."
-          : " The report continues, but its private status card could not be created; use `/reports status`.";
       }
     } else {
       dmWarning = " Your private status card is being created.";
@@ -417,7 +441,8 @@ export class AccountInteractionHandler {
     pendingId?: string
   ): Promise<void> {
     const connection = await this.requiredConnection(interaction.user.id);
-    const predecessor = await this.api(connection).report(predecessorReportId);
+    const api = this.api(connection);
+    const predecessor = await this.prepareRetryPredecessor(connection, api, predecessorReportId);
     if (!predecessor.retryableModes.includes(input.mode) || predecessor.successorReportId !== null) throw new UserFacingError("That replacement option is no longer available.");
     const idempotencyKey = `retry:${interaction.id}`;
     const encryptedContext = await this.dependencies.database.reportTargetContext(predecessorReportId);
@@ -427,7 +452,7 @@ export class AccountInteractionHandler {
       encryptedContext ?? undefined
     );
     let report: ReportDetail;
-    try { report = await this.api(connection).retryReport(predecessorReportId, idempotencyKey, input); }
+    try { report = await api.retryReport(predecessor.reportId, idempotencyKey, input); }
     catch (error) {
       if (shouldAbandonReportLink(error)) await this.dependencies.database.abandonReportLink(linkId);
       else {
@@ -439,6 +464,43 @@ export class AccountInteractionHandler {
     await this.dependencies.database.completeReplacementLink(linkId, report.reportId, predecessorReportId);
     if (pendingId) await this.dependencies.database.deletePendingForm(pendingId, interaction.user.id);
     await interaction.editReply(`Replacement report **${report.reportId}** is queued. The existing private status card will continue updating.`);
+  }
+
+  private async prepareRetryPredecessor(
+    connection: ApiConnection,
+    api: DsaApi,
+    reportId: string
+  ): Promise<ReportDetail> {
+    const report = await api.report(reportId);
+    if (report.accountId !== connection.account_id) {
+      throw new UserFacingError("That replacement option is no longer available.");
+    }
+    if (report.automaticNetworkRetry !== true) return report;
+    const predecessorReportId = report.predecessorReportId;
+    if (predecessorReportId === null || report.successorReportId !== null) {
+      throw new UserFacingError("That replacement option is no longer available.");
+    }
+
+    const predecessor = await api.report(predecessorReportId);
+    if (predecessor.accountId !== connection.account_id ||
+      predecessor.connectionRecovery?.state !== "restarting" ||
+      predecessor.connectionRecovery.successorReportId !== report.reportId ||
+      predecessor.successorReportId !== report.reportId) {
+      throw new UserFacingError("That replacement option is no longer available.");
+    }
+
+    const adoption = await this.dependencies.database.adoptAutomaticNetworkRetry(
+      connection.account_id, predecessorReportId, report.reportId
+    );
+    if (adoption === "busy") {
+      throw new UserFacingError("The existing status card is being updated. Please try again shortly.");
+    }
+    if (adoption === "conflict") {
+      throw new UserFacingError("That replacement option is no longer available.");
+    }
+    // A missing predecessor link means there is no local card to transfer; the API remains the
+    // authority for retry eligibility, and completeReplacementLink will still track the new child.
+    return report;
   }
 
   private async resolvePending(pending: PendingTarget): Promise<PendingTarget> {
@@ -503,11 +565,12 @@ export class AccountInteractionHandler {
     } else {
       const reportId = interaction.options.getString("report-id", true);
       const mode = interaction.options.getString("mode", true) as "reuse" | "regenerate";
+      const predecessor = await this.prepareRetryPredecessor(connection, api, reportId);
       const idempotencyKey = `retry:${interaction.id}`;
       const linkId = await this.dependencies.database.beginReportLink(interaction.user.id, connection.account_id, idempotencyKey, encryptJson({ reportId, input: { mode } }, this.dependencies.config.dataEncryptionKey));
       let report: ReportDetail;
       try {
-        report = await api.retryReport(reportId, idempotencyKey, { mode });
+        report = await api.retryReport(predecessor.reportId, idempotencyKey, { mode });
       } catch (error) {
         if (shouldAbandonReportLink(error)) await this.dependencies.database.abandonReportLink(linkId);
         else {
@@ -516,32 +579,56 @@ export class AccountInteractionHandler {
         }
         throw error;
       }
-      await this.dependencies.database.completeReportLink(linkId, report.reportId);
+      await this.dependencies.database.completeReplacementLink(linkId, report.reportId, predecessor.reportId);
       let warning = "";
-      if (await this.dependencies.database.claimDmCard(report.reportId)) {
+      const cardIdentity = await this.dependencies.database.claimDmCard(report.reportId);
+      if (cardIdentity !== null) {
         let payload: Record<string, unknown> | undefined;
+        let attemptedCardSend = false;
         try {
           const context = targetContextFromReport(report);
           const options = statusMessageOptions(report, context);
-          const nonce = cardNonce(report.reportId);
-          payload = cardPayloadDiagnostics(options, nonce);
-          const message = await interaction.user.send({ ...options, nonce, enforceNonce: true });
-          await this.dependencies.database.setDmMapping(report.reportId, message.channelId, message.id);
+          const dm = await interaction.user.createDM();
+          let message = await reconcileUncertainCardMessage(
+            dm, this.dependencies.client.user?.id ?? null, report.reportId, cardIdentity
+          );
+          if (message !== null) {
+            await this.dependencies.database.setDmMapping(report.reportId, message.channelId, message.id);
+            await message.edit({ ...options, content: null, embeds: [] });
+          } else {
+            payload = cardPayloadDiagnostics(options, cardIdentity.nonce);
+            attemptedCardSend = true;
+            message = await dm.send({ ...options, nonce: cardIdentity.nonce, enforceNonce: true });
+            await this.dependencies.database.setDmMapping(report.reportId, message.channelId, message.id);
+          }
           await this.dependencies.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
           botLog("initial_card_created", { reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: "completed", durationMs: 0 });
         } catch (error) {
-          const validationFailure = isDiscordValidationFailure(error);
-          if (validationFailure) await this.dependencies.database.terminalCardRepair(report.reportId, "discord_validation_50035");
-          else {
+          if (error instanceof UncertainCardDeliveryError) {
             await this.dependencies.database.releaseDmCard(report.reportId);
-            await this.dependencies.database.rescheduleCardRepair(report.reportId, 5);
+            await this.dependencies.database.rescheduleCardRepair(
+              report.reportId, 300, `uncertain_card_delivery_${error.reason}`
+            );
+            botLog("account_card_delivery_uncertain", {
+              reportId: report.reportId, traceId: report.traceId,
+              stage: "initial_card", outcome: "rescheduled", failureCategory: error.reason
+            }, "warn");
+            warning = " The private status card's delivery is uncertain; NReport will check again before creating another card.";
+          } else {
+            const validationFailure = isDiscordValidationFailure(error);
+            if (validationFailure) await this.dependencies.database.terminalCardRepair(report.reportId, "discord_validation_50035");
+            else {
+              if (!attemptedCardSend) await this.dependencies.database.releaseDmCard(report.reportId);
+              await this.dependencies.database.rescheduleCardRepair(report.reportId, attemptedCardSend ? 120 : 5,
+                attemptedCardSend ? "uncertain_card_send" : undefined);
+            }
+            botLog(validationFailure ? "initial_card_ignored" : "initial_card_failed", {
+              reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: validationFailure ? "ignored" : "retry",
+              durationMs: 0, ...errorFields(error), ...(payload === undefined ? {} : { payload }), failureCategory: safeErrorCategory(error)
+            }, "warn");
+            captureInteractionFailure(error, "status_card_delivery", "initial_card", validationFailure ? "ignored" : "retrying", report.reportId, report.traceId);
+            warning = " I could not create the DM status card; use `/reports status`.";
           }
-          botLog(validationFailure ? "initial_card_ignored" : "initial_card_failed", {
-            reportId: report.reportId, traceId: report.traceId, stage: "initial_card", outcome: validationFailure ? "ignored" : "retry",
-            durationMs: 0, ...errorFields(error), ...(payload === undefined ? {} : { payload }), failureCategory: safeErrorCategory(error)
-          }, "warn");
-          captureInteractionFailure(error, "status_card_delivery", "initial_card", validationFailure ? "ignored" : "retrying", report.reportId, report.traceId);
-          warning = " I could not create the DM status card; use `/reports status`.";
         }
       } else {
         warning = " Your private status card is being created.";

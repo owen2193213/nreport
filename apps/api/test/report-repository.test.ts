@@ -187,7 +187,9 @@ describe("verification state races", () => {
 
     expect(await repository.saveAwaitingVerification({ id: "job-1", report_id: "report-1", execution_token: 1 } as never, "encrypted-session")).toBe(true);
 
-    const update = client.query.mock.calls.find(([sql]) => String(sql).includes("session_state"));
+    const update = client.query.mock.calls.find(([sql]) =>
+      String(sql).includes("UPDATE account_reports") && String(sql).includes("session_state")
+    );
     expect(String(update?.[0])).toContain("status IN ('requesting_verification', 'verification_received')");
     expect(String(update?.[0])).toContain("CASE WHEN status = 'verification_received'");
     expect(client.query.mock.calls.some(([sql, values]) => String(sql).includes("account_report_events") && values?.includes("awaiting_verification"))).toBe(false);
@@ -396,12 +398,13 @@ describe("lifecycle job leases", () => {
 
     const lifecycleRecoveryStatements = [...client.query.mock.calls, ...poolQuery.mock.calls]
       .map(([sql]) => String(sql))
-      .filter((sql) => sql.includes("job.locked_at < now() - interval '2 minutes'"));
-    expect(lifecycleRecoveryStatements).toHaveLength(4);
+      .filter((sql) => sql.includes("UPDATE account_report_jobs AS job"));
+    expect(lifecycleRecoveryStatements).toHaveLength(2);
     for (const sql of lifecycleRecoveryStatements) {
       expect(sql).toContain("job.state = 'running'");
       expect(sql).toContain("job.locked_at < now() - interval '2 minutes'");
     }
+    expect(lifecycleRecoveryStatements[0]).toContain("job.attempts < job.max_attempts");
   });
 
   it.each([
@@ -490,6 +493,11 @@ describe("retry eligibility", () => {
     expect(reportRetryableModes({
       status: "failed", use_ai: true, prepared_input: null, discord_status: null,
       review_status: null, error_code: "ambiguous_submission_state", submission_started_at: new Date()
+    })).toEqual([]);
+    expect(reportRetryableModes({
+      status: "failed", use_ai: true, prepared_input: { finalText: "Prepared" }, discord_status: null,
+      review_status: null, error_code: "discord_network_error", submission_started_at: null,
+      successor_report_id: "auto-successor"
     })).toEqual([]);
   });
 });

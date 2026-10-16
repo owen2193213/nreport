@@ -4,6 +4,7 @@ import type {
   CreateReportInput,
   CursorPage,
   ReportLifecycleEvent,
+  ReportConnectionRecovery,
   ReportStatus,
   ReportTimelineEvent,
   RetryReportInput,
@@ -11,7 +12,12 @@ import type {
 } from "@nreport/contracts";
 import { boundedDiagnostic } from "@nreport/contracts";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
-import type { LifecycleFailureSignal, LifecycleJob, LifecycleReport } from "./lifecycle-runner-v2.js";
+import type {
+  LifecycleFailureSignal,
+  LifecycleJob,
+  LifecycleReport,
+  LifecycleRetryOptions
+} from "./lifecycle-runner-v2.js";
 import type { AccountEventDelivery } from "./event-delivery-v2.js";
 import { isEventCursor, isReportCursor } from "./pagination.js";
 
@@ -115,6 +121,9 @@ CREATE TABLE IF NOT EXISTS account_reports (
   preparation_input_tokens bigint NOT NULL DEFAULT 0 CHECK (preparation_input_tokens >= 0),
   preparation_output_tokens bigint NOT NULL DEFAULT 0 CHECK (preparation_output_tokens >= 0),
   preparation_search_requests bigint NOT NULL DEFAULT 0 CHECK (preparation_search_requests >= 0),
+  connection_recovery jsonb,
+  automatic_network_restarts integer NOT NULL DEFAULT 0
+    CONSTRAINT account_reports_automatic_network_restarts_check CHECK (automatic_network_restarts BETWEEN 0 AND 1),
   credit_chain_id uuid NOT NULL REFERENCES report_credit_chains(id) ON DELETE RESTRICT,
   predecessor_report_id uuid REFERENCES account_reports(id) ON DELETE RESTRICT,
   successor_report_id uuid REFERENCES account_reports(id) ON DELETE RESTRICT,
@@ -154,6 +163,14 @@ ALTER TABLE account_reports ADD COLUMN IF NOT EXISTS trace_id uuid;
 UPDATE account_reports SET trace_id = gen_random_uuid() WHERE trace_id IS NULL;
 ALTER TABLE account_reports ALTER COLUMN trace_id SET DEFAULT gen_random_uuid();
 ALTER TABLE account_reports ALTER COLUMN trace_id SET NOT NULL;
+ALTER TABLE account_reports ADD COLUMN IF NOT EXISTS connection_recovery jsonb;
+ALTER TABLE account_reports ADD COLUMN IF NOT EXISTS automatic_network_restarts integer NOT NULL DEFAULT 0;
+DO $$ BEGIN
+  ALTER TABLE account_reports
+    ADD CONSTRAINT account_reports_automatic_network_restarts_check
+    CHECK (automatic_network_restarts BETWEEN 0 AND 1);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS account_reports_trace_idx ON account_reports(trace_id);
 
 DO $$ BEGIN
@@ -391,6 +408,8 @@ export interface AccountReportRow extends QueryResultRow {
   discord_report_id: string | null;
   discord_status: "received" | "actioned" | "closed_no_action" | "review_not_approved" | null;
   review_status: "queued" | "requested" | "received" | "confirmation_timeout" | "request_failed" | "ineligible" | "request_ambiguous" | "approved" | "not_approved" | null;
+  connection_recovery: ReportConnectionRecovery | null;
+  automatic_network_restarts: number;
   failure_stage: string | null;
   error_code: string | null;
   error_message: string | null;
@@ -621,7 +640,9 @@ export class ReportRepository {
            AND (
              (job.kind = 'prepare_report' AND job.locked_at < now() - interval '6 minutes')
              OR
-             (job.kind IN ('request_code', 'verify_submit') AND job.locked_at < now() - interval '2 minutes')
+              (job.kind IN ('request_code', 'verify_submit')
+                AND job.attempts < job.max_attempts
+                AND job.locked_at < now() - interval '2 minutes')
            )
            AND report.submission_started_at IS NULL`
       );
@@ -640,6 +661,27 @@ export class ReportRepository {
       throw error;
     } finally {
       client.release();
+    }
+
+    const failures: LifecycleFailureSignal[] = [];
+    const exhaustedJobs = await this.pool.query<{ id: string } & QueryResultRow>(
+      `SELECT job.id
+       FROM account_report_jobs AS job
+       JOIN account_reports AS report ON report.id = job.report_id
+       WHERE job.kind IN ('request_code', 'verify_submit')
+         AND job.state IN ('pending', 'running')
+         AND job.attempts >= job.max_attempts
+         AND (job.state = 'pending' OR job.locked_at IS NULL
+              OR job.locked_at < now() - interval '2 minutes')
+         AND (report.submission_started_at IS NULL OR job.kind = 'request_code')
+       ORDER BY report.id, job.id`
+    );
+    for (const candidate of exhaustedJobs.rows) {
+      const failure = await this.failExhaustedLifecycleJob(candidate.id);
+      if (failure !== undefined) {
+        failures.push(failure);
+        onFailure?.(failure);
+      }
     }
 
     const ambiguousSubmissions = await this.pool.query<{ id: string }>(
@@ -661,7 +703,6 @@ export class ReportRepository {
        ORDER BY report.id`
     );
 
-    const failures: LifecycleFailureSignal[] = [];
     for (const candidate of ambiguousSubmissions.rows) {
       const failure = await this.recoverAmbiguousSubmission(candidate.id);
       if (failure !== undefined) {
@@ -677,6 +718,117 @@ export class ReportRepository {
       }
     }
     return failures;
+  }
+
+  private async failExhaustedLifecycleJob(jobId: string): Promise<LifecycleFailureSignal | undefined> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const owner = await client.query<{ report_id: string } & QueryResultRow>(
+        "SELECT report_id FROM account_report_jobs WHERE id = $1",
+        [jobId]
+      );
+      const reportId = owner.rows[0]?.report_id;
+      if (reportId === undefined || !(await lockReportMutationParents(client, reportId))) {
+        await client.query("COMMIT");
+        return undefined;
+      }
+      const candidate = await client.query<{
+        id: string;
+        report_id: string;
+        kind: LifecycleJob["kind"];
+        payload: Record<string, unknown>;
+        attempts: number;
+        max_attempts: number;
+        trace_id: string;
+      } & QueryResultRow>(
+        `SELECT job.id, job.report_id, job.kind, job.payload, job.attempts, job.max_attempts,
+                report.trace_id
+         FROM account_report_jobs AS job
+         JOIN account_reports AS report ON report.id = job.report_id
+         WHERE job.id = $1 AND job.kind IN ('request_code', 'verify_submit')
+           AND job.state IN ('pending', 'running')
+           AND job.attempts >= job.max_attempts
+           AND (job.state = 'pending' OR job.locked_at IS NULL
+                OR job.locked_at < now() - interval '2 minutes')
+           AND (report.submission_started_at IS NULL OR job.kind = 'request_code')
+         FOR UPDATE OF job`,
+        [jobId]
+      );
+      const row = candidate.rows[0];
+      if (row === undefined) {
+        await client.query("COMMIT");
+        return undefined;
+      }
+
+      const locked = await lockReportCredit(client, row.report_id);
+      if (locked === undefined) {
+        await client.query("COMMIT");
+        return undefined;
+      }
+      const job: LifecycleJob = {
+        id: row.id,
+        report_id: row.report_id,
+        kind: row.kind,
+        payload: row.payload,
+        attempts: row.attempts,
+        max_attempts: row.max_attempts,
+        execution_token: row.attempts,
+        trace_id: row.trace_id
+      };
+      if (await settleSupersededRequestJob(client, job, locked, undefined, true)) {
+        await client.query("COMMIT");
+        return undefined;
+      }
+      if (locked.submission_started_at !== null) {
+        await client.query("COMMIT");
+        return undefined;
+      }
+
+      const errorCode = "lifecycle_attempts_exhausted";
+      const errorMessage = "The lifecycle worker stopped during the last permitted verification attempt. No further attempt was started.";
+      if (locked.credit_state === "reserved") {
+        await releaseCredit(client, locked.account_id, locked.credit_chain_id, "Lifecycle attempts exhausted before submission");
+      }
+      const failed = await client.query(
+        `UPDATE account_reports
+         SET status = 'failed', failure_stage = status, error_code = $2,
+             error_message = $3, connection_recovery = NULL, updated_at = now()
+         WHERE id = $1 AND submission_started_at IS NULL AND status <> 'failed'
+         RETURNING id`,
+        [row.report_id, errorCode, errorMessage]
+      );
+      const settledJob = await client.query(
+        `UPDATE account_report_jobs
+         SET state = 'failed', locked_at = NULL, last_error = $4, updated_at = now()
+         WHERE id = $1 AND report_id = $2 AND attempts = $3
+           AND attempts >= max_attempts AND state IN ('pending', 'running')
+         RETURNING id`,
+        [row.id, row.report_id, row.attempts, errorCode]
+      );
+      if (settledJob.rowCount !== 1) throw new Error("Exhausted lifecycle job could not be settled.");
+      if (failed.rowCount === 1) {
+        await insertEvent(client, locked.account_id, row.report_id, "report_failed", locked.lifecycle_attempt, {
+          errorCode
+        });
+      }
+      await client.query("COMMIT");
+      if (failed.rowCount !== 1) return undefined;
+      return {
+        reportId: row.report_id,
+        traceId: row.trace_id,
+        lifecycleAttempt: locked.lifecycle_attempt,
+        stage: "verification",
+        eventType: "report_failed",
+        outcome: "failed",
+        errorCategory: "lifecycle_attempts_exhausted"
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   private async recoverAmbiguousSubmission(reportId: string): Promise<LifecycleFailureSignal | undefined> {
@@ -709,7 +861,7 @@ export class ReportRepository {
         `UPDATE account_reports SET status = 'failed', failure_stage = 'submitting',
            error_code = 'ambiguous_submission_state',
            error_message = 'Discord submission may have started before the worker restarted.',
-           updated_at = now() WHERE id = $1`,
+           connection_recovery = NULL, updated_at = now() WHERE id = $1`,
         [reportId]
       );
       await client.query(
@@ -851,7 +1003,7 @@ export class ReportRepository {
       await client.query(
         `UPDATE account_reports SET status = 'failed', failure_stage = status,
            error_code = 'verification_timeout', error_message = 'Discord verification email timed out.',
-           verification_deadline = NULL, updated_at = now() WHERE id = $1`,
+           verification_deadline = NULL, connection_recovery = NULL, updated_at = now() WHERE id = $1`,
         [reportId]
       );
       await client.query(
@@ -900,7 +1052,7 @@ export class ReportRepository {
           `UPDATE account_reports SET status = 'failed', failure_stage = 'submitted',
              error_code = 'discord_receipt_timeout',
              error_message = 'Discord did not send a report receipt before the deadline.',
-             receipt_deadline = NULL, updated_at = now()
+             receipt_deadline = NULL, connection_recovery = NULL, updated_at = now()
            WHERE id = $1 AND status = 'submitted' AND discord_status IS NULL AND receipt_deadline <= now()
            RETURNING id, trace_id, account_id, lifecycle_attempt`,
           [candidate.id]
@@ -1625,7 +1777,7 @@ export class ReportRepository {
         return false;
       }
       const updated = await client.query<{ account_id: string; lifecycle_attempt: number }>(
-        `UPDATE account_reports AS report SET status = $2, updated_at = now()
+        `UPDATE account_reports AS report SET status = $2, connection_recovery = NULL, updated_at = now()
          WHERE report.id = $1
            AND report.status NOT IN ('failed', 'submitting', 'submitted')
            AND EXISTS (
@@ -1770,7 +1922,7 @@ export class ReportRepository {
         const failed = await client.query(
           `UPDATE account_reports
            SET status = 'failed', failure_stage = status, error_code = $2,
-               error_message = $3, updated_at = now()
+               error_message = $3, connection_recovery = NULL, updated_at = now()
            WHERE id = $1 AND submission_started_at IS NULL AND status <> 'failed'
            RETURNING id`,
           [reportId, code, message]
@@ -1858,7 +2010,7 @@ export class ReportRepository {
         await client.query(
           `UPDATE account_reports SET status = 'failed', failure_stage = 'verifying',
              error_code = 'account_suspended', error_message = 'Account was suspended before submission.',
-             updated_at = now() WHERE id = $1`,
+             connection_recovery = NULL, updated_at = now() WHERE id = $1`,
           [job.report_id]
         );
         await insertEvent(client, locked.account_id, job.report_id, "report_failed", locked.lifecycle_attempt, { errorCode: "account_suspended" });
@@ -1886,7 +2038,8 @@ export class ReportRepository {
         );
       }
       await client.query(
-        `UPDATE account_reports SET status = 'submitting', submission_started_at = now(), updated_at = now()
+        `UPDATE account_reports SET status = 'submitting', submission_started_at = now(),
+           connection_recovery = NULL, updated_at = now()
          WHERE id = $1`,
         [job.report_id]
       );
@@ -1906,6 +2059,7 @@ export class ReportRepository {
       `WITH candidate AS (
          SELECT id FROM account_report_jobs
          WHERE kind <> 'prepare_report' AND state = 'pending' AND run_at <= now()
+           AND (kind NOT IN ('request_code', 'verify_submit') OR attempts < max_attempts)
          ORDER BY run_at, id FOR UPDATE SKIP LOCKED LIMIT 1
        )
        UPDATE account_report_jobs AS job
@@ -1933,7 +2087,7 @@ export class ReportRepository {
     const result = await this.pool.query<LifecycleReport & QueryResultRow>(
       `SELECT id, trace_id, flow, prepared_input->>'country' AS country,
               reporter_email, reporter_legal_name, timezone, locale, language,
-              proxy_session_id, session_state, request_input, prepared_input, discord_report_id
+              proxy_session_id, session_state, request_input, prepared_input, status, discord_report_id
        FROM account_reports WHERE id = $1`,
       [reportId]
     );
@@ -1952,15 +2106,16 @@ export class ReportRepository {
         return false;
       }
       const updated = await client.query<{ account_id: string; lifecycle_attempt: number }>(
-        `UPDATE account_reports AS report SET status = $2, updated_at = now()
+        `UPDATE account_reports AS report SET status = $2, connection_recovery = NULL, updated_at = now()
          WHERE report.id = $1
-           AND report.status NOT IN ('failed', 'submitting', 'submitted')
+           AND (($3 = 'request_code' AND report.status = 'requesting_verification')
+             OR ($3 = 'verify_submit' AND report.status IN ('awaiting_verification', 'verification_received', 'verifying')))
            AND EXISTS (
              SELECT 1 FROM api_accounts AS account
              WHERE account.id = report.account_id AND account.status = 'active'
            )
          RETURNING account_id, lifecycle_attempt`,
-        [job.report_id, status]
+        [job.report_id, status, job.kind]
       );
       const row = updated.rows[0];
       if (row !== undefined) {
@@ -1979,7 +2134,7 @@ export class ReportRepository {
   public async saveAwaitingVerification(
     job: LifecycleJob,
     encryptedSession: string
-  ): Promise<boolean> {
+  ): Promise<boolean | "superseded"> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -1987,11 +2142,17 @@ export class ReportRepository {
         await client.query("COMMIT");
         return false;
       }
+      const locked = await lockReportCredit(client, job.report_id);
+      if (locked !== undefined && await settleSupersededRequestJob(client, job, locked, encryptedSession)) {
+        await client.query("COMMIT");
+        return "superseded";
+      }
       const updated = await client.query<{
         account_id: string; lifecycle_attempt: number; status: ReportStatus;
       }>(
         `UPDATE account_reports
          SET session_state = $2,
+             connection_recovery = NULL,
              status = CASE WHEN status = 'verification_received'
                THEN 'verification_received' ELSE 'awaiting_verification' END,
              verification_deadline = CASE WHEN status = 'verification_received'
@@ -2027,50 +2188,34 @@ export class ReportRepository {
   }
 
   public async completeLifecycleJob(job: LifecycleJob): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE account_report_jobs
-       SET state = 'completed', locked_at = NULL, updated_at = now()
-       WHERE id = $1 AND attempts = $2 AND state = 'running'
-       RETURNING id`,
-      [job.id, job.execution_token]
-    );
-    return result.rowCount === 1;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (!(await ownsLifecycleJob(client, job))) {
+        await client.query("COMMIT");
+        return false;
+      }
+      const result = await client.query(
+        `UPDATE account_report_jobs SET state = 'completed', locked_at = NULL, updated_at = now()
+         WHERE id = $1 AND report_id = $2 AND attempts = $3 AND state = 'running' RETURNING id`,
+        [job.id, job.report_id, job.execution_token]
+      );
+      await client.query("COMMIT");
+      return result.rowCount === 1;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
-  public async retryLifecycleJob(job: LifecycleJob, code: string, delaySeconds: number): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE account_report_jobs
-       SET state = 'pending', locked_at = NULL, last_error = $3,
-           run_at = now() + ($4 * interval '1 second'), updated_at = now()
-       WHERE id = $1 AND attempts = $2 AND state = 'running'
-       RETURNING id`,
-      [job.id, job.execution_token, code, delaySeconds]
-    );
-    return result.rowCount === 1;
-  }
-
-  public async failBeforeSubmission(
+  public async retryLifecycleJob(
     job: LifecycleJob,
     code: string,
-    message: string
-  ): Promise<boolean> {
-    return this.failLifecycle(job, code, message, true);
-  }
-
-  public async failAfterSubmission(
-    job: LifecycleJob,
-    code: string,
-    message: string
-  ): Promise<boolean> {
-    return this.failLifecycle(job, code, message, false);
-  }
-
-  private async failLifecycle(
-    job: LifecycleJob,
-    code: string,
-    message: string,
-    releaseReservation: boolean
-  ): Promise<boolean> {
+    delaySeconds: number,
+    options: LifecycleRetryOptions = {}
+  ): Promise<boolean | "superseded"> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -2079,6 +2224,141 @@ export class ReportRepository {
         return false;
       }
       const locked = await lockReportCredit(client, job.report_id);
+      if (locked !== undefined && await settleSupersededRequestJob(client, job, locked, options.encryptedSession)) {
+        await client.query("COMMIT");
+        return "superseded";
+      }
+      const attemptState = await client.query<{ attempts: number; max_attempts: number }>(
+        `SELECT attempts, max_attempts FROM account_report_jobs
+         WHERE id = $1 AND report_id = $2 AND kind = $3 AND attempts = $4 AND state = 'running'
+         FOR UPDATE`,
+        [job.id, job.report_id, job.kind, job.execution_token]
+      );
+      const actualAttempt = attemptState.rows[0];
+      if (actualAttempt === undefined || actualAttempt.attempts >= actualAttempt.max_attempts) {
+        await client.query("COMMIT");
+        return false;
+      }
+      const recordProgress = options.recordConnectionProgress === true &&
+        (job.kind === "request_code" || job.kind === "verify_submit") &&
+        locked !== undefined && locked.submission_started_at === null &&
+        locked.discord_report_id === null && locked.status !== "failed" &&
+        locked.successor_report_id === null &&
+        ((job.kind === "request_code" && locked.status === "requesting_verification") ||
+          (job.kind === "verify_submit" &&
+            (locked.status === "verification_received" || locked.status === "verifying")));
+      if (locked === undefined || (options.recordConnectionProgress === true && !recordProgress)) {
+        await client.query("COMMIT");
+        return false;
+      }
+      if (options.encryptedSession !== undefined) {
+        await client.query(
+          `UPDATE account_reports SET session_state = $2, updated_at = now()
+           WHERE id = $1 AND submission_started_at IS NULL`,
+          [job.report_id, options.encryptedSession]
+        );
+      }
+      if (options.encryptedVerifiedToken !== undefined) {
+        await client.query(
+          `UPDATE account_report_jobs SET payload = payload || jsonb_build_object('encryptedVerifiedToken', $2::text)
+           WHERE id = $1 AND report_id = $3 AND attempts = $4 AND state = 'running'`,
+          [job.id, options.encryptedVerifiedToken, job.report_id, job.execution_token]
+        );
+      }
+      const scheduled = await client.query<{ run_at: Date }>(
+        `UPDATE account_report_jobs
+         SET state = 'pending', locked_at = NULL, last_error = $3,
+             run_at = now() + ($4 * interval '1 second'), updated_at = now()
+         WHERE id = $1 AND attempts = $2 AND state = 'running'
+         RETURNING run_at`,
+        [job.id, job.execution_token, code, Math.max(1, Math.floor(delaySeconds))]
+      );
+      const runAt = scheduled.rows[0]?.run_at;
+      if (runAt === undefined) {
+        await client.query("ROLLBACK");
+        return false;
+      }
+      if (recordProgress) {
+        const recovery: ReportConnectionRecovery = {
+          state: "retrying",
+          attempt: actualAttempt.attempts + 1,
+          maxAttempts: actualAttempt.max_attempts,
+          retryAt: runAt.toISOString(),
+          successorReportId: null
+        };
+        await client.query(
+          "UPDATE account_reports SET connection_recovery = $2::jsonb, updated_at = now() WHERE id = $1",
+          [job.report_id, JSON.stringify(recovery)]
+        );
+        await insertEvent(client, locked.account_id, job.report_id, "report_connection_retry", locked.lifecycle_attempt, {
+          attempt: recovery.attempt,
+          maxAttempts: recovery.maxAttempts,
+          retryAt: recovery.retryAt
+        });
+      }
+      await client.query("COMMIT");
+      return true;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async failBeforeSubmission(
+    job: LifecycleJob,
+    code: string,
+    message: string,
+    automaticNetworkRestartEligible = false,
+    encryptedSession?: string
+  ): Promise<boolean | "restarted" | "superseded"> {
+    return this.failLifecycle(job, code, message, true, automaticNetworkRestartEligible, encryptedSession);
+  }
+
+  public async failAfterSubmission(
+    job: LifecycleJob,
+    code: string,
+    message: string
+  ): Promise<boolean> {
+    return (await this.failLifecycle(job, code, message, false)) === true;
+  }
+
+  private async failLifecycle(
+    job: LifecycleJob,
+    code: string,
+    message: string,
+    releaseReservation: boolean,
+    automaticNetworkRestartEligible = false,
+    encryptedSession?: string
+  ): Promise<boolean | "restarted" | "superseded"> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (!(await ownsLifecycleJob(client, job))) {
+        await client.query("COMMIT");
+        return false;
+      }
+      const locked = await lockReportCredit(client, job.report_id);
+      if (
+        locked !== undefined && releaseReservation &&
+        await settleSupersededRequestJob(client, job, locked, encryptedSession)
+      ) {
+        await client.query("COMMIT");
+        return "superseded";
+      }
+      if (
+        locked !== undefined &&
+        releaseReservation &&
+        automaticNetworkRestartEligible &&
+        await eligibleAutomaticNetworkRestart(client, job, locked, code)
+      ) {
+        const restarted = await createAutomaticNetworkSuccessor(client, job, locked, code, message);
+        if (restarted) {
+          await client.query("COMMIT");
+          return "restarted";
+        }
+      }
       if (locked !== undefined && releaseReservation && locked.credit_state === "reserved") {
         await releaseCredit(client, locked.account_id, locked.credit_chain_id, "Lifecycle failed before submission");
       }
@@ -2086,7 +2366,7 @@ export class ReportRepository {
         const failed = await client.query(
           `UPDATE account_reports
            SET status = 'failed', failure_stage = status, error_code = $2,
-               error_message = $3, updated_at = now()
+               error_message = $3, connection_recovery = NULL, updated_at = now()
            WHERE id = $1 AND status <> 'failed'
              AND ($4::boolean = false OR submission_started_at IS NULL)
            RETURNING id`,
@@ -2123,6 +2403,7 @@ export class ReportRepository {
       const updated = await client.query<AccountReportRow>(
         `UPDATE account_reports
          SET status = 'submitted', discord_report_id = $2,
+             connection_recovery = NULL,
              receipt_deadline = now() + interval '120 seconds', updated_at = now()
          WHERE id = $1 AND status = 'submitting'
          RETURNING *`,
@@ -2403,14 +2684,15 @@ export class ReportRepository {
            (report_id, kind, dedupe_key, payload, max_attempts, run_at)
          VALUES ($1, 'verify_submit', $2, $3, 3, now() + interval '3 seconds')
          ON CONFLICT (dedupe_key) DO UPDATE
-         SET payload = EXCLUDED.payload, state = 'pending', run_at = EXCLUDED.run_at,
+         SET payload = account_report_jobs.payload || EXCLUDED.payload,
+             state = 'pending', run_at = EXCLUDED.run_at,
              locked_at = NULL, last_error = NULL, updated_at = now()
          WHERE account_report_jobs.state = 'pending'`,
         [report.id, `verify-submit:${report.id}:${report.lifecycle_attempt}`, { encryptedCode: input.encryptedCode }]
       );
       await client.query(
         `UPDATE account_reports SET status = 'verification_received',
-           verification_deadline = NULL, updated_at = now() WHERE id = $1`,
+           verification_deadline = NULL, connection_recovery = NULL, updated_at = now() WHERE id = $1`,
         [report.id]
       );
       await insertEvent(client, report.account_id, report.id, "verification_received", report.lifecycle_attempt);
@@ -2462,7 +2744,7 @@ export class ReportRepository {
     if (report.error_code === "discord_receipt_timeout") {
       await client.query(
         `UPDATE account_reports SET status = 'submitted', failure_stage = NULL,
-           error_code = NULL, error_message = NULL, updated_at = now() WHERE id = $1`,
+           error_code = NULL, error_message = NULL, connection_recovery = NULL, updated_at = now() WHERE id = $1`,
         [report.id]
       );
       await insertEvent(client, report.account_id, report.id, "report_receipt_recovered", report.lifecycle_attempt);
@@ -2829,6 +3111,19 @@ interface LockedCreditRow extends QueryResultRow {
   account_status: "active" | "suspended";
   status: ReportStatus;
   lifecycle_attempt: number;
+  flow: CreateReportInput["flow"];
+  session_state: string | null;
+  use_ai: boolean;
+  request_input: CreateReportInput;
+  prepared_input: Record<string, unknown> | null;
+  legal_reference: string | null;
+  research_summary: string | null;
+  research_sources: unknown[];
+  retry_sequence: number;
+  submission_started_at: Date | null;
+  discord_report_id: string | null;
+  successor_report_id: string | null;
+  automatic_network_restarts: number;
 }
 
 export interface QueuePhaseSnapshot {
@@ -2868,6 +3163,38 @@ async function ownsLifecycleJob(client: PoolClient, job: LifecycleJob): Promise<
     [job.id, job.report_id, job.kind, job.execution_token]
   );
   return result.rowCount === 1;
+}
+
+async function settleSupersededRequestJob(
+  client: PoolClient,
+  job: LifecycleJob,
+  report: LockedCreditRow,
+  encryptedSession?: string,
+  allowPending = false
+): Promise<boolean> {
+  if (
+    job.kind !== "request_code" ||
+    (report.status === "requesting_verification" && report.submission_started_at === null)
+  ) return false;
+
+  if (
+    report.status === "verification_received" && report.submission_started_at === null &&
+    report.session_state === null && encryptedSession !== undefined
+  ) {
+    await client.query(
+      `UPDATE account_reports SET session_state = COALESCE(session_state, $2), updated_at = now()
+       WHERE id = $1 AND status = 'verification_received' AND submission_started_at IS NULL`,
+      [job.report_id, encryptedSession]
+    );
+  }
+  const completed = await client.query(
+    `UPDATE account_report_jobs SET state = 'completed', locked_at = NULL, updated_at = now()
+     WHERE id = $1 AND report_id = $2 AND attempts = $3
+       AND (state = 'running' OR ($4::boolean AND state = 'pending')) RETURNING id`,
+    [job.id, job.report_id, job.execution_token, allowPending]
+  );
+  if (completed.rowCount !== 1) throw new Error("Superseded request-code job could not be completed.");
+  return true;
 }
 
 async function ownsPreparationJob(
@@ -2955,6 +3282,10 @@ export interface InboundReconciliationResult {
 async function lockReportCredit(client: PoolClient, reportId: string): Promise<LockedCreditRow | undefined> {
   const result = await client.query<LockedCreditRow>(
     `SELECT report.account_id, report.credit_chain_id, report.status, report.lifecycle_attempt,
+            report.flow, report.session_state, report.use_ai, report.request_input, report.prepared_input,
+            report.legal_reference, report.research_summary, report.research_sources,
+            report.retry_sequence, report.submission_started_at, report.discord_report_id,
+            report.successor_report_id, report.automatic_network_restarts,
             chain.state AS credit_state, account.status AS account_status
      FROM account_reports AS report
      JOIN report_credit_chains AS chain ON chain.id = report.credit_chain_id
@@ -2987,6 +3318,127 @@ async function releaseCredit(client: PoolClient, accountId: string, chainId: str
      VALUES ($1, $2, 'release', 1, -1, $3)`,
     [accountId, chainId, reason]
   );
+}
+
+async function eligibleAutomaticNetworkRestart(
+  client: PoolClient,
+  job: LifecycleJob,
+  report: LockedCreditRow,
+  code: string
+): Promise<boolean> {
+  if (
+    (job.kind !== "request_code" && job.kind !== "verify_submit") ||
+    report.account_status !== "active" ||
+    (job.kind === "request_code" && report.status !== "requesting_verification") ||
+    (job.kind === "verify_submit" && report.status !== "verifying") ||
+    report.submission_started_at !== null ||
+    report.discord_report_id !== null ||
+    report.successor_report_id !== null ||
+    report.automatic_network_restarts !== 0 ||
+    (report.credit_state !== "reserved" && report.credit_state !== "consumed") ||
+    !isSafePreparedInput(report.prepared_input) ||
+    !(code === "discord_network_error" || /^discord_http_5\d\d$/.test(code))
+  ) {
+    return false;
+  }
+  const owned = await client.query<{ kind: string; attempts: number; max_attempts: number }>(
+    `SELECT kind, attempts, max_attempts FROM account_report_jobs
+     WHERE id = $1 AND report_id = $2 AND kind = $3 AND attempts = $4
+       AND max_attempts = $5 AND state = 'running' FOR UPDATE`,
+    [job.id, job.report_id, job.kind, job.attempts, job.max_attempts]
+  );
+  const actual = owned.rows[0];
+  return actual !== undefined && actual.kind === job.kind &&
+    actual.attempts >= actual.max_attempts && actual.attempts === job.attempts && job.attempts >= job.max_attempts;
+}
+
+function isSafePreparedInput(value: Record<string, unknown> | null): boolean {
+  return value !== null &&
+    typeof value.country === "string" &&
+    typeof value.category === "string" &&
+    typeof value.description === "string" &&
+    typeof value.finalText === "string";
+}
+
+async function createAutomaticNetworkSuccessor(
+  client: PoolClient,
+  job: LifecycleJob,
+  predecessor: LockedCreditRow,
+  code: string,
+  message: string
+): Promise<boolean> {
+  const reportId = randomUUID();
+  const traceId = randomUUID();
+  const idempotencyKey = `automatic-network-restart:${job.report_id}`;
+  const requestHash = createHash("sha256")
+    .update(JSON.stringify({ predecessorReportId: job.report_id, automaticNetworkRestart: true }))
+    .digest("hex");
+  const recovery: ReportConnectionRecovery = {
+    state: "restarting",
+    attempt: job.attempts,
+    maxAttempts: job.max_attempts,
+    retryAt: null,
+    successorReportId: reportId
+  };
+  const failed = await client.query(
+    `UPDATE account_reports
+     SET status = 'failed', failure_stage = status, error_code = $2, error_message = $3,
+         connection_recovery = $4::jsonb,
+         updated_at = now()
+     WHERE id = $1 AND status <> 'failed' AND successor_report_id IS NULL
+       AND automatic_network_restarts = 0 AND submission_started_at IS NULL
+     RETURNING id`,
+    [job.report_id, code, message, JSON.stringify(recovery)]
+  );
+  if (failed.rowCount !== 1) return false;
+  const inserted = await client.query(
+    `INSERT INTO account_reports
+       (id, trace_id, account_id, idempotency_key, request_hash, flow, use_ai, request_input,
+        prepared_input, legal_reference, research_summary, research_sources,
+        credit_chain_id, predecessor_report_id, retry_mode, retry_sequence,
+        lifecycle_attempt, status, automatic_network_restarts)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+             $13, $14, 'reuse', $15, $16, 'queued', 1)
+     RETURNING id`,
+    [
+      reportId, traceId, predecessor.account_id, idempotencyKey, requestHash,
+      predecessor.flow, predecessor.use_ai, predecessor.request_input, predecessor.prepared_input,
+      predecessor.legal_reference, predecessor.research_summary, JSON.stringify(predecessor.research_sources),
+      predecessor.credit_chain_id, job.report_id, predecessor.retry_sequence + 1,
+      predecessor.lifecycle_attempt + 1
+    ]
+  );
+  if (inserted.rowCount !== 1) throw new Error("Automatic network retry successor was not created.");
+  const linked = await client.query(
+    `UPDATE account_reports SET successor_report_id = $2, updated_at = now()
+     WHERE id = $1 AND successor_report_id IS NULL AND automatic_network_restarts = 0
+     RETURNING id`,
+    [job.report_id, reportId]
+  );
+  if (linked.rowCount !== 1) throw new Error("Automatic network retry successor could not be linked.");
+  await client.query(
+    `UPDATE account_report_jobs SET state = 'failed', locked_at = NULL,
+       last_error = $2, updated_at = now()
+     WHERE report_id = $1 AND kind IN ('request_code', 'verify_submit')
+       AND state IN ('pending', 'running')`,
+    [job.report_id, code]
+  );
+  await client.query(
+    `INSERT INTO account_report_jobs (report_id, kind, dedupe_key, max_attempts)
+     VALUES ($1, 'prepare_report', $2, 3)`,
+    [reportId, `prepare:${reportId}`]
+  );
+  await insertEvent(client, predecessor.account_id, job.report_id, "report_connection_restarting", predecessor.lifecycle_attempt, {
+    attempt: job.attempts,
+    maxAttempts: job.max_attempts,
+    successorReportId: reportId
+  });
+  await insertEvent(client, predecessor.account_id, reportId, "report_queued", predecessor.lifecycle_attempt + 1, {
+    retryMode: "reuse",
+    predecessorReportId: job.report_id,
+    automaticNetworkRestart: true
+  });
+  return true;
 }
 
 async function insertEvent(
@@ -3115,7 +3567,9 @@ export function reportRetryableModes(report: {
   review_status?: string | null;
   error_code: string | null;
   submission_started_at?: Date | null;
+  successor_report_id?: string | null;
 }): Array<"reuse" | "regenerate" | "rewrite_ai" | "edit_manual"> {
+  if (report.successor_report_id != null) return [];
   if (report.discord_status === "actioned" || report.error_code === "ambiguous_submission_state") return [];
   if (report.review_status === "ineligible" || report.review_status === "confirmation_timeout" || report.review_status === "request_ambiguous") return [];
   const appealDenied = report.discord_status === "review_not_approved" || report.review_status === "not_approved";

@@ -229,6 +229,25 @@ describe("DiscordDsaClient", () => {
     });
   });
 
+  it("exports only initialized state without bootstrapping over the network", () => {
+    const transport = new FakeTransport();
+    const client = new DiscordDsaClient({ transport });
+
+    expect(client.snapshotInitializedSession()).toBeNull();
+    expect(transport.requests).toEqual([]);
+  });
+
+  it("snapshots initialized state synchronously without another request", () => {
+    const transport = new FakeTransport();
+    const client = new DiscordDsaClient({ fingerprint: "persisted-fp", transport });
+
+    expect(client.snapshotInitializedSession()).toEqual({
+      fingerprint: "persisted-fp",
+      cookies: '{"cookies":[]}'
+    });
+    expect(transport.requests).toEqual([]);
+  });
+
   it("snapshots cookies after fingerprint bootstrap can update the jar", async () => {
     const transport = new FingerprintCookieTransport();
     const client = new DiscordDsaClient({ transport });

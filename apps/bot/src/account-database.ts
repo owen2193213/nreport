@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type { ApiAccountView, ReportLifecycleEvent } from "@nreport/contracts";
 import { boundedDiagnostic } from "@nreport/contracts";
@@ -9,6 +9,8 @@ const IMMEDIATE_LIFECYCLE_EVENT_TYPES = [
   "report_submitted",
   "discord:received",
   "report_failed",
+  "report_connection_retry",
+  "report_connection_restarting",
   "report_receipt_timeout",
   "review_confirmation_timeout",
   "review_ineligible",
@@ -19,6 +21,19 @@ const IMMEDIATE_LIFECYCLE_EVENT_TYPES = [
   "discord:closed_no_action"
 ] as const;
 const immediateLifecycleEventSql = IMMEDIATE_LIFECYCLE_EVENT_TYPES.map((type) => `'${type}'`).join(", ");
+const MAX_DM_CARD_MIGRATION_DEPTH = 256;
+
+export function cardNonce(reportId: string): string {
+  return `card-${createHash("sha256").update(reportId).digest("hex").slice(0, 16)}`;
+}
+
+export interface DmCardIdentity {
+  nonce: string;
+  originReportId: string;
+  originClaimedAt: Date;
+  relatedReportIds: string[];
+  relatedReportIdsComplete: boolean;
+}
 
 export const BOT_ACCOUNT_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS api_connections (
@@ -52,6 +67,9 @@ CREATE TABLE IF NOT EXISTS bot_report_links (
   encrypted_target_context text,
   dm_channel_id text,
   dm_message_id text,
+  dm_card_nonce text,
+  dm_card_origin_report_id uuid,
+  dm_card_origin_claimed_at timestamptz,
   dm_claimed_at timestamptz,
   recovery_attempts integer NOT NULL DEFAULT 0,
   recovery_run_at timestamptz NOT NULL DEFAULT now(),
@@ -67,6 +85,9 @@ CREATE TABLE IF NOT EXISTS bot_report_links (
 );
 CREATE INDEX IF NOT EXISTS bot_report_links_owner_idx ON bot_report_links(discord_user_id, created_at DESC);
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS dm_claimed_at timestamptz;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS dm_card_nonce text;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS dm_card_origin_report_id uuid;
+ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS dm_card_origin_claimed_at timestamptz;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS recovery_attempts integer NOT NULL DEFAULT 0;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS recovery_run_at timestamptz NOT NULL DEFAULT now();
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS recovery_claimed_at timestamptz;
@@ -80,6 +101,12 @@ ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS encrypted_target_context t
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS visible_payload_hash text;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS last_card_edit_at timestamptz;
 ALTER TABLE bot_report_links ADD COLUMN IF NOT EXISTS superseded_by_report_id uuid;
+CREATE INDEX IF NOT EXISTS bot_report_links_card_identity_idx
+  ON bot_report_links(account_id, dm_card_nonce, dm_card_origin_report_id, dm_card_origin_claimed_at, created_at, report_id)
+  WHERE report_id IS NOT NULL AND dm_card_nonce IS NOT NULL;
+CREATE INDEX IF NOT EXISTS bot_report_links_predecessor_idx
+  ON bot_report_links(account_id, superseded_by_report_id)
+  WHERE superseded_by_report_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS lifecycle_inbox (
   event_id bigint PRIMARY KEY,
@@ -199,6 +226,20 @@ export interface PendingCardRepair extends QueryResultRow {
   card_repair_attempts: number;
 }
 
+export interface ReportCardState extends QueryResultRow {
+  report_id: string;
+  discord_user_id: string;
+  account_id: string;
+  superseded_by_report_id: string | null;
+  dm_channel_id: string | null;
+  dm_message_id: string | null;
+  encrypted_target_context: string | null;
+  visible_payload_hash: string | null;
+  dm_card_nonce: string | null;
+  dm_card_origin_report_id: string | null;
+  dm_card_origin_claimed_at: Date | null;
+}
+
 export interface NotificationHealthSnapshot {
   pendingNotificationCount: number;
   oldestPendingNotificationAgeMs: number | null;
@@ -215,7 +256,133 @@ export class AccountBotDatabase {
     this.pool = typeof database === "string" ? new Pool({ connectionString: database, max: 8 }) : database;
   }
 
-  public async migrate(): Promise<void> { await this.pool.query(BOT_ACCOUNT_SCHEMA_SQL); }
+  public async migrate(): Promise<void> {
+    await this.pool.query(BOT_ACCOUNT_SCHEMA_SQL);
+    const malformedSuccessor = await this.pool.query<{ id: string }>(
+      `SELECT predecessor.id
+       FROM bot_report_links AS predecessor
+       JOIN bot_report_links AS successor
+         ON successor.report_id = predecessor.superseded_by_report_id
+       WHERE (successor.dm_card_nonce IS NULL
+              OR successor.dm_card_origin_report_id IS NULL
+              OR successor.dm_card_origin_claimed_at IS NULL)
+         AND (predecessor.report_id IS NULL OR successor.account_id <> predecessor.account_id)
+       LIMIT 1`
+    );
+    if (malformedSuccessor.rows.length > 0) {
+      throw new Error("Cannot migrate DM card identities with malformed successor links.");
+    }
+
+    // Reject unresolved chains before writing any identities; pathological depth is kept bounded.
+    const resolutions = await this.pool.query<{
+      target_id: string | null;
+      nonce: string | null;
+      origin_report_id: string | null;
+      origin_claimed_at: Date | null;
+      target_count: string;
+    }>(
+      `WITH RECURSIVE targets AS (
+         SELECT id, account_id, report_id
+         FROM bot_report_links
+         WHERE report_id IS NOT NULL
+           AND (dm_card_nonce IS NULL OR dm_card_origin_report_id IS NULL OR dm_card_origin_claimed_at IS NULL)
+       ), walk AS (
+         SELECT target.id AS target_id, link.account_id, link.report_id AS current_report_id,
+                link.dm_card_nonce, link.dm_card_origin_report_id, link.dm_card_origin_claimed_at,
+                link.created_at, ARRAY[link.report_id]::uuid[] AS path, 0 AS depth,
+                (SELECT count(*)::integer
+                 FROM bot_report_links AS prior
+                 WHERE prior.account_id = link.account_id
+                   AND prior.superseded_by_report_id = link.report_id
+                   AND prior.report_id IS NOT NULL) AS predecessor_count
+         FROM targets AS target
+         JOIN bot_report_links AS link ON link.id = target.id
+
+         UNION ALL
+
+         SELECT walk.target_id, prior.account_id, prior.report_id,
+                prior.dm_card_nonce, prior.dm_card_origin_report_id, prior.dm_card_origin_claimed_at,
+                prior.created_at, walk.path || prior.report_id, walk.depth + 1,
+                (SELECT count(*)::integer
+                 FROM bot_report_links AS previous
+                 WHERE previous.account_id = prior.account_id
+                   AND previous.superseded_by_report_id = prior.report_id
+                   AND previous.report_id IS NOT NULL)
+         FROM walk
+         JOIN bot_report_links AS prior
+           ON prior.account_id = walk.account_id
+          AND prior.superseded_by_report_id = walk.current_report_id
+          AND prior.report_id IS NOT NULL
+         WHERE walk.dm_card_nonce IS NULL
+           AND walk.dm_card_origin_report_id IS NULL
+           AND walk.dm_card_origin_claimed_at IS NULL
+           AND walk.predecessor_count = 1
+           AND walk.depth < ${MAX_DM_CARD_MIGRATION_DEPTH}
+           AND NOT (prior.report_id = ANY(walk.path))
+       ), resolved AS (
+         SELECT DISTINCT ON (target_id)
+                target_id,
+                dm_card_nonce AS nonce,
+                CASE WHEN dm_card_nonce IS NULL THEN current_report_id ELSE dm_card_origin_report_id END
+                  AS origin_report_id,
+                CASE WHEN dm_card_nonce IS NULL THEN created_at ELSE dm_card_origin_claimed_at END
+                  AS origin_claimed_at
+         FROM walk
+         WHERE (dm_card_nonce IS NOT NULL
+                AND dm_card_origin_report_id IS NOT NULL
+                AND dm_card_origin_claimed_at IS NOT NULL)
+            OR (dm_card_nonce IS NULL
+                AND dm_card_origin_report_id IS NULL
+                AND dm_card_origin_claimed_at IS NULL
+                AND predecessor_count = 0)
+         ORDER BY target_id, depth DESC
+       ), counts AS (
+         SELECT (SELECT count(*)::text FROM targets) AS target_count
+       )
+       SELECT resolved.target_id, resolved.nonce, resolved.origin_report_id,
+              resolved.origin_claimed_at, counts.target_count
+       FROM counts LEFT JOIN resolved ON TRUE`
+    );
+    const resolutionCounts = resolutions.rows[0];
+    const targetCount = Number(resolutionCounts?.target_count ?? "0");
+    const resolved = resolutions.rows.filter((row) => row.target_id !== null);
+    if (resolved.length !== targetCount) {
+      throw new Error(`Cannot migrate unresolved DM card identities (${resolved.length}/${targetCount} resolved).`);
+    }
+
+    if (resolved.length === 0) return;
+
+    const ids: string[] = [];
+    const nonces: string[] = [];
+    const originReportIds: string[] = [];
+    const originClaimedAts: Date[] = [];
+    for (const identity of resolved) {
+      if (identity.target_id === null || identity.origin_report_id === null || identity.origin_claimed_at === null) {
+        throw new Error("Cannot migrate an incomplete DM card identity resolution.");
+      }
+      ids.push(identity.target_id);
+      nonces.push(identity.nonce ?? cardNonce(identity.origin_report_id));
+      originReportIds.push(identity.origin_report_id);
+      originClaimedAts.push(identity.origin_claimed_at);
+    }
+
+    const updated = await this.pool.query(
+      `UPDATE bot_report_links AS link
+       SET dm_card_nonce = resolved.nonce,
+           dm_card_origin_report_id = resolved.origin_report_id,
+           dm_card_origin_claimed_at = resolved.origin_claimed_at
+       FROM unnest($1::uuid[], $2::text[], $3::uuid[], $4::timestamptz[])
+         AS resolved(id, nonce, origin_report_id, origin_claimed_at)
+       WHERE link.id = resolved.id
+         AND link.dm_card_nonce IS NULL
+         AND link.dm_card_origin_report_id IS NULL
+         AND link.dm_card_origin_claimed_at IS NULL`,
+      [ids, nonces, originReportIds, originClaimedAts]
+    );
+    if (updated.rowCount !== resolved.length) {
+      throw new Error("Cannot migrate DM card identities after concurrent link changes.");
+    }
+  }
 
   public async recordDiagnostic(input: {
     reportId?: string; traceId?: string; service: string; severity: string; event: string;
@@ -378,9 +545,20 @@ export class AccountBotDatabase {
     try {
       await client.query("BEGIN");
       const predecessor = await client.query<{
-        dm_channel_id: string | null; dm_message_id: string | null; encrypted_target_context: string | null; visible_payload_hash: string | null; last_card_edit_at: Date | null;
-      }>("SELECT dm_channel_id, dm_message_id, encrypted_target_context, visible_payload_hash, last_card_edit_at FROM bot_report_links WHERE report_id = $1 FOR UPDATE", [predecessorReportId]);
+        report_id: string; created_at: Date; dm_channel_id: string | null; dm_message_id: string | null;
+        dm_card_nonce: string | null; dm_card_origin_report_id: string | null; dm_card_origin_claimed_at: Date | null;
+        encrypted_target_context: string | null; visible_payload_hash: string | null; last_card_edit_at: Date | null;
+      }>(
+        `SELECT report_id, created_at, dm_channel_id, dm_message_id, dm_card_nonce,
+                dm_card_origin_report_id, dm_card_origin_claimed_at,
+                encrypted_target_context, visible_payload_hash, last_card_edit_at
+         FROM bot_report_links WHERE report_id = $1 FOR UPDATE`,
+        [predecessorReportId]
+      );
       const prior = predecessor.rows[0];
+      const parentNonce = prior?.dm_card_nonce ?? cardNonce(predecessorReportId);
+      const parentOriginReportId = prior?.dm_card_origin_report_id ?? predecessorReportId;
+      const parentOriginClaimedAt = prior?.dm_card_origin_claimed_at ?? prior?.created_at ?? new Date();
       const external = await client.query<{ id: string }>(
         "SELECT id FROM bot_report_links WHERE report_id = $1 AND id <> $2 FOR UPDATE", [reportId, linkId]
       );
@@ -389,8 +567,20 @@ export class AccountBotDatabase {
           `UPDATE bot_report_links SET report_id = $2, encrypted_request = NULL,
              dm_channel_id = COALESCE(dm_channel_id, $3), dm_message_id = COALESCE(dm_message_id, $4),
              encrypted_target_context = COALESCE(encrypted_target_context, $5),
-             visible_payload_hash = $6, last_card_edit_at = $7, updated_at = now() WHERE id = $1`,
-          [linkId, reportId, prior?.dm_channel_id ?? null, prior?.dm_message_id ?? null, prior?.encrypted_target_context ?? null, prior?.visible_payload_hash ?? null, prior?.last_card_edit_at ?? null]
+             visible_payload_hash = $6, last_card_edit_at = $7,
+             dm_card_nonce = CASE WHEN dm_message_id IS NULL
+               THEN COALESCE($8, dm_card_nonce, $9) ELSE COALESCE(dm_card_nonce, $8, $9) END,
+             dm_card_origin_report_id = CASE WHEN dm_message_id IS NULL
+               THEN COALESCE($10, dm_card_origin_report_id, $11)
+               ELSE COALESCE(dm_card_origin_report_id, $10, $11) END,
+             dm_card_origin_claimed_at = CASE WHEN dm_message_id IS NULL
+               THEN COALESCE($12, dm_card_origin_claimed_at, now())
+               ELSE COALESCE(dm_card_origin_claimed_at, $12, now()) END,
+             updated_at = now() WHERE id = $1`,
+          [linkId, reportId, prior?.dm_channel_id ?? null, prior?.dm_message_id ?? null,
+            prior?.encrypted_target_context ?? null, prior?.visible_payload_hash ?? null,
+            prior?.last_card_edit_at ?? null, parentNonce, cardNonce(reportId),
+            parentOriginReportId, reportId, parentOriginClaimedAt]
         );
       } else {
         await client.query(
@@ -403,9 +593,22 @@ export class AccountBotDatabase {
              dm_channel_id = COALESCE(successor.dm_channel_id, $3),
              dm_message_id = COALESCE(successor.dm_message_id, $4),
              encrypted_target_context = COALESCE(successor.encrypted_target_context, pending.encrypted_target_context, $5),
-             visible_payload_hash = $6, last_card_edit_at = $7, updated_at = now()
+             visible_payload_hash = $6, last_card_edit_at = $7,
+             dm_card_nonce = CASE WHEN successor.dm_message_id IS NULL
+               THEN COALESCE($8, successor.dm_card_nonce, $9)
+               ELSE COALESCE(successor.dm_card_nonce, $8, $9) END,
+             dm_card_origin_report_id = CASE WHEN successor.dm_message_id IS NULL
+               THEN COALESCE($10, successor.dm_card_origin_report_id, $11)
+               ELSE COALESCE(successor.dm_card_origin_report_id, $10, $11) END,
+             dm_card_origin_claimed_at = CASE WHEN successor.dm_message_id IS NULL
+               THEN COALESCE($12, successor.dm_card_origin_claimed_at, now())
+               ELSE COALESCE(successor.dm_card_origin_claimed_at, $12, now()) END,
+             updated_at = now()
            FROM pending WHERE successor.id = $2`,
-          [linkId, external.rows[0].id, prior?.dm_channel_id ?? null, prior?.dm_message_id ?? null, prior?.encrypted_target_context ?? null, prior?.visible_payload_hash ?? null, prior?.last_card_edit_at ?? null]
+          [linkId, external.rows[0].id, prior?.dm_channel_id ?? null, prior?.dm_message_id ?? null,
+            prior?.encrypted_target_context ?? null, prior?.visible_payload_hash ?? null,
+            prior?.last_card_edit_at ?? null, parentNonce, cardNonce(reportId),
+            parentOriginReportId, reportId, parentOriginClaimedAt]
         );
       }
       await client.query(
@@ -420,6 +623,158 @@ export class AccountBotDatabase {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Move a private status card to an API-created automatic network-retry child. This deliberately
+   * accepts only the exact predecessor/child pair supplied by the API and never follows a later
+   * manual replacement.
+   */
+  public async adoptAutomaticNetworkRetry(
+    accountId: string,
+    predecessorReportId: string,
+    successorReportId: string
+  ): Promise<"adopted" | "busy" | "unavailable" | "conflict"> {
+    if (predecessorReportId === successorReportId) return "conflict";
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Match event ingestion's account-first lock order so webhook and feed processing serialize.
+      const connectionResult = await client.query<{ discord_user_id: string }>(
+        "SELECT discord_user_id FROM api_connections WHERE account_id = $1 FOR UPDATE",
+        [accountId]
+      );
+      const connection = connectionResult.rows[0];
+      if (connection === undefined) {
+        await client.query("COMMIT");
+        return "unavailable";
+      }
+
+      const initialLinks = await client.query<{
+        report_id: string; discord_user_id: string; account_id: string; id: string;
+      }>(
+        `SELECT report_id, discord_user_id, account_id, id FROM bot_report_links
+         WHERE report_id = ANY($1::uuid[]) ORDER BY report_id FOR UPDATE`,
+        [[predecessorReportId, successorReportId]]
+      );
+      const predecessor = initialLinks.rows.find((link) => link.report_id === predecessorReportId);
+      const successor = initialLinks.rows.find((link) => link.report_id === successorReportId);
+      if (predecessor === undefined || predecessor.account_id !== accountId ||
+        predecessor.discord_user_id !== connection.discord_user_id) {
+        await client.query("COMMIT");
+        return "unavailable";
+      }
+      if (successor !== undefined && (successor.account_id !== accountId ||
+        successor.discord_user_id !== connection.discord_user_id)) {
+        await client.query("COMMIT");
+        return "conflict";
+      }
+      if (successor === undefined) {
+        await client.query(
+          `INSERT INTO bot_report_links (id, discord_user_id, account_id, idempotency_key, report_id)
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (report_id) DO NOTHING`,
+          [randomUUID(), connection.discord_user_id, accountId, `external:${successorReportId}`, successorReportId]
+        );
+      }
+
+      // Re-read under locks after the optional insert. ORDER BY keeps the row-lock order stable.
+      const lockedLinks = await client.query<{
+        report_id: string; discord_user_id: string; account_id: string;
+        superseded_by_report_id: string | null; dm_channel_id: string | null; dm_message_id: string | null;
+        dm_claimed_at: Date | null; encrypted_target_context: string | null; visible_payload_hash: string | null;
+      }>(
+        `SELECT report_id, discord_user_id, account_id, superseded_by_report_id,
+                dm_channel_id, dm_message_id, dm_claimed_at, encrypted_target_context, visible_payload_hash
+         FROM bot_report_links WHERE report_id = ANY($1::uuid[]) ORDER BY report_id FOR UPDATE`,
+        [[predecessorReportId, successorReportId]]
+      );
+      const lockedPredecessor = lockedLinks.rows.find((link) => link.report_id === predecessorReportId);
+      const lockedSuccessor = lockedLinks.rows.find((link) => link.report_id === successorReportId);
+      if (lockedPredecessor === undefined || lockedSuccessor === undefined ||
+        lockedPredecessor.account_id !== accountId || lockedSuccessor.account_id !== accountId ||
+        lockedPredecessor.discord_user_id !== connection.discord_user_id ||
+        lockedSuccessor.discord_user_id !== connection.discord_user_id) {
+        await client.query("COMMIT");
+        return "conflict";
+      }
+
+      // A delayed parent event must not reactivate a child that a user has since replaced.
+      if (lockedSuccessor.superseded_by_report_id !== null) {
+        await client.query("COMMIT");
+        return "conflict";
+      }
+      if (lockedPredecessor.superseded_by_report_id !== null) {
+        const result = lockedPredecessor.superseded_by_report_id === successorReportId
+          ? "adopted"
+          : "conflict";
+        await client.query("COMMIT");
+        return result;
+      }
+
+      const hasLiveCardClaim = (link: typeof lockedPredecessor): boolean =>
+        link.dm_message_id === null && link.dm_claimed_at !== null &&
+        link.dm_claimed_at.getTime() > Date.now() - 2 * 60_000;
+      if (hasLiveCardClaim(lockedPredecessor) || hasLiveCardClaim(lockedSuccessor)) {
+        await client.query("COMMIT");
+        return "busy";
+      }
+      if (lockedPredecessor.dm_message_id !== null && lockedSuccessor.dm_message_id !== null &&
+        (lockedPredecessor.dm_channel_id !== lockedSuccessor.dm_channel_id ||
+          lockedPredecessor.dm_message_id !== lockedSuccessor.dm_message_id)) {
+        await client.query("COMMIT");
+        return "conflict";
+      }
+
+      await client.query(
+        `UPDATE bot_report_links AS child SET
+           dm_channel_id = COALESCE(child.dm_channel_id, parent.dm_channel_id),
+           dm_message_id = COALESCE(child.dm_message_id, parent.dm_message_id),
+           dm_card_nonce = COALESCE(parent.dm_card_nonce, $3, child.dm_card_nonce),
+           dm_card_origin_report_id = COALESCE(parent.dm_card_origin_report_id, parent.report_id, child.dm_card_origin_report_id),
+           dm_card_origin_claimed_at = COALESCE(parent.dm_card_origin_claimed_at, parent.created_at, child.dm_card_origin_claimed_at),
+           encrypted_target_context = COALESCE(parent.encrypted_target_context, child.encrypted_target_context),
+           visible_payload_hash = CASE
+             WHEN child.dm_message_id IS NULL AND parent.dm_message_id IS NOT NULL THEN NULL
+             ELSE child.visible_payload_hash END,
+           last_card_edit_at = CASE
+             WHEN child.dm_message_id IS NULL AND parent.dm_message_id IS NOT NULL THEN NULL
+             ELSE child.last_card_edit_at END,
+           dm_claimed_at = NULL, card_repair_claimed_at = NULL,
+           card_repair_terminal_at = NULL, card_repair_error = NULL,
+           card_repair_run_at = now(), updated_at = now()
+         FROM bot_report_links AS parent
+         WHERE child.report_id = $2 AND parent.report_id = $1`,
+        [predecessorReportId, successorReportId, cardNonce(predecessorReportId)]
+      );
+      await client.query(
+        `UPDATE bot_report_links SET dm_channel_id = NULL, dm_message_id = NULL,
+           dm_claimed_at = NULL, card_repair_claimed_at = NULL,
+           superseded_by_report_id = $2, updated_at = now()
+         WHERE report_id = $1 AND superseded_by_report_id IS NULL`,
+        [predecessorReportId, successorReportId]
+      );
+      await client.query("COMMIT");
+      return "adopted";
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Returns card state only when the supplied API account still owns the bot-side link. */
+  public async reportCardState(accountId: string, reportId: string): Promise<ReportCardState | null> {
+    const result = await this.pool.query<ReportCardState>(
+      `SELECT link.report_id, link.discord_user_id, link.account_id, link.superseded_by_report_id,
+              link.dm_channel_id, link.dm_message_id, link.encrypted_target_context, link.visible_payload_hash,
+              link.dm_card_nonce, link.dm_card_origin_report_id, link.dm_card_origin_claimed_at
+       FROM bot_report_links AS link
+       JOIN api_connections AS connection ON connection.account_id = link.account_id
+       WHERE link.account_id = $1 AND link.report_id = $2`,
+      [accountId, reportId]
+    );
+    return result.rows[0] ?? null;
   }
 
   public async abandonReportLink(linkId: string): Promise<void> {
@@ -460,9 +815,12 @@ export class AccountBotDatabase {
   public async setDmMapping(reportId: string, channelId: string, messageId: string): Promise<void> {
     await this.pool.query(
       `UPDATE bot_report_links SET dm_channel_id = $2, dm_message_id = $3,
-         dm_claimed_at = NULL, card_repair_claimed_at = NULL, updated_at = now()
+         dm_card_nonce = COALESCE(dm_card_nonce, $4),
+         dm_card_origin_report_id = COALESCE(dm_card_origin_report_id, report_id),
+         dm_card_origin_claimed_at = COALESCE(dm_card_origin_claimed_at, now()),
+         dm_claimed_at = NULL, card_repair_claimed_at = NULL, card_repair_error = NULL, updated_at = now()
        WHERE report_id = $1 AND superseded_by_report_id IS NULL`,
-      [reportId, channelId, messageId]
+      [reportId, channelId, messageId, cardNonce(reportId)]
     );
   }
 
@@ -470,7 +828,8 @@ export class AccountBotDatabase {
   public async clearStaleDmMapping(reportId: string, messageId: string): Promise<boolean> {
     const result = await this.pool.query(
       `UPDATE bot_report_links SET dm_channel_id = NULL, dm_message_id = NULL,
-         dm_claimed_at = NULL, visible_payload_hash = NULL, updated_at = now()
+         dm_card_nonce = NULL, dm_card_origin_report_id = NULL, dm_card_origin_claimed_at = NULL,
+         dm_claimed_at = NULL, visible_payload_hash = NULL, card_repair_error = NULL, updated_at = now()
        WHERE report_id = $1 AND dm_message_id = $2`,
       [reportId, messageId]
     );
@@ -487,20 +846,53 @@ export class AccountBotDatabase {
 
   public async completeCardUpdate(reportId: string, visiblePayloadHash: string): Promise<void> {
     await this.pool.query(
-      "UPDATE bot_report_links SET visible_payload_hash = $2, last_card_edit_at = now(), updated_at = now() WHERE report_id = $1",
+      `UPDATE bot_report_links SET visible_payload_hash = $2, last_card_edit_at = now(),
+         card_repair_error = NULL, updated_at = now() WHERE report_id = $1`,
       [reportId, visiblePayloadHash]
     );
   }
 
-  public async claimDmCard(reportId: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE bot_report_links SET dm_claimed_at = now(), updated_at = now()
-       WHERE report_id = $1 AND superseded_by_report_id IS NULL AND dm_message_id IS NULL
-         AND (dm_claimed_at IS NULL OR dm_claimed_at < now() - interval '2 minutes')
-       RETURNING id`,
-      [reportId]
+  public async claimDmCard(reportId: string): Promise<DmCardIdentity | null> {
+    const result = await this.pool.query<DmCardIdentity>(
+      `WITH claimed AS (
+         UPDATE bot_report_links SET
+           dm_card_nonce = COALESCE(dm_card_nonce, $2),
+           dm_card_origin_report_id = COALESCE(dm_card_origin_report_id, report_id),
+           dm_card_origin_claimed_at = COALESCE(dm_card_origin_claimed_at, now()),
+           dm_claimed_at = now(), updated_at = now()
+         WHERE report_id = $1 AND superseded_by_report_id IS NULL AND dm_message_id IS NULL
+           AND (dm_claimed_at IS NULL OR dm_claimed_at < now() - interval '2 minutes')
+         RETURNING account_id, report_id, created_at, dm_card_nonce,
+                   dm_card_origin_report_id, dm_card_origin_claimed_at
+       )
+       SELECT claimed.dm_card_nonce AS nonce,
+              claimed.dm_card_origin_report_id AS "originReportId",
+              claimed.dm_card_origin_claimed_at AS "originClaimedAt",
+              identity.related_report_ids AS "relatedReportIds",
+              identity.related_report_ids_complete AS "relatedReportIdsComplete"
+       FROM claimed
+       CROSS JOIN LATERAL (
+         SELECT array_agg(bounded.report_id ORDER BY bounded.created_at, bounded.report_id) AS related_report_ids,
+                count(*) <= 20 AS related_report_ids_complete
+         FROM (
+           SELECT lineage.report_id, lineage.created_at
+           FROM (
+             SELECT link.report_id::text AS report_id, link.created_at
+             FROM bot_report_links AS link
+             WHERE link.account_id = claimed.account_id
+               AND link.dm_card_nonce = claimed.dm_card_nonce
+               AND link.dm_card_origin_report_id = claimed.dm_card_origin_report_id
+               AND link.dm_card_origin_claimed_at = claimed.dm_card_origin_claimed_at
+             UNION
+             SELECT claimed.report_id::text, claimed.created_at
+           ) AS lineage
+           ORDER BY lineage.created_at, lineage.report_id
+           LIMIT 21
+         ) AS bounded
+       ) AS identity`,
+      [reportId, cardNonce(reportId)]
     );
-    return result.rowCount === 1;
+    return result.rows[0] ?? null;
   }
 
   public async releaseDmCard(reportId: string): Promise<void> {
@@ -537,12 +929,13 @@ export class AccountBotDatabase {
     return result.rows;
   }
 
-  public async rescheduleCardRepair(reportId: string, delaySeconds: number): Promise<void> {
+  public async rescheduleCardRepair(reportId: string, delaySeconds: number, error?: string): Promise<void> {
     await this.pool.query(
       `UPDATE bot_report_links SET card_repair_claimed_at = NULL,
-         card_repair_run_at = now() + ($2::text || ' seconds')::interval, updated_at = now()
+         card_repair_run_at = now() + ($2::text || ' seconds')::interval,
+         card_repair_error = COALESCE($3, card_repair_error), updated_at = now()
        WHERE report_id = $1 AND dm_message_id IS NULL`,
-      [reportId, Math.max(1, Math.floor(delaySeconds))]
+      [reportId, Math.max(1, Math.floor(delaySeconds)), error?.slice(0, 300) ?? null]
     );
   }
 

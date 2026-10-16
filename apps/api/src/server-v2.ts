@@ -122,6 +122,14 @@ function publicReport(row: AccountReportRow, queueLength = 0): ReportDetail {
         : null,
     predecessorReportId: row.predecessor_report_id ?? null,
     successorReportId: row.successor_report_id ?? null,
+    connectionRecovery: row.connection_recovery == null ? null : {
+      state: row.connection_recovery.state,
+      attempt: row.connection_recovery.attempt,
+      maxAttempts: row.connection_recovery.maxAttempts,
+      retryAt: row.connection_recovery.retryAt,
+      successorReportId: row.connection_recovery.successorReportId
+    },
+    automaticNetworkRetry: (row.automatic_network_restarts ?? 0) > 0,
     retryableModes: reportRetryableModes(row),
     queueLength,
     timeline: [],
@@ -795,6 +803,8 @@ function publicReportSummary(row: AccountReportRow) {
     reviewStatus: report.reviewStatus,
     predecessorReportId: report.predecessorReportId,
     successorReportId: report.successorReportId,
+    connectionRecovery: report.connectionRecovery,
+    automaticNetworkRetry: report.automaticNetworkRetry,
     retryableModes: report.retryableModes,
     createdAt: report.createdAt,
     updatedAt: report.updatedAt

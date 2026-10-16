@@ -649,7 +649,7 @@ async function releaseSuspendedReservations(client: PoolClient, accountId: strin
     await client.query(
       `UPDATE account_reports SET status = 'failed', failure_stage = status,
          error_code = 'account_suspended', error_message = 'Account was suspended before submission.',
-         updated_at = now() WHERE id = $1`,
+         connection_recovery = NULL, updated_at = now() WHERE id = $1`,
       [report.id]
     );
     await client.query(

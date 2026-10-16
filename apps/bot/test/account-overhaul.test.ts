@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import type * as ObservabilityPackage from "@nreport/observability";
 
-import { AccountBotDatabase } from "../src/account-database.js";
+import { AccountBotDatabase, cardNonce } from "../src/account-database.js";
 import { AccountNotificationWorker, isDiscordUnknownMessage, NOTIFICATION_LOOP_COUNT } from "../src/account-notifier.js";
 import { loadBotConfig } from "../src/config.js";
 import { HealthServer, reportEventIngestionStatus } from "../src/health.js";
@@ -13,6 +13,13 @@ import * as healthModule from "../src/health.js";
 import { DsaApiError } from "@nreport/contracts";
 import { AccountInteractionHandler, shouldAbandonReportLink } from "../src/account-interactions.js";
 import { errorFields, setBotDiagnosticSink } from "../src/observability.js";
+
+function cardIdentity(reportId: string) {
+  return {
+    nonce: cardNonce(reportId), originReportId: reportId, originClaimedAt: new Date(),
+    relatedReportIds: [reportId], relatedReportIdsComplete: true
+  };
+}
 
 const captureLifecycleFailureMock = vi.hoisted(() => vi.fn());
 vi.mock("@nreport/observability", async (importOriginal) => {
@@ -196,11 +203,11 @@ describe("initial card interaction diagnostics", () => {
     });
     const database = {
       connection: vi.fn(async () => ({ account_id: "account-1", encrypted_api_key: "key" })),
-      beginReportLink: vi.fn(async () => "link-1"), completeReportLink: vi.fn(), claimDmCard: vi.fn(async () => true),
+      beginReportLink: vi.fn(async () => "link-1"), completeReportLink: vi.fn(), claimDmCard: vi.fn(async () => cardIdentity(report.reportId)),
       terminalCardRepair: vi.fn()
     };
     const handler = new AccountInteractionHandler({
-      client: {} as never,
+      client: { user: { id: "bot-user" } } as never,
       config: { apiBaseUrl: "https://api.example.test", adminApiKey: "admin", dataEncryptionKey: Buffer.alloc(32) } as never,
       database: database as never, messageResolver: {} as never, profileResolver: {} as never, serverResolver: {} as never
     });
@@ -213,7 +220,7 @@ describe("initial card interaction diagnostics", () => {
     setBotDiagnosticSink((event, fields) => diagnostics.push({ event, fields }));
     try {
       await privateHandler.submit({
-        user: { id: "discord-1", send: vi.fn(async () => { throw validationError; }) },
+        user: { id: "discord-1", createDM: vi.fn(async () => ({ messages: { fetch: vi.fn() }, send: vi.fn(async () => { throw validationError; }) })) },
         editReply: vi.fn()
       }, { flow: "message" }, "create-1");
     } finally {
@@ -238,11 +245,11 @@ describe("initial card interaction diagnostics", () => {
     } as const;
     const database = {
       connection: vi.fn(async () => ({ account_id: "account-1", encrypted_api_key: "key" })),
-      beginReportLink: vi.fn(async () => "link-1"), completeReportLink: vi.fn(), claimDmCard: vi.fn(async () => true),
+      beginReportLink: vi.fn(async () => "link-1"), completeReportLink: vi.fn(), claimDmCard: vi.fn(async () => cardIdentity(report.reportId)),
       setDmMapping: vi.fn(), completeCardUpdate: vi.fn()
     };
     const handler = new AccountInteractionHandler({
-      client: {} as never,
+      client: { user: { id: "bot-user" } } as never,
       config: { apiBaseUrl: "https://api.example.test", adminApiKey: "admin", dataEncryptionKey: Buffer.alloc(32) } as never,
       database: database as never, messageResolver: {} as never, profileResolver: {} as never, serverResolver: {} as never
     });
@@ -254,12 +261,117 @@ describe("initial card interaction diagnostics", () => {
     const send = vi.fn(async (_options: unknown) => ({ channelId: "dm", id: "card" }));
 
     await privateHandler.submit({
-      user: { id: "discord-1", send },
+      user: { id: "discord-1", createDM: vi.fn(async () => ({ messages: { fetch: vi.fn() }, send })) },
       editReply: vi.fn()
     }, { flow: "message" }, "create-1");
 
     expect(send).toHaveBeenCalledOnce();
     expect(send.mock.calls[0]?.[0]).toMatchObject({ nonce: "card-bd7662a5eeb41614", enforceNonce: true });
+  });
+});
+
+describe("manual retry after an automatic network successor", () => {
+  const automaticChild = {
+    reportId: "44444444-4444-4444-8444-444444444444",
+    traceId: "55555555-5555-4555-8555-555555555555",
+    accountId: "account-1",
+    predecessorReportId: "11111111-1111-4111-8111-111111111111",
+    successorReportId: null,
+    automaticNetworkRetry: true,
+    retryableModes: ["reuse"]
+  };
+  const predecessor = {
+    reportId: automaticChild.predecessorReportId,
+    traceId: "33333333-3333-4333-8333-333333333333",
+    accountId: "account-1",
+    successorReportId: automaticChild.reportId,
+    connectionRecovery: {
+      state: "restarting", attempt: 3, maxAttempts: 3, retryAt: null,
+      successorReportId: automaticChild.reportId
+    }
+  };
+
+  function setup() {
+    const order: string[] = [];
+    const retryReport = vi.fn(async () => {
+      order.push("retry");
+      return { reportId: "66666666-6666-4666-8666-666666666666", traceId: "77777777-7777-4777-8777-777777777777" };
+    });
+    const api = {
+      report: vi.fn(async (reportId: string) => reportId === automaticChild.reportId ? automaticChild : predecessor),
+      retryReport
+    };
+    const database = {
+      connection: vi.fn(async () => ({ account_id: "account-1", encrypted_api_key: "key" })),
+      adoptAutomaticNetworkRetry: vi.fn(async () => { order.push("adopt"); return "adopted" as const; }),
+      reportTargetContext: vi.fn(async () => null),
+      beginReportLink: vi.fn(async () => "retry-link"),
+      completeReplacementLink: vi.fn(async () => { order.push("complete"); }),
+      claimDmCard: vi.fn(async () => null),
+      abandonReportLink: vi.fn(),
+      deletePendingForm: vi.fn()
+    };
+    const handler = new AccountInteractionHandler({
+      client: {} as never,
+      config: { apiBaseUrl: "https://api.example.test", adminApiKey: "admin", dataEncryptionKey: Buffer.alloc(32) } as never,
+      database: database as never, messageResolver: {} as never, profileResolver: {} as never, serverResolver: {} as never
+    });
+    const privateHandler = handler as unknown as {
+      api: () => unknown;
+      submitRetry: (interaction: unknown, predecessorReportId: string, input: unknown) => Promise<void>;
+      reports: (interaction: unknown) => Promise<void>;
+    };
+    vi.spyOn(privateHandler, "api").mockReturnValue(api);
+    return { handler, privateHandler, api, database, order };
+  }
+
+  it("adopts A→B before the status-card retry path creates manual child C", async () => {
+    const h = setup();
+    const interaction = {
+      isModalSubmit: () => false, isButton: () => true,
+      isMessageContextMenuCommand: () => false, isChatInputCommand: () => false,
+      customId: `report-retry-reuse:${automaticChild.reportId}`, id: "button-retry",
+      user: { id: "discord-user" }, deferReply: vi.fn(), editReply: vi.fn(),
+      isRepliable: () => true, deferred: true, replied: false
+    };
+
+    await h.handler.handle(interaction as never);
+
+    expect(h.api.report.mock.calls.map(([id]) => id)).toEqual([automaticChild.reportId, predecessor.reportId]);
+    expect(h.database.adoptAutomaticNetworkRetry).toHaveBeenCalledWith(
+      "account-1", predecessor.reportId, automaticChild.reportId
+    );
+    expect(h.api.retryReport).toHaveBeenCalledWith(automaticChild.reportId, "retry:button-retry", { mode: "reuse" });
+    expect(h.database.completeReplacementLink).toHaveBeenCalledWith(
+      "retry-link", "66666666-6666-4666-8666-666666666666", automaticChild.reportId
+    );
+    expect(h.order).toEqual(["adopt", "retry", "complete"]);
+  });
+
+  it("adopts A→B before the direct `/reports retry` command creates manual child C", async () => {
+    const h = setup();
+    const interaction = {
+      id: "command-retry",
+      user: { id: "discord-user", send: vi.fn() },
+      options: {
+        getSubcommand: () => "retry",
+        getString: (name: string) => name === "report-id" ? automaticChild.reportId : "reuse"
+      },
+      deferReply: vi.fn(), editReply: vi.fn()
+    };
+
+    await h.privateHandler.reports(interaction);
+
+    expect(h.api.report.mock.calls.map(([id]) => id)).toEqual([automaticChild.reportId, predecessor.reportId]);
+    expect(h.database.adoptAutomaticNetworkRetry).toHaveBeenCalledWith(
+      "account-1", predecessor.reportId, automaticChild.reportId
+    );
+    expect(h.api.retryReport).toHaveBeenCalledWith(automaticChild.reportId, "retry:command-retry", { mode: "reuse" });
+    expect(h.database.completeReplacementLink).toHaveBeenCalledWith(
+      "retry-link", "66666666-6666-4666-8666-666666666666", automaticChild.reportId
+    );
+    expect(h.order).toEqual(["adopt", "retry", "complete"]);
+    expect(h.database.claimDmCard).toHaveBeenCalledWith("66666666-6666-4666-8666-666666666666");
   });
 });
 
@@ -269,6 +381,7 @@ describe("interaction Sentry diagnostics", () => {
     const predecessor = {
       reportId: "11111111-1111-4111-8111-111111111111",
       traceId: "33333333-3333-4333-8333-333333333333",
+      accountId: "account-1",
       retryableModes: ["reuse"], successorReportId: null
     };
     const error = new DsaApiError(503, "upstream_unavailable", "API temporarily unavailable", "request-42");
@@ -364,13 +477,20 @@ describe("local account mapping", () => {
   });
 
   it("maps the database card-claim result to acquired or unavailable", async () => {
+    const claimedAt = new Date();
     const query = vi.fn()
-      .mockResolvedValueOnce({ rows: [{ id: "link-1" }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{
+        nonce: cardNonce("report-1"), originReportId: "report-1", originClaimedAt: claimedAt,
+        relatedReportIds: ["report-1"], relatedReportIdsComplete: true
+      }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 });
     const database = new AccountBotDatabase({ query } as never);
 
-    await expect(database.claimDmCard("report-1")).resolves.toBe(true);
-    await expect(database.claimDmCard("report-1")).resolves.toBe(false);
+    await expect(database.claimDmCard("report-1")).resolves.toEqual({
+      nonce: cardNonce("report-1"), originReportId: "report-1", originClaimedAt: claimedAt,
+      relatedReportIds: ["report-1"], relatedReportIdsComplete: true
+    });
+    await expect(database.claimDmCard("report-1")).resolves.toBeNull();
   });
 
   it("clears a stale card mapping only when it still names the missing message", async () => {
@@ -663,7 +783,7 @@ describe("account reconciliation", () => {
       abandonReportLink: vi.fn(),
       completeReportLink: vi.fn(),
       completeReplacementLink: vi.fn(),
-      claimDmCard: vi.fn(async () => false),
+      claimDmCard: vi.fn(async () => null),
       existingEventIds: vi.fn(async () => new Set<string>()),
       ingestEvent: vi.fn(async () => "accepted"),
       advanceCursor: vi.fn(),
@@ -803,13 +923,15 @@ describe("account reconciliation", () => {
     const database = {
       connections: vi.fn(async () => [connection]), cleanupExpiredForms: vi.fn(), pendingReportLinks: vi.fn(async () => []),
       dueCardRepairs: vi.fn(async () => [{ report_id: repairedReport.reportId, discord_user_id: "discord-1", encrypted_target_context: null, card_repair_attempts: 1, trace_id: repairedReport.traceId }]),
-      claimDmCard: vi.fn(async () => true), releaseDmCard: vi.fn(), rescheduleCardRepair: vi.fn()
+      claimDmCard: vi.fn(async () => cardIdentity(repairedReport.reportId)), releaseDmCard: vi.fn(), rescheduleCardRepair: vi.fn()
     };
     const deliveryError = Object.assign(new Error("Discord gateway unavailable"), { code: "ECONNRESET", status: 502 });
     const logger = vi.fn();
     const worker = new AccountNotificationWorker(
       database as never,
-      { users: { fetch: vi.fn(async () => ({ send: vi.fn(async () => { throw deliveryError; }) })) } } as never,
+      { user: { id: "bot-user" }, users: { fetch: vi.fn(async () => ({
+        createDM: vi.fn(async () => ({ messages: { fetch: vi.fn() }, send: vi.fn(async () => { throw deliveryError; }) }))
+      })) } } as never,
       { dataEncryptionKey: Buffer.alloc(32), apiBaseUrl: "https://api.example.test" } as never,
       () => ({ report: vi.fn(async () => repairedReport) }) as never,
       undefined,

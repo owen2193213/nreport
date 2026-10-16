@@ -44,6 +44,7 @@ export interface TargetDisplayContext {
 
 export type ReportViewKey =
   | "preparing" | "verification_received" | "verifying" | "submitting" | "awaiting_confirmation" | "confirmation_received" | "failed"
+  | "connection_retry" | "connection_restarting" | "connection_replaced"
   | "report_denied" | "appeal_denied" | "report_accepted" | "appeal_accepted"
   | "report_timeout" | "appeal_timeout" | "appeal_failed" | "ineligible";
 
@@ -114,6 +115,9 @@ function validateElements<T extends string>(values: readonly string[] | undefine
 }
 
 const PREPARING = new Set(["planning", "researching", "writing"]);
+const CONNECTION_RETRYABLE_STATUSES = new Set([
+  "requesting_verification", "awaiting_verification", "verification_received", "verifying"
+]);
 
 export function classifyReportView(report: ReportDetail): ReportViewState {
   if (report.reviewStatus === "confirmation_timeout") return state("appeal_timeout", "Appeal unconfirmed", "Discord did not confirm the appeal within 2 minutes. It will not be retried automatically.", "No retry", true);
@@ -144,6 +148,39 @@ export function classifyReportView(report: ReportDetail): ReportViewState {
     false
   );
   if (report.failure?.code === "discord_receipt_timeout") return state("report_timeout", "Report unconfirmed", "Discord did not confirm the report within 2 minutes. The final outcome is unknown, so the report will not be submitted again automatically.", "No retry", true);
+  if (report.connectionRecovery?.state === "retrying" && CONNECTION_RETRYABLE_STATUSES.has(report.status)) {
+    const attempt = Number.isSafeInteger(report.connectionRecovery.attempt) ? Math.max(1, report.connectionRecovery.attempt) : 1;
+    const maxAttempts = Number.isSafeInteger(report.connectionRecovery.maxAttempts)
+      ? Math.max(attempt, report.connectionRecovery.maxAttempts)
+      : attempt;
+    const retryAt = discordRelativeTimestamp(report.connectionRecovery.retryAt);
+    return state(
+      "connection_retry",
+      "Connection interrupted",
+      `Retrying the Discord connection (attempt ${attempt} of ${maxAttempts})${retryAt === undefined ? "." : `; next retry ${retryAt}.`}`,
+      "Retrying",
+      false
+    );
+  }
+  if (report.connectionRecovery?.state === "restarting" && report.status === "failed" &&
+    report.connectionRecovery.successorReportId !== null) {
+    return state(
+      "connection_replaced",
+      "Continued in a new report",
+      `The connection was interrupted repeatedly. Processing continued in report \`${safe(report.connectionRecovery.successorReportId)}\`.`,
+      "Replaced",
+      true
+    );
+  }
+  if (report.automaticNetworkRetry === true && report.status === "queued") {
+    return state(
+      "connection_restarting",
+      "Starting fresh connection",
+      "The connection was interrupted repeatedly. NReport is starting a fresh Discord connection.",
+      "In progress",
+      false
+    );
+  }
   if (report.status === "failed") return state("failed", "Report failed", report.failure?.message ?? "The report stopped before Discord confirmed submission.", "Needs attention", true);
   if (hasReportSubmitted(report)) return state(
     "awaiting_confirmation",
@@ -467,6 +504,14 @@ function lastTimelineEvent(
 function discordHistoryTime(value: string): string {
   const seconds = Math.floor(Date.parse(value) / 1_000);
   return Number.isFinite(seconds) ? `<t:${seconds}:R>` : safe(value);
+}
+
+function discordRelativeTimestamp(value: string | null): string | undefined {
+  if (value === null) return undefined;
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) return undefined;
+  const seconds = Math.floor(milliseconds / 1_000);
+  return Number.isSafeInteger(seconds) ? `<t:${seconds}:R>` : undefined;
 }
 
 function reportCodeBlock(finalText: string): string {

@@ -145,6 +145,13 @@ export interface ReportTimelineEvent {
   discordStatus: DiscordReportStatus | null;
   errorCode: string | null;
 }
+export interface ReportConnectionRecovery {
+  state: "retrying" | "restarting";
+  attempt: number;
+  maxAttempts: number;
+  retryAt: string | null;
+  successorReportId: string | null;
+}
 export interface ReportSummary {
   reportId: string;
   traceId: string;
@@ -162,6 +169,8 @@ export interface ReportSummary {
   reviewStatus: DiscordReviewStatus | null;
   predecessorReportId: string | null;
   successorReportId: string | null;
+  connectionRecovery?: ReportConnectionRecovery | null;
+  automaticNetworkRetry?: boolean;
   retryableModes: ReportRetryMode[];
   queueLength?: number;
   createdAt: string;

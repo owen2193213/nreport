@@ -3,9 +3,10 @@ import { createHash } from "node:crypto";
 
 import { DsaApi, DsaApiError, type CreateReportInput, type RetryReportInput } from "@nreport/contracts";
 import type { LifecycleFailureContext } from "@nreport/observability";
-import type { Client, Message } from "discord.js";
+import type { Client, DMChannel, Message } from "discord.js";
 
-import type { AccountBotDatabase, ApiConnection, ClaimedNotification } from "./account-database.js";
+import { type AccountBotDatabase, type ApiConnection, type ClaimedNotification, type DmCardIdentity } from "./account-database.js";
+import type { ReportCardState } from "./account-database.js";
 import type { BotConfig } from "./config.js";
 import { cardPayloadDiagnostics } from "./card-diagnostics.js";
 import { decryptJson } from "./crypto.js";
@@ -17,16 +18,26 @@ import type { ReportDetail } from "@nreport/contracts";
 type AccountApi = Pick<DsaApi, "createReport" | "retryReport" | "events" | "report">;
 type AccountNotifierLog = (event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error") => void;
 type NotificationDeliveryStage =
-  | "load_preferences" | "fetch_report" | "resolve_context" | "render_card"
-  | "fetch_user" | "open_dm" | "fetch_card" | "claim_card" | "send_card"
+  | "load_preferences" | "fetch_report" | "adopt_automatic_retry" | "reload_card_state" | "resolve_context" | "render_card"
+  | "fetch_user" | "open_dm" | "fetch_card" | "claim_card" | "reconcile_card_history" | "send_card"
   | "save_card_mapping" | "save_card_hash" | "edit_card" | "reply" | "complete_notification";
 type CardCreationResult =
-  | { outcome: "created" | "busy" | "terminal" }
+  | { outcome: "created" | "busy" | "terminal" | "uncertain"; reason?: string }
   | { outcome: "failed"; diagnostics: Record<string, unknown> };
 
 class ReconciliationEventIngestError extends Error {}
 
+export class UncertainCardDeliveryError extends Error {
+  public constructor(public readonly reason: "history_fetch_failed" | "history_incomplete" | "bot_identity_unavailable") {
+    super(`Could not establish whether the original status card exists: ${reason}`);
+    this.name = "UncertainCardDeliveryError";
+  }
+}
+
 const RECOVERY_DELAYS_SECONDS = [5, 15, 30, 60, 120, 300] as const;
+const DM_HISTORY_PAGE_SIZE = 100;
+const DM_HISTORY_MAX_PAGES = 3;
+const CARD_HISTORY_RECONCILE_AFTER_MS = 5_000;
 
 /** Number of concurrent notification-delivery loops; per-report ordering is enforced in claimNotification. */
 export const NOTIFICATION_LOOP_COUNT = 3;
@@ -73,13 +84,81 @@ function notificationNonce(eventId: string): string {
   return `nreport-${createHash("sha256").update(eventId).digest("hex").slice(0, 16)}`;
 }
 
-export function cardNonce(reportId: string): string {
-  return `card-${createHash("sha256").update(reportId).digest("hex").slice(0, 16)}`;
-}
+export { cardNonce } from "./account-database.js";
 
 export function isDiscordUnknownMessage(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error &&
     (error as { code?: unknown }).code === 10008;
+}
+
+function messageContainsReportId(message: Message, reportIds: ReadonlySet<string>): boolean {
+  const markers = new Set([...reportIds].map((reportId) => `Report ID: \`${reportId}\``));
+  const isReportFooterLine = (value: unknown): boolean => typeof value === "string" &&
+    markers.has(value.split(/\r?\n/u, 1)[0] ?? "");
+  const containsComponentFooter = (value: unknown, depth = 0): boolean => {
+    if (depth >= 8 || typeof value !== "object" || value === null) return false;
+    if (Array.isArray(value)) return value.some((item) => containsComponentFooter(item, depth + 1));
+    const component = value as { content?: unknown; components?: unknown };
+    return isReportFooterLine(component.content) || containsComponentFooter(component.components, depth + 1);
+  };
+  // The card's Components V2 text display begins with its report-ID line; older cards used an
+  // embed footer. Do not search excerpts or arbitrary component text, which may quote another ID.
+  return isReportFooterLine(message.content) || containsComponentFooter(message.components) ||
+    (message.embeds ?? []).some((embed) => isReportFooterLine(embed.footer?.text));
+}
+
+/** Searches a bounded DM history before retrying a card send whose acceptance is uncertain. */
+export async function reconcileUncertainCardMessage(
+  dm: Pick<DMChannel, "messages">,
+  botUserId: string | null,
+  reportId: string,
+  identity: DmCardIdentity
+): Promise<Message | null> {
+  const ageMs = Date.now() - identity.originClaimedAt.getTime();
+  if (identity.originReportId === reportId && ageMs < CARD_HISTORY_RECONCILE_AFTER_MS) return null;
+  if (botUserId === null) throw new UncertainCardDeliveryError("bot_identity_unavailable");
+
+  let before: string | undefined;
+  let historyCoversClaim = false;
+  for (let pageNumber = 0; pageNumber < DM_HISTORY_MAX_PAGES; pageNumber += 1) {
+    let page;
+    try {
+      page = await dm.messages.fetch({
+        limit: DM_HISTORY_PAGE_SIZE,
+        ...(before === undefined ? {} : { before })
+      });
+    } catch {
+      throw new UncertainCardDeliveryError("history_fetch_failed");
+    }
+    const messages = Array.from(page.values());
+    if (messages.length === 0) {
+      historyCoversClaim = true;
+      break;
+    }
+    const match = messages.find((message) =>
+      message.author.id === botUserId &&
+      (String(message.nonce ?? "") === identity.nonce ||
+        messageContainsReportId(message, new Set([
+          reportId, identity.originReportId, ...identity.relatedReportIds
+        ])))
+    );
+    if (match !== undefined) return match;
+
+    const oldest = messages.reduce((current, message) =>
+      message.createdTimestamp < current.createdTimestamp ? message : current
+    );
+    if (oldest.createdTimestamp <= identity.originClaimedAt.getTime() ||
+      messages.length < DM_HISTORY_PAGE_SIZE) {
+      historyCoversClaim = true;
+      break;
+    }
+    before = oldest.id;
+  }
+
+  if (!historyCoversClaim || !identity.relatedReportIdsComplete) {
+    throw new UncertainCardDeliveryError("history_incomplete");
+  }
+  return null;
 }
 
 export class AccountNotificationWorker {
@@ -126,6 +205,7 @@ export class AccountNotificationWorker {
     let deliveryStage: NotificationDeliveryStage = "load_preferences";
     let payload: Record<string, unknown> | undefined;
     let attemptedCardSend = false;
+    let activeCardReportId = item.report_id;
     const traceFields = {
       reportId: item.report_id,
       ...(item.trace_id === null ? {} : { traceId: item.trace_id })
@@ -139,11 +219,64 @@ export class AccountNotificationWorker {
       const preferences = await this.database.notificationPreferences(item.discord_user_id);
       const api = this.api(item);
       deliveryStage = "fetch_report";
-      const report = await api.report(item.report_id);
+      const sourceReport = await api.report(item.report_id);
+      if (sourceReport.accountId !== item.account_id) {
+        await this.database.ignoreNotification(item.event_id, "report_account_mismatch", attempts);
+        this.safeLog("account_notification_ignored", {
+          ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+          stage: "fetch_report", outcome: "ignored", failureCategory: "report_account_mismatch"
+        }, "warn");
+        return true;
+      }
+      let report = sourceReport;
+      activeCardReportId = report.reportId;
+      let cardItem = item;
+      deliveryStage = "adopt_automatic_retry";
+      const adoption = await this.adoptLifecycleNetworkRetry(sourceReport, item.account_id, api);
+      if (adoption.outcome === "busy") {
+        await this.database.retryNotification(item.event_id, "automatic_retry_card_claim_in_progress", attempts);
+        this.safeLog("account_notification_retry", {
+          ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+          failureCategory: "automatic_retry_card_claim_busy", stage: "notification", outcome: "retry"
+        }, "warn");
+        return true;
+      }
+      if (adoption.outcome === "conflict") {
+        await this.database.completeNotification(item.event_id, attempts);
+        this.safeLog("account_notification_completed", {
+          ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+          stage: "notification", outcome: "stale_automatic_retry"
+        });
+        this.clearCapturedFailure(sentryFailureKey);
+        return true;
+      }
+      if (adoption.outcome === "adopted") {
+        report = adoption.report;
+        activeCardReportId = report.reportId;
+        deliveryStage = "reload_card_state";
+        const cardState = adoption.cardState ?? await this.database.reportCardState(item.account_id, report.reportId);
+        if (cardState === null || cardState.superseded_by_report_id !== null) {
+          await this.database.completeNotification(item.event_id, attempts);
+          this.safeLog("account_notification_completed", {
+            ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+            stage: "notification", outcome: "stale_automatic_retry"
+          });
+          this.clearCapturedFailure(sentryFailureKey);
+          return true;
+        }
+        cardItem = {
+          ...item,
+          report_id: report.reportId,
+          dm_channel_id: cardState.dm_channel_id,
+          dm_message_id: cardState.dm_message_id,
+          encrypted_target_context: cardState.encrypted_target_context,
+          visible_payload_hash: cardState.visible_payload_hash
+        };
+      }
       deliveryStage = "resolve_context";
-      const context = item.encrypted_target_context === null
+      const context = cardItem.encrypted_target_context === null
         ? targetContextFromReport(report)
-        : this.decrypt<TargetDisplayContext>(item.encrypted_target_context, this.config.dataEncryptionKey);
+        : this.decrypt<TargetDisplayContext>(cardItem.encrypted_target_context, this.config.dataEncryptionKey);
       deliveryStage = "render_card";
       const options = statusMessageOptions(report, context);
       const visibleHash = visibleStatusHash(report, context);
@@ -152,18 +285,19 @@ export class AccountNotificationWorker {
       deliveryStage = "open_dm";
       const dm = await user.createDM();
       let message: Message | null = null;
-      if (item.dm_message_id !== null) {
+      if (cardItem.dm_message_id !== null) {
         deliveryStage = "fetch_card";
         try {
-          message = await dm.messages.fetch(item.dm_message_id);
+          message = await dm.messages.fetch(cardItem.dm_message_id);
         } catch (error) {
           if (!isDiscordUnknownMessage(error)) throw error;
-          await this.database.clearStaleDmMapping(report.reportId, item.dm_message_id);
+          await this.database.clearStaleDmMapping(report.reportId, cardItem.dm_message_id);
         }
       }
       if (message === null) {
         deliveryStage = "claim_card";
-        if (!(await this.database.claimDmCard(report.reportId))) {
+        const identity = await this.database.claimDmCard(report.reportId);
+        if (identity === null) {
           await this.database.retryNotification(item.event_id, "status_card_creation_in_progress", attempts);
           this.safeLog("account_notification_retry", {
             ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
@@ -172,27 +306,39 @@ export class AccountNotificationWorker {
           return true;
         }
         try {
-          deliveryStage = "send_card";
-          const nonce = cardNonce(report.reportId);
-          payload = cardPayloadDiagnostics(options, nonce);
-          attemptedCardSend = true;
-          message = await dm.send({ ...options, nonce, enforceNonce: true });
-          deliveryStage = "save_card_mapping";
-          await this.database.setDmMapping(report.reportId, message.channelId, message.id);
+          deliveryStage = "reconcile_card_history";
+          message = await reconcileUncertainCardMessage(dm, this.client.user?.id ?? null, report.reportId, identity);
+          if (message !== null) {
+            deliveryStage = "save_card_mapping";
+            await this.database.setDmMapping(report.reportId, message.channelId, message.id);
+            deliveryStage = "edit_card";
+            await message.edit({ ...options, content: null, embeds: [] });
+          } else {
+            deliveryStage = "send_card";
+            payload = cardPayloadDiagnostics(options, identity.nonce);
+            attemptedCardSend = true;
+            message = await dm.send({ ...options, nonce: identity.nonce, enforceNonce: true });
+            deliveryStage = "save_card_mapping";
+            await this.database.setDmMapping(report.reportId, message.channelId, message.id);
+          }
           deliveryStage = "save_card_hash";
           await this.database.completeCardUpdate(report.reportId, visibleHash);
         } catch (error) {
-          await this.database.releaseDmCard(report.reportId);
+          if (!attemptedCardSend || isDiscordValidationFailure(error)) {
+            await this.database.releaseDmCard(report.reportId);
+          }
           throw error;
         }
-      } else if (item.visible_payload_hash !== visibleHash) {
+      } else if (cardItem.visible_payload_hash !== visibleHash) {
         deliveryStage = "edit_card";
         await message.edit({ ...options, content: null, embeds: [] });
         deliveryStage = "save_card_hash";
         await this.database.completeCardUpdate(report.reportId, visibleHash);
       }
       const view = classifyReportView(report);
-      if (shouldSendDecisionDm(item.event_type, view.key, preferences)) {
+      const predecessorFailureRedirectedToChild = report.reportId !== sourceReport.reportId &&
+        item.event_type === "report_failed";
+      if (!predecessorFailureRedirectedToChild && shouldSendDecisionDm(item.event_type, view.key, preferences)) {
         deliveryStage = "reply";
         await message.reply({
           ...decisionMessageOptions(report, context),
@@ -208,7 +354,14 @@ export class AccountNotificationWorker {
       });
       this.clearCapturedFailure(sentryFailureKey);
     } catch (error) {
-      if (error instanceof DsaApiError && error.status === 401) {
+      if (error instanceof UncertainCardDeliveryError) {
+        await this.database.releaseDmCard(activeCardReportId);
+        await this.database.retryNotification(item.event_id, `uncertain_card_delivery_${error.reason}`, attempts);
+        this.safeLog("account_card_delivery_uncertain", {
+          ...traceFields, eventType: item.event_type, attempts, durationMs: Date.now() - startedAt,
+          stage: deliveryStage, outcome: "rescheduled", failureCategory: error.reason
+        }, "warn");
+      } else if (error instanceof DsaApiError && error.status === 401) {
         const user = await this.client.users.fetch(item.discord_user_id).catch(() => null);
         await user?.send("Your reporting API key was revoked or expired. Use `/access connect` to reconnect; detailed status refreshes are paused.").catch(() => undefined);
         await this.database.completeNotification(item.event_id, attempts);
@@ -245,6 +398,51 @@ export class AccountNotificationWorker {
       }
     }
     return true;
+  }
+
+  private async adoptLifecycleNetworkRetry(
+    report: ReportDetail,
+    accountId: string,
+    api: AccountApi
+  ): Promise<
+    | { outcome: "none" }
+    | { outcome: "adopted"; report: ReportDetail; cardState: ReportCardState | null }
+    | { outcome: "busy" | "conflict" }
+  > {
+    let child: ReportDetail;
+    let predecessorReportId: string;
+    if (report.automaticNetworkRetry === true) {
+      child = report;
+      predecessorReportId = report.predecessorReportId ?? "";
+    } else if (report.connectionRecovery?.state === "restarting" &&
+      report.connectionRecovery.successorReportId !== null) {
+      child = await api.report(report.connectionRecovery.successorReportId);
+      predecessorReportId = report.reportId;
+    } else {
+      return { outcome: "none" };
+    }
+
+    if (child.accountId !== accountId) return { outcome: "conflict" };
+    if (child.automaticNetworkRetry !== true) {
+      // A progress event is safe to render, but it cannot authorize adopting an unrelated report.
+      return report.automaticNetworkRetry === true ? { outcome: "conflict" } : { outcome: "none" };
+    }
+    if (predecessorReportId === "" || child.predecessorReportId !== predecessorReportId ||
+      child.reportId === predecessorReportId || child.successorReportId !== null) {
+      // An API-side successor can be a manual replacement whose bot event has not arrived yet.
+      // Never adopt it or walk onward to it from this delayed automatic-retry event.
+      return { outcome: "conflict" };
+    }
+    const outcome = await this.database.adoptAutomaticNetworkRetry(
+      accountId, predecessorReportId, child.reportId
+    );
+    if (outcome === "busy" || outcome === "conflict") return { outcome };
+    if (outcome === "unavailable") return { outcome: "none" };
+    return {
+      outcome: "adopted",
+      report: child,
+      cardState: await this.database.reportCardState(accountId, child.reportId)
+    };
   }
 
   public async reconcileConnection(connection: ApiConnection): Promise<void> {
@@ -370,7 +568,7 @@ export class AccountNotificationWorker {
           const context = link.encrypted_target_context === null
             ? targetContextFromReport(report)
             : this.decrypt<TargetDisplayContext>(link.encrypted_target_context, this.config.dataEncryptionKey);
-          await this.ensureInitialCard(report, connection.discord_user_id, context);
+          await this.ensureInitialCard(report, connection.discord_user_id, context, connection.account_id, api);
           this.safeLog("report_create_recovered", {
             reportId: report.reportId, traceId: report.traceId,
             stage: "creation_recovery", outcome: "completed", durationMs: Date.now() - startedAt
@@ -421,8 +619,19 @@ export class AccountNotificationWorker {
         const context = repair.encrypted_target_context === null
           ? targetContextFromReport(report)
           : this.decrypt<TargetDisplayContext>(repair.encrypted_target_context, this.config.dataEncryptionKey);
-        const result = await this.ensureInitialCard(report, repair.discord_user_id, context);
-        if (result.outcome === "failed") {
+        const result = await this.ensureInitialCard(
+          report, repair.discord_user_id, context, connection.account_id, api
+        );
+        if (result.outcome === "uncertain") {
+          await this.database.rescheduleCardRepair(
+            repair.report_id, 300, `uncertain_card_delivery_${result.reason ?? "unknown"}`
+          );
+          this.safeLog("account_card_delivery_uncertain", {
+            reportId: report.reportId, traceId: report.traceId,
+            stage: "initial_card", outcome: "rescheduled",
+            failureCategory: result.reason ?? "unknown"
+          }, "warn");
+        } else if (result.outcome === "failed") {
           await this.database.rescheduleCardRepair(
             repair.report_id,
             reportRecoveryDelaySeconds(repair.card_repair_attempts, false)
@@ -431,6 +640,10 @@ export class AccountNotificationWorker {
             reportId: report.reportId, traceId: report.traceId,
             stage: "initial_card", outcome: "retry", durationMs: 0, ...result.diagnostics
           }, "warn");
+        } else if (result.outcome === "busy") {
+          await this.database.rescheduleCardRepair(repair.report_id, 5);
+        } else if (result.outcome === "terminal") {
+          await this.database.terminalCardRepair(repair.report_id, "automatic_retry_superseded");
         }
       } catch (error) {
         await this.database.rescheduleCardRepair(
@@ -455,40 +668,96 @@ export class AccountNotificationWorker {
   private async ensureInitialCard(
     report: ReportDetail,
     discordUserId: string,
-    context = targetContextFromReport(report)
+    context = targetContextFromReport(report),
+    accountId = report.accountId,
+    api?: AccountApi
   ): Promise<CardCreationResult> {
     const startedAt = Date.now();
     let payload: Record<string, unknown> | undefined;
+    let attemptedCardSend = false;
+    let activeReport = report;
     try {
-      if (!(await this.database.claimDmCard(report.reportId))) return { outcome: "busy" };
+      let activeContext = context;
+      if (report.automaticNetworkRetry === true || report.connectionRecovery?.state === "restarting") {
+        if (api === undefined || report.accountId !== accountId) return { outcome: "terminal" };
+        const adoption = await this.adoptLifecycleNetworkRetry(report, accountId, api);
+        if (adoption.outcome === "busy") return { outcome: "busy" };
+        if (adoption.outcome === "conflict") return { outcome: "terminal" };
+        if (adoption.outcome === "adopted") {
+          activeReport = adoption.report;
+          const cardState = adoption.cardState ?? await this.database.reportCardState(accountId, activeReport.reportId);
+          if (cardState === null || cardState.superseded_by_report_id !== null) return { outcome: "terminal" };
+          if (cardState.encrypted_target_context !== null) {
+            activeContext = this.decrypt<TargetDisplayContext>(
+              cardState.encrypted_target_context, this.config.dataEncryptionKey
+            );
+          }
+          if (cardState.dm_message_id !== null) {
+            const user = await this.client.users.fetch(discordUserId);
+            const dm = await user.createDM();
+            let existing: Message | null = null;
+            try {
+              existing = await dm.messages.fetch(cardState.dm_message_id);
+            } catch (error) {
+              if (!isDiscordUnknownMessage(error)) throw error;
+              await this.database.clearStaleDmMapping(activeReport.reportId, cardState.dm_message_id);
+            }
+            if (existing !== null) {
+              const options = statusMessageOptions(activeReport, activeContext);
+              await existing.edit({ ...options, content: null, embeds: [] });
+              await this.database.completeCardUpdate(activeReport.reportId, visibleStatusHash(activeReport, activeContext));
+              this.clearCapturedFailure(`card_repair:${activeReport.reportId}`);
+              return { outcome: "created" };
+            }
+          }
+        }
+      }
+      const identity = await this.database.claimDmCard(activeReport.reportId);
+      if (identity === null) return { outcome: "busy" };
       const user = await this.client.users.fetch(discordUserId);
-      const options = statusMessageOptions(report, context);
-      const nonce = cardNonce(report.reportId);
-      payload = cardPayloadDiagnostics(options, nonce);
-      const message = await user.send({ ...options, nonce, enforceNonce: true });
-      await this.database.setDmMapping(report.reportId, message.channelId, message.id);
-      await this.database.completeCardUpdate(report.reportId, visibleStatusHash(report, context));
+      const dm = await user.createDM();
+      const options = statusMessageOptions(activeReport, activeContext);
+      let message = await reconcileUncertainCardMessage(
+        dm, this.client.user?.id ?? null, activeReport.reportId, identity
+      );
+      if (message !== null) {
+        await this.database.setDmMapping(activeReport.reportId, message.channelId, message.id);
+        await message.edit({ ...options, content: null, embeds: [] });
+      } else {
+        payload = cardPayloadDiagnostics(options, identity.nonce);
+        attemptedCardSend = true;
+        message = await dm.send({ ...options, nonce: identity.nonce, enforceNonce: true });
+        await this.database.setDmMapping(activeReport.reportId, message.channelId, message.id);
+      }
+      await this.database.completeCardUpdate(activeReport.reportId, visibleStatusHash(activeReport, activeContext));
       this.safeLog("initial_card_created", {
-        reportId: report.reportId, traceId: report.traceId,
+        reportId: activeReport.reportId, traceId: activeReport.traceId,
         stage: "initial_card", outcome: "completed", durationMs: Date.now() - startedAt
       });
-      this.clearCapturedFailure(`card_repair:${report.reportId}`);
-      this.clearCapturedFailure(`card_repair_cleanup:${report.reportId}`);
+      this.clearCapturedFailure(`card_repair:${activeReport.reportId}`);
+      this.clearCapturedFailure(`card_repair_cleanup:${activeReport.reportId}`);
       return { outcome: "created" };
     } catch (error) {
+      if (error instanceof UncertainCardDeliveryError) {
+        await this.database.releaseDmCard(activeReport.reportId);
+        this.safeLog("account_card_delivery_uncertain", {
+          reportId: activeReport.reportId, traceId: activeReport.traceId,
+          stage: "initial_card", outcome: "rescheduled", failureCategory: error.reason
+        }, "warn");
+        return { outcome: "uncertain", reason: error.reason };
+      }
       const validationFailure = isDiscordValidationFailure(error);
-      const errorCode = validationFailure ? "discord_validation_50035" : undefined;
       try {
-        if (errorCode === undefined) await this.database.releaseDmCard(report.reportId);
-        else await this.database.terminalCardRepair(report.reportId, errorCode);
+        if (validationFailure) await this.database.terminalCardRepair(activeReport.reportId, "discord_validation_50035");
+        else if (!attemptedCardSend) await this.database.releaseDmCard(activeReport.reportId);
       } catch (cleanupError) {
         this.safeLog("initial_card_cleanup_failed", {
-          reportId: report.reportId, traceId: report.traceId,
+          reportId: activeReport.reportId, traceId: activeReport.traceId,
           stage: "card_claim_cleanup", outcome: "failed",
           ...errorFields(cleanupError), failureCategory: safeErrorCategory(cleanupError)
         }, "error");
-        this.captureFailureOnce(`card_repair_cleanup:${report.reportId}`, cleanupError, {
-          operation: "status_card_claim_cleanup", reportId: report.reportId, traceId: report.traceId,
+        this.captureFailureOnce(`card_repair_cleanup:${activeReport.reportId}`, cleanupError, {
+          operation: "status_card_claim_cleanup", reportId: activeReport.reportId, traceId: activeReport.traceId,
           stage: "card_claim_cleanup", outcome: "failed", severity: "error"
         });
       }
@@ -496,12 +765,12 @@ export class AccountNotificationWorker {
         ...errorFields(error), ...(payload === undefined ? {} : { payload }), failureCategory: safeErrorCategory(error)
       };
       this.safeLog(validationFailure ? "initial_card_ignored" : "initial_card_failed", {
-        reportId: report.reportId, traceId: report.traceId,
+        reportId: activeReport.reportId, traceId: activeReport.traceId,
         stage: "initial_card", outcome: validationFailure ? "ignored" : "retry", durationMs: Date.now() - startedAt,
         ...diagnostics
       }, "warn");
-      this.captureFailureOnce(`card_repair:${report.reportId}`, error, {
-        operation: "status_card_delivery", reportId: report.reportId, traceId: report.traceId,
+      this.captureFailureOnce(`card_repair:${activeReport.reportId}`, error, {
+        operation: "status_card_delivery", reportId: activeReport.reportId, traceId: activeReport.traceId,
         stage: "initial_card", outcome: validationFailure ? "ignored" : "retrying", attempt: 1
       });
       return validationFailure ? { outcome: "terminal" } : { outcome: "failed", diagnostics };

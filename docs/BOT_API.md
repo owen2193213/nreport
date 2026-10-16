@@ -206,10 +206,38 @@ Creation reserves one account credit transactionally with the report, retry chai
 job, and initial event. Just before the non-idempotent Discord submission call, the API atomically
 marks the report `submitting`, consumes that entitlement, and emits the boundary event.
 
-- Failures before the boundary release the reservation.
+- Terminal failures before the boundary release the reservation.
 - Failures, crashes, or ambiguous outcomes after the boundary keep it consumed.
 - An idempotent replay never reserves or consumes twice.
 - Suspending an account fails eligible pre-boundary reports and releases their reservations.
+
+Transient connection failures before final submission use up to three attempts on the existing
+sticky session, with capped backoff and jitter. The limit also applies after worker restarts;
+recovering exhausted work does not start a fourth network attempt. Rate-limited requests honor `Retry-After` and do
+not change sessions to bypass a limit. If the required wait exceeds five minutes, automatic
+recovery stops without retrying early; a reserved entitlement is released rather than held
+indefinitely. Invalid credentials, certificate validation, configuration,
+validation, and permanent DNS failures stop rather than retrying indefinitely.
+
+After safe connection attempts are exhausted, the API may create one automatic `reuse` successor
+with a fresh report ID, trace, identity, and proxy session. Prepared content is reused without
+another AI generation. The predecessor, successor, job, event, and credit-chain transfer commit
+atomically; a reserved entitlement stays reserved, and a consumed entitlement is not consumed
+again. Only final pre-boundary failure releases a reserved entitlement. Each manual operation
+gets at most one automatic restart; its automatic successor inherits the used budget. A new
+manual retry resets that budget. No final report/appeal submission, ambiguous outcome, or missing
+confirmation is automatically resubmitted by this mechanism.
+
+Report summary/detail responses may include `connectionRecovery` with `state` (`retrying` or
+`restarting`), `attempt`, `maxAttempts`, nullable `retryAt`, and nullable `successorReportId`.
+For a scheduled retry, `attempt` is the next connection attempt within that lifecycle job;
+it is separate from the report's `lifecycleAttempt`.
+`automaticNetworkRetry=true` identifies an API-created automatic successor. These optional
+metadata fields contain no proxy credentials, cookies, verification codes, or transport state.
+An automatically replaced predecessor is terminal as an individual report, with
+`connectionRecovery.state=restarting` and its successor ID. Clients should follow that marked
+successor to display current progress. The predecessor's marker is retained for delayed delivery
+and adoption; it records the replacement, not whether the successor is still running.
 
 ```http
 POST /v1/discord/dsa/reports/<report-id>/retries
@@ -251,6 +279,11 @@ earlier verification-code email and `verification_received` event. Neither recei
 submission ID means Discord took enforcement action.
 
 ## Events, webhooks, and recovery
+
+`report_connection_retry` and `report_connection_restarting` are immediate progress events.
+Their signed envelopes retain the minimal lifecycle-event shape; clients fetch the report's
+recovery metadata using their personal key. An automatic successor may be observed before its
+predecessor's restarting event, so consumers must support either event order idempotently.
 
 `GET /v1/discord/dsa/events?after=&limit=` is the authoritative, replayable, account-scoped event feed. Events
 contain only `eventId`, `accountId`, `reportId`, the API-generated UUID `traceId`, `type`, `occurredAt`,

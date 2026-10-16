@@ -8,7 +8,8 @@ vi.mock("@nreport/observability", async (importOriginal) => {
   return { ...actual, captureLifecycleFailure: captureLifecycleFailureMock };
 });
 
-import { AccountNotificationWorker, reportRecoveryDelaySeconds } from "../src/account-notifier.js";
+import { AccountNotificationWorker, cardNonce, reportRecoveryDelaySeconds } from "../src/account-notifier.js";
+import type { ReportCardState } from "../src/account-database.js";
 import { targetContextFromReport, visibleStatusHash } from "../src/report-ui.js";
 
 const report: ReportDetail = {
@@ -33,29 +34,370 @@ function harness(hash: string | null = null, eventId = "event", dmMessageId: str
   const message = { edit: vi.fn().mockResolvedValue(undefined), reply: vi.fn().mockResolvedValue(undefined) };
   const dm = { messages: { fetch: vi.fn().mockResolvedValue(message) }, send: vi.fn() };
   const database = {
-    claimNotification: vi.fn().mockResolvedValue({ event_id: eventId, event_type: "report_failed", report_id: report.reportId,
-      trace_id: "33333333-3333-4333-8333-333333333333",
-      lifecycle_attempt: report.lifecycleAttempt,
-      attempts: 1,
-      discord_user_id: "user", encrypted_api_key: "unused", encrypted_target_context: null,
-      dm_message_id: dmMessageId, visible_payload_hash: hash }),
+    claimNotification: vi.fn().mockResolvedValue(notificationItem(eventId, "report_failed", report.reportId, dmMessageId, hash)),
     notificationPreferences: vi.fn().mockResolvedValue({ decisionEnabled: true, reportDeniedEnabled: false, problemEnabled: true }),
     completeCardUpdate: vi.fn(), completeNotification: vi.fn(), retryNotification: vi.fn(), ignoreNotification: vi.fn(),
     cleanupExpiredForms: vi.fn().mockResolvedValue(undefined),
+    adoptAutomaticNetworkRetry: vi.fn<() => Promise<"adopted" | "busy" | "unavailable" | "conflict">>().mockResolvedValue("unavailable"),
+    reportCardState: vi.fn<(accountId: string, reportId: string) => Promise<ReportCardState | null>>().mockResolvedValue(null),
+    connections: vi.fn().mockResolvedValue([]),
+    pendingReportLinks: vi.fn().mockResolvedValue([]),
+    dueCardRepairs: vi.fn().mockResolvedValue([]),
+    rescheduleCardRepair: vi.fn().mockResolvedValue(undefined),
     notificationHealthSnapshot: vi.fn().mockResolvedValue({
       pendingNotificationCount: 0, oldestPendingNotificationAgeMs: null,
       pendingCardUpdateCount: 0, oldestPendingCardUpdateAgeMs: null
     }),
-    claimDmCard: vi.fn().mockResolvedValue(false), releaseDmCard: vi.fn(), terminalCardRepair: vi.fn(), clearStaleDmMapping: vi.fn().mockResolvedValue(true)
+    claimDmCard: vi.fn().mockResolvedValue(null), setDmMapping: vi.fn().mockResolvedValue(undefined),
+    releaseDmCard: vi.fn(), terminalCardRepair: vi.fn(), clearStaleDmMapping: vi.fn().mockResolvedValue(true)
   };
-  const api = { report: vi.fn().mockResolvedValue(report) };
-  const client = { users: { fetch: vi.fn().mockResolvedValue({ createDM: vi.fn().mockResolvedValue(dm) }) } };
+  const api = { report: vi.fn<(reportId: string) => Promise<ReportDetail>>().mockResolvedValue(report) };
+  const client = { user: { id: "bot-user" }, users: { fetch: vi.fn().mockResolvedValue({ createDM: vi.fn().mockResolvedValue(dm) }) } };
   const logger = vi.fn<(event: string, fields?: Record<string, unknown>, level?: "info" | "warn" | "error") => void>();
   const worker = new AccountNotificationWorker(database as never, client as never, {} as never, () => api as never, undefined, logger);
   return { worker, database, api, message, dm, logger };
 }
 
+function notificationItem(
+  eventId: string,
+  eventType: string,
+  reportId: string,
+  dmMessageId: string | null,
+  visiblePayloadHash: string | null
+) {
+  return {
+    event_id: eventId,
+    event_type: eventType,
+    report_id: reportId,
+    trace_id: report.traceId,
+    account_id: report.accountId,
+    lifecycle_attempt: report.lifecycleAttempt,
+    attempts: 1,
+    discord_user_id: "user",
+    encrypted_api_key: "unused",
+    dm_channel_id: dmMessageId === null ? null : "dm-channel",
+    dm_message_id: dmMessageId,
+    encrypted_target_context: null,
+    visible_payload_hash: visiblePayloadHash,
+    last_card_edit_at: null
+  };
+}
+
 describe("notification delivery against an existing report card", () => {
+  const predecessorId = report.reportId;
+  const automaticChildId = "44444444-4444-4444-8444-444444444444";
+  const manualChildId = "55555555-5555-4555-8555-555555555555";
+  const restartingParent: ReportDetail = {
+    ...report,
+    status: "failed",
+    connectionRecovery: {
+      state: "restarting", attempt: 3, maxAttempts: 3, retryAt: null, successorReportId: automaticChildId
+    },
+    successorReportId: automaticChildId
+  };
+  const automaticChild: ReportDetail = {
+    ...report,
+    reportId: automaticChildId,
+    status: "queued",
+    predecessorReportId: predecessorId,
+    automaticNetworkRetry: true,
+    connectionRecovery: null,
+    failure: null
+  };
+  const adoptedCardState: ReportCardState = {
+    report_id: automaticChildId,
+    discord_user_id: "user",
+    account_id: report.accountId,
+    superseded_by_report_id: null,
+    dm_channel_id: "dm-channel",
+    dm_message_id: "original-card",
+    encrypted_target_context: null,
+    visible_payload_hash: null,
+    dm_card_nonce: cardNonce(predecessorId),
+    dm_card_origin_report_id: predecessorId,
+    dm_card_origin_claimed_at: new Date(Date.now() - 180_000)
+  };
+
+  it("adopts the direct child when the predecessor restarting event arrives first", async () => {
+    const h = harness();
+    h.database.claimNotification.mockResolvedValue(
+      notificationItem("restart-event", "report_connection_restarting", predecessorId, "predecessor-card", "old-hash")
+    );
+    h.api.report.mockImplementation((reportId: string) => Promise.resolve(reportId === predecessorId ? restartingParent : automaticChild));
+    h.database.adoptAutomaticNetworkRetry.mockResolvedValue("adopted");
+    h.database.reportCardState.mockResolvedValue(adoptedCardState);
+
+    await h.worker.processOne();
+
+    expect(h.api.report.mock.calls.map(([id]) => id)).toEqual([predecessorId, automaticChildId]);
+    expect(h.database.adoptAutomaticNetworkRetry).toHaveBeenCalledWith(report.accountId, predecessorId, automaticChildId);
+    expect(h.dm.messages.fetch).toHaveBeenCalledWith("original-card");
+    expect(h.message.edit).toHaveBeenCalledOnce();
+    expect(h.dm.send).not.toHaveBeenCalled();
+    expect(h.message.reply).not.toHaveBeenCalled();
+    expect(h.database.completeNotification).toHaveBeenCalledWith("restart-event", 1);
+  });
+
+  it("adopts an automatic child when its event arrives before the predecessor restart event", async () => {
+    const h = harness();
+    h.database.claimNotification.mockResolvedValue(
+      notificationItem("child-event", "report_queued", automaticChildId, null, null)
+    );
+    h.api.report.mockResolvedValue(automaticChild);
+    h.database.adoptAutomaticNetworkRetry.mockResolvedValue("adopted");
+    h.database.reportCardState.mockResolvedValue(adoptedCardState);
+
+    await h.worker.processOne();
+
+    expect(h.api.report).toHaveBeenCalledOnce();
+    expect(h.api.report).toHaveBeenCalledWith(automaticChildId);
+    expect(h.database.adoptAutomaticNetworkRetry).toHaveBeenCalledWith(report.accountId, predecessorId, automaticChildId);
+    expect(h.dm.messages.fetch).toHaveBeenCalledWith("original-card");
+    expect(h.message.edit).toHaveBeenCalledOnce();
+    expect(h.dm.send).not.toHaveBeenCalled();
+    expect(h.message.reply).not.toHaveBeenCalled();
+  });
+
+  it("does not send the predecessor's failure event as a terminal DM for the child", async () => {
+    const h = harness();
+    h.database.claimNotification.mockResolvedValue(
+      notificationItem("late-parent-failure", "report_failed", predecessorId, "predecessor-card", null)
+    );
+    const failedChild: ReportDetail = {
+      ...automaticChild,
+      status: "failed",
+      failure: { stage: "requesting_verification", code: "network_unavailable", message: "Connection failed." }
+    };
+    h.api.report.mockImplementation((reportId: string) => Promise.resolve(reportId === predecessorId ? restartingParent : failedChild));
+    h.database.adoptAutomaticNetworkRetry.mockResolvedValue("adopted");
+    h.database.reportCardState.mockResolvedValue(adoptedCardState);
+
+    await h.worker.processOne();
+
+    expect(h.message.edit).toHaveBeenCalledOnce();
+    expect(h.message.reply).not.toHaveBeenCalled();
+    expect(h.database.completeNotification).toHaveBeenCalledWith("late-parent-failure", 1);
+  });
+
+  it("ignores a delayed predecessor event when its automatic child was manually superseded", async () => {
+    const h = harness();
+    h.database.claimNotification.mockResolvedValue(
+      notificationItem("late-restart-event", "report_connection_restarting", predecessorId, "predecessor-card", null)
+    );
+    const manuallySupersededChild = { ...automaticChild, successorReportId: manualChildId };
+    h.api.report.mockImplementation((reportId: string) => Promise.resolve(reportId === predecessorId ? restartingParent : manuallySupersededChild));
+
+    await h.worker.processOne();
+
+    expect(h.database.adoptAutomaticNetworkRetry).not.toHaveBeenCalled();
+    expect(h.api.report.mock.calls.map(([id]) => id)).toEqual([predecessorId, automaticChildId]);
+    expect(h.api.report).not.toHaveBeenCalledWith(manualChildId);
+    expect(h.database.reportCardState).not.toHaveBeenCalled();
+    expect(h.message.edit).not.toHaveBeenCalled();
+    expect(h.message.reply).not.toHaveBeenCalled();
+    expect(h.dm.send).not.toHaveBeenCalled();
+    expect(h.database.completeNotification).toHaveBeenCalledWith("late-restart-event", 1);
+  });
+
+  it("adopts a restarting predecessor during card repair before sending another card", async () => {
+    const h = harness();
+    h.database.connections.mockResolvedValue([{
+      discord_user_id: "user", account_id: report.accountId, encrypted_api_key: "unused",
+      username: "fixture", key_prefix: "dsa_fixture", event_cursor: "0", connected_at: new Date()
+    }]);
+    h.database.dueCardRepairs.mockResolvedValue([{
+      report_id: predecessorId, discord_user_id: "user", encrypted_target_context: null,
+      card_repair_attempts: 1, trace_id: report.traceId
+    }]);
+    h.api.report.mockImplementation((reportId: string) => Promise.resolve(reportId === predecessorId ? restartingParent : automaticChild));
+    h.database.adoptAutomaticNetworkRetry.mockResolvedValue("adopted");
+    h.database.reportCardState.mockResolvedValue(adoptedCardState);
+
+    await h.worker.recoverOnce();
+
+    expect(h.api.report.mock.calls.map(([id]) => id)).toEqual([predecessorId, automaticChildId]);
+    expect(h.database.adoptAutomaticNetworkRetry).toHaveBeenCalledWith(report.accountId, predecessorId, automaticChildId);
+    expect(h.dm.messages.fetch).toHaveBeenCalledWith("original-card");
+    expect(h.message.edit).toHaveBeenCalledOnce();
+    expect(h.dm.send).not.toHaveBeenCalled();
+    expect(h.database.completeCardUpdate).toHaveBeenCalledWith(
+      automaticChildId, expect.any(String)
+    );
+  });
+
+  it("reconciles an accepted predecessor card after a lost mapping before sending the automatic child", async () => {
+    const h = harness(null, "lost-parent-card", null);
+    const identity = {
+      nonce: cardNonce(predecessorId),
+      originReportId: predecessorId,
+      originClaimedAt: new Date(Date.now() - 180_000),
+      relatedReportIds: [predecessorId, automaticChildId],
+      relatedReportIdsComplete: true
+    };
+    const acceptedParentCard = {
+      id: "accepted-parent-card",
+      channelId: "dm-channel",
+      author: { id: "bot-user" },
+      nonce: null,
+      content: "",
+      components: [{ components: [{ content: `Report ID: \`${predecessorId}\`` }] }],
+      createdTimestamp: Date.now() - 179_000,
+      edit: vi.fn().mockResolvedValue(undefined)
+    };
+    const acceptedMessages = new Map([[acceptedParentCard.id, acceptedParentCard]]);
+    const originalSend = vi.fn((payload: { nonce: string }) => {
+      expect(payload.nonce).toBe(identity.nonce);
+      return Promise.resolve(acceptedParentCard);
+    });
+    await originalSend({ nonce: identity.nonce });
+    h.database.claimNotification.mockResolvedValue(
+      notificationItem("lost-parent-card", "report_connection_restarting", predecessorId, null, null)
+    );
+    h.api.report.mockImplementation((reportId: string) => Promise.resolve(reportId === predecessorId ? restartingParent : automaticChild));
+    h.database.adoptAutomaticNetworkRetry.mockResolvedValue("adopted");
+    h.database.reportCardState.mockResolvedValue({
+      ...adoptedCardState,
+      dm_channel_id: null,
+      dm_message_id: null,
+      dm_card_nonce: identity.nonce,
+      dm_card_origin_report_id: identity.originReportId,
+      dm_card_origin_claimed_at: identity.originClaimedAt
+    });
+    h.database.claimDmCard.mockResolvedValue(identity);
+    h.dm.messages.fetch.mockImplementation((query: unknown) => {
+      if (typeof query === "object" && query !== null && "limit" in query) {
+        return Promise.resolve(acceptedMessages) as never;
+      }
+      return Promise.resolve(acceptedParentCard) as never;
+    });
+
+    await h.worker.processOne();
+
+    expect(h.database.claimDmCard).toHaveBeenCalledWith(automaticChildId);
+    expect(h.database.setDmMapping).toHaveBeenCalledWith(automaticChildId, "dm-channel", "accepted-parent-card");
+    expect(acceptedParentCard.edit).toHaveBeenCalledOnce();
+    expect(h.dm.send).not.toHaveBeenCalled();
+    expect(h.database.completeNotification).toHaveBeenCalledWith("lost-parent-card", 1);
+    expect(h.dm.messages.fetch).toHaveBeenCalledWith({ limit: 100 });
+    expect(originalSend).toHaveBeenCalledOnce();
+    expect(acceptedMessages.size).toBe(1);
+    expect(acceptedMessages.has(acceptedParentCard.id)).toBe(true);
+  });
+
+  it("finds an accepted automatic-child card by its footer after manual transfer when history omits the nonce", async () => {
+    const h = harness(null, "manual-child-card", null);
+    const manualChild = {
+      ...automaticChild, reportId: manualChildId, predecessorReportId: automaticChildId,
+      automaticNetworkRetry: false, successorReportId: null
+    };
+    const identity = {
+      nonce: cardNonce(predecessorId),
+      originReportId: predecessorId,
+      originClaimedAt: new Date(Date.now() - 180_000),
+      relatedReportIds: [predecessorId, automaticChildId, manualChildId],
+      relatedReportIdsComplete: true
+    };
+    const acceptedAutomaticCard = {
+      id: "accepted-automatic-card",
+      channelId: "dm-channel",
+      author: { id: "bot-user" },
+      nonce: null,
+      content: "",
+      components: [{ components: [{ content: `Report ID: \`${automaticChildId}\`\nReporter email: \`redacted@example.test\`` }] }],
+      createdTimestamp: Date.now() - 120_000,
+      edit: vi.fn().mockResolvedValue(undefined)
+    };
+    h.database.claimNotification.mockResolvedValue(
+      notificationItem("manual-child-card", "report_queued", manualChildId, null, null)
+    );
+    h.api.report.mockResolvedValue(manualChild);
+    h.database.claimDmCard.mockResolvedValue(identity);
+    h.dm.messages.fetch.mockImplementation((query: unknown) => {
+      if (typeof query === "object" && query !== null && "limit" in query) {
+        return Promise.resolve(new Map([[acceptedAutomaticCard.id, acceptedAutomaticCard]])) as never;
+      }
+      return Promise.resolve(acceptedAutomaticCard) as never;
+    });
+
+    await h.worker.processOne();
+
+    expect(h.database.setDmMapping).toHaveBeenCalledWith(manualChildId, "dm-channel", "accepted-automatic-card");
+    expect(acceptedAutomaticCard.edit).toHaveBeenCalledOnce();
+    expect(h.dm.send).not.toHaveBeenCalled();
+    expect(h.database.completeNotification).toHaveBeenCalledWith("manual-child-card", 1);
+  });
+
+  it("defers an uncertain child card send when the bounded DM scan cannot cover the original claim", async () => {
+    const h = harness(null, "uncovered-parent-card", null);
+    const claimedAt = new Date(Date.now() - 180_000);
+    const identity = {
+      nonce: cardNonce(predecessorId),
+      originReportId: predecessorId,
+      originClaimedAt: claimedAt,
+      relatedReportIds: [predecessorId, automaticChildId],
+      relatedReportIdsComplete: true
+    };
+    const history = new Map(Array.from({ length: 100 }, (_, index) => [`newer-${index}`, {
+      id: `newer-${index}`,
+      channelId: "dm-channel",
+      author: { id: "bot-user" },
+      nonce: null,
+      content: "unrelated",
+      components: [],
+      createdTimestamp: claimedAt.getTime() + 10_000 + index
+    }]));
+    h.database.claimNotification.mockResolvedValue(
+      notificationItem("uncovered-parent-card", "report_connection_restarting", predecessorId, null, null)
+    );
+    h.api.report.mockImplementation((reportId: string) => Promise.resolve(reportId === predecessorId ? restartingParent : automaticChild));
+    h.database.adoptAutomaticNetworkRetry.mockResolvedValue("adopted");
+    h.database.reportCardState.mockResolvedValue({
+      ...adoptedCardState,
+      dm_channel_id: null,
+      dm_message_id: null,
+      dm_card_nonce: identity.nonce,
+      dm_card_origin_report_id: identity.originReportId,
+      dm_card_origin_claimed_at: claimedAt
+    });
+    h.database.claimDmCard.mockResolvedValue(identity);
+    h.dm.messages.fetch.mockResolvedValue(history);
+
+    await h.worker.processOne();
+
+    expect(h.dm.send).not.toHaveBeenCalled();
+    expect(h.database.releaseDmCard).toHaveBeenCalledWith(automaticChildId);
+    expect(h.database.retryNotification).toHaveBeenCalledWith(
+      "uncovered-parent-card", "uncertain_card_delivery_history_incomplete", 1
+    );
+    expect(h.logger.mock.calls.some(([event]) => event === "account_card_delivery_uncertain")).toBe(true);
+  });
+
+  it("does not send when the persisted identity lineage exceeds its bounded report-ID set", async () => {
+    const h = harness(null, "truncated-card-lineage", null);
+    const claimedAt = new Date(Date.now() - 180_000);
+    h.database.claimNotification.mockResolvedValue(
+      notificationItem("truncated-card-lineage", "report_queued", report.reportId, null, null)
+    );
+    h.database.claimDmCard.mockResolvedValue({
+      nonce: cardNonce(report.reportId),
+      originReportId: report.reportId,
+      originClaimedAt: claimedAt,
+      relatedReportIds: [report.reportId],
+      relatedReportIdsComplete: false
+    });
+    h.dm.messages.fetch.mockResolvedValue(new Map([["unrelated", {
+      id: "unrelated", channelId: "dm-channel", author: { id: "bot-user" }, nonce: null,
+      content: "unrelated message", components: [], embeds: [], createdTimestamp: Date.now()
+    }]]));
+
+    await h.worker.processOne();
+
+    expect(h.dm.send).not.toHaveBeenCalled();
+    expect(h.database.retryNotification).toHaveBeenCalledWith(
+      "truncated-card-lineage", "uncertain_card_delivery_history_incomplete", 1
+    );
+  });
+
   it("edits the original card and replies to it before completing the event", async () => {
     const h = harness();
     await h.worker.processOne();
@@ -91,7 +433,8 @@ describe("notification delivery against an existing report card", () => {
     const h = harness();
     const item = {
       event_id: "event", event_type: "report_failed", report_id: report.reportId,
-      trace_id: report.traceId, lifecycle_attempt: 1, discord_user_id: "user",
+      trace_id: report.traceId, account_id: report.accountId,
+      lifecycle_attempt: 1, discord_user_id: "user",
       encrypted_api_key: "unused", encrypted_target_context: null,
       dm_message_id: "original-card", visible_payload_hash: null
     };
@@ -131,8 +474,12 @@ describe("notification delivery against an existing report card", () => {
     const first = harness(null, "event", null);
     const retry = harness(null, "event", null);
     const created = { channelId: "dm", id: "card" };
-    first.database.claimDmCard.mockResolvedValue(true);
-    retry.database.claimDmCard.mockResolvedValue(true);
+    const identity = {
+      nonce: cardNonce(report.reportId), originReportId: report.reportId, originClaimedAt: new Date(),
+      relatedReportIds: [report.reportId], relatedReportIdsComplete: true
+    };
+    first.database.claimDmCard.mockResolvedValue(identity);
+    retry.database.claimDmCard.mockResolvedValue(identity);
     first.dm.send.mockResolvedValue(created);
     retry.dm.send.mockResolvedValue(created);
 
@@ -232,7 +579,7 @@ describe("notification delivery against an existing report card", () => {
     captureLifecycleFailureMock.mockClear();
     const h = harness(null, "event", null);
     h.dm.messages.fetch.mockRejectedValue({ code: 10008 });
-    h.database.claimDmCard.mockResolvedValue(false);
+    h.database.claimDmCard.mockResolvedValue(null);
 
     await h.worker.processOne();
 
@@ -244,7 +591,10 @@ describe("notification delivery against an existing report card", () => {
 
   it("stops a Discord validation failure and records safe send-card diagnostics", async () => {
     const h = harness(null, "event", null);
-    h.database.claimDmCard.mockResolvedValue(true);
+    h.database.claimDmCard.mockResolvedValue({
+      nonce: cardNonce(report.reportId), originReportId: report.reportId, originClaimedAt: new Date(),
+      relatedReportIds: [report.reportId], relatedReportIdsComplete: true
+    });
     h.dm.send.mockRejectedValue(Object.assign(new Error("Invalid Form Body"), {
       code: 50035,
       status: 400,

@@ -35,6 +35,7 @@ export interface LifecycleReport {
   session_state: string | null;
   request_input: PreparedReportInput["request"];
   prepared_input: Omit<PreparedReportInput, "request">;
+  status: string;
   discord_report_id: string | null;
 }
 
@@ -45,7 +46,13 @@ export interface LifecycleFailureSignal {
   stage: "verification" | "submitted" | "review_confirmation" | "submitting" | "review_submission";
   eventType: "report_failed" | "report_receipt_timeout" | "review_confirmation_timeout" | "review_request_ambiguous";
   outcome: "failed" | "ambiguous";
-  errorCategory: "verification_timeout" | "discord_receipt_timeout" | "review_confirmation_timeout" | "ambiguous_submission_state" | "review_request_ambiguous";
+  errorCategory:
+    | "verification_timeout"
+    | "discord_receipt_timeout"
+    | "review_confirmation_timeout"
+    | "ambiguous_submission_state"
+    | "review_request_ambiguous"
+    | "lifecycle_attempts_exhausted";
 }
 
 interface LifecycleStore {
@@ -53,12 +60,23 @@ interface LifecycleStore {
   heartbeatLifecycleJob(job: LifecycleJob): Promise<boolean>;
   getLifecycleReport(reportId: string): Promise<LifecycleReport | null>;
   setStatus(job: LifecycleJob, status: "requesting_verification" | "verifying"): Promise<boolean>;
-  saveAwaitingVerification(job: LifecycleJob, encryptedSession: string): Promise<boolean>;
+  saveAwaitingVerification(job: LifecycleJob, encryptedSession: string): Promise<boolean | "superseded">;
   beginSubmission(job: LifecycleJob): Promise<boolean>;
   markSubmitted(job: LifecycleJob, discordReportId: string): Promise<boolean>;
   completeLifecycleJob(job: LifecycleJob): Promise<boolean>;
-  retryLifecycleJob(job: LifecycleJob, code: string, delaySeconds: number): Promise<boolean>;
-  failBeforeSubmission(job: LifecycleJob, code: string, message: string): Promise<boolean>;
+  retryLifecycleJob(
+    job: LifecycleJob,
+    code: string,
+    delaySeconds: number,
+    options?: LifecycleRetryOptions
+  ): Promise<boolean | "superseded">;
+  failBeforeSubmission(
+    job: LifecycleJob,
+    code: string,
+    message: string,
+    automaticNetworkRestartEligible?: boolean,
+    encryptedSession?: string
+  ): Promise<boolean | "restarted" | "superseded">;
   failAfterSubmission(job: LifecycleJob, code: string, message: string): Promise<boolean>;
   markReviewRequested(job: LifecycleJob, discordReportId: string): Promise<boolean>;
   beginReviewSubmission(job: LifecycleJob): Promise<boolean>;
@@ -69,9 +87,16 @@ interface LifecycleStore {
   reconcilePendingInboundMessages?(): Promise<{ processed: number; remaining: number; oldestPendingAgeMs: number | null }>;
 }
 
+export interface LifecycleRetryOptions {
+  recordConnectionProgress?: boolean;
+  encryptedSession?: string;
+  encryptedVerifiedToken?: string;
+}
+
 interface LifecycleClient {
   sendEmailCode(flow: "message_urf" | "user_urf" | "guild_urf", email: string): Promise<unknown>;
   snapshotSession(): Promise<DiscordDsaSessionState>;
+  snapshotInitializedSession?(): DiscordDsaSessionState | null;
   verifyEmailCode(flow: "message_urf" | "user_urf" | "guild_urf", email: string, code: string): Promise<string>;
   getMenu(flow: "message_urf" | "user_urf" | "guild_urf"): Promise<unknown>;
   prepareSubmission(menu: never, draft: ReturnType<typeof toReportDraft>, token: string, language: string): unknown;
@@ -135,7 +160,7 @@ export type LifecycleRunnerOutcome =
     };
 
 interface LifecycleJobResult {
-  outcome: "completed" | "waiting_for_email" | "retry_scheduled" | "failed" | "ambiguous" | "ownership_lost";
+  outcome: "completed" | "waiting_for_email" | "retry_scheduled" | "restarting" | "failed" | "ambiguous" | "ownership_lost";
   errorCategory?: string;
   error?: unknown;
   retryDelayMs?: number;
@@ -159,7 +184,8 @@ export class LifecycleRunner {
     clientFactory?: (report: LifecycleReport, session?: DiscordDsaSessionState) => LifecycleClient,
     codecs?: Partial<RunnerCodecs>,
     sleep: RunnerSleep = cancellableDelay,
-    private readonly onOutcome: (outcome: LifecycleRunnerOutcome) => void | Promise<void> = () => undefined
+    private readonly onOutcome: (outcome: LifecycleRunnerOutcome) => void | Promise<void> = () => undefined,
+    private readonly random: () => number = Math.random
   ) {
     this.clientFactory = clientFactory ?? ((report, session) => defaultClient(config, report, session));
     this.codecs = {
@@ -255,9 +281,10 @@ export class LifecycleRunner {
       await this.store.failReview(job, "request_failed", "review_url_invalid", "The automatic appeal link was invalid.");
       return failedResult("review_url_invalid", new Error("Automatic appeal URL is invalid."));
     }
-    const client = this.clientFactory(report);
+    let client: LifecycleClient | undefined;
     let submissionStarted = false;
     try {
+      client = this.clientFactory(report);
       await ownership.wait(client.bootstrapFingerprint());
       const token = await ownership.wait(client.resolveReportReviewToken(reviewUrl));
       submissionStarted = await this.store.beginReviewSubmission(job);
@@ -304,7 +331,10 @@ export class LifecycleRunner {
       } else if (submissionStarted && ambiguous(error)) {
         await this.store.failReview(job, "request_ambiguous", "review_request_ambiguous", "The automatic appeal outcome could not be confirmed.");
         return ambiguousResult("review_request_ambiguous", error);
-      } else if (!submissionStarted && job.attempts < job.max_attempts && retryable(error)) {
+      } else if (
+        !submissionStarted && job.attempts < job.max_attempts && retryable(error) &&
+        !retryAfterExceedsMaxAutomaticWait(error)
+      ) {
         const delaySeconds = retryDelaySeconds(job.attempts, error);
         await this.store.retryLifecycleJob(job, discordFailureCode(error), delaySeconds);
         return retryResult(discordFailureCode(error), delaySeconds, error);
@@ -314,25 +344,49 @@ export class LifecycleRunner {
         return failedResult(code, error);
       }
     } finally {
-      await client.close();
+      await client?.close();
     }
   }
 
   private async requestCode(job: LifecycleJob, ownership: JobOwnership): Promise<LifecycleJobResult> {
     const report = await this.requiredReport(job.report_id);
-    const client = this.clientFactory(report);
+    let client: LifecycleClient | undefined;
     try {
-      if (!(await this.store.setStatus(job, "requesting_verification"))) return ownershipLostResult();
+      const restoredSession = job.attempts > 1 && report.session_state !== null
+        ? decodeSession(this.codecs.decrypt(report.session_state))
+        : undefined;
+      client = this.clientFactory(report, restoredSession);
+      if (report.status === "verifying") {
+        return (await this.store.completeLifecycleJob(job))
+          ? { outcome: "completed" }
+          : ownershipLostResult();
+      }
+      if (report.status === "verification_received") {
+        const initialized = client.snapshotInitializedSession?.();
+        const savedSession = initialized ?? await ownership.wait(client.snapshotSession());
+        const saved = await this.store.saveAwaitingVerification(job, this.codecs.encrypt(savedSession));
+        if (saved === "superseded") return { outcome: "completed" };
+        return saved
+          ? { outcome: "waiting_for_email", submissionCertainty: "not_started" }
+          : ownershipLostResult();
+      }
+      if (!(await this.store.setStatus(job, "requesting_verification"))) {
+        return (await this.store.completeLifecycleJob(job))
+          ? { outcome: "completed" }
+          : ownershipLostResult();
+      }
       await ownership.wait(client.sendEmailCode(transportFlow(report.flow), report.reporter_email));
-      const session = await ownership.wait(client.snapshotSession());
-      return (await this.store.saveAwaitingVerification(job, this.codecs.encrypt(session)))
+      const savedSession = await ownership.wait(client.snapshotSession());
+      const saved = await this.store.saveAwaitingVerification(job, this.codecs.encrypt(savedSession));
+      if (saved === "superseded") return { outcome: "completed" };
+      return saved
         ? { outcome: "waiting_for_email", submissionCertainty: "not_started" }
         : ownershipLostResult();
     } catch (error) {
       if (isOwnershipLost(error)) throw error;
-      return this.handleBeforeBoundaryFailure(job, error);
+      return this.handleBeforeBoundaryFailure(job, error, client);
     } finally {
-      await client.close();
+      await client?.close();
     }
   }
 
@@ -350,29 +404,47 @@ export class LifecycleRunner {
       await this.store.failBeforeSubmission(job, "session_not_ready", "Verification session was not ready.");
       return failedResult("session_not_ready", new Error("Verification session was not ready after the final attempt."));
     }
-    const session = this.codecs.decrypt(report.session_state) as DiscordDsaSessionState;
-    const rawCode = job.payload.encryptedCode ?? job.payload.code;
-    if (typeof rawCode !== "string") {
-      await this.store.failBeforeSubmission(job, "verification_code_missing", "Verification code was unavailable.");
-      return failedResult("verification_code_missing", new Error("Verification code was unavailable in stored job data."));
-    }
-    const decoded = this.codecs.decrypt(rawCode);
-    const code = typeof decoded === "string" ? decoded : (decoded as { code?: unknown }).code;
-    if (typeof code !== "string") {
-      await this.store.failBeforeSubmission(job, "verification_code_invalid", "Verification code was invalid.");
-      return failedResult("verification_code_invalid", new Error("Verification code was invalid after decrypting stored job data."));
-    }
-    const client = this.clientFactory(report, session);
+    let client: LifecycleClient | undefined;
     let crossedBoundary = false;
+    let verifiedToken: string | undefined;
     try {
-      if (!(await this.store.setStatus(job, "verifying"))) return ownershipLostResult();
+      const session = decodeSession(this.codecs.decrypt(report.session_state));
+      client = this.clientFactory(report, session);
+      if (!(await this.store.setStatus(job, "verifying"))) {
+        return (await this.store.completeLifecycleJob(job))
+          ? { outcome: "completed" }
+          : ownershipLostResult();
+      }
       const flow = transportFlow(report.flow);
-      const token = await ownership.wait(client.verifyEmailCode(flow, report.reporter_email, code));
+      const storedToken = job.payload.encryptedVerifiedToken;
+      if (typeof storedToken === "string") {
+        const decodedToken = this.codecs.decrypt(storedToken);
+        verifiedToken = typeof decodedToken === "string"
+          ? decodedToken
+          : (decodedToken as { token?: unknown }).token as string | undefined;
+        if (typeof verifiedToken !== "string" || verifiedToken.length === 0) {
+          throw new Error("Stored Discord verification token is invalid.");
+        }
+      } else {
+        const rawCode = job.payload.encryptedCode ?? job.payload.code;
+        if (typeof rawCode !== "string") {
+          await this.store.failBeforeSubmission(job, "verification_code_missing", "Verification code was unavailable.");
+          return failedResult("verification_code_missing", new Error("Verification code was unavailable in stored job data."));
+        }
+        const decoded = this.codecs.decrypt(rawCode);
+        const code = typeof decoded === "string" ? decoded : (decoded as { code?: unknown }).code;
+        if (typeof code !== "string") {
+          await this.store.failBeforeSubmission(job, "verification_code_invalid", "Verification code was invalid.");
+          return failedResult("verification_code_invalid", new Error("Verification code was invalid after decrypting stored job data."));
+        }
+        verifiedToken = await ownership.wait(client.verifyEmailCode(flow, report.reporter_email, code));
+      }
       const menu = await ownership.wait(client.getMenu(flow));
+      if (verifiedToken === undefined) throw new Error("Discord verification token is unavailable.");
       const payload = client.prepareSubmission(
         menu as never,
         toReportDraft({ request: report.request_input, ...report.prepared_input }, report.reporter_legal_name),
-        token,
+        verifiedToken,
         DISCORD_FORM_LANGUAGE
       );
       crossedBoundary = await this.store.beginSubmission(job);
@@ -397,22 +469,60 @@ export class LifecycleRunner {
           ? ambiguousResult(code, error)
           : failedResult(code, error);
       } else {
-        return this.handleBeforeBoundaryFailure(job, error);
+        return this.handleBeforeBoundaryFailure(job, error, client, verifiedToken);
       }
     } finally {
-      await client.close();
+      await client?.close();
     }
   }
 
-  private async handleBeforeBoundaryFailure(job: LifecycleJob, error: unknown): Promise<LifecycleJobResult> {
+  private async handleBeforeBoundaryFailure(
+    job: LifecycleJob,
+    error: unknown,
+    client?: LifecycleClient,
+    verifiedToken?: string
+  ): Promise<LifecycleJobResult> {
     const code = discordFailureCode(error);
-    if (job.attempts < job.max_attempts && retryable(error)) {
-      const delaySeconds = retryDelaySeconds(job.attempts, error);
-      return (await this.store.retryLifecycleJob(job, code, delaySeconds))
+    if (
+      job.attempts < job.max_attempts && retryable(error) &&
+      !retryAfterExceedsMaxAutomaticWait(error)
+    ) {
+      const delaySeconds = retryDelaySeconds(job.attempts, error, this.random);
+      const initializedSession = client?.snapshotInitializedSession?.();
+      const retryOptions: LifecycleRetryOptions = {
+        ...((job.kind !== "submit_review" && isTransientConnectionFailure(error))
+          ? { recordConnectionProgress: true }
+          : {}),
+        ...(initializedSession === null || initializedSession === undefined
+          ? {}
+          : { encryptedSession: this.codecs.encrypt(initializedSession) }),
+        ...(verifiedToken === undefined ? {} : { encryptedVerifiedToken: this.codecs.encrypt({ token: verifiedToken }) })
+      };
+      const saved = Object.keys(retryOptions).length === 0
+        ? await this.store.retryLifecycleJob(job, code, delaySeconds)
+        : await this.store.retryLifecycleJob(job, code, delaySeconds, retryOptions);
+      if (saved === "superseded") return { outcome: "completed" };
+      return saved
         ? retryResult(code, delaySeconds, error)
         : ownershipLostResult();
     }
-    await this.store.failBeforeSubmission(job, code, "Discord preparation failed safely.");
+    const automaticNetworkRestartEligible =
+      job.attempts >= job.max_attempts &&
+      (job.kind === "request_code" || job.kind === "verify_submit") &&
+      !retryAfterExceedsMaxAutomaticWait(error) &&
+      isTransientConnectionFailure(error);
+    const initializedSession = client?.snapshotInitializedSession?.();
+    const failureOutcome = initializedSession === null || initializedSession === undefined
+      ? await this.store.failBeforeSubmission(
+        job, code, "Discord preparation failed safely.", automaticNetworkRestartEligible
+      )
+      : await this.store.failBeforeSubmission(
+        job, code, "Discord preparation failed safely.", automaticNetworkRestartEligible,
+        this.codecs.encrypt(initializedSession)
+      );
+    if (failureOutcome === "restarted") return restartingResult(code, error);
+    if (failureOutcome === "superseded") return { outcome: "completed" };
+    if (!failureOutcome) return ownershipLostResult();
     return failedResult(code, error);
   }
 
@@ -692,8 +802,89 @@ function transportFlow(flow: LifecycleReport["flow"]): "message_urf" | "user_urf
 }
 
 function retryable(error: unknown): boolean {
-  return error instanceof DiscordDsaNetworkError ||
+  return isTransientNetworkFailure(error) ||
     (error instanceof DiscordDsaHttpError && (error.status === 429 || error.status >= 500));
+}
+
+function isTransientConnectionFailure(error: unknown): boolean {
+  return isTransientNetworkFailure(error) || (error instanceof DiscordDsaHttpError && error.status >= 500);
+}
+
+const TRANSIENT_NETWORK_CODES = new Set([
+  "ECONNABORTED", "ECONNREFUSED", "ECONNRESET", "EHOSTDOWN", "EHOSTUNREACH", "EPIPE", "EAI_AGAIN",
+  "ENETDOWN", "ENETUNREACH", "ETIMEDOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_SOCKET", "UND_ERR_REQUEST_TIMEOUT"
+]);
+
+const PERMANENT_NETWORK_CODES = new Set([
+  "EAI_NONAME", "ENOTFOUND", "ERR_INVALID_ARG_TYPE", "ERR_INVALID_URL", "ERR_INVALID_PROTOCOL",
+  "ERR_TLS_CERT_ALTNAME_INVALID", "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "ERR_TLS_CERT_SIGNATURE_ALGORITHM_UNSUPPORTED"
+]);
+
+const MAX_AUTOMATIC_WAIT_SECONDS = 300;
+
+function retryAfterExceedsMaxAutomaticWait(error: unknown): boolean {
+  if (!(error instanceof DiscordDsaHttpError) || error.retryAfterSeconds === undefined) return false;
+  return !Number.isFinite(error.retryAfterSeconds) || error.retryAfterSeconds > MAX_AUTOMATIC_WAIT_SECONDS;
+}
+
+function isTransientNetworkFailure(error: unknown): boolean {
+  if (!(error instanceof DiscordDsaNetworkError)) return false;
+  const causes = errorCauseChain(error);
+  if (causes.some((cause) => causeStatus(cause) === 407 || isProxyAuthenticationFailure(cause))) return false;
+  const codes = causes.map(causeCode).filter((code): code is string => code !== undefined);
+  if (codes.some((code) => PERMANENT_NETWORK_CODES.has(code))) return false;
+  return codes.some((code) => TRANSIENT_NETWORK_CODES.has(code));
+}
+
+function errorCauseChain(error: unknown): unknown[] {
+  const causes: unknown[] = [];
+  const visited = new Set<unknown>();
+  const pending: unknown[] = [error];
+  while (pending.length > 0 && causes.length < 64) {
+    const current = pending.pop();
+    if (current === null || typeof current !== "object" || visited.has(current)) continue;
+    visited.add(current);
+    causes.push(current);
+    if ("cause" in current) pending.push((current as { cause?: unknown }).cause);
+    if ("errors" in current && Array.isArray((current as { errors?: unknown }).errors)) {
+      pending.push(...((current as { errors: unknown[] }).errors.slice(0, 16)));
+    }
+  }
+  return causes;
+}
+
+function decodeSession(value: unknown): DiscordDsaSessionState {
+  let state = value;
+  if (typeof state === "string") {
+    try { state = JSON.parse(state) as unknown; } catch { /* handled as invalid below */ }
+  }
+  if (state === null || typeof state !== "object") throw new Error("Stored Discord session is invalid.");
+  const candidate = state as { fingerprint?: unknown; cookies?: unknown };
+  if (typeof candidate.fingerprint !== "string" || typeof candidate.cookies !== "string") {
+    throw new Error("Stored Discord session is invalid.");
+  }
+  return { fingerprint: candidate.fingerprint, cookies: candidate.cookies };
+}
+
+function causeCode(value: unknown): string | undefined {
+  if (value === null || typeof value !== "object" || !("code" in value)) return undefined;
+  const code = (value as { code?: unknown }).code;
+  return typeof code === "string" ? code.toUpperCase() : undefined;
+}
+
+function causeStatus(value: unknown): number | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const candidate = value as { status?: unknown; statusCode?: unknown };
+  const status = typeof candidate.statusCode === "number" ? candidate.statusCode : candidate.status;
+  return typeof status === "number" ? status : undefined;
+}
+
+function isProxyAuthenticationFailure(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || !("message" in value)) return false;
+  const message = (value as { message?: unknown }).message;
+  return typeof message === "string" && /Proxy response \(407\) !== 200 when HTTP Tunneling/i.test(message);
 }
 
 function ambiguous(error: unknown): boolean {
@@ -706,11 +897,13 @@ function discordFailureCode(error: unknown): string {
   return "discord_lifecycle_failed";
 }
 
-function retryDelaySeconds(attempts: number, error?: unknown): number {
+function retryDelaySeconds(attempts: number, error?: unknown, random: () => number = Math.random): number {
   if (error instanceof DiscordDsaHttpError && error.retryAfterSeconds !== undefined) {
     return Math.max(1, Math.ceil(error.retryAfterSeconds));
   }
-  return Math.min(60, 5 * 2 ** attempts);
+  const baseDelay = Math.min(60, 5 * 2 ** attempts);
+  const randomValue = Math.max(0, Math.min(1, random()));
+  return Math.max(1, Math.round(baseDelay * (0.8 + randomValue * 0.4)));
 }
 
 function retryResult(errorCategory: string, delaySeconds: number, error?: unknown): LifecycleJobResult {
@@ -727,6 +920,10 @@ function failedResult(errorCategory: string, error?: unknown): LifecycleJobResul
   return {
     outcome: "failed", errorCategory, submissionCertainty: "not_started", ...(error === undefined ? {} : { error })
   };
+}
+
+function restartingResult(errorCategory: string, error?: unknown): LifecycleJobResult {
+  return { outcome: "restarting", errorCategory, submissionCertainty: "not_started", ...(error === undefined ? {} : { error }) };
 }
 
 function ambiguousResult(errorCategory: string, error?: unknown): LifecycleJobResult {

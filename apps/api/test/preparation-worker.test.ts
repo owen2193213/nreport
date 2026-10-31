@@ -92,7 +92,7 @@ describe("PreparationWorker", () => {
     expect(onIterationError).toHaveBeenCalledWith(expect.any(Error));
   });
 
-  it("prepares manual reports without calling AI and skips AI-only states", async () => {
+  it.each(["Manual report text.", ""])("prepares manual reports without calling AI or filling blank text (%j)", async (finalText) => {
     const prepare = vi.fn();
     const transition = vi.fn();
     const completePreparation = vi.fn();
@@ -111,8 +111,7 @@ describe("PreparationWorker", () => {
             useAi: false as const,
             country: "DE",
             category: "sub_other_hate_speech",
-            description: "Manual evidence summary.",
-            finalText: "Manual report text.",
+            finalText,
             target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
           }
         }
@@ -131,7 +130,7 @@ describe("PreparationWorker", () => {
     expect(completePreparation).toHaveBeenCalledWith(
       "job-1",
       "report-1",
-      expect.objectContaining({ finalText: "Manual report text." }),
+      expect.objectContaining({ finalText, description: finalText }),
       expect.objectContaining({ legalName: "Generated Name" }),
       expect.objectContaining({ aiRequests: 0, searchRequests: 0 }),
       7
@@ -193,7 +192,7 @@ describe("PreparationWorker", () => {
     });
   });
 
-  it("reuses a predecessor's immutable prepared payload without calling AI", async () => {
+  it.each(["Prepared report", ""])("reuses immutable prepared text without calling AI (%j)", async (finalText) => {
     const prepare = vi.fn();
     const store = {
       claimPreparation: vi.fn(async () => ({
@@ -209,7 +208,7 @@ describe("PreparationWorker", () => {
             useAi: true as const,
             target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
           },
-          prepared_input: { country: "DE", category: "illegal", description: "Evidence", finalText: "Prepared report" },
+          prepared_input: { country: "DE", category: "illegal", description: "Evidence", finalText },
           legal_reference: "DSA",
           research_summary: "Prior research",
           research_sources: [{ title: "EUR-Lex", url: "https://eur-lex.europa.eu/" }]
@@ -227,7 +226,7 @@ describe("PreparationWorker", () => {
     expect(prepare).not.toHaveBeenCalled();
     expect(store.transition).not.toHaveBeenCalled();
     expect(identity).toHaveBeenCalledWith("DE");
-    expect(store.completePreparation.mock.calls[0]?.[2]).toMatchObject({ finalText: "Prepared report", legalReference: "DSA" });
+    expect(store.completePreparation.mock.calls[0]?.[2]).toMatchObject({ finalText, legalReference: "DSA" });
   });
 
   it("persists a safe specific reason when the AI provider remains rate limited", async () => {

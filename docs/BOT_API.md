@@ -160,7 +160,7 @@ from all AI and Brave inputs.
 
 When `useAi` is `true`, `finalText` is forbidden. Country, category, and description are immutable
 hints; the preparation worker fills only omitted values. When `useAi` is `false`, country,
-category, and a 1–512-character `finalText` are required, description defaults to `finalText`, and
+category, and a 0–512-character `finalText` are required, description defaults to `finalText`, and
 the API does not instantiate or call an AI or search provider.
 
 Caller-selected identities, models, providers, prompts, metadata, callback URLs, and submitting
@@ -199,6 +199,13 @@ Report creation and retry routes allow 60 mutations per authenticated account pe
 
 `GET /v1/discord/dsa/reports?after=&limit=` returns account-owned summaries with an opaque cursor. A foreign
 report ID produces the same `404` as a nonexistent one.
+
+Manual API clients may explicitly supply `finalText: ""` to submit no written explanation.
+The field remains required and string-only when `useAi: false`, with a 512-character maximum.
+Blank/whitespace-only text normalizes to the empty string; preparation preserves it without
+calling AI or generating replacement text. `edit_manual` retries can likewise clear the text.
+Discord's live menu may still require text for an individual report route; transport validation
+continues to enforce that requirement.
 
 ## Credits and retries
 

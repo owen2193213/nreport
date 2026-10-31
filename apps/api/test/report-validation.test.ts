@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseCreateReportInput } from "../src/validation.js";
+import { parseCreateReportInput, parseRetryReportInput, toReportDraft } from "../src/validation.js";
 
 describe("account-owned report input", () => {
   it("accepts unresolved AI hints and rejects client-supplied final text", () => {
@@ -72,5 +72,40 @@ describe("account-owned report input", () => {
         target: { guildIdOrInviteCode: "invite", guildElements: ["name"] }
       })
     ).toThrow(/reportedUsername/);
+  });
+
+  it.each(["", "   "])("preserves intentionally blank manual report text (%j)", (finalText) => {
+    const input = parseCreateReportInput({
+      flow: "message",
+      useAi: false,
+      country: "DE",
+      category: "sub_other_hate_speech",
+      finalText,
+      target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
+    });
+    expect(input).toMatchObject({ useAi: false, finalText: "", description: "" });
+    expect(toReportDraft({ request: input, country: "DE", category: "sub_other_hate_speech", description: "", finalText: "" }, "Reporter")).toMatchObject({ context: "" });
+  });
+
+  it("allows an edit_manual retry to clear the report text", () => {
+    expect(parseRetryReportInput({
+      mode: "edit_manual", country: "DE", category: "sub_other_hate_speech", finalText: ""
+    })).toEqual({ mode: "edit_manual", country: "DE", category: "sub_other_hate_speech", finalText: "" });
+  });
+
+  it.each([undefined, null, 1, "x".repeat(513)])("rejects missing, non-string, or oversized manual text (%j)", (finalText) => {
+    const fields = { country: "DE", category: "sub_other_hate_speech", finalText };
+    expect(() => parseCreateReportInput({
+      ...fields, flow: "message", useAi: false,
+      target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
+    })).toThrow(/finalText/);
+    expect(() => parseRetryReportInput({ ...fields, mode: "edit_manual" })).toThrow(/finalText/);
+  });
+
+  it("still forbids even empty client-written finalText in AI mode", () => {
+    expect(() => parseCreateReportInput({
+      flow: "message", useAi: true, finalText: "",
+      target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
+    })).toThrow(/finalText.*useAi/i);
   });
 });

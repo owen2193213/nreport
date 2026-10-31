@@ -23,7 +23,7 @@ import { createHash } from "node:crypto";
 import type { AdminCreateAccountInput, ApiAccountView, CreateReportInput, PublicReportTarget, ReportDetail, ReportTarget, RetryReportInput } from "@nreport/contracts";
 import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
-import type { FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyReply, FastifyRequest, HookHandlerDoneFunction } from "fastify";
 
 import type { AccountPrincipal } from "./accounts.js";
 import type { AppConfig } from "./config.js";
@@ -82,6 +82,16 @@ function bearer(request: FastifyRequest): string | null {
 
 function apiError(reply: FastifyReply, request: FastifyRequest, status: number, code: string, message: string, supportReference?: string) {
   return reply.code(status).send({ error: { code, message, requestId: request.id, ...(supportReference === undefined ? {} : { supportReference }) } });
+}
+
+function validateFinalTextType(request: FastifyRequest, reply: FastifyReply, done: HookHandlerDoneFunction): void {
+  // Check the original JSON value before Ajv can coerce null, numbers, or arrays into strings.
+  const body = request.body;
+  if (typeof body === "object" && body !== null && "finalText" in body && typeof body.finalText !== "string") {
+    apiError(reply, request, 400, "invalid_request", "finalText must be a string.");
+    return;
+  }
+  done();
 }
 
 function publicReport(row: AccountReportRow, queueLength = 0): ReportDetail {
@@ -356,6 +366,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
   app.post(
     `${DSA_API_BASE_PATH}/reports`,
     {
+      preValidation: validateFinalTextType,
       preHandler: accountAuth,
       config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: { body: createReportBodySchema }
@@ -452,6 +463,7 @@ export async function buildV2Server(config: AppConfig, dependencies: V2Dependenc
   app.post<{ Params: { reportId: string }; Body: RetryReportInput }>(
     `${DSA_API_BASE_PATH}/reports/:reportId/retries`,
     {
+      preValidation: validateFinalTextType,
       preHandler: accountAuth,
       config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: { body: retryReportBodySchema }

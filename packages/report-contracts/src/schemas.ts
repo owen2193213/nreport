@@ -24,7 +24,7 @@ export const createReportBodySchema = {
     country: { type: "string", minLength: 2, maxLength: 2 },
     category: { type: "string", minLength: 1, maxLength: 100 },
     description: { type: "string", minLength: 1, maxLength: 4000 },
-    finalText: { type: "string", minLength: 1, maxLength: 512 },
+    finalText: { type: "string", maxLength: 512 },
     target: {
       oneOf: [
         { type: "object", required: ["messageUrl"], properties: { messageUrl: { type: "string", maxLength: 512 } } },
@@ -92,7 +92,15 @@ export const retryReportBodySchema = {
       type: "object",
       additionalProperties: false,
       required: ["mode"],
-      properties: { mode: { enum: ["reuse", "regenerate", "rewrite_ai"] } }
+      properties: {
+        mode: { enum: ["reuse", "regenerate", "rewrite_ai"] },
+        // Keep Ajv's removeAdditional from stripping the next branch's manual fields.
+        country: false,
+        category: false,
+        finalText: false,
+        profileElements: false,
+        guildElements: false
+      }
     },
     {
       type: "object",
@@ -102,7 +110,7 @@ export const retryReportBodySchema = {
         mode: { const: "edit_manual" },
         country: { type: "string", minLength: 2, maxLength: 2 },
         category: { type: "string", minLength: 1, maxLength: 100 },
-        finalText: { type: "string", minLength: 1, maxLength: 512 },
+        finalText: { type: "string", maxLength: 512 },
         profileElements: { type: "array", minItems: 1, uniqueItems: true, items: { enum: [...PROFILE_ELEMENTS] } },
         guildElements: { type: "array", minItems: 1, uniqueItems: true, items: { enum: [...GUILD_ELEMENTS] } }
       }

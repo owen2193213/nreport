@@ -55,6 +55,17 @@ describe("buildSubmissionPayload", () => {
     ).toThrow(PayloadValidationError);
   });
 
+  it("preserves empty report text when the live menu makes it optional", () => {
+    const payload = buildSubmissionPayload(createMessageMenu(), { ...draft, context: "" }, "token");
+    expect(payload.elements.dsa_free_text).toBe("");
+  });
+
+  it("rejects empty report text when the live menu requires it", () => {
+    const menu = createMessageMenu();
+    menu.nodes["150"]!.elements[0]!.should_submit_data = true;
+    expect(() => buildSubmissionPayload(menu, { ...draft, context: "" }, "token")).toThrow(/dsa_free_text is required/);
+  });
+
   it("rejects an invalid country option", () => {
     expect(() =>
       buildSubmissionPayload(

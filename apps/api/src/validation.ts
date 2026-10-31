@@ -62,6 +62,14 @@ function optionalString(
   return requiredString(input, key, maximum);
 }
 
+function finalTextString(input: Record<string, unknown>): string {
+  const value = input.finalText;
+  if (typeof value !== "string") throw new Error("finalText must be a string.");
+  const text = value.trim();
+  if (text.length > 512) throw new Error("finalText is too long.");
+  return text;
+}
+
 function nullableString(
   input: Record<string, unknown>,
   key: string,
@@ -283,7 +291,7 @@ export function parseCreateReportInput(value: unknown): CreateReportInput {
     throw new Error("category is invalid.");
   }
   const description = optionalString(input, "description", 4_000);
-  const finalText = optionalString(input, "finalText", 512);
+  const finalText = input.finalText === undefined ? undefined : finalTextString(input);
   if (useAi && finalText !== undefined) throw new Error("finalText cannot be supplied when useAi is true.");
   if (!useAi && countryValue === undefined) throw new Error("country is required when useAi is false.");
   if (!useAi && category === undefined) throw new Error("category is required when useAi is false.");
@@ -374,7 +382,7 @@ export function parseRetryReportInput(value: unknown): RetryReportInput {
   const country = requiredString(input, "country", 2).toUpperCase();
   if (!supportedCountries().includes(country)) throw new Error("country must be a supported two-letter code.");
   const category = requiredString(input, "category", 100);
-  const finalText = requiredString(input, "finalText", 512);
+  const finalText = finalTextString(input);
   const profileElements = input.profileElements === undefined ? undefined : stringArray(input, "profileElements", PROFILE_ELEMENTS);
   const guildElements = input.guildElements === undefined ? undefined : stringArray(input, "guildElements", GUILD_ELEMENTS);
   return { mode: modeValue, country, category, finalText, ...(profileElements ? { profileElements } : {}), ...(guildElements ? { guildElements } : {}) };

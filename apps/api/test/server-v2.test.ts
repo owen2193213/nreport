@@ -367,6 +367,75 @@ describe("v2 account-owned server", () => {
     await server.close();
   });
 
+  it.each(["create", "edit_manual"] as const)("accepts empty manual text through the %s HTTP schema", async (operation) => {
+    let persisted: unknown;
+    const write = vi.fn(async (_accountId: string, ...args: unknown[]) => {
+      persisted = args.at(-1);
+      return { created: true, report: {
+        id: "44444444-4444-4444-8444-444444444444", account_id: principal.accountId,
+        flow: "message", use_ai: false, request_input: {
+          flow: "message", useAi: false, country: "DE", category: "sub_other_hate_speech", finalText: "",
+          target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
+        },
+        prepared_input: null, status: "queued", lifecycle_attempt: 1,
+        created_at: new Date(), updated_at: new Date()
+      } };
+    });
+    const server = await buildV2Server(config, {
+      healthcheck: vi.fn(),
+      accounts: { authenticate: vi.fn(async () => principal) },
+      reports: { create: write, retry: write }
+    } as never);
+    try {
+      const response = await server.inject({
+        method: "POST",
+        url: operation === "create" ? "/v1/discord/dsa/reports" : "/v1/discord/dsa/reports/22222222-2222-4222-8222-222222222222/retries",
+        headers: { authorization: "Bearer personal-key", "idempotency-key": `empty-text:${operation}` },
+        payload: {
+          country: "DE", category: "sub_other_hate_speech", finalText: "",
+          ...(operation === "create" ? {
+            flow: "message", useAi: false,
+            target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
+          } : { mode: "edit_manual" })
+        }
+      });
+      expect(response.statusCode, response.body).toBe(202);
+      expect(response.json()).toMatchObject({ status: "queued", useAi: false });
+      expect(persisted).toMatchObject({ finalText: "" });
+      if (operation === "create") expect(persisted).toMatchObject({ description: "" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it.each([null, 1, false, [""], [null]])("rejects non-string HTTP finalText before coercion (%j)", async (finalText) => {
+    const write = vi.fn();
+    const server = await buildV2Server(config, {
+      healthcheck: vi.fn(), accounts: { authenticate: vi.fn(async () => principal) },
+      reports: { create: write, retry: write }
+    } as never);
+    try {
+      for (const operation of ["create", "edit_manual"]) {
+        const response = await server.inject({
+          method: "POST",
+          url: operation === "create" ? "/v1/discord/dsa/reports" : "/v1/discord/dsa/reports/22222222-2222-4222-8222-222222222222/retries",
+          headers: { authorization: "Bearer personal-key", "idempotency-key": `invalid-text:${operation}` },
+          payload: {
+            country: "DE", category: "sub_other_hate_speech", finalText,
+            ...(operation === "create" ? {
+              flow: "message", useAi: false,
+              target: { messageUrl: "https://discord.com/channels/@me/123456789012345678/123456789012345679" }
+            } : { mode: "edit_manual" })
+          }
+        });
+        expect(response.statusCode, response.body).toBe(400);
+      }
+      expect(write).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   it("returns malformed report identifiers as the same private 404 without querying storage", async () => {
     const findOwned = vi.fn();
     const server = await buildV2Server(config, {

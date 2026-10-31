@@ -45,6 +45,9 @@ for the report category and profile/server elements, and text inputs for details
   optional evidence/guidance hint. The API selects omitted values and returns its written report as
   `finalText`.
 - Manual mode requires country, category, and final text of at most 512 characters.
+  The HTTP API also accepts explicit `finalText: ""` for clients that submit no written
+  explanation; preparation does not generate replacement text. The existing bot modal still
+  requires its report-details field. Discord's live menu requirements continue to apply.
 - Quick Report immediately submits captured message evidence with `useAi: true`; it opens no
   modal or review step.
 - The bot resolves only evidence available through Discord's supported bot interface.
